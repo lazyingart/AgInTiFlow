@@ -3,7 +3,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright";
 import {
@@ -101,7 +101,10 @@ import { longJobStatus, startLongJob } from "./long-job-tools.js";
 import { executeAgentLinkTool, isAgentLinkTool } from "./agentlink.js";
 import { classifyGoalIntent, isDirectAnswerIntent } from "./goal-intent.js";
 import { normalizeProviderBaseURL, normalizeProviderId, providerRequiresApiKey } from "./provider-contract.js";
-import { resolveProviderHandoff } from "./provider-handoff.js";
+import {
+  resolveProviderHandoff,
+  resolveProviderQualityRebound,
+} from "./provider-handoff.js";
 import { ProviderReadinessError, probeProviderRuntime } from "./provider-runtime.js";
 import { probeLocalMaxResources } from "./local-resource-policy.js";
 import {
@@ -121,6 +124,7 @@ import {
   applyLocalFailureRecovery,
   decideLocalFailureRecovery,
   localFailureRecoveryInstruction,
+  testSpecificationMutationBlockCount,
 } from "./local-failure-recovery.js";
 import { resolveRuntimeConfig } from "./config.js";
 import {
@@ -235,7 +239,7 @@ const CONSTRAINED_SOURCE_MUTATION_OUTPUT_TOKEN_CAP = 8192;
 const MALFORMED_TOOL_RESPONSE_RETRY_OUTPUT_TOKEN_CAP = 6144;
 const MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS = 4;
 const FAILED_TEST_EVIDENCE_VERSION = 2;
-const FAILED_TEST_RECOVERY_PACKET_VERSION = 16;
+const FAILED_TEST_RECOVERY_PACKET_VERSION = 17;
 const MAX_FAILED_TEST_CANONICAL_REREADS = 4;
 const PATCH_CONTEXT_REFRESH_VERSION = 1;
 const PATCH_CONTEXT_REPAIR_VERSION = 1;
@@ -2264,13 +2268,18 @@ export function buildKnownConstrainedPhasePlan(
   const repositoryStateRepair = runtimeConfig.testFailureRepositoryStateRepair === true;
   const generatedArtifactProducer =
     runtimeConfig.generatedArtifactProducerPending === true;
+  const freshSourceMutation = runtimeConfig.completionFreshMutationRequired === true;
+  const explicitHeadRestorePending = Boolean(
+    freshSourceMutation &&
+      runtimeConfig.completionFreshMutationRestorePending === true &&
+      String(runtimeConfig.completionFreshMutationRestoreCommand || "").trim()
+  );
   if (
     runtimeConfig.testFailureRepairActive === true &&
     !repositoryStateRepair &&
-    !generatedArtifactProducer
+    !generatedArtifactProducer &&
+    !explicitHeadRestorePending
   ) return null;
-
-  const freshSourceMutation = runtimeConfig.completionFreshMutationRequired === true;
   const verificationPending = runtimeConfig.testVerificationPending === true;
   const requiredProjectCommandPending = runtimeConfig.requiredProjectCommandPending === true;
   const verifiedCompletion = runtimeConfig.verifiedCompletionPending === true;
@@ -2303,7 +2312,9 @@ export function buildKnownConstrainedPhasePlan(
   }
 
   const command = String(
-    generatedArtifactProducer
+    explicitHeadRestorePending
+      ? runtimeConfig.completionFreshMutationRestoreCommand || ""
+      : generatedArtifactProducer
       ? runtimeConfig.generatedArtifactProducerCommand || ""
       : requiredProjectCommandPending
         ? runtimeConfig.requiredProjectCommand || ""
@@ -2368,7 +2379,13 @@ export function buildKnownConstrainedPhasePlan(
           "4. Finish only after that exact command passes at the current mutation revision.",
         ].join("\n")
     : freshSourceMutation
-      ? runtimeConfig.completionFreshMutationNeedsSourceRead === true
+      ? explicitHeadRestorePending
+        ? [
+            `1. Run the exact task-owned HEAD restore command now: ${command}`,
+            "2. Do not broaden the path scope or replace the restore with a guessed source patch.",
+            "3. After restoration, run the retained verifier once, remove disposable build output, and finish from clean repository evidence.",
+          ].join("\n")
+        : runtimeConfig.completionFreshMutationNeedsSourceRead === true
         ? [
             "1. Read one exact current canonical project file offered by the runtime.",
             "2. On the next turn, apply one bounded material correction to that grounded file.",
@@ -2415,7 +2432,9 @@ export function buildKnownConstrainedPhasePlan(
         ? "The bounded status inspection is complete. Select the complete task-owned subset from the exact offered paths and call commit_project_changes once. Do not include unrelated work, inspect again, or invent another source edit."
         : "The current failure is a repository-state acceptance gate, not a content defect. Run only the exact offered status inspection once. The runtime will convert its result into a bounded path-selection commit phase; do not start a status/diff loop or invent another source edit."
     : freshSourceMutation
-      ? runtimeConfig.completionFreshMutationNeedsSourceRead === true
+      ? explicitHeadRestorePending
+        ? "The current request explicitly names a dirty tracked file and asks for its exact HEAD version. Run only the offered provenance-bound restore command; do not guess a replacement patch or touch any other path."
+        : runtimeConfig.completionFreshMutationNeedsSourceRead === true
         ? "Completion was rejected because a fresh canonical source correction is still missing. Read one exact offered project file now; command, test, Git, and finish actions remain intentionally unavailable until the source is grounded and materially patched."
         : "Completion was rejected because a fresh canonical source correction is still missing. Use the offered path-bounded apply_patch tool now. Do not substitute another read-only inspection, test rerun, Git command, private verifier edit, or finish claim."
       : generatedArtifactProducer
@@ -3524,9 +3543,9 @@ export function isBareTaskContinuationText(value = "") {
   const normalized = String(value || "").replace(/\s+/g, " ").trim();
   if (!normalized || normalized.length > 600) return false;
   const explicitActiveTaskContinuation =
-    /^(?:(?:please|kindly)\s+)?(?:continue|resume|finish|complete|keep\s+working)\b(?=[^.!?。！？]{0,220}\b(?:same|current|previous|existing|retained|saved|unfinished|active)\b)(?=[^.!?。！？]{0,220}\b(?:task|work|run|session|job|repair|implementation|project|issue|fix)\b)(?![^.!?。！？]{0,220}\b(?:new|another|different|unrelated|separate)\b)[^.!?。！？]*[.!?。！？]*$/i.test(normalized);
+    /^(?:(?:please|kindly)\s+)?(?:continue|resume|recover|finish|complete|keep\s+working)\b(?=[^.!?。！？]{0,220}\b(?:same|current|previous|existing|retained|saved|unfinished|active)\b)(?=[^.!?。！？]{0,220}\b(?:task|work|run|session|job|repair|implementation|project|issue|fix)\b)(?![^.!?。！？]{0,220}\b(?:new|another|different|unrelated|separate)\b)[^.!?。！？]*[.!?。！？]*$/i.test(normalized);
   return explicitActiveTaskContinuation ||
-    /^(?:(?:please|kindly)\s+)?(?:continue|resume|finish|complete|keep\s+working)(?:\s+(?:and\s+)?(?:continue|finish|complete|working))?(?:\s+(?:the\s+)?(?:same|current|previous|existing|retained|saved|unfinished)\s+(?:task|work|run|session|job))?(?:\s+from\s+(?:the\s+)?(?:retained|saved|current|previous)\s+state)?[.!?]*$/i.test(normalized) ||
+    /^(?:(?:please|kindly)\s+)?(?:continue|resume|recover|finish|complete|keep\s+working)(?:\s+(?:and\s+)?(?:continue|resume|recover|finish|complete|working))?(?:\s+(?:the\s+)?(?:same|current|previous|existing|retained|saved|unfinished)\s+(?:task|work|run|session|job))?(?:\s+from\s+(?:the\s+)?(?:retained|saved|current|previous)\s+state)?[.!?]*$/i.test(normalized) ||
     /^(?:请)?(?:继续|接着|恢复|完成)(?:之前|上次|当前|同一|这个)?(?:的)?(?:任务|工作|会话|进度)?(?:并完成)?[。！？.!?]*$/u.test(normalized) ||
     /^(?:このまま|前回から|保存した状態から)?(?:同じ|現在の|前の)?(?:タスク|作業|セッション)?(?:を)?(?:続けて|再開して|完了して)(?:ください)?[。！？.!?]*$/u.test(normalized);
 }
@@ -3545,7 +3564,7 @@ function isGenericTaskContinuationText(value = "") {
   if (hasLeadingTaskContinuationClause(normalized)) return true;
   if (normalized.length > 600) return false;
   const explicitSameTaskContinuation =
-    /(?:^|[.!?]\s+)(?:(?:please|kindly)\s+)?(?:continue|resume|keep\s+working|finish|complete)\b.{0,180}\b(?:same|current|previous|existing|retained|saved|unfinished)\b.{0,80}\b(?:task|work|run|session|job|state|repair|implementation|project|issue|fix)\b/i.test(normalized);
+    /(?:^|[.!?]\s+)(?:(?:please|kindly)\s+)?(?:continue|resume|recover|keep\s+working|finish|complete)\b.{0,180}\b(?:same|current|previous|existing|retained|saved|unfinished)\b.{0,80}\b(?:task|work|run|session|job|state|repair|implementation|project|issue|fix)\b/i.test(normalized);
   return explicitSameTaskContinuation || isBareTaskContinuationText(normalized);
 }
 
@@ -4030,10 +4049,14 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
     requiredProjectCommands: currentTurnCommands,
   };
   const verification = state.meta.projectVerification;
-  if (verification && typeof verification === "object" && currentTurnCommands.length) {
-    startRequiredCommandBatch(verification, currentTurnCommands, {
-      goalRevision: activeRevision,
-    });
+  if (verification && typeof verification === "object") {
+    verification.contractRequiredCommands = currentTurnCommands;
+    clearRequiredCommandBatch(verification);
+    if (currentTurnCommands.length) {
+      startRequiredCommandBatch(verification, currentTurnCommands, {
+        goalRevision: activeRevision,
+      });
+    }
   }
   return removed;
 }
@@ -4276,6 +4299,7 @@ async function applyContinuationPrompt(state, config, observers) {
       content: retainedTestEvidence.content,
       paths: retainedTestEvidence.paths,
       repairPaths: retainedTestEvidence.repairPaths,
+      authoritativeTestRestores: retainedTestEvidence.authoritativeTestRestores,
       mutationRevision: Number(currentFailure?.mutationRevision || 0),
       failureSignature: String(currentFailure?.failureSignature || ""),
       command: String(currentFailure?.command || ""),
@@ -4711,7 +4735,14 @@ function normalizeLeadingWorkspaceCd(command = "", config = {}) {
 function projectCommandsEquivalent(left = "", right = "", config = {}) {
   const normalizedLeft = normalizeLeadingWorkspaceCd(left, config);
   const normalizedRight = normalizeLeadingWorkspaceCd(right, config);
-  return Boolean(normalizedLeft && normalizedLeft === normalizedRight);
+  return Boolean(
+    normalizedLeft &&
+      (
+        normalizedLeft === normalizedRight ||
+        projectTestCommandKey(normalizedLeft) ===
+          projectTestCommandKey(normalizedRight)
+      )
+  );
 }
 
 function isRetainedExactVerificationCommand(command = "", config = {}) {
@@ -4822,7 +4853,9 @@ function commandReportsInvalidTestInvocation(result = {}) {
     /(?:^|\n)ERROR:\s+file or directory not found:/i.test(output) ||
     /(?:^|\n)(?:pytest|py\.test):\s*error:\s*(?:unrecognized arguments?|argument\b|the following arguments are required)/i.test(output) ||
     /(?:^|\n)usage:\s*(?:pytest|py\.test)\b[\s\S]{0,1200}(?:^|\n)(?:pytest|py\.test):\s*error:/im.test(output) ||
-    /(?:No module named pytest|pytest:\s*command not found|command not found:\s*pytest)/i.test(output)
+    /(?:No module named pytest|pytest:\s*command not found|command not found:\s*pytest)/i.test(output) ||
+    /(?:^|\n)(?:\/bin\/)?(?:ba)?sh:\s*(?:line\s+\d+:\s*)?[^\n:]+:\s*command not found\s*$/im.test(output) ||
+    /(?:^|\n)'?[^'\n]+'?\s+is not recognized as an internal or external command/im.test(output)
   );
 }
 
@@ -4832,7 +4865,9 @@ function testRunRepresentsInvalidInvocation(testRun = {}) {
   return (
     /(?:^|\b)file or directory not found:/i.test(summary) ||
     /(?:pytest|py\.test):\s*error:\s*(?:unrecognized arguments?|argument\b|the following arguments are required)/i.test(summary) ||
-    /(?:No module named pytest|pytest:\s*command not found|command not found:\s*pytest)/i.test(summary)
+    /(?:No module named pytest|pytest:\s*command not found|command not found:\s*pytest)/i.test(summary) ||
+    /(?:^|\n)(?:\/bin\/)?(?:ba)?sh:\s*(?:line\s+\d+:\s*)?[^\n:]+:\s*command not found\s*$/im.test(summary) ||
+    /(?:^|\n)'?[^'\n]+'?\s+is not recognized as an internal or external command/im.test(summary)
   );
 }
 
@@ -5732,13 +5767,18 @@ function requiredCommandBatchKey(commands = []) {
 }
 
 function normalizedRequiredProjectCommands(values = [], limit = 24) {
-  return [
-    ...new Set(
-      (Array.isArray(values) ? values : [])
-        .map(normalizeProjectCommand)
-        .filter(Boolean)
-    ),
-  ].slice(0, limit);
+  const commands = [];
+  const identities = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    const command = normalizeProjectCommand(value);
+    if (!command) continue;
+    const identity = projectTestCommandKey(command) || command;
+    if (identities.has(identity)) continue;
+    identities.add(identity);
+    commands.push(command);
+    if (commands.length >= limit) break;
+  }
+  return commands;
 }
 
 function contractRequiredProjectCommands(state = {}, config = {}) {
@@ -6198,6 +6238,16 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
               path: String(toolResult.args?.path || toolResult.path || ""),
               searchHash: String(toolResult.args.searchHash),
               replaceHash: String(toolResult.args.replaceHash),
+              ...(String(toolResult.change?.beforeHash || "")
+                ? { beforeContentSha256: String(toolResult.change.beforeHash) }
+                : {}),
+              ...(String(toolResult.change?.afterHash || toolResult.change?.contentSha256 || "")
+                ? {
+                    afterContentSha256: String(
+                      toolResult.change?.afterHash || toolResult.change?.contentSha256
+                    ),
+                  }
+                : {}),
             },
           }
         : {}),
@@ -6246,6 +6296,15 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     const requiredCommand = requiredCommands.find(
       (candidate) => projectCommandsEquivalent(candidate, exitProbe.command || command, config)
     ) || "";
+    const substantiveTestCommand = isSubstantiveTestCommand(command, config);
+    const verificationCommand = Boolean(
+      substantiveTestCommand ||
+        (requiredCommand &&
+          requiredCommandHasValidationIntent(
+            requiredCommand,
+            classifyCommand(requiredCommand)
+          ))
+    );
     const requiredMutatingCommands = requiredCommands.filter((candidate) =>
       commandCanMutateProjectContent(
         normalizeProjectCommand(normalizeCommandForPolicy(candidate, config)),
@@ -6256,21 +6315,12 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       successful &&
       Number(toolResult.exitCode ?? 0) === 0 &&
       (!exitProbe.present || exitProbe.status === 0);
-    // Shell commands are not transactional. A command may mutate files and
-    // then fail, so any executed write-capable command invalidates prior
-    // verification regardless of its final exit status. Test identity and
-    // mutation capability are independent: a generator or snapshot-updating
-    // test still advances the revision, then records its evidence there.
+    // Shell commands are not transactional. A failed command can still
+    // invalidate prior verification when the before/after workspace evidence
+    // proves a project mutation. A failed command with no observed mutation
+    // must not fabricate a fresh source revision merely because its command
+    // shape was conservatively classified as write-capable.
     const generatedArtifactProducer = safeProjectProducerSegment(command, config);
-    const projectContentMutation = Boolean(
-      command &&
-        toolResult.blocked !== true &&
-        !retainedExactVerification &&
-        (
-          commandCanMutateProjectContent(mutationCommand, commandPolicy) ||
-          generatedArtifactProducer
-        )
-    );
     const commandMutationPaths = Array.isArray(toolResult.projectMutationPaths)
       ? [
           ...new Set(
@@ -6280,6 +6330,47 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
           ),
         ].slice(0, 64)
       : [];
+    const exactHeadRestoreCommand = Boolean(
+      config.completionFreshMutationRestorePending === true &&
+        projectCommandsEquivalent(
+          command,
+          config.completionFreshMutationRestoreCommand || "",
+          config
+        )
+    );
+    const disposableGeneratedCleanup = commandOnlyCleansDisposableGeneratedOutputs(
+      mutationCommand,
+      commandMutationPaths,
+      state,
+      config
+    );
+    const disposableGeneratedVerificationSideEffects =
+      commandHasOnlyDisposableGeneratedVerificationSideEffects(
+        commandMutationPaths,
+        state,
+        config,
+        { verificationCommand }
+      );
+    const projectContentMutation = Boolean(
+      command &&
+        toolResult.blocked !== true &&
+        !retainedExactVerification &&
+        !disposableGeneratedCleanup &&
+        !disposableGeneratedVerificationSideEffects &&
+        (commandSucceeded || commandMutationPaths.length > 0) &&
+        (
+          commandCanMutateProjectContent(mutationCommand, commandPolicy) ||
+          generatedArtifactProducer
+        )
+    );
+    if (disposableGeneratedCleanup) {
+      toolResult.disposableGeneratedCleanup = true;
+      toolResult.disposableGeneratedCleanupPaths = commandMutationPaths;
+    }
+    if (disposableGeneratedVerificationSideEffects) {
+      toolResult.disposableGeneratedVerificationSideEffects = true;
+      toolResult.disposableGeneratedVerificationPaths = commandMutationPaths;
+    }
     let requiredBatch = currentRequiredCommandBatch(verification, requiredCommands);
     const activeExecutionContract = state.meta?.activeExecutionContract;
     const activeTurnCommands =
@@ -6337,6 +6428,26 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         paths: commandMutationPaths,
         commandCategory: String(commandPolicy.category || "general-shell"),
       }, config);
+      if (
+        exactHeadRestoreCommand &&
+        commandSucceeded &&
+        commandMutationPaths.length > 0 &&
+        Number(activeExecutionContract?.revision || 0) ===
+          Number(state.meta?.goalContract?.revision || 0)
+      ) {
+        activeExecutionContract.materialMutationRevision =
+          verification.mutationRevision;
+        activeExecutionContract.materialMutationPaths = [
+          ...new Set([
+            ...(Array.isArray(activeExecutionContract.materialMutationPaths)
+              ? activeExecutionContract.materialMutationPaths
+              : []),
+            ...commandMutationPaths,
+          ]),
+        ].slice(0, 24);
+        toolResult.explicitHeadRestore = true;
+        toolResult.explicitHeadRestorePaths = commandMutationPaths;
+      }
       if (
         generatedArtifactProducer &&
         Number(activeExecutionContract?.revision || 0) ===
@@ -6447,9 +6558,8 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     if (run.requiredProjectCommand) {
       toolResult.requiredProjectCommand = run.requiredProjectCommand;
     }
-    const substantiveTestCommand = isSubstantiveTestCommand(command, config);
     const failedRequiredCommand = Boolean(requiredCommand && !commandSucceeded);
-    if (substantiveTestCommand && commandReportsInvalidTestInvocation(toolResult)) {
+    if (verificationCommand && commandReportsInvalidTestInvocation(toolResult)) {
       const invalidEvidence = compactFailedTestEvidence(toolResult, config);
       const invalidInvocation = {
         ...run,
@@ -6461,9 +6571,9 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         invalidInvocation,
       ].slice(-16);
       toolResult.projectTestDiscoveryFailure = invalidInvocation;
-    } else if (substantiveTestCommand || failedRequiredCommand) {
+    } else if (verificationCommand || failedRequiredCommand) {
       delete state.meta.verifiedCompletionCandidate;
-      const zeroTests = substantiveTestCommand && commandReportsZeroTests(toolResult);
+      const zeroTests = verificationCommand && commandReportsZeroTests(toolResult);
       const reportedFailure =
         !commandSucceeded ||
         commandReportsTestFailure(toolResult) ||
@@ -6711,6 +6821,8 @@ function projectTestCommandKey(command = "") {
     // executed. Treating them as distinct suites can leave an old failure
     // unresolved after the same verifier passes without the wrapper.
     .replace(/^PYTHONDONTWRITEBYTECODE=(?:0|1|true|false)\s+/i, "")
+    .replace(/^(?:bash|sh)\s+(?=(?:\.\/)?[^\s;&|]+\.sh(?:\s|$))/i, "")
+    .replace(/^\.\/(?=[^\s;&|]+\.sh(?:\s|$))/u, "")
     .replace(/\s+(?:2>&1|1>&2)\s*$/u, "");
   return normalizeProjectCommand(invocation);
 }
@@ -6859,21 +6971,28 @@ export function changedGitStatusPaths(before = null, after = null) {
       .filter((entry) => safeTaskOwnedCommitPath(entry?.path))
       .map((entry) => [String(entry.path), entry])
   );
+  const current = new Map(
+    after.entries
+      .filter((entry) => safeTaskOwnedCommitPath(entry?.path))
+      .map((entry) => [String(entry.path), entry])
+  );
   return [
     ...new Set(
-      after.entries
-        .filter((entry) => {
-          const candidate = safeTaskOwnedCommitPath(entry?.path);
-          if (!candidate) return false;
-          const previous = prior.get(candidate);
-          return Boolean(
-            !previous ||
-              String(previous.status || "") !== String(entry.status || "") ||
-              String(previous.fingerprint || "") !== String(entry.fingerprint || "")
-          );
-        })
-        .map((entry) => safeTaskOwnedCommitPath(entry.path))
-        .filter(Boolean)
+      [
+        ...after.entries
+          .filter((entry) => {
+            const candidate = safeTaskOwnedCommitPath(entry?.path);
+            if (!candidate) return false;
+            const previous = prior.get(candidate);
+            return Boolean(
+              !previous ||
+                String(previous.status || "") !== String(entry.status || "") ||
+                String(previous.fingerprint || "") !== String(entry.fingerprint || "")
+            );
+          })
+          .map((entry) => safeTaskOwnedCommitPath(entry.path)),
+        ...[...prior.keys()].filter((candidate) => !current.has(candidate)),
+      ].filter(Boolean)
     ),
   ].slice(0, 64);
 }
@@ -6928,6 +7047,149 @@ function shellQuoteArgument(value = "", platform = process.platform) {
   return `'${text.replace(/'/g, `'"'"'`)}'`;
 }
 
+export function buildAuthoritativeTestRestoreCommand(
+  paths = [],
+  { platform = process.platform } = {}
+) {
+  const requestedPaths = Array.isArray(paths)
+    ? [...new Set(paths.map((item) => String(item || "").trim()).filter(Boolean))]
+    : [];
+  const safePaths = requestedPaths
+    .map(safeTaskOwnedCommitPath)
+    .filter((item) => item && failedTestPathIsTestEvidence(item));
+  if (!safePaths.length || safePaths.length !== requestedPaths.length) return "";
+  const quotedPaths = safePaths.map((item) => shellQuoteArgument(item, platform));
+  if (quotedPaths.some((item) => !item)) return "";
+  return `git checkout HEAD -- ${quotedPaths.join(" ")}`;
+}
+
+export function buildTaskOwnedHeadRestoreCommand(
+  paths = [],
+  { platform = process.platform } = {}
+) {
+  const requestedPaths = Array.isArray(paths)
+    ? [...new Set(paths.map((item) => String(item || "").trim()).filter(Boolean))]
+    : [];
+  const safePaths = requestedPaths
+    .map(safeTaskOwnedCommitPath)
+    .filter((item) => item && !isPrivateVerificationEvidencePath(item));
+  if (!safePaths.length || safePaths.length !== requestedPaths.length) return "";
+  const quotedPaths = safePaths.map((item) => shellQuoteArgument(item, platform));
+  if (quotedPaths.some((item) => !item)) return "";
+  return `git checkout HEAD -- ${quotedPaths.join(" ")}`;
+}
+
+function explicitlyRequestedDirtyHeadRestore(state = {}, config = {}) {
+  const request = String(
+    state.meta?.goalContract?.currentRequest || config.goal || state.goal || ""
+  ).trim();
+  if (!request) return null;
+  const clauses = request
+    // A period inside a tracked filename is not a sentence boundary.
+    .split(/(?:[!?;；。！？\n]+|\.(?=\s|$))/u)
+    .map((item) => item.trim())
+    .filter(
+      (item) =>
+        /(?:\b(?:restore|revert|reset)\b|恢复|还原|回退)/i.test(item) &&
+        /\bHEAD\b/i.test(item) &&
+        !/(?:\b(?:do not|don't|dont|never)\s+(?:restore|revert|reset)\b|不要(?:恢复|还原|回退))/i.test(item)
+    );
+  if (!clauses.length) return null;
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const candidates = clauses
+    .flatMap((clause) =>
+      [...clause.matchAll(
+        /((?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.{}+@-]+)+\.[A-Za-z0-9]{1,12})/g
+      )].map((match) => match[1])
+    )
+    .map(safeTaskOwnedCommitPath)
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .slice(0, 4);
+  const dirtyTrackedPaths = candidates.filter((candidate) => {
+    const tracked = spawnSync(
+      "git",
+      ["ls-files", "--error-unmatch", "--", candidate],
+      { cwd: commandCwd, encoding: "utf8", timeout: 5000 }
+    );
+    if (tracked.status !== 0) return false;
+    const changed = spawnSync(
+      "git",
+      ["diff", "--quiet", "HEAD", "--", candidate],
+      { cwd: commandCwd, encoding: "utf8", timeout: 5000 }
+    );
+    return changed.status === 1;
+  });
+  const command = buildTaskOwnedHeadRestoreCommand(dirtyTrackedPaths);
+  return command
+    ? { command, paths: dirtyTrackedPaths }
+    : null;
+}
+
+function activeAuthoritativeTestRestoreCandidates(config = {}, state = {}) {
+  if (
+    taskExplicitlyAuthorizesTestMutation(state, config) ||
+    testSpecificationMutationBlockCount(state) < 3
+  ) {
+    return [];
+  }
+  const verification = state.meta?.projectVerification || {};
+  const packet = state.meta?.failedTestRecoveryPacket || {};
+  const currentFailure = currentFailedProjectTest(state)?.test;
+  if (
+    !currentFailure ||
+    Number(packet.packetVersion || 0) !== FAILED_TEST_RECOVERY_PACKET_VERSION ||
+    Number(packet.mutationRevision || 0) !==
+      Math.max(0, Number(verification.mutationRevision || 0)) ||
+    String(packet.failureSignature || "") !==
+      String(currentFailure.failureSignature || "")
+  ) {
+    return [];
+  }
+  const commandCwd = path.resolve(config.commandCwd || state.commandCwd || process.cwd());
+  return (Array.isArray(packet.authoritativeTestRestores)
+    ? packet.authoritativeTestRestores
+    : [])
+    .map((candidate) => {
+      const relativePath = safeRecoveryEvidencePath(candidate?.path);
+      if (!relativePath || !failedTestPathIsTestEvidence(relativePath)) return null;
+      const provenance = authoritativeTestRestoreProvenance(state, relativePath);
+      if (
+        !provenance ||
+        provenance.restoredRevision !== Math.max(0, Number(candidate?.restoredRevision || 0)) ||
+        provenance.agentMutationRevision !==
+          Math.max(0, Number(candidate?.agentMutationRevision || 0))
+      ) {
+        return null;
+      }
+      let currentSource = "";
+      try {
+        currentSource = fsSync.readFileSync(path.resolve(commandCwd, relativePath), "utf8");
+      } catch {
+        return null;
+      }
+      const currentSha256 = hashForLog(currentSource);
+      if (
+        !candidate?.currentSha256 ||
+        currentSha256 !== String(candidate.currentSha256) ||
+        currentSha256 === String(candidate.baselineSha256 || "")
+      ) {
+        return null;
+      }
+      return {
+        path: relativePath,
+        currentSha256,
+        baselineSha256: String(candidate.baselineSha256 || ""),
+        restoredRevision: provenance.restoredRevision,
+        agentMutationRevision: provenance.agentMutationRevision,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
 export function buildTaskOwnedCommitCommand(
   paths = [],
   message = "",
@@ -6965,30 +7227,30 @@ export function projectTestVerificationFinishBlock(state = {}) {
     .filter((run) => run.commandKey && !testRunRepresentsInvalidInvocation(run));
   if (!testRuns.length) return null;
 
-  const latestByCommand = new Map();
-  for (const run of testRuns) latestByCommand.set(run.commandKey, run);
-  const unresolvedFailure = [...latestByCommand.values()]
+  const currentRuns = testRuns.filter((run) =>
+    testRunMatchesVerificationRevision(run, verification)
+  );
+  const latestCurrentByCommand = new Map();
+  for (const run of currentRuns) latestCurrentByCommand.set(run.commandKey, run);
+  const unresolvedFailure = [...latestCurrentByCommand.values()]
     .filter((run) => run.passed !== true)
     .sort((left, right) => right.index - left.index)[0];
   const latestRecorded = testRuns.at(-1);
-  const requiredRun = unresolvedFailure || latestRecorded;
+  const currentPassingRun = [...currentRuns]
+    .reverse()
+    .find((run) => run.passed === true);
+  const requiredRun = unresolvedFailure || currentPassingRun || latestRecorded;
   const runRevision = Math.max(0, Number(requiredRun?.mutationRevision || 0));
   const runPrivateRevision = Math.max(
     0,
     Number(requiredRun?.privateMutationRevision || 0)
   );
 
-  if (
-    !unresolvedFailure &&
-    requiredRun?.passed === true &&
-    testRunMatchesVerificationRevision(requiredRun, verification)
-  ) {
+  if (!unresolvedFailure && currentPassingRun) {
     return null;
   }
 
-  const failedAtCurrentRevision = Boolean(
-    unresolvedFailure && testRunMatchesVerificationRevision(unresolvedFailure, verification)
-  );
+  const failedAtCurrentRevision = Boolean(unresolvedFailure);
   return {
     category: failedAtCurrentRevision
       ? "project-test-current-failure"
@@ -7122,6 +7384,197 @@ function safeRecoveryEvidencePath(value = "") {
   }
   if (/(?:secret|credential|password|private[-_]?key|access[-_]?token)/i.test(candidate)) return "";
   return PLAIN_TEXT_FILE_EXTENSIONS.has(path.extname(candidate).toLowerCase()) ? candidate : "";
+}
+
+function failedTestPathIsTestEvidence(value = "") {
+  const candidate = String(value || "").replace(/\\/g, "/").replace(/^\.\//, "").trim();
+  if (!candidate) return false;
+  if (/(?:^|\/)(?:tests?|__tests__|specs?)(?:\/|$)/i.test(candidate)) return true;
+  const basename = path.posix.basename(candidate);
+  return (
+    /(?:^|[._-])(?:test|tests|spec|specs)\.[^/]+$/i.test(basename) ||
+    /(?:Test|Tests|Spec|Specs)\.(?:java|kt|kts|scala|groovy|cs|swift)$/i.test(basename)
+  );
+}
+
+function failedTestMentionedWorkspacePaths(config = {}, state = {}, testRun = {}) {
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const failureText = [
+    testRun?.failureSummary,
+    ...(Array.isArray(testRun?.failingTests) ? testRun.failingTests : []),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  if (!failureText.trim()) return [];
+
+  const candidates = [];
+  const sourcePathPattern =
+    /(?:^|[\s("'`])((?:(?:[A-Za-z]:)?[\\/]|\.{1,2}[\\/])?[A-Za-z0-9_@+.,=~-]+(?:[\\/][A-Za-z0-9_@+.,=~-]+)*\.[A-Za-z0-9]{1,10})(?=[:(\s"'`]|$)/gmu;
+  for (const match of failureText.matchAll(sourcePathPattern)) {
+    const rawPath = String(match[1] || "").replace(/\\/g, "/");
+    const absolutePath = path.isAbsolute(rawPath)
+      ? path.resolve(rawPath)
+      : path.resolve(commandCwd, rawPath);
+    const workspaceRelative = path.relative(commandCwd, absolutePath).replace(/\\/g, "/");
+    const relativePath = safeRecoveryEvidencePath(workspaceRelative);
+    if (!relativePath || candidates.includes(relativePath)) continue;
+    try {
+      const stat = fsSync.statSync(absolutePath);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > 128000) continue;
+    } catch {
+      continue;
+    }
+    candidates.push(relativePath);
+    if (candidates.length >= 8) break;
+  }
+  return candidates;
+}
+
+function failedTestVerifierWorkspacePaths(config = {}, state = {}, testRun = {}) {
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const sequence = parseTopLevelShellSequence(
+    normalizeProjectCommand(testRun?.command || "")
+  );
+  if (
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return [];
+  }
+  const candidates = [];
+  for (const command of sequence.commands) {
+    for (const token of tokenizeShellWords(command)) {
+      const relativePath = safeRecoveryEvidencePath(token);
+      if (!relativePath || candidates.includes(relativePath)) continue;
+      const absolutePath = path.resolve(commandCwd, relativePath);
+      const workspaceRelative = path
+        .relative(commandCwd, absolutePath)
+        .replace(/\\/g, "/");
+      if (workspaceRelative !== relativePath) continue;
+      try {
+        const stat = fsSync.statSync(absolutePath);
+        if (!stat.isFile() || stat.size <= 0 || stat.size > 128000) continue;
+      } catch {
+        continue;
+      }
+      candidates.push(relativePath);
+      if (candidates.length >= 4) return candidates;
+    }
+  }
+  return candidates;
+}
+
+function gitHeadRestorePaths(command = "") {
+  const normalized = normalizeProjectCommand(command);
+  const sequence = parseTopLevelShellSequence(normalized);
+  if (
+    !normalized ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator ||
+    sequence.commands.length !== 1
+  ) {
+    return [];
+  }
+  const tokens = tokenizeShellWords(sequence.commands[0]);
+  if (tokens[0] !== "git" || !["checkout", "restore"].includes(tokens[1])) return [];
+  const separatorIndex = tokens.indexOf("--");
+  if (separatorIndex < 0 || separatorIndex >= tokens.length - 1) return [];
+  if (tokens[1] === "checkout") {
+    if (!tokens.slice(2, separatorIndex).includes("HEAD")) return [];
+  } else {
+    const options = tokens.slice(2, separatorIndex);
+    const sourceIndex = options.indexOf("--source");
+    const restoresHead = options.includes("--source=HEAD") ||
+      (sourceIndex >= 0 && options[sourceIndex + 1] === "HEAD");
+    if (!restoresHead) return [];
+  }
+  return tokens
+    .slice(separatorIndex + 1)
+    .map(safeTaskOwnedCommitPath)
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .slice(0, 16);
+}
+
+function authoritativeTestRestoreProvenance(state = {}, relativePath = "") {
+  const candidate = safeRecoveryEvidencePath(relativePath);
+  if (!candidate || !failedTestPathIsTestEvidence(candidate)) return null;
+  const verification = state.meta?.projectVerification || {};
+  const restoreRun = [...(Array.isArray(verification.commandRuns)
+    ? verification.commandRuns
+    : [])]
+    .reverse()
+    .find(
+      (run) =>
+        run?.ok === true &&
+        gitHeadRestorePaths(run?.command || "").includes(candidate)
+    );
+  if (!restoreRun) return null;
+  const restoredRevision = Math.max(0, Number(restoreRun.mutationRevision || 0));
+  const laterMutations = (Array.isArray(verification.mutationHistory)
+    ? verification.mutationHistory
+    : [])
+    .filter((mutation) => Number(mutation?.revision || 0) > restoredRevision)
+    .sort((left, right) => Number(left?.revision || 0) - Number(right?.revision || 0));
+  const pathMutations = laterMutations.filter((mutation) =>
+    (Array.isArray(mutation?.paths) ? mutation.paths : [])
+      .map(safeRecoveryEvidencePath)
+      .includes(candidate)
+  );
+  if (
+    !pathMutations.length ||
+    pathMutations.some(
+      (mutation) => !["apply_patch", "write_file"].includes(String(mutation?.toolName || ""))
+    )
+  ) {
+    return null;
+  }
+  const opaqueMutation = laterMutations.find(
+    (mutation) =>
+      String(mutation?.toolName || "") === "run_command" &&
+      (!Array.isArray(mutation?.paths) || mutation.paths.length === 0) &&
+      String(mutation?.commandCategory || "") !== "test"
+  );
+  if (opaqueMutation) return null;
+  const latestMutation = pathMutations.at(-1);
+  return {
+    path: candidate,
+    restoredRevision,
+    agentMutationRevision: Math.max(0, Number(latestMutation?.revision || 0)),
+    afterContentSha256: String(latestMutation?.patch?.afterContentSha256 || ""),
+  };
+}
+
+async function authoritativeTestRestoreCandidate(
+  config = {},
+  state = {},
+  relativePath = "",
+  currentSource = ""
+) {
+  const provenance = authoritativeTestRestoreProvenance(state, relativePath);
+  if (!provenance || !currentSource) return null;
+  const baselineSource = await readGitBaselineSource(config, provenance.path);
+  if (!baselineSource || baselineSource === currentSource) return null;
+  const currentSha256 = hashForLog(currentSource);
+  if (
+    provenance.afterContentSha256 &&
+    provenance.afterContentSha256 !== currentSha256
+  ) {
+    return null;
+  }
+  return {
+    ...provenance,
+    currentSha256,
+    baselineSha256: hashForLog(baselineSource),
+    currentBytes: Buffer.byteLength(currentSource, "utf8"),
+    baselineBytes: Buffer.byteLength(baselineSource, "utf8"),
+  };
 }
 
 function failedTestMutationRepairPaths(
@@ -7780,7 +8233,11 @@ export function taskForbidsExternalValidatorSourceRead(config = {}, state = {}) 
   });
 }
 
-function recoveryEvidenceDependencies(sourcePath = "", content = "") {
+function recoveryEvidenceDependencies(
+  sourcePath = "",
+  content = "",
+  { commandCwd = "" } = {}
+) {
   const explicitDependencies = [];
   const importCandidates = [];
   const append = (collection, candidate) => {
@@ -7805,7 +8262,7 @@ function recoveryEvidenceDependencies(sourcePath = "", content = "") {
     }
   }
   for (const match of String(content || "").matchAll(
-    /["']([A-Za-z0-9_./-]+\.(?:bash|c|cc|cfg|cjs|conf|cpp|csv|go|h|hpp|ini|java|js|json|mjs|py|rs|sh|toml|ts|tsx|tsv|txt|ya?ml))["']/gi
+    /["']([A-Za-z0-9_./-]+\.(?:bash|c|cc|cfg|cjs|conf|cpp|csv|go|h|hpp|html?|ini|java|js|json|md|mjs|py|rst|rs|sh|toml|ts|tsx|tsv|txt|xml|ya?ml))["']/gi
   )) {
     const raw = match[1];
     append(
@@ -7822,6 +8279,68 @@ function recoveryEvidenceDependencies(sourcePath = "", content = "") {
       .filter(Boolean);
     if (segments.length) {
       append(explicitDependencies, path.posix.normalize(segments.join("/")));
+    }
+  }
+  if (path.posix.extname(sourcePath).toLowerCase() === ".java") {
+    const normalizedSource = String(sourcePath || "").replace(/\\/g, "/");
+    const packageMatch = String(content || "").match(
+      /^\s*package\s+([A-Za-z_][\w.]*)\s*;/m
+    );
+    const packagePath = String(packageMatch?.[1] || "").replace(/\./g, "/");
+    const sourceDir = path.posix.dirname(normalizedSource);
+    const sourceRoot = packagePath && sourceDir.endsWith(packagePath)
+      ? sourceDir.slice(0, Math.max(0, sourceDir.length - packagePath.length))
+      : "";
+    const counterpartDirs = [sourceDir];
+    if (sourceDir.includes("/src/test/java/")) {
+      counterpartDirs.push(sourceDir.replace("/src/test/java/", "/src/main/java/"));
+    } else if (sourceDir.startsWith("src/test/java/")) {
+      counterpartDirs.push(sourceDir.replace(/^src\/test\/java\//, "src/main/java/"));
+    } else if (sourceDir.includes("/src/main/java/")) {
+      counterpartDirs.push(sourceDir.replace("/src/main/java/", "/src/test/java/"));
+    } else if (sourceDir.startsWith("src/main/java/")) {
+      counterpartDirs.push(sourceDir.replace(/^src\/main\/java\//, "src/test/java/"));
+    }
+    const importedNames = new Set();
+    for (const match of String(content || "").matchAll(
+      /^\s*import\s+(?!static\s+)([A-Za-z_][\w.]*\.([A-Z][A-Za-z0-9_]*))\s*;/gm
+    )) {
+      importedNames.add(String(match[2] || ""));
+      if (sourceRoot) append(importCandidates, `${sourceRoot}${match[1].replace(/\./g, "/")}.java`);
+    }
+    const declaredNames = new Set(
+      [...String(content || "").matchAll(
+        /\b(?:class|interface|record|enum)\s+([A-Z][A-Za-z0-9_]*)\b/g
+      )].map((match) => String(match[1] || ""))
+    );
+    const projectTypeNames = [
+      ...String(content || "").matchAll(/\b([A-Z][A-Za-z0-9_]*)\b/g),
+    ]
+      .map((match) => String(match[1] || ""))
+      .filter(Boolean)
+      .filter((name, index, names) => names.indexOf(name) === index)
+      .filter((name) => !declaredNames.has(name) && !importedNames.has(name));
+    const javaCandidates = [];
+    for (const name of projectTypeNames) {
+      for (const directory of counterpartDirs) {
+        append(javaCandidates, path.posix.join(directory, `${name}.java`));
+      }
+    }
+    const workspaceRoot = commandCwd ? path.resolve(commandCwd) : "";
+    for (const candidate of javaCandidates) {
+      if (candidate === normalizedSource) continue;
+      if (workspaceRoot) {
+        const absolutePath = path.resolve(workspaceRoot, candidate);
+        const relativePath = path.relative(workspaceRoot, absolutePath).replace(/\\/g, "/");
+        if (relativePath !== candidate) continue;
+        try {
+          const stat = fsSync.statSync(absolutePath);
+          if (!stat.isFile() || stat.size <= 0 || stat.size > 128000) continue;
+        } catch {
+          continue;
+        }
+      }
+      append(explicitDependencies, candidate);
     }
   }
   return [...explicitDependencies, ...importCandidates]
@@ -8172,9 +8691,22 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
       .map(safeRecoveryEvidencePath)
       .filter(Boolean)
   );
+  const failureMentionedPaths = failedTestMentionedWorkspacePaths(
+    config,
+    state,
+    testRun
+  );
+  const verifierWorkspacePaths = failedTestVerifierWorkspacePaths(
+    config,
+    state,
+    testRun
+  );
   const queue = [
+    ...failureMentionedPaths.filter(failedTestPathIsTestEvidence),
     ...(Array.isArray(verification.discoveredTests) ? verification.discoveredTests : []),
     ...mutationEvidencePaths,
+    ...failureMentionedPaths.filter((item) => !failedTestPathIsTestEvidence(item)),
+    ...verifierWorkspacePaths,
     ...taskReferencedPaths,
   ]
     .map(safeRecoveryEvidencePath)
@@ -8186,6 +8718,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
   const mockBehaviorDiagnostics = [];
   const baselineRecoveryEvidence = [];
   const diagnosticFocuses = [];
+  const authoritativeTestRestores = [];
   const literalOperands = failedTestLiteralOperands(testRun.failureSummary || "").slice(0, 6);
   const tracebackSourceDocuments = await failedTestTracebackSourceDocuments(testRun, config);
   const commandCwd = path.resolve(config.commandCwd || process.cwd());
@@ -8234,6 +8767,20 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
     if (!stat?.isFile() || stat.size <= 0 || stat.size > 128000) continue;
     const raw = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
     if (!raw) continue;
+    if (failedTestPathIsTestEvidence(relativePath)) {
+      const restoreCandidate = await authoritativeTestRestoreCandidate(
+        config,
+        state,
+        relativePath,
+        raw
+      );
+      if (
+        restoreCandidate &&
+        !authoritativeTestRestores.some((item) => item.path === restoreCandidate.path)
+      ) {
+        authoritativeTestRestores.push(restoreCandidate);
+      }
+    }
     seen.add(relativePath);
     const tracebackFrame = tracebackEvidencePaths.has(relativePath)
       ? failedTestTracebackFrameAnchor(state, relativePath)
@@ -8730,7 +9277,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
         );
       }
     }
-    for (const dependency of recoveryEvidenceDependencies(relativePath, raw)) {
+    for (const dependency of recoveryEvidenceDependencies(relativePath, raw, { commandCwd })) {
       if (!seen.has(dependency) && !queue.includes(dependency)) queue.push(dependency);
     }
   }
@@ -8757,6 +9304,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
     .filter((item) => evidencePaths.includes(item));
   const fallbackRepairPaths = evidencePaths
     .filter((item) => !pathLooksLikeTestSource(item))
+    .filter((item) => !verifierWorkspacePaths.includes(item))
     .filter(
       (item) =>
         filterExplicitlyExcludedOutputPaths(
@@ -8770,6 +9318,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
       ? preferredRepairPaths
       : fallbackRepairPaths
     ).slice(0, 6),
+    authoritativeTestRestores: authoritativeTestRestores.slice(0, 4),
     content: [
       `Bounded failed-test evidence packet v${FAILED_TEST_RECOVERY_PACKET_VERSION}. These are exact current workspace excerpts selected from the discovered test and its local dependencies. Use them to calculate the producing transformation; do not restart broad discovery.`,
       testRun.command ? `Verification command: ${testRun.command}` : "",
@@ -9210,6 +9759,58 @@ export function repeatedNoProgressToolBlock(state, toolName, args = {}, config =
         "Finish with a concrete external blocker only when no enabled tool can make progress.",
       ],
     },
+  };
+}
+
+export function forbiddenCurrentTestRerunBlock(
+  state = {},
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (toolName !== "run_command") return null;
+  const currentRequest = String(
+    state.meta?.goalContract?.currentRequest ||
+      state.meta?.goalContract?.currentPreview ||
+      ""
+  ).trim();
+  const forbidsRerun = Boolean(
+    /\b(?:do not|don't|dont|never|without)\s+(?:re-?run|repeat|run|execute)\b[^.!?;\n]{0,100}\b(?:tests?|verifier|verification|checks?|suite)\b/i.test(
+      currentRequest
+    ) ||
+      /(?:不要|禁止|无需|無需)[^。！？；\n]{0,80}(?:重跑|重新运行|重新執行|再次运行|再次執行|运行|執行)[^。！？；\n]{0,60}(?:测试|測試|验证|驗證|检查|檢查)/u.test(
+        currentRequest
+      )
+  );
+  if (!forbidsRerun) return null;
+
+  const command = normalizeProjectCommand(args.command || "");
+  const commandKey = projectTestCommandKey(command);
+  if (!commandKey) return null;
+  const verification = state.meta?.projectVerification || {};
+  const knownVerifierKeys = new Set(
+    [
+      ...(Array.isArray(verification.requiredCommands)
+        ? verification.requiredCommands
+        : []),
+      ...(Array.isArray(verification.testRuns)
+        ? verification.testRuns.map((run) => run?.command)
+        : []),
+      ...(Array.isArray(state.meta?.activeExecutionContract?.requiredProjectCommands)
+        ? state.meta.activeExecutionContract.requiredProjectCommands
+        : []),
+    ]
+      .map(projectTestCommandKey)
+      .filter(Boolean)
+  );
+  const recognizedVerifier = Boolean(
+    isSubstantiveTestCommand(command, config) || knownVerifierKeys.has(commandKey)
+  );
+  if (!recognizedVerifier) return null;
+  return {
+    category: "current-request-forbidden-test-rerun",
+    reason:
+      "The current request explicitly forbids rerunning the verifier. Reuse the retained passing project-test evidence and continue only with allowed cleanup, status, or finish actions.",
   };
 }
 
@@ -11289,6 +11890,238 @@ function commandWritesOnlyPrivateVerificationEvidence(command = "") {
   return underlyingPolicy.writesWorkspace !== true && underlyingPolicy.mayMutateProject !== true;
 }
 
+const DISPOSABLE_GENERATED_PATH_SEGMENTS = new Set([
+  ".build",
+  ".gradle",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  "__pycache__",
+  "build",
+  "coverage",
+  "obj",
+  "out",
+  "target",
+]);
+
+const DISPOSABLE_GENERATED_FILE_EXTENSIONS = new Set([
+  ".class",
+  ".o",
+  ".obj",
+  ".pyc",
+  ".pyo",
+]);
+
+function disposableGeneratedPath(value = "", commandCwd = process.cwd()) {
+  const raw = String(value || "")
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/\\/g, "/");
+  if (!raw || raw.includes("\0")) return "";
+  const root = path.resolve(commandCwd || process.cwd());
+  const absolutePath = path.isAbsolute(raw) ? path.resolve(raw) : path.resolve(root, raw);
+  const relativePath = path.relative(root, absolutePath).replace(/\\/g, "/");
+  if (
+    !relativePath ||
+    relativePath.startsWith("..") ||
+    path.isAbsolute(relativePath)
+  ) {
+    return "";
+  }
+  const segments = relativePath.split("/").filter(Boolean);
+  const generated = segments.some((segment) =>
+    DISPOSABLE_GENERATED_PATH_SEGMENTS.has(segment)
+  ) || DISPOSABLE_GENERATED_FILE_EXTENSIONS.has(
+    path.posix.extname(relativePath).toLowerCase()
+  );
+  return generated ? relativePath : "";
+}
+
+function disposableGeneratedRequiredOutputs(state = {}, config = {}) {
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const taskContract = deriveScsTaskContract({
+    goal: completionContractGoal(config, state),
+    taskProfile: config.taskProfile || state.meta?.taskProfile || "auto",
+  });
+  return [
+    ...(Array.isArray(state.meta?.projectVerification?.requiredOutputs)
+      ? state.meta.projectVerification.requiredOutputs
+      : []),
+    ...(Array.isArray(state.meta?.artifactProgress?.exactOutputPaths)
+      ? state.meta.artifactProgress.exactOutputPaths
+      : []),
+    ...(Array.isArray(taskContract.exactOutputPaths)
+      ? taskContract.exactOutputPaths
+      : []),
+  ]
+    .map((item) => {
+      const raw = String(item || "").trim();
+      if (!raw) return "";
+      const absolutePath = path.isAbsolute(raw)
+        ? path.resolve(raw)
+        : path.resolve(commandCwd, raw);
+      const relativePath = path.relative(commandCwd, absolutePath).replace(/\\/g, "/");
+      return relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)
+        ? relativePath
+        : "";
+    })
+    .filter(Boolean);
+}
+
+function disposableGeneratedPathOverlapsRequiredOutput(
+  candidate = "",
+  requiredOutputs = []
+) {
+  return requiredOutputs.some(
+    (required) =>
+      candidate === required ||
+      candidate.startsWith(`${required}/`) ||
+      required.startsWith(`${candidate}/`)
+  );
+}
+
+function mutationPathsAreOnlyDisposableGeneratedOutputs(
+  mutationPaths = [],
+  state = {},
+  config = {},
+  { allowEmpty = false } = {}
+) {
+  const paths = Array.isArray(mutationPaths) ? mutationPaths : [];
+  if (!paths.length && !allowEmpty) return false;
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const requiredOutputs = disposableGeneratedRequiredOutputs(state, config);
+  return paths.every((candidate) => {
+    const generatedPath = disposableGeneratedPath(candidate, commandCwd);
+    return Boolean(
+      generatedPath &&
+        !disposableGeneratedPathOverlapsRequiredOutput(
+          generatedPath,
+          requiredOutputs
+        )
+    );
+  });
+}
+
+function commandHasOnlyDisposableGeneratedVerificationSideEffects(
+  mutationPaths = [],
+  state = {},
+  config = {},
+  { verificationCommand = false } = {}
+) {
+  return Boolean(
+    verificationCommand &&
+      mutationPathsAreOnlyDisposableGeneratedOutputs(
+        mutationPaths,
+        state,
+        config
+      )
+  );
+}
+
+function commandContainsDisposableGeneratedCleanup(
+  command = "",
+  requiredOutputs = [],
+  commandCwd = process.cwd()
+) {
+  const normalized = normalizeProjectCommand(command);
+  const cleanupPattern =
+    /(?:^|&&|\|\||;|\bthen\b)\s*(?:command\s+)?(rm|rmdir)\s+([^;&|]+)/giu;
+  for (const match of normalized.matchAll(cleanupPattern)) {
+    const tokens = tokenizeShellWords(`${match[1]} ${match[2]}`);
+    const targets = tokens
+      .slice(1)
+      .filter((token) => token !== "--" && !token.startsWith("-"));
+    if (!targets.length) continue;
+    const allDisposable = targets.every((target) => {
+      const generatedPath = disposableGeneratedPath(target, commandCwd);
+      return Boolean(
+        generatedPath &&
+          !disposableGeneratedPathOverlapsRequiredOutput(
+            generatedPath,
+            requiredOutputs
+          )
+      );
+    });
+    if (allDisposable) return true;
+  }
+  return false;
+}
+
+function commandOnlyCleansDisposableGeneratedOutputs(
+  command = "",
+  mutationPaths = [],
+  state = {},
+  config = {}
+) {
+  const normalized = normalizeProjectCommand(command);
+  const sequence = parseTopLevelShellSequence(normalized);
+  if (
+    !normalized ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator ||
+    !sequence.commands.length
+  ) {
+    return false;
+  }
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const requiredOutputs = disposableGeneratedRequiredOutputs(state, config);
+  if (
+    commandContainsDisposableGeneratedCleanup(
+      normalized,
+      requiredOutputs,
+      commandCwd
+    ) &&
+    mutationPathsAreOnlyDisposableGeneratedOutputs(
+      mutationPaths,
+      state,
+      config,
+      { allowEmpty: true }
+    )
+  ) {
+    return true;
+  }
+  let sawCleanup = false;
+  for (const segment of sequence.commands) {
+    const tokens = tokenizeShellWords(segment);
+    if (["rm", "rmdir"].includes(tokens[0])) {
+      const targets = tokens
+        .slice(1)
+        .filter((token) => token !== "--" && !token.startsWith("-"));
+      if (!targets.length) return false;
+      for (const target of targets) {
+        const generatedPath = disposableGeneratedPath(target, commandCwd);
+        if (
+          !generatedPath ||
+          disposableGeneratedPathOverlapsRequiredOutput(
+            generatedPath,
+            requiredOutputs
+          )
+        ) {
+          return false;
+        }
+      }
+      sawCleanup = true;
+      continue;
+    }
+    const policy = classifyCommand(segment);
+    if (commandCanMutateProjectContent(segment, policy)) return false;
+  }
+  if (!sawCleanup) return false;
+  return mutationPathsAreOnlyDisposableGeneratedOutputs(
+    mutationPaths,
+    state,
+    config,
+    { allowEmpty: true }
+  );
+}
+
 function commandCanMutateProjectContent(command = "", commandPolicy = {}) {
   // The classifier may conservatively mark an interpreter or compound shell
   // command as workspace-writing while still proving that this exact command
@@ -11449,6 +12282,97 @@ function artifactValidationTouchesExactOutput(state = {}, toolName = "", args = 
   // workspace tools always expose their target path.
   if (!mutationPaths.length) return true;
   return mutationPaths.some((item) => exactOutputs.has(item));
+}
+
+function taskExplicitlyAuthorizesTestMutation(state = {}, config = {}) {
+  const contract = state.meta?.goalContract || {};
+  const text = [
+    contract.taskGoal,
+    contract.activeGoal,
+    contract.currentRequest,
+    state.goal,
+    config.goal,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join("\n");
+  if (!text) return false;
+  const segments = text.split(/[.!?;\n。！？；]+/u).map((item) => item.trim()).filter(Boolean);
+  return segments.some((segment) => {
+    if (
+      /\b(?:do\s+not|don't|dont|never|without)\b/i.test(segment) ||
+      /(?:不要|不得|禁止|无需|不需要|保留|保持不变)/u.test(segment) ||
+      /(?:変更しない|編集しない|書き換えない|触らない)/u.test(segment)
+    ) {
+      return false;
+    }
+    return Boolean(
+      /\b(?:add|create|write|generate)\b.{0,100}\b(?:new\s+)?(?:regression\s+)?(?:tests?|test\s+cases?|test\s+files?|specs?)\b/i.test(segment) ||
+      /\b(?:edit|change|modify|update|rewrite|replace|remove|delete)\b.{0,100}\b(?:existing\s+)?(?:tests?|test\s+cases?|test\s+files?|assertions?|expectations?|fixtures?|test\s+harness(?:es)?)\b/i.test(segment) ||
+      /\b(?:fix|repair)\b.{0,80}\b(?:broken\s+)?(?:test\s+files?|test\s+harness(?:es)?|test\s+fixtures?)\b/i.test(segment) ||
+      /(?:添加|创建|编写|生成)[^。！？；]{0,60}(?:测试|测试用例|测试文件|回归测试)|(?:修改|改动|更新|重写|替换|删除|修复)[^。！？；]{0,60}(?:测试文件|测试用例|断言|预期|测试夹具|测试框架)/u.test(segment) ||
+      /(?:追加|作成|記述|生成)[^。！？；]{0,60}(?:テスト|テストケース|テストファイル)|(?:編集|変更|更新|書き換え|置換|削除|修復)[^。！？；]{0,60}(?:テストファイル|テストケース|アサーション|期待値|フィクスチャ|テストハーネス)/u.test(segment)
+    );
+  });
+}
+
+export function failedTestSpecificationMutationBlock(
+  state = {},
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (
+    config.testFailureRepairActive !== true ||
+    !["write_file", "apply_patch"].includes(toolName)
+  ) {
+    return null;
+  }
+  const commandCwd = config.commandCwd || state.commandCwd || process.cwd();
+  const mutationPaths = artifactValidationMutationPaths(
+    toolName,
+    args,
+    commandCwd
+  );
+  const testMutationPaths = mutationPaths.filter(pathLooksLikeTestSource);
+  if (!testMutationPaths.length) return null;
+  if (taskExplicitlyAuthorizesTestMutation(state, config)) return null;
+
+  const deterministicTestTargets = new Set(
+    (Array.isArray(config.testFailureRepairPatchTargets)
+      ? config.testFailureRepairPatchTargets
+      : [])
+      .map((target) => String(target?.path || ""))
+      .filter(pathLooksLikeTestSource)
+      .flatMap((item) => artifactValidationPathKeys(item, commandCwd))
+  );
+  if (
+    deterministicTestTargets.size > 0 &&
+    testMutationPaths.every((item) => deterministicTestTargets.has(item))
+  ) {
+    return null;
+  }
+
+  const relativePaths = [...new Set(testMutationPaths.map((item) => {
+    const relative = path.relative(commandCwd, item).replace(/\\/g, "/");
+    return relative && !relative.startsWith("..") ? relative : path.basename(item);
+  }))];
+  return {
+    reason:
+      `Failed-test repair preserves authoritative test specifications by default: ${relativePaths.join(", ")}.`,
+    category: "failed-test-specification-mutation",
+    permissionAdvice: {
+      category: "failed-test-specification-mutation",
+      autoRecover: true,
+      summary: "The failing tests remain read-only evidence for this repair.",
+      instruction:
+        "Repair the production implementation and rerun the exact retained verifier. Edit a test only when the user explicitly requested test-file changes or the runtime offers an exact deterministic test-harness repair target.",
+      options: [
+        "Patch the production source identified by the failed-test evidence.",
+        "Read the authoritative test to understand expectations without changing it.",
+      ],
+    },
+  };
 }
 
 function artifactValidationExactInputMutationBlock(state = {}, toolName = "", args = {}, config = {}) {
@@ -11685,6 +12609,12 @@ export function artifactValidationScopeBlock(state, toolName, args = {}, config 
     return null;
   }
   if (toolName !== "read_file") return null;
+  if (config.testFailureRepairActive === true) {
+    // The per-turn failed-test tool contract already constrains source reads.
+    // Do not let an earlier exact-output transition make a real verifier
+    // failure impossible to repair after a required instruction file exists.
+    return null;
+  }
   const commandCwd = config.commandCwd || state.commandCwd || process.cwd();
   const exactOutputs = Array.isArray(state.meta?.artifactProgress?.exactOutputPaths)
     ? state.meta.artifactProgress.exactOutputPaths
@@ -12456,6 +13386,14 @@ function recordDurableEvidenceCategories(state = {}, toolResult = {}) {
   );
   const toolName = String(toolResult.toolName || "");
   if (["write_file", "apply_patch"].includes(toolName)) categories.add("file");
+  if (
+    toolName === "run_command" &&
+    toolResult.explicitHeadRestore === true &&
+    Array.isArray(toolResult.explicitHeadRestorePaths) &&
+    toolResult.explicitHeadRestorePaths.length > 0
+  ) {
+    categories.add("file");
+  }
   if (["send_to_canvas", "open_workspace_file", "preview_workspace", "read_image"].includes(toolName)) {
     categories.add("artifact");
   }
@@ -12568,10 +13506,8 @@ export function completionTaskContract(config = {}, state = {}) {
     currentRequest &&
       refreshesExecutionContract &&
       activeExecutionContractIsAuthoritative &&
-      activeExecutionContract.requiresWorkspaceMutation !== true &&
       activeExecutionContract.requiresFileMutation !== true &&
       activeExecutionContract.requiresSourceGrounding !== true &&
-      currentContract?.requiresWorkspaceMutation !== true &&
       currentContract?.requiresFileMutation !== true &&
       currentContract?.requiresSourceGrounding !== true &&
       !(Array.isArray(currentContract?.requiredGitActions) &&
@@ -12642,7 +13578,7 @@ export function completionTaskContract(config = {}, state = {}) {
       ...contract,
       requiredEvidence: [...evidenceByCategory.values()],
       requiresWorkspaceMutation: authoritativeReadOnlyContinuation
-        ? false
+        ? Boolean(currentContract?.requiresWorkspaceMutation)
         : Boolean(contract.requiresWorkspaceMutation || currentContract?.requiresWorkspaceMutation),
       requiresFileMutation: authoritativeReadOnlyContinuation
         ? false
@@ -12690,8 +13626,39 @@ export function completionTaskContract(config = {}, state = {}) {
                 state.meta?.projectVerification?.mutationRevision ||
                 0
             )
-          ),
+      ),
     };
+  }
+  const currentForbiddenActions = (
+    Array.isArray(currentContract?.forbiddenActions)
+      ? currentContract.forbiddenActions
+      : []
+  ).join("\n");
+  if (currentForbiddenActions) {
+    const forbiddenGitActions = new Set();
+    if (/\bcommit\b|提交代码|提交代碼/i.test(currentForbiddenActions)) {
+      forbiddenGitActions.add("add");
+      forbiddenGitActions.add("commit");
+    }
+    if (/\bpush\b|推送/i.test(currentForbiddenActions)) {
+      forbiddenGitActions.add("push");
+    }
+    if (/\bstage\b|暂存|暫存/i.test(currentForbiddenActions)) {
+      forbiddenGitActions.add("add");
+    }
+    if (forbiddenGitActions.size) {
+      const requiredGitActions = (Array.isArray(contract.requiredGitActions)
+        ? contract.requiredGitActions
+        : []
+      ).filter((action) => !forbiddenGitActions.has(String(action || "").toLowerCase()));
+      contract = {
+        ...contract,
+        requiredGitActions,
+        ...(requiredGitActions.length
+          ? {}
+          : { requiredGitRevision: 0, requiredGitMutationRevision: 0 }),
+      };
+    }
   }
   return contract;
 }
@@ -12910,6 +13877,9 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       groundingExecutionContract.requiresSourceGrounding === true &&
       !groundingFreshMutationSatisfied
   );
+  const explicitHeadRestore = currentTurnRequiresFreshMutation
+    ? explicitlyRequestedDirtyHeadRestore(state, config)
+    : null;
   if (
     (
       completionRepairRequiresFreshMutation &&
@@ -12953,7 +13923,21 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         ? groundingMutationBaseline + 1
         : completionFreshMutationRevision;
       runtimeConfig.completionFreshMutationPaths = candidatePaths;
-      runtimeConfig.completionFreshMutationNeedsSourceRead = !groundedAfterRepair;
+      runtimeConfig.completionFreshMutationNeedsSourceRead = explicitHeadRestore
+        ? false
+        : !groundedAfterRepair;
+      if (
+        explicitHeadRestore &&
+        explicitHeadRestore.paths.every((candidate) =>
+          candidatePaths.includes(candidate)
+        )
+      ) {
+        runtimeConfig.completionFreshMutationRestorePending = true;
+        runtimeConfig.completionFreshMutationRestorePaths =
+          explicitHeadRestore.paths;
+        runtimeConfig.completionFreshMutationRestoreCommand =
+          explicitHeadRestore.command;
+      }
     }
   }
   const testRuns = (Array.isArray(verification.testRuns) ? verification.testRuns : [])
@@ -13079,10 +14063,23 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       (state.meta?.artifactProgress?.completed || [])
         .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, ""))
     );
+    const repairWorkspaceRoot = path.resolve(
+      config.commandCwd || state.commandCwd || process.cwd()
+    );
     runtimeConfig.testFailureRepairAllowedCreates = (verification.requiredOutputs || [])
       .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, ""))
       .filter((item) => !completedOutputs.has(item))
       .filter((item) => /(?:^|\/)(?:AGINTI|AGENTS)\.md$/i.test(item))
+      .filter((item) => {
+        const absolutePath = path.resolve(repairWorkspaceRoot, item);
+        const relativePath = path.relative(repairWorkspaceRoot, absolutePath);
+        return Boolean(
+          relativePath &&
+          !relativePath.startsWith("..") &&
+          !path.isAbsolute(relativePath) &&
+          !fsSync.existsSync(absolutePath)
+        );
+      })
       .slice(0, 8);
     const toolLoop = state.meta?.toolLoop || {};
     const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
@@ -13470,12 +14467,21 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       Number.isFinite(failureAt) &&
       (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).some((entry) => {
         const entryAt = Date.parse(String(entry?.at || ""));
+        const toolName = String(entry?.toolName || "");
+        const evidencePath = safeRecoveryEvidencePath(
+          toolLoopReadEvidencePath(entry) || entry?.path
+        );
+        const productionContextRead = Boolean(
+          toolName === "read_file" &&
+          evidencePath &&
+          !failedTestPathIsTestEvidence(evidencePath)
+        );
         return (
           Number.isFinite(entryAt) &&
           entryAt > failureAt &&
           entry?.ok === true &&
           entry?.blocked !== true &&
-          ["read_file", "search_files"].includes(String(entry?.toolName || ""))
+          productionContextRead
         );
       });
     const lacksRetainedPatchEvidence = Boolean(
@@ -13502,6 +14508,33 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
           .filter((item, index, items) => items.indexOf(item) === index)
           .slice(0, 8)
       : [];
+    const canonicalProductionRepairPaths = recoveryPacketRepairPaths
+      .filter((item) => !failedTestPathIsTestEvidence(item))
+      .slice(0, 6);
+    runtimeConfig.testFailureCanonicalMutationPaths = canonicalProductionRepairPaths;
+    runtimeConfig.testFailureCanonicalRepairPaths = authoritativeTracebackRepair
+      ? []
+      : Boolean(
+          diagnosticIsCurrent &&
+            (Array.isArray(diagnostic?.focuses) ? diagnostic.focuses : []).some(
+              (focus) => focus?.kind === "generated-artifact-semantic-producer"
+            )
+        )
+        ? canonicalProductionRepairPaths
+        : [];
+    const authoritativeTestRestores = currentRecoveryPacket
+      ? activeAuthoritativeTestRestoreCandidates(runtimeConfig, state)
+      : [];
+    const authoritativeTestRestoreCommand = buildAuthoritativeTestRestoreCommand(
+      authoritativeTestRestores.map((item) => item.path)
+    );
+    if (authoritativeTestRestoreCommand) {
+      runtimeConfig.testFailureAuthoritativeRestorePending = true;
+      runtimeConfig.testFailureAuthoritativeRestorePaths =
+        authoritativeTestRestores.map((item) => item.path);
+      runtimeConfig.testFailureAuthoritativeRestoreCommand =
+        authoritativeTestRestoreCommand;
+    }
     const recoveryPacketPaths = currentRecoveryPacket
       ? failedTestRecoveryEvidencePaths(state)
           .map(safeRecoveryEvidencePath)
@@ -13559,6 +14592,67 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         );
       }
     }
+    const exactRecoveryPacketContextActive = Boolean(
+      recoveryPacketPaths.length && Number.isFinite(recoveryPacketContextAt)
+    );
+    const recoveryPacketHasProductionContext = [
+      ...recoveryPacketPaths,
+      ...recoveryPacketRepairPaths,
+    ].some((item) => !failedTestPathIsTestEvidence(item));
+    const auxiliaryContextMarkers = [
+      Date.parse(String(state.meta?.failedTestRecoveryPacket?.generatedAt || "")),
+      Date.parse(String(state.meta?.failedTestFocusedRecovery?.at || "")),
+    ].filter(Number.isFinite);
+    const auxiliaryContextAt = auxiliaryContextMarkers.length
+      ? Math.max(...auxiliaryContextMarkers)
+      : recoveryPacketContextAt;
+    const instructionBasenames = new Set([
+      "AGENT.md",
+      "AGENTS.md",
+      "AGINTI.md",
+      "README.md",
+      "TASK.md",
+    ]);
+    const auxiliaryReadAlreadyUsed = Boolean(
+      Number.isFinite(auxiliaryContextAt) &&
+        (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).some((entry) => {
+          const entryAt = Date.parse(String(entry?.at || ""));
+          const entryPath = safeRecoveryEvidencePath(
+            toolLoopReadEvidencePath(entry) || entry?.path
+          );
+          return Boolean(
+            Number.isFinite(entryAt) &&
+            entryAt > auxiliaryContextAt &&
+            entry?.ok === true &&
+            entry?.blocked !== true &&
+            String(entry?.toolName || "") === "read_file" &&
+            entryPath &&
+            !recoveryPacketPaths.includes(entryPath) &&
+            !instructionBasenames.has(path.posix.basename(entryPath))
+          );
+        })
+    );
+    const auxiliaryRepairReadBudgetAvailable = recoveryPacketRepairPaths
+      .filter((item) => !failedTestPathIsTestEvidence(item))
+      .some(
+        (item) =>
+          Math.max(0, Number(recoveryPacketReadCounts.get(item) || 0)) <
+          MAX_FAILED_TEST_CANONICAL_REREADS
+      );
+    const dependencyRichCompiledPacket = recoveryPacketPaths.some((item) =>
+      [".java", ".kt", ".kts", ".scala", ".groovy"].includes(
+        path.posix.extname(item).toLowerCase()
+      )
+    );
+    runtimeConfig.testFailureRepairAuxiliaryReadAllowed = Boolean(
+      normalizeProviderId(runtimeConfig.provider, "") === "deepseek" &&
+        runtimeConfig.testFailureRepairMutationRequired === true &&
+        exactRecoveryPacketContextActive &&
+        recoveryPacketHasProductionContext &&
+        dependencyRichCompiledPacket &&
+        auxiliaryRepairReadBudgetAvailable &&
+        !auxiliaryReadAlreadyUsed
+    );
     const optionalDeepSeekRepairRereadPaths =
       normalizeProviderId(runtimeConfig.provider, "") === "deepseek" &&
       runtimeConfig.testFailureRepairMutationRequired === true &&
@@ -13581,19 +14675,54 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
                 MAX_FAILED_TEST_CANONICAL_REREADS
             )
         : [];
-    const exactRecoveryPacketContextActive = Boolean(
-      recoveryPacketPaths.length && Number.isFinite(recoveryPacketContextAt)
+    const failedTestRepairContextConsumed = exactRecoveryPacketContextActive
+      ? recoveryPacketHasProductionContext
+        ? unreadRecoveryPacketPaths.length === 0
+        : fallbackSourceContextConsumed
+      : patchContextConsumed;
+    const latestTestSpecificationBlock = [...(Array.isArray(toolLoop.recent)
+      ? toolLoop.recent
+      : [])]
+      .reverse()
+      .find(
+        (entry) =>
+          entry?.blocked === true &&
+          String(entry?.category || "") === "failed-test-specification-mutation" &&
+          Number(entry?.mutationRevision || 0) === mutationRevision
+      );
+    const latestTestSpecificationBlockAt = Date.parse(
+      String(latestTestSpecificationBlock?.at || "")
     );
-    runtimeConfig.testFailureCanonicalRepairPaths = authoritativeTracebackRepair
-      ? []
-      : Boolean(
-          diagnosticIsCurrent &&
-            (Array.isArray(diagnostic?.focuses) ? diagnostic.focuses : []).some(
-              (focus) => focus?.kind === "generated-artifact-semantic-producer"
-            )
-        )
-        ? recoveryPacketRepairPaths
-        : [];
+    const canonicalSourceReadAfterSpecificationBlock = Boolean(
+      Number.isFinite(latestTestSpecificationBlockAt) &&
+        canonicalProductionRepairPaths.length > 0 &&
+        (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).some((entry) => {
+          const entryAt = Date.parse(String(entry?.at || ""));
+          const entryPath = safeRecoveryEvidencePath(
+            toolLoopReadEvidencePath(entry) || entry?.path
+          );
+          return Boolean(
+            Number.isFinite(entryAt) &&
+            entryAt > latestTestSpecificationBlockAt &&
+            entry?.ok === true &&
+            entry?.blocked !== true &&
+            String(entry?.toolName || "") === "read_file" &&
+            canonicalProductionRepairPaths.includes(entryPath)
+          );
+        })
+    );
+    runtimeConfig.testFailureAuthoritativeSourceRereadRequired = Boolean(
+      runtimeConfig.testFailureRepairMutationRequired === true &&
+        Number.isFinite(latestTestSpecificationBlockAt) &&
+        canonicalProductionRepairPaths.length > 0 &&
+        !canonicalSourceReadAfterSpecificationBlock
+    );
+    runtimeConfig.testFailureRepairNeedsSourceDiscovery = Boolean(
+      runtimeConfig.testFailureRepairMutationRequired &&
+        exactRecoveryPacketContextActive &&
+        !recoveryPacketHasProductionContext &&
+        !fallbackSourceContextConsumed
+    );
     runtimeConfig.testFailureRepairContextPaths = authoritativeTracebackRepair
       ? []
       : unreadRecoveryPacketPaths;
@@ -13603,9 +14732,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     runtimeConfig.testFailureRepairNeedsPatchContext = Boolean(
       runtimeConfig.testFailureRepairMutationRequired &&
         !deterministicStructuralFocus &&
-        !(exactRecoveryPacketContextActive
-          ? unreadRecoveryPacketPaths.length === 0
-          : patchContextConsumed) &&
+        !failedTestRepairContextConsumed &&
         (
           unreadRecoveryPacketPaths.length > 0 ||
           retainedNoChangePatch ||
@@ -16379,6 +17506,27 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
 
   // Validation inspects raw patch paths before event/log redaction. The guard
   // does not persist argument contents.
+  const testSpecificationMutationBlock = failedTestSpecificationMutationBlock(
+    state,
+    toolName,
+    args,
+    config
+  );
+  if (testSpecificationMutationBlock) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      ...testSpecificationMutationBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
   const validationScopeBlock = artifactValidationScopeBlock(state, toolName, args, config);
   if (validationScopeBlock) {
     const result = {
@@ -16426,6 +17574,27 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       toolName,
       args: safeArgs,
       ...unchangedFailedTestBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
+  const forbiddenTestRerun = forbiddenCurrentTestRerunBlock(
+    state,
+    toolName,
+    safeArgs,
+    config
+  );
+  if (forbiddenTestRerun) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      ...forbiddenTestRerun,
     };
     await store.appendEvent("tool.blocked", result);
     observers.event("tool.blocked", result);
@@ -21038,7 +22207,7 @@ async function recordPreInferenceFailure({ error, config, state, store, observer
 
 class ProviderHandoffSignal extends Error {
   constructor({ sessionId, expectedRuntimeRevision, decision }) {
-    super(`Provider handoff requested for ${decision.sourceProvider} -> ${decision.targetProvider}.`);
+    super(`Provider route change requested for ${decision.sourceProvider} -> ${decision.targetProvider}.`);
     this.name = "ProviderHandoffSignal";
     this.sessionId = sessionId;
     this.expectedRuntimeRevision = expectedRuntimeRevision;
@@ -21065,6 +22234,7 @@ async function prepareProviderHandoff({ error, config, state, store, observers, 
     targetModel: decision.targetModel,
     failureCode: decision.failureCode,
     httpStatus: decision.status || 0,
+    sourceRoutingMode: decision.sourceRoutingMode || "smart",
     requestedAt: at,
   };
   state.meta.providerHandoff = detail;
@@ -21076,6 +22246,73 @@ async function prepareProviderHandoff({ error, config, state, store, observers, 
   emitConsole(
     config,
     `${decision.sourceProvider}/${decision.sourceModel} is unavailable (${decision.failureCode}); continuing the same session with ${decision.targetProvider}/${decision.targetModel}.`,
+    { kind: "meta" }
+  );
+  return new ProviderHandoffSignal({
+    sessionId,
+    expectedRuntimeRevision: Number(state.meta.runtimeConfig?.revision || 1),
+    decision,
+  });
+}
+
+async function prepareProviderQualityRebound({
+  config,
+  state,
+  store,
+  observers,
+  sessionId,
+  localRecovery,
+}) {
+  const decision = resolveProviderQualityRebound(config, state, localRecovery);
+  if (!decision) return null;
+
+  state.meta = state.meta || {};
+  const priorAttempts = Math.max(
+    0,
+    Number(state.meta.providerQualityRebound?.attempts || 0)
+  );
+  if (priorAttempts >= 1) return null;
+
+  const at = new Date().toISOString();
+  const detail = {
+    version: 1,
+    attempts: priorAttempts + 1,
+    status: "pending",
+    sourceProvider: decision.sourceProvider,
+    sourceModel: decision.sourceModel,
+    targetProvider: decision.targetProvider,
+    targetModel: decision.targetModel,
+    reasonCode: decision.reasonCode,
+    originalHandoffFailureCode: decision.originalHandoffFailureCode,
+    semanticTestFailureCount: decision.semanticTestFailureCount,
+    semanticTestMutationFailureCount:
+      decision.semanticTestMutationFailureCount,
+    blockedTestSpecificationMutationCount:
+      decision.blockedTestSpecificationMutationCount,
+    goalKey: decision.goalKey,
+    requestedAt: at,
+  };
+  state.meta.providerQualityRebound = detail;
+  ensureChatState(state);
+  state.messages.push({
+    role: "user",
+    content: [
+      "Provider quality recovery: continue the same task and preserve its current goal, source files, and verifier evidence.",
+      decision.blockedTestSpecificationMutationCount >= 3
+        ? `The local fallback exhausted its authenticated strong routes after ${decision.blockedTestSpecificationMutationCount} rejected attempts to rewrite authoritative tests instead of repairing production code.`
+        : `The local fallback exhausted its authenticated strong routes after ${decision.semanticTestMutationFailureCount} distinct source revisions failed the same project verification command.`,
+      "Treat existing tests and specifications as authoritative unless the user explicitly requested test changes.",
+      "Re-read the current production implementation and latest failure, restore any unrequested test edits from the repository baseline, replace incoherent partial production edits with one coherent minimal repair, rerun the retained canonical verifier, and finish only from passing evidence.",
+    ].join(" "),
+  });
+  state.updatedAt = at;
+  updateGoalStatus(state, "active", "provider_quality_rebound", at);
+  await store.saveState(state);
+  await store.appendEvent("provider.quality_rebound_requested", detail);
+  observers.event("provider.quality_rebound_requested", { ...detail, sessionId });
+  emitConsole(
+    config,
+    `Local recovery routes are exhausted; continuing the same session once with ${decision.targetProvider}/${decision.targetModel}.`,
     { kind: "meta" }
   );
   return new ProviderHandoffSignal({
@@ -21105,6 +22342,35 @@ async function activatePendingProviderHandoff({ config, state, store, observers,
   await store.saveState(state);
   await store.appendEvent("provider.handoff_activated", detail);
   observers.event("provider.handoff_activated", { ...detail, sessionId });
+}
+
+async function activatePendingProviderQualityRebound({
+  config,
+  state,
+  store,
+  observers,
+  sessionId,
+}) {
+  const rebound = state.meta?.providerQualityRebound;
+  if (
+    !rebound ||
+    rebound.status !== "pending" ||
+    normalizeProviderId(rebound.targetProvider, "") !==
+      normalizeProviderId(config.provider, "") ||
+    String(rebound.targetModel || "") !== String(config.model || "")
+  ) {
+    return;
+  }
+  const detail = {
+    ...rebound,
+    status: "active",
+    activatedAt: new Date().toISOString(),
+  };
+  state.meta.providerQualityRebound = detail;
+  state.updatedAt = detail.activatedAt;
+  await store.saveState(state);
+  await store.appendEvent("provider.quality_rebound_activated", detail);
+  observers.event("provider.quality_rebound_activated", { ...detail, sessionId });
 }
 
 async function runAgentOnceUnlocked(config) {
@@ -21342,6 +22608,13 @@ async function runAgentOnceUnlocked(config) {
   }
 
   await activatePendingProviderHandoff({ config, state, store, observers, sessionId });
+  await activatePendingProviderQualityRebound({
+    config,
+    state,
+    store,
+    observers,
+    sessionId,
+  });
 
   ensureChatState(state);
 
@@ -21874,6 +23147,15 @@ async function runAgentOnceUnlocked(config) {
       if (localFailureRecovery.active) {
         config = applyLocalFailureRecovery(config, state);
       }
+      const qualityRebound = await prepareProviderQualityRebound({
+        config,
+        state,
+        store,
+        observers,
+        sessionId,
+        localRecovery: localFailureRecovery,
+      });
+      if (qualityRebound) throw qualityRebound;
       if (localFailureRecovery.activated) {
         state.provider = config.provider;
         state.model = config.model;
@@ -21896,6 +23178,7 @@ async function runAgentOnceUnlocked(config) {
               content: recoveryEvidence.content,
               paths: recoveryEvidence.paths,
               repairPaths: recoveryEvidence.repairPaths,
+              authoritativeTestRestores: recoveryEvidence.authoritativeTestRestores,
               mutationRevision: Number(currentFailure.mutationRevision || 0),
               failureSignature: String(currentFailure.failureSignature || ""),
               command: String(currentFailure.command || ""),
@@ -23245,6 +24528,7 @@ async function runAgentOnceUnlocked(config) {
             content: recoveryEvidence.content,
             paths: recoveryEvidence.paths,
             repairPaths: recoveryEvidence.repairPaths,
+            authoritativeTestRestores: recoveryEvidence.authoritativeTestRestores,
             mutationRevision: Number(currentFailure.mutationRevision || 0),
             failureSignature: String(currentFailure.failureSignature || ""),
             command: String(currentFailure.command || ""),

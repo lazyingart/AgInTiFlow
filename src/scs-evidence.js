@@ -540,6 +540,19 @@ function inferExactOutputPaths(goal = "") {
     activeOutputDir = outputDirMatch?.[1] || "";
     quotedPathPattern.lastIndex = 0;
     for (const match of sourceLine.matchAll(quotedPathPattern)) {
+      const prefix = sourceLine.slice(
+        Math.max(0, Number(match.index || 0) - 180),
+        Number(match.index || 0)
+      );
+      if (
+        (looksLikeShellCommandLiteral(match[1]) ||
+          Boolean(canonicalBareVerifierCommand(match[1]))) &&
+        /\b(?:run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)\b[^.!?;。！？；\n]{0,160}$/i.test(
+          prefix
+        )
+      ) {
+        continue;
+      }
       pushPath(match[1]);
     }
     const unquotedLine = sourceLine.replace(quotedPathPattern, (match) => " ".repeat(match.length));
@@ -1274,7 +1287,7 @@ function profileRequirementsForGoal(taskProfile = "", goal = "") {
   ]);
   if (!codeLikeProfiles.has(profile)) return defaults;
   let requirements = [...defaults];
-  if (!goalRequestsWorkspaceMutation(goal)) {
+  if (!goalRequestsFileMutation(goal)) {
     requirements = requirements.filter((category) => category !== "file");
   }
   if (!codeProfileRequiresCommand(goal)) {
@@ -1321,7 +1334,7 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   const text = normalizedText(positiveGoal);
   const artifactSignalText = text
     .replace(
-      /\b(?:clean(?:\s+up)?|remove|delete|clear|purge)\b[^.\n;]{0,120}\b(?:generated|temporary|stale|test)?\s*(?:test\s+)?(?:debris|caches?|byproducts?)\b/gi,
+      /\b(?:clean(?:\s+up)?|remove|delete|clear|purge)\b[^.\n;]{0,120}\b(?:(?:disposable|generated|temporary|stale|test|build)\s+){0,4}(?:debris|caches?|byproducts?|outputs?|artifacts?|files?|directories?|folders?)\b/gi,
       ""
     )
     .replace(
@@ -1409,9 +1422,9 @@ function inferForbiddenActions(goal = "") {
   const text = String(goal || "");
   const forbidden = [];
   const isAction = (value = "") =>
-    /\b(use|open|click|browse|browser|upload|attach|submit|publish|deploy|run|execute|install|delete|remove|commit|push|call|api)\b/i.test(
+    /\b(use|open|click|browse|browser|upload|attach|submit|publish|deploy|run|execute|install|delete|remove|commit|push|call|api|alter|change|edit|fix|modify|patch|repair|rewrite|touch|write)\b/i.test(
       value
-    ) || /浏览器|网页|打开|点击|上传|提交|发布|部署|运行|执行|安装|删除|复制|移动|提交代码|推送|调用|API/.test(value);
+    ) || /浏览器|网页|打开|点击|上传|提交|发布|部署|运行|执行|安装|删除|复制|移动|修改|编辑|修复|改写|写入|提交代码|推送|调用|API/.test(value);
   const patterns = [
     { re: /\b(do not|don't|dont|never|no need to)\s+([^.\n;]+)/gi, prefix: "User forbids" },
     // A sentence such as "without changing X, run tests and commit" starts a
@@ -1470,6 +1483,19 @@ function stripCompletedWorkNarration(goal = "") {
   const priorActor =
     "(?:(?:the\\s+)?(?:prior|previous|earlier|last)\\s+(?:run|turn|attempt|session|agent|worker)|(?:it|this|that)\\s+(?:was|has\\s+been))";
   return String(goal || "")
+    .replace(
+      /\b(?:continue|resume)\s+(?:the\s+)?(?:same\s+)?(?:already\s+)?(?:completed|finished|verified|committed)\b[^.!?;；。！？\n]*/gi,
+      (clause) =>
+        /\b(?:and|but|then)\s+(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/i.test(
+          clause
+        )
+          ? clause
+          : ""
+    )
+    .replace(
+      /\b(?:clean(?:\s+up)?|remove|delete|clear|purge)\b[^.!?;；。！？\n]{0,120}\b(?:disposable|generated|temporary|stale)\b[^.!?;；。！？\n]{0,100}\b(?:build\s+)?(?:outputs?|artifacts?|files?|directories?|folders?|caches?)\b/gi,
+      ""
+    )
     .replace(
       new RegExp(
         `\\b${priorActor}\\b[^.!?;；。！？\\n]{0,300}\\b${completedAction}\\b[^.!?;；。！？\\n]*`,
@@ -1587,7 +1613,7 @@ function prefixRequestsInlineCommandExecution(prefix = "") {
     )
     .trim();
   return (
-    /^(?:followed\s+by|run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)(?:\s+(?:exactly|again|once))?(?:\s+(?:(?:the|this|that)\s+)?(?:(?:exact|required|following|declared|requested|specified|validator|validation|verification|acceptance|test|project)\s+)*commands?(?:\s+named)?)?\s*$/i.test(
+    /^(?:followed\s+by|run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)(?:\s+(?:exactly|again|once))?(?:\s+(?:(?:the|this|that)\s+)?(?:(?:canonical|exact|required|following|declared|requested|specified|validator|validation|verification|acceptance|test|project)\s+)*(?:commands?|verifier|validator|verification|tests?|test\s+suite|suite)(?:\s+named)?)?\s*$/i.test(
       clause
     ) || /^(?:随后运行|隨後運行|接着运行|接著運行|运行|運行|执行|執行|调用|調用|验证|驗證|检查|檢查|确认|確認)\s*$/.test(clause)
   );
@@ -1618,9 +1644,21 @@ function sentenceContinuesRequestedCommandList(source = "", sentenceStart = -1, 
 }
 
 function precedingLineRequestsInlineCommandExecution(source = "", commandIndex = -1) {
-  const lines = String(source || "")
-    .slice(0, Math.max(0, Number(commandIndex || 0)))
-    .split(/\r?\n/);
+  const precedingSource = String(source || "").slice(
+    0,
+    Math.max(0, Number(commandIndex || 0))
+  );
+  const lastLineBreak = precedingSource.lastIndexOf("\n");
+  const currentLinePrefix = precedingSource.slice(lastLineBreak + 1).trim();
+  if (
+    currentLinePrefix &&
+    !/^(?:[-*+]|\d+[.)])$/u.test(currentLinePrefix)
+  ) {
+    return false;
+  }
+  const priorLinesSource =
+    lastLineBreak >= 0 ? precedingSource.slice(0, lastLineBreak) : "";
+  const lines = priorLinesSource.split(/\r?\n/);
   while (lines.length && !String(lines.at(-1) || "").trim()) lines.pop();
   const precedingLine = String(lines.at(-1) || "").trim();
   if (precedingLine && prefixRequestsInlineCommandExecution(precedingLine)) {
@@ -1722,6 +1760,7 @@ function inferExplicitRequestedCommands(goal = "") {
     if (
       !command ||
       command.length > 1000 ||
+      /^\.[A-Za-z0-9_-]+$/u.test(command) ||
       /(?:^|\s)(?:\.{3}|…)(?:\s|$)/u.test(command) ||
       /[<>](?:PATH|FILE|COMMAND|VALUE)[<>]?/i.test(command) ||
       hasActiveShellExpansion(command)
@@ -2274,14 +2313,26 @@ function evaluateProjectTestVerification(events = []) {
     const event = eventList[index];
     const data = event?.data && typeof event.data === "object" ? event.data : {};
     const command = String(data.args?.command || "").trim();
+    const recordedProjectTest =
+      data.projectTest && typeof data.projectTest === "object"
+        ? data.projectTest
+        : null;
     if (
       event?.type !== "tool.completed" ||
       data.toolName !== "run_command" ||
-      !projectTestCommand(command)
+      (!projectTestCommand(command) && !recordedProjectTest)
     ) {
       continue;
     }
-    testRuns.push({ command, exitCode: Number.isInteger(data.exitCode) ? data.exitCode : null });
+    const exitCode = Number.isInteger(data.exitCode) ? data.exitCode : null;
+    testRuns.push({
+      command,
+      exitCode,
+      passed: recordedProjectTest
+        ? recordedProjectTest.passed === true
+        : exitCode === 0,
+      source: recordedProjectTest ? "project-verification-ledger" : "command-pattern",
+    });
   }
 
   if (testRuns.length === 0) {
@@ -2296,7 +2347,7 @@ function evaluateProjectTestVerification(events = []) {
   }
 
   const lastRun = testRuns.at(-1);
-  const ok = lastRun.exitCode === 0;
+  const ok = lastRun.passed === true;
   return {
     ok,
     checked: true,
@@ -3572,6 +3623,23 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
       `${toolName || "tool"} produced file/workspace evidence`,
       payload.path || payload.reportPath || args.path || ""
     );
+  }
+  if (
+    toolName === "run_command" &&
+    payload.explicitHeadRestore === true &&
+    Array.isArray(payload.explicitHeadRestorePaths)
+  ) {
+    for (const restoredPath of payload.explicitHeadRestorePaths
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .slice(0, 24)) {
+      push(
+        "file",
+        "runtime-verified exact task-owned HEAD restore",
+        restoredPath,
+        { explicitHeadRestore: true }
+      );
+    }
   }
   if (toolName === "run_command" || payload.stdout || Number.isInteger(payload.exitCode)) {
     const command = normalizeProjectCommand(args.command || "");

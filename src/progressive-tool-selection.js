@@ -935,6 +935,8 @@ function constrainReadFilePaths(tool, paths, phase) {
             ? "Exact read-only acceptance or validator source named by the retained failed verification command."
           : phase === "failed-test-workspace-diagnostic-read"
             ? "Exact generated workspace diagnostic produced by the current failed verification cycle."
+          : phase === "failed-test-authoritative-source-reread"
+            ? "Exact canonical production source that must be refreshed after a rejected attempt to rewrite an authoritative test."
           : "Exact workspace-relative path discovered by inspect_project.",
   };
   return {
@@ -954,6 +956,8 @@ function constrainReadFilePaths(tool, paths, phase) {
               ? "Read one exact existing external acceptance or validator file from the retained failed command. This path is read-only and no neighboring external files are exposed."
             : phase === "failed-test-workspace-diagnostic-read"
               ? "Read one exact generated workspace diagnostic from the current failed verification cycle. External validator source remains unavailable."
+            : phase === "failed-test-authoritative-source-reread"
+              ? "Reread the exact canonical production source after the runtime rejected repeated attempts to mutate an authoritative test. This read is mandatory before another repair patch is offered."
           : phase === "read-instructions"
           ? "Read one exact project instruction file discovered by inspect_project before repository mutation or validation commands are enabled."
           : phase === "read-tests"
@@ -1063,6 +1067,51 @@ function constrainCompletionFreshMutationPatch(tool, paths = []) {
             ...(properties.path || { type: "string" }),
             ...(normalizedPaths.length ? { enum: normalizedPaths } : {}),
             description: "Exact grounded canonical project path for this source correction.",
+          },
+        },
+        required: [
+          ...new Set([
+            ...(Array.isArray(tool.function.parameters?.required)
+              ? tool.function.parameters.required
+              : []),
+            "path",
+            ...(Object.hasOwn(properties, "search") ? ["search"] : []),
+            ...(Object.hasOwn(properties, "replace") ? ["replace"] : []),
+          ]),
+        ],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+function constrainFailedTestCanonicalPatch(tool, paths = []) {
+  if (!tool) return null;
+  const normalizedPaths = (Array.isArray(paths) ? paths : [])
+    .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, "").trim())
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .slice(0, 12);
+  if (!normalizedPaths.length) return null;
+  const properties = tool.function?.parameters?.properties || {};
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description: [
+        "Repair one canonical production source selected by the retained failed-test evidence.",
+        `The path must be one of: ${normalizedPaths.join(", ")}.`,
+        "The failing tests are authoritative read-only evidence. Preserve their expectations and repair the implementation that produces the failure.",
+        "After one material source mutation, the runtime will expose the exact retained verifier.",
+      ].join(" "),
+      parameters: {
+        ...tool.function.parameters,
+        properties: {
+          ...properties,
+          path: {
+            ...(properties.path || { type: "string" }),
+            enum: normalizedPaths,
+            description: "Exact evidence-derived canonical production source path.",
           },
         },
         required: [
@@ -2112,6 +2161,70 @@ export function selectProgressiveTools(
     throw new TypeError("An enabled, valid finish function tool must exist in the input tool array");
   }
 
+  // A provenance-bound restore from the current request supersedes stale
+  // failed-test and patch-context recovery state. The constrained planner uses
+  // the same precedence; keep the offered tool surface aligned with it so the
+  // model cannot substitute a guessed patch for the exact restore command.
+  if (
+    config.completionFreshMutationRequired === true &&
+    config.completionFreshMutationRestorePending === true &&
+    typeof config.completionFreshMutationRestoreCommand === "string" &&
+    config.completionFreshMutationRestoreCommand.trim()
+  ) {
+    const available = new Map(
+      baselineEnabled.map(({ name, tool }) => [name, tool])
+    );
+    const restoreTaskOwnedSource = constrainRunCommand(
+      available.get("run_command"),
+      config.completionFreshMutationRestoreCommand,
+      [
+        "Run the exact provenance-bound HEAD restore requested for the task-owned tracked path.",
+        "Do not broaden its path scope, substitute a guessed source patch, or inspect unrelated Git state.",
+        "After restoration, run the retained verifier once and finish from clean repository evidence.",
+      ].join(" ")
+    );
+    return [restoreTaskOwnedSource, finish].filter(Boolean);
+  }
+
+  if (config.testFailureRepairActive === true) {
+    const mandatoryAvailable = new Map(
+      baselineEnabled.map(({ name, tool }) => [name, tool])
+    );
+    if (
+      config.testFailureAuthoritativeRestorePending === true &&
+      typeof config.testFailureAuthoritativeRestoreCommand === "string" &&
+      config.testFailureAuthoritativeRestoreCommand.trim()
+    ) {
+      const restoreAuthoritativeTests = constrainRunCommand(
+        mandatoryAvailable.get("run_command"),
+        config.testFailureAuthoritativeRestoreCommand,
+        [
+          "Restore only the exact authoritative test paths that this same task previously reset to HEAD and subsequently damaged through recorded agent mutations.",
+          "The runtime verified the current content hash and owns the complete path list. Run this exact command once; do not broaden it, inspect unrelated Git state, or restore production files.",
+          "After restoration, reread and repair the canonical production source, then rerun the retained verifier.",
+        ].join(" ")
+      );
+      return [restoreAuthoritativeTests, finish].filter(Boolean);
+    }
+    if (
+      config.testFailureAuthoritativeSourceRereadRequired === true &&
+      Array.isArray(config.testFailureCanonicalMutationPaths) &&
+      config.testFailureCanonicalMutationPaths.length > 0
+    ) {
+      const canonicalMutationPaths = config.testFailureCanonicalMutationPaths
+        .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, "").trim())
+        .filter(Boolean)
+        .filter((item, index, items) => items.indexOf(item) === index)
+        .slice(0, 6);
+      const mandatoryRepairRead = constrainReadFilePaths(
+        mandatoryAvailable.get("read_file"),
+        exactWorkspacePathAliases(canonicalMutationPaths, config.commandCwd).slice(0, 8),
+        "failed-test-authoritative-source-reread"
+      );
+      return [mandatoryRepairRead, finish].filter(Boolean);
+    }
+  }
+
   if (
     config.patchContextRefreshRequired === true &&
     typeof config.patchContextRefreshPath === "string" &&
@@ -2280,13 +2393,6 @@ export function selectProgressiveTools(
       );
       return [repositoryStateTool, finish].filter(Boolean);
     }
-    const constrainedRepairPatch = annotateRequiredSymbolRepair(
-      constrainFailedTestApplyPatch(
-        available.get("apply_patch"),
-        config.testFailureRepairPatchTargets
-      ),
-      config.testFailureRequiredSymbolRepair
-    );
     const constrainedInstructionCreate = constrainWriteFilePaths(
       available.get("write_file"),
       Array.isArray(config.testFailureRepairAllowedCreates)
@@ -2314,6 +2420,48 @@ export function selectProgressiveTools(
           .filter((item, index, items) => items.indexOf(item) === index)
           .slice(0, 6)
       : [];
+    const canonicalRepairMutationPaths = Array.isArray(
+      config.testFailureCanonicalMutationPaths
+    )
+      ? config.testFailureCanonicalMutationPaths
+          .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, "").trim())
+          .filter(Boolean)
+          .filter((item, index, items) => items.indexOf(item) === index)
+          .slice(0, 6)
+      : canonicalRepairReadPaths;
+    const configuredPatchTargets = Array.isArray(config.testFailureRepairPatchTargets)
+      ? config.testFailureRepairPatchTargets
+      : [];
+    const hasExactPatchTarget = configuredPatchTargets.some(
+      (target) =>
+        target &&
+        typeof target === "object" &&
+        String(target.path || "").trim() &&
+        String(target.search || "")
+    );
+    const fallbackPatchPaths = configuredPatchTargets
+      .map((target) =>
+        typeof target === "string" ? target : String(target?.path || "")
+      )
+      .map((item) => String(item || "").replace(/\\/g, "/").replace(/^\.\//, "").trim())
+      .filter(Boolean)
+      .filter((item, index, items) => items.indexOf(item) === index);
+    const constrainedRepairPatch = annotateRequiredSymbolRepair(
+      hasExactPatchTarget
+        ? constrainFailedTestApplyPatch(
+            available.get("apply_patch"),
+            configuredPatchTargets
+          )
+        : constrainFailedTestCanonicalPatch(
+            available.get("apply_patch"),
+            canonicalRepairMutationPaths.length
+              ? canonicalRepairMutationPaths
+              : fallbackPatchPaths
+          ) || (
+            available.get("apply_patch")
+          ),
+      config.testFailureRequiredSymbolRepair
+    );
     const normalizeDiagnosticReadPaths = (items = []) =>
       (Array.isArray(items) ? items : [])
         .map((item) => String(item || "").replace(/\\/g, "/").trim())
@@ -2374,24 +2522,50 @@ export function selectProgressiveTools(
       config.commandCwd
     )
       .slice(0, 8);
-    const constrainedRepairRead = boundedRepairReadPaths.length
-      ? constrainReadFilePaths(
-          available.get("read_file"),
-          boundedRepairReadPaths,
-          workspaceDiagnosticReadPaths.length
-            ? "failed-test-workspace-diagnostic-read"
-            : diagnosticReadPaths.length
-              ? "failed-test-diagnostic-read"
-            : sourceReferencedReadPaths.length || projectInstructionReadPaths.length
-              ? "failed-test-source-reference-read"
-            : repairContextPaths.length
-              ? "failed-test-evidence-refresh"
-              : "deepseek-failed-test-source-reread"
-        )
-      : available.get("read_file");
+    const auxiliaryRepairRead = config.testFailureRepairAuxiliaryReadAllowed === true &&
+      available.get("read_file")
+      ? {
+          ...available.get("read_file"),
+          function: {
+            ...available.get("read_file").function,
+            description: [
+              "Read an exact workspace-relative supporting source, build script, or project metadata file needed to interpret the retained failed-test evidence.",
+              "This is one bounded read-only dependency turn. Repair writes remain restricted to the evidence-derived canonical production paths.",
+              "Do not read secrets, caches, generated binaries, or unrelated files.",
+            ].join(" "),
+          },
+        }
+      : null;
+    const constrainedRepairRead = auxiliaryRepairRead ||
+      (config.testFailureRepairNeedsSourceDiscovery === true
+      ? available.get("read_file")
+      : boundedRepairReadPaths.length
+        ? constrainReadFilePaths(
+            available.get("read_file"),
+            boundedRepairReadPaths,
+            workspaceDiagnosticReadPaths.length
+              ? "failed-test-workspace-diagnostic-read"
+              : diagnosticReadPaths.length
+                ? "failed-test-diagnostic-read"
+              : sourceReferencedReadPaths.length || projectInstructionReadPaths.length
+                ? "failed-test-source-reference-read"
+              : repairContextPaths.length
+                ? "failed-test-evidence-refresh"
+                : "deepseek-failed-test-source-reread"
+          )
+        : available.get("read_file"));
     const toolNames = config.testFailureRepairMutationRequired === true
       ? [
-          ...(boundedRepairReadPaths.length
+          ...(config.testFailureRepairAuxiliaryReadAllowed === true
+            ? ["read_file"]
+            : config.testFailureRepairNeedsSourceDiscovery === true
+            ? ["list_files"]
+            : []),
+          ...(config.testFailureRepairAuxiliaryReadAllowed === true
+            ? []
+            : config.testFailureRepairNeedsSourceDiscovery === true
+            ? ["read_file", "search_files"]
+            : boundedRepairReadPaths.length
             ? ["read_file"]
             : config.testFailureRepairNeedsPatchContext === true
               ? ["read_file", "search_files"]

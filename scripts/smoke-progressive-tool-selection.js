@@ -1943,6 +1943,167 @@ sameNames(
   "an unchanged failed-test rerun did not close discovery until a real mutation"
 );
 
+const authoritativeTestRestoreTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureAuthoritativeRestorePending: true,
+    testFailureAuthoritativeRestoreCommand:
+      "git checkout HEAD -- 'src/test/java/example/WindowSummaryTest.java'",
+    convergenceSuppressedToolNames: ["run_command"],
+    patchContextRepairRequired: true,
+    patchContextRepairPath: "src/test/java/example/WindowSummaryTest.java",
+    patchContextRepairSearch: "damaged authoritative test body",
+  },
+  goal: "Recover the authoritative test this same task damaged, then repair production.",
+  profile: "code",
+});
+sameNames(
+  authoritativeTestRestoreTools,
+  ["run_command", "finish"],
+  "a provenance-bound authoritative-test restore was hidden by convergence suppression"
+);
+assertStrict.deepEqual(
+  authoritativeTestRestoreTools[0].function.parameters.properties.command.enum,
+  ["git checkout HEAD -- 'src/test/java/example/WindowSummaryTest.java'"],
+  "the authoritative-test restore tool was not constrained to its exact command"
+);
+
+const authoritativeRestoreRequestTools = await captureRequestTools({
+  provider: "deepseek",
+  model: "deepseek-v4-pro",
+  taskProfile: "code",
+  allowShellTool: true,
+  testFailureRepairActive: true,
+  testFailureRepairMutationRequired: true,
+  testFailureAuthoritativeRestorePending: true,
+  testFailureAuthoritativeRestoreCommand:
+    "git checkout HEAD -- 'src/test/java/example/WindowSummaryTest.java'",
+  patchContextRepairRequired: true,
+  patchContextRepairPath: "src/test/java/example/WindowSummaryTest.java",
+  patchContextRepairSearch: "damaged authoritative test body",
+});
+sameNames(
+  authoritativeRestoreRequestTools,
+  ["run_command", "finish"],
+  "the model request boundary let stale patch context mask authoritative-test restoration"
+);
+assertStrict.deepEqual(
+  authoritativeRestoreRequestTools[0].function.parameters.properties.command.enum,
+  ["git checkout HEAD -- 'src/test/java/example/WindowSummaryTest.java'"],
+  "the request boundary lost the exact authoritative-test restoration command"
+);
+
+const explicitHeadRestoreTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    completionFreshMutationRequired: true,
+    completionFreshMutationRestorePending: true,
+    completionFreshMutationRestoreCommand:
+      "git checkout HEAD -- 'src/main/java/example/WindowSummary.java'",
+    completionFreshMutationPaths: [
+      "src/main/java/example/WindowSummary.java",
+    ],
+    convergenceSuppressedToolNames: ["run_command"],
+  },
+  goal: "Restore the exact task-owned production source to HEAD.",
+  profile: "code",
+});
+sameNames(
+  explicitHeadRestoreTools,
+  ["run_command", "finish"],
+  "an explicit task-owned HEAD restore was hidden by convergence suppression"
+);
+assertStrict.deepEqual(
+  explicitHeadRestoreTools[0].function.parameters.properties.command.enum,
+  ["git checkout HEAD -- 'src/main/java/example/WindowSummary.java'"],
+  "the task-owned HEAD restore tool was not constrained to its exact command"
+);
+
+const explicitHeadRestoreWithStaleFailureTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    completionFreshMutationRequired: true,
+    completionFreshMutationRestorePending: true,
+    completionFreshMutationRestoreCommand:
+      "git checkout HEAD -- 'src/main/java/example/WindowSummary.java'",
+    completionFreshMutationPaths: [
+      "src/main/java/example/WindowSummary.java",
+    ],
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    patchContextRepairRequired: true,
+    patchContextRepairPath: "src/main/java/example/WindowSummary.java",
+    patchContextRepairSearch: "stale failed-test source anchor",
+  },
+  goal: "Restore the exact task-owned production source to HEAD.",
+  profile: "code",
+});
+sameNames(
+  explicitHeadRestoreWithStaleFailureTools,
+  ["run_command", "finish"],
+  "stale failed-test patch context masked an explicit task-owned HEAD restore"
+);
+assertStrict.deepEqual(
+  explicitHeadRestoreWithStaleFailureTools[0].function.parameters.properties.command.enum,
+  ["git checkout HEAD -- 'src/main/java/example/WindowSummary.java'"],
+  "the stale-failure recovery surface widened the explicit HEAD restore command"
+);
+
+const authoritativeProductionRereadTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    commandCwd: "/tmp/aginti-authoritative-repair",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureAuthoritativeSourceRereadRequired: true,
+    testFailureCanonicalMutationPaths: [
+      "src/main/java/example/WindowSummary.java",
+    ],
+    patchContextRefreshRequired: true,
+    patchContextRefreshPath: "src/test/java/example/WindowSummaryTest.java",
+  },
+  goal: "Reread production after rejecting an authoritative-test rewrite.",
+  profile: "code",
+});
+sameNames(
+  authoritativeProductionRereadTools,
+  ["read_file", "finish"],
+  "a rejected authoritative-test rewrite did not force one canonical production reread"
+);
+assertStrict.deepEqual(
+  authoritativeProductionRereadTools[0].function.parameters.properties.path.enum,
+  [
+    "src/main/java/example/WindowSummary.java",
+    "/tmp/aginti-authoritative-repair/src/main/java/example/WindowSummary.java",
+  ],
+  "the authoritative production reread escaped its exact canonical path"
+);
+
+const canonicalProductionPatchTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    testFailureRepairActive: true,
+    testFailureRepairMutationRequired: true,
+    testFailureCanonicalMutationPaths: [
+      "src/main/java/example/WindowSummary.java",
+    ],
+  },
+  goal: "Repair only the canonical production implementation.",
+  profile: "code",
+});
+sameNames(
+  canonicalProductionPatchTools,
+  ["apply_patch", "finish"],
+  "canonical failed-test repair did not close unrelated mutation paths"
+);
+assertStrict.deepEqual(
+  canonicalProductionPatchTools[0].function.parameters.properties.path.enum,
+  ["src/main/java/example/WindowSummary.java"],
+  "canonical failed-test apply_patch was not schema-bound to production"
+);
+
 const externalValidatorPath = "/tmp/aginti-acceptance/deck_contract.py";
 const externalDiagnosticFailedTestRepairTools = selectProgressiveTools(allTools, {
   config: {
@@ -2235,7 +2396,7 @@ const conciseRepositoryStateRepairRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 18,
         failureSignature: "concise-repository-state-gate",
         content: "Retained canonical source evidence from the prior content failure.",
@@ -2284,7 +2445,7 @@ const explicitFailRepositoryStateRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 19,
         failureSignature: "explicit-fail-repository-state-gate",
         content: "Stale canonical-source evidence from the preceding repair.",
@@ -2454,13 +2615,13 @@ const retainedPacketRepairRuntime = nextStepRuntimeConfig(
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 3,
         failureSignature: "retained-failure",
-        content: "Bounded failed-test evidence packet v16.",
+        content: "Bounded failed-test evidence packet v17.",
       },
       failedTestDiagnostic: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 3,
         failureSignature: "retained-failure",
         at: "2026-08-24T02:00:00.000Z",
@@ -2507,21 +2668,21 @@ const packetPathReadState = {
       }],
     },
     failedTestRecoveryPacket: {
-      packetVersion: 16,
+      packetVersion: 17,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
-      content: "Bounded failed-test evidence packet v16.",
+      content: "Bounded failed-test evidence packet v17.",
       paths: ["tests/test_service_ctl.py", "service_ctl.py"],
       generatedAt: "2026-08-24T02:00:10.000Z",
     },
     failedTestFocusedRecovery: {
-      packetVersion: 16,
+      packetVersion: 17,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
       at: "2026-08-24T02:00:10.000Z",
     },
     failedTestDiagnostic: {
-      packetVersion: 16,
+      packetVersion: 17,
       mutationRevision: 7,
       failureSignature: "packet-path-failure",
       at: "2026-08-24T02:00:00.000Z",
@@ -2632,6 +2793,11 @@ const allPacketPathsReadDeepSeekRuntime = nextStepRuntimeConfig(
     },
   }
 );
+assertStrict.equal(
+  allPacketPathsReadDeepSeekRuntime.testFailureRepairAuxiliaryReadAllowed,
+  false,
+  "ordinary failed-test recovery unexpectedly opened compiled-language dependency discovery"
+);
 assertStrict.deepEqual(
   allPacketPathsReadDeepSeekRuntime.testFailureRepairOptionalRereadPaths,
   ["service_ctl.py"],
@@ -2651,6 +2817,284 @@ assertStrict.deepEqual(
   allPacketPathsReadDeepSeekTools[0].function.parameters.properties.path.enum,
   ["service_ctl.py"],
   "DeepSeek repair reread fallback was not constrained to the canonical source"
+);
+const testOnlyPacketState = {
+  meta: {
+    projectVerification: {
+      mutationRevision: 9,
+      testRuns: [{
+        command: "scripts/test.sh",
+        mutationRevision: 9,
+        passed: false,
+        failureEvidenceVersion: 2,
+        failureSignature: "java-test-only-packet",
+        at: "2026-08-29T10:00:00.000Z",
+      }],
+    },
+    failedTestRecoveryPacket: {
+      packetVersion: 17,
+      mutationRevision: 9,
+      failureSignature: "java-test-only-packet",
+      content: "Bounded failed-test evidence packet v17.",
+      paths: ["src/test/java/art/lazying/telemetry/WindowSummaryTest.java"],
+      repairPaths: [],
+      generatedAt: "2026-08-29T10:00:01.000Z",
+    },
+    failedTestDiagnostic: {
+      packetVersion: 17,
+      mutationRevision: 9,
+      failureSignature: "java-test-only-packet",
+      at: "2026-08-29T10:00:01.000Z",
+      focuses: [],
+    },
+    toolLoop: {
+      stagnationEpoch: 11,
+      recent: [{
+        toolName: "read_file",
+        path: "src/test/java/art/lazying/telemetry/WindowSummaryTest.java",
+        ok: true,
+        blocked: false,
+        goalRevision: 1,
+        mutationRevision: 9,
+        at: "2026-08-29T10:00:02.000Z",
+      }, {
+        toolName: "search_files",
+        path: "src",
+        ok: true,
+        blocked: false,
+        goalRevision: 1,
+        mutationRevision: 9,
+        at: "2026-08-29T10:00:02.500Z",
+      }],
+    },
+  },
+  messages: [],
+};
+const testOnlyPacketRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "java" },
+  testOnlyPacketState
+);
+assertStrict.equal(
+  testOnlyPacketRuntime.testFailureRepairNeedsPatchContext,
+  true,
+  "reading a test-only recovery packet incorrectly closed production-source discovery"
+);
+assertStrict.equal(
+  testOnlyPacketRuntime.testFailureRepairNeedsSourceDiscovery,
+  true,
+  "a path-only source search incorrectly closed production-source discovery"
+);
+const testOnlyPacketTools = selectProgressiveTools(allTools, {
+    config: testOnlyPacketRuntime,
+    goal: "Repair the Java implementation after the visible test failed.",
+    profile: "java",
+  });
+sameNames(
+  testOnlyPacketTools,
+  ["list_files", "read_file", "search_files", "apply_patch", "finish"],
+  "test-only recovery evidence forced a blind mutation without production source"
+);
+assertStrict.equal(
+  testOnlyPacketTools
+    .find((item) => item.function?.name === "read_file")
+    ?.function?.parameters?.properties?.path?.enum,
+  undefined,
+  "source discovery retained a stale failed-test path enum"
+);
+const existingInstructionWorkspace = await fs.mkdtemp(
+  path.join(os.tmpdir(), "aginti-existing-required-instruction-")
+);
+try {
+  await fs.writeFile(
+    path.join(existingInstructionWorkspace, "AGINTI.md"),
+    "# Existing project instructions\n\nRun `scripts/test.sh`.\n",
+    "utf8"
+  );
+  const existingInstructionRuntime = nextStepRuntimeConfig(
+    {
+      provider: "localllm",
+      taskProfile: "java",
+      commandCwd: existingInstructionWorkspace,
+    },
+    {
+      ...testOnlyPacketState,
+      commandCwd: existingInstructionWorkspace,
+      meta: {
+        ...testOnlyPacketState.meta,
+        projectVerification: {
+          ...testOnlyPacketState.meta.projectVerification,
+          requiredOutputs: ["AGINTI.md"],
+        },
+        artifactProgress: {
+          completed: [],
+        },
+      },
+    }
+  );
+  assertStrict.deepEqual(
+    existingInstructionRuntime.testFailureRepairAllowedCreates,
+    [],
+    "failed-test recovery offered create-only write_file for an existing instruction file"
+  );
+} finally {
+  await fs.rm(existingInstructionWorkspace, { recursive: true, force: true });
+}
+const testOnlyPacketWithSourceRuntime = nextStepRuntimeConfig(
+  { provider: "localllm", taskProfile: "java" },
+  {
+    ...testOnlyPacketState,
+    meta: {
+      ...testOnlyPacketState.meta,
+      toolLoop: {
+        stagnationEpoch: 11,
+        recent: [
+          ...testOnlyPacketState.meta.toolLoop.recent,
+          {
+            toolName: "read_file",
+            path: "src/main/java/art/lazying/telemetry/WindowSummary.java",
+            ok: true,
+            blocked: false,
+            goalRevision: 1,
+            mutationRevision: 9,
+            at: "2026-08-29T10:00:03.000Z",
+          },
+        ],
+      },
+    },
+  }
+);
+assertStrict.equal(
+  testOnlyPacketWithSourceRuntime.testFailureRepairNeedsPatchContext,
+  false,
+  "failed-test recovery stayed in discovery after production source was read"
+);
+assertStrict.equal(
+  testOnlyPacketWithSourceRuntime.testFailureRepairNeedsSourceDiscovery,
+  false,
+  "source discovery remained open after production source was read"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: testOnlyPacketWithSourceRuntime,
+    goal: "Apply the Java source repair from current evidence.",
+    profile: "java",
+  }),
+  ["apply_patch", "finish"],
+  "production-source grounding did not return failed-test recovery to mutation-only mode"
+);
+const compiledDependencyPacketState = {
+  meta: {
+    projectVerification: {
+      mutationRevision: 12,
+      testRuns: [{
+        command: "scripts/test.sh",
+        mutationRevision: 12,
+        passed: false,
+        failureEvidenceVersion: 2,
+        failureSignature: "compiled-dependency-read",
+        at: "2026-08-29T12:00:00.000Z",
+      }],
+    },
+    failedTestRecoveryPacket: {
+      packetVersion: 17,
+      mutationRevision: 12,
+      failureSignature: "compiled-dependency-read",
+      content: "Bounded failed-test evidence packet v17.",
+      paths: [
+        "src/test/java/example/WindowSummaryTest.java",
+        "src/main/java/example/WindowSummary.java",
+      ],
+      repairPaths: ["src/main/java/example/WindowSummary.java"],
+      generatedAt: "2026-08-29T12:00:01.000Z",
+    },
+    failedTestDiagnostic: {
+      packetVersion: 17,
+      mutationRevision: 12,
+      failureSignature: "compiled-dependency-read",
+      at: "2026-08-29T12:00:01.000Z",
+      focuses: [],
+    },
+    toolLoop: {
+      stagnationEpoch: 12,
+      recent: [
+        {
+          toolName: "read_file",
+          path: "src/main/java/example/WindowSummary.java",
+          ok: true,
+          blocked: false,
+          at: "2026-08-29T12:00:02.000Z",
+        },
+        {
+          toolName: "read_file",
+          path: "src/test/java/example/WindowSummaryTest.java",
+          ok: true,
+          blocked: false,
+          at: "2026-08-29T12:00:03.000Z",
+        },
+      ],
+    },
+  },
+};
+const compiledDependencyRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "java" },
+  compiledDependencyPacketState
+);
+assertStrict.equal(
+  compiledDependencyRuntime.testFailureRepairAuxiliaryReadAllowed,
+  true,
+  "DeepSeek did not receive one bounded supporting-read turn for a compiled-language repair"
+);
+const compiledDependencyTools = selectProgressiveTools(allTools, {
+  config: compiledDependencyRuntime,
+  goal: "Repair the Java implementation from the authoritative failed-test packet.",
+  profile: "java",
+});
+sameNames(
+  compiledDependencyTools,
+  ["read_file", "apply_patch", "finish"],
+  "compiled-language recovery omitted its bounded supporting-read turn"
+);
+assertStrict.equal(
+  compiledDependencyTools[0].function.parameters.properties.path?.enum,
+  undefined,
+  "compiled-language supporting reads remained pinned to stale packet paths"
+);
+const compiledDependencyConsumedRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", taskProfile: "java" },
+  {
+    ...compiledDependencyPacketState,
+    meta: {
+      ...compiledDependencyPacketState.meta,
+      toolLoop: {
+        ...compiledDependencyPacketState.meta.toolLoop,
+        recent: [
+          ...compiledDependencyPacketState.meta.toolLoop.recent,
+          {
+            toolName: "read_file",
+            path: "src/main/java/example/Reading.java",
+            ok: true,
+            blocked: false,
+            at: "2026-08-29T12:00:04.000Z",
+          },
+        ],
+      },
+    },
+  }
+);
+assertStrict.equal(
+  compiledDependencyConsumedRuntime.testFailureRepairAuxiliaryReadAllowed,
+  false,
+  "a successful compiled-language dependency read reopened broad discovery"
+);
+const compiledDependencyConsumedTools = selectProgressiveTools(allTools, {
+  config: compiledDependencyConsumedRuntime,
+  goal: "Apply the Java source repair after reading the supporting type.",
+  profile: "java",
+});
+assertStrict.deepEqual(
+  compiledDependencyConsumedTools[0].function.parameters.properties.path.enum,
+  ["src/main/java/example/WindowSummary.java"],
+  "compiled-language recovery did not contract back to the canonical source"
 );
 const regeneratedSameFailurePacketRuntime = nextStepRuntimeConfig(
   { provider: "deepseek", taskProfile: "qa" },
@@ -3185,13 +3629,13 @@ const focusedPatchRepairRuntime = nextStepRuntimeConfig(
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 5,
         failureSignature: "focused-failure",
-        content: "Bounded failed-test evidence packet v16.",
+        content: "Bounded failed-test evidence packet v17.",
       },
       failedTestDiagnostic: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 5,
         failureSignature: "focused-failure",
         at: "2026-08-24T02:00:00.000Z",
@@ -3344,15 +3788,15 @@ const tracebackRepairRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 9,
         failureSignature: "deepest-traceback-line",
-        content: "Bounded failed-test evidence packet v16.",
+        content: "Bounded failed-test evidence packet v17.",
         paths: ["README.md", "build_cad.py", "inputs/tube_measurements.csv"],
         generatedAt: "2026-08-29T04:00:00.000Z",
       },
       failedTestDiagnostic: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 9,
         failureSignature: "deepest-traceback-line",
         at: "2026-08-29T04:00:00.000Z",
@@ -3470,13 +3914,13 @@ const pythonGuardRepairRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 8,
         failureSignature: "python-main-guard-order",
-        content: "Bounded failed-test evidence packet v16.",
+        content: "Bounded failed-test evidence packet v17.",
       },
       failedTestDiagnostic: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 8,
         failureSignature: "python-main-guard-order",
         at: "2026-08-26T18:00:00.000Z",
@@ -3628,13 +4072,13 @@ const duplicateSourceRepairRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 9,
         failureSignature: "python-duplicate-source",
-        content: "Bounded failed-test evidence packet v16.",
+        content: "Bounded failed-test evidence packet v17.",
       },
       failedTestDiagnostic: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 9,
         failureSignature: "python-duplicate-source",
         at: "2026-08-26T19:00:00.000Z",
@@ -3741,13 +4185,13 @@ const baselineRecoveryRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 10,
         failureSignature: "python-baseline-recovery",
-        content: "Bounded failed-test evidence packet v16.",
+        content: "Bounded failed-test evidence packet v17.",
       },
       failedTestDiagnostic: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 10,
         failureSignature: "python-baseline-recovery",
         at: "2026-08-26T19:30:00.000Z",
@@ -3848,13 +4292,13 @@ const harnessPathRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 11,
         failureSignature: "agent-created-test-harness-path",
-        content: "Bounded failed-test evidence packet v16.",
+        content: "Bounded failed-test evidence packet v17.",
       },
       failedTestDiagnostic: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 11,
         failureSignature: "agent-created-test-harness-path",
         at: "2026-08-26T20:30:00.000Z",
@@ -3935,13 +4379,13 @@ const portCollisionRuntime = nextStepRuntimeConfig(
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 12,
         failureSignature: "agent-created-test-port-collision",
-        content: "Bounded failed-test evidence packet v16.",
+        content: "Bounded failed-test evidence packet v17.",
       },
       failedTestDiagnostic: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 12,
         failureSignature: "agent-created-test-port-collision",
         at: "2026-08-27T09:00:00.000Z",

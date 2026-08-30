@@ -10,6 +10,7 @@ import { resolveRuntimeConfig } from "../src/config.js";
 import {
   classifyProviderHandoffError,
   resolveProviderHandoff,
+  resolveProviderQualityRebound,
 } from "../src/provider-handoff.js";
 import { SessionStore } from "../src/session-store.js";
 
@@ -45,6 +46,129 @@ assert.deepEqual(
 assert.equal(
   classifyProviderHandoffError(Object.assign(new Error("invalid request"), { status: 400 })).eligible,
   false
+);
+
+const exhaustedLocalRecovery = {
+  active: false,
+  reason: "no-strong-local-recovery-model",
+  semanticTestFailureCount: 1,
+  semanticTestMutationFailureCount: 4,
+};
+const qualityReboundState = {
+  meta: {
+    goalContract: { currentHash: "same-repair-goal" },
+    providerHandoff: {
+      attempts: 1,
+      status: "active",
+      sourceProvider: "deepseek",
+      sourceModel: "deepseek-v4-pro",
+      sourceRoutingMode: "smart",
+      targetProvider: "localllm",
+      targetModel: "localllm-deep",
+      failureCode: "provider_tool_contract",
+    },
+  },
+};
+const qualityRebound = resolveProviderQualityRebound(
+  {
+    provider: "localllm",
+    model: "localllm-deep",
+    routingMode: "manual",
+  },
+  qualityReboundState,
+  exhaustedLocalRecovery
+);
+assert(qualityRebound, "exhausted local repair did not rebound to the original capable provider");
+assert.equal(qualityRebound.targetProvider, "deepseek");
+assert.equal(qualityRebound.targetModel, "deepseek-v4-pro");
+assert.equal(qualityRebound.runtimePatch.routingMode, "smart");
+assert.deepEqual(
+  [
+    qualityRebound.runtimePatch.routeModel,
+    qualityRebound.runtimePatch.mainModel,
+    qualityRebound.runtimePatch.spareModel,
+  ],
+  ["deepseek-v4-pro", "deepseek-v4-pro", "deepseek-v4-pro"]
+);
+
+for (const failureCode of ["provider_quota", "provider_auth", "provider_timeout"]) {
+  const ineligibleState = structuredClone(qualityReboundState);
+  ineligibleState.meta.providerHandoff.failureCode = failureCode;
+  assert.equal(
+    resolveProviderQualityRebound(
+      { provider: "localllm", model: "localllm-deep", routingMode: "manual" },
+      ineligibleState,
+      exhaustedLocalRecovery
+    ),
+    null,
+    `${failureCode} unexpectedly rebounded into a provider known to be unavailable`
+  );
+}
+
+const explicitlyManualSourceState = structuredClone(qualityReboundState);
+explicitlyManualSourceState.meta.providerHandoff.sourceRoutingMode = "manual";
+assert.equal(
+  resolveProviderQualityRebound(
+    { provider: "localllm", model: "localllm-deep", routingMode: "manual" },
+    explicitlyManualSourceState,
+    exhaustedLocalRecovery
+  ),
+  null,
+  "an explicit manual source route was overridden by quality recovery"
+);
+
+const alreadyReboundedState = structuredClone(qualityReboundState);
+alreadyReboundedState.meta.providerQualityRebound = { attempts: 1, status: "active" };
+assert.equal(
+  resolveProviderQualityRebound(
+    { provider: "localllm", model: "localllm-deep", routingMode: "manual" },
+    alreadyReboundedState,
+    exhaustedLocalRecovery
+  ),
+  null,
+  "provider quality recovery could ping-pong after its single bounded attempt"
+);
+
+assert.equal(
+  resolveProviderQualityRebound(
+    { provider: "localllm", model: "localllm-deep", routingMode: "manual" },
+    qualityReboundState,
+    { ...exhaustedLocalRecovery, semanticTestMutationFailureCount: 3 }
+  ),
+  null,
+  "provider quality recovery activated before four distinct failed source revisions"
+);
+
+const authoritativeTestBlockRebound = resolveProviderQualityRebound(
+  {
+    provider: "localllm",
+    model: "localllm-deep",
+    routingMode: "manual",
+  },
+  qualityReboundState,
+  {
+    ...exhaustedLocalRecovery,
+    semanticTestMutationFailureCount: 2,
+    blockedTestSpecificationMutationCount: 3,
+  }
+);
+assert(
+  authoritativeTestBlockRebound,
+  "three ignored authoritative-test mutation rejections did not activate bounded quality recovery"
+);
+assert.equal(authoritativeTestBlockRebound.blockedTestSpecificationMutationCount, 3);
+assert.equal(
+  resolveProviderQualityRebound(
+    { provider: "localllm", model: "localllm-deep", routingMode: "manual" },
+    qualityReboundState,
+    {
+      ...exhaustedLocalRecovery,
+      semanticTestMutationFailureCount: 2,
+      blockedTestSpecificationMutationCount: 2,
+    }
+  ),
+  null,
+  "quality recovery activated after fewer than three authoritative-test mutation rejections"
 );
 assert.deepEqual(
   classifyProviderHandoffError(Object.assign(

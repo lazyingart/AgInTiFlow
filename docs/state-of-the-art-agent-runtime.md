@@ -161,6 +161,16 @@ existing routine owned by the relevant project:
 The agent selects, invokes, monitors, and verifies those routines. It does not
 replace them with prompt-specific shell fragments.
 
+## Verification Recovery
+
+Failed project tests are authoritative evidence unless the current request
+explicitly asks to change them. AgInTiFlow keeps the failing command and source
+lineage, constrains repair writes to evidence-linked production files, and
+rejects repeated attempts to weaken the test specification. If bounded
+LocalLLM recovery exhausts its authenticated strong routes without producing a
+passing verification, the same session can rebound once to its original
+provider while preserving the goal, source context, and verifier evidence.
+
 ## Acceptance Gates
 
 A primary-backend release is accepted only after all of these pass:

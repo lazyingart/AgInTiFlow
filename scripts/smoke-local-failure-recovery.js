@@ -185,6 +185,22 @@ assert.deepEqual(
   ["localllm-code", "localllm-deep"],
   "new-goal recovery retained exhausted model attempts from an older goal"
 );
+const stalePersistedRouteState = {
+  meta: {
+    goalContract: { currentHash: "new-goal" },
+    localFailureRecovery: {
+      active: true,
+      model: "localllm-deep",
+      fromModel: "localllm-code",
+      goalKey: "old-goal",
+    },
+  },
+};
+assert.equal(
+  applyLocalFailureRecovery(baseConfig, stalePersistedRouteState).model,
+  "localllm-fast",
+  "a recovery model from an older continuation remained pinned without current evidence"
+);
 
 const exhaustedRecovery = decideLocalFailureRecovery(
   {
@@ -363,6 +379,158 @@ const alreadyStrong = decideLocalFailureRecovery(
 );
 assert.equal(alreadyStrong.active, false, "an already-deep route should not oscillate models");
 
+const repeatedSemanticTestState = {
+  meta: {
+    goalContract: { currentHash: "semantic-stall" },
+    toolLoop: { recent: [] },
+    projectVerification: {
+      testRuns: [2, 3, 4].map((mutationRevision) => ({
+        command: "scripts/test.sh",
+        passed: false,
+        failureSignature: "same-java-failure",
+        mutationRevision,
+      })),
+    },
+  },
+};
+const repeatedSemanticTestRecovery = decideLocalFailureRecovery(
+  {
+    ...baseConfig,
+    model: "localllm-deep",
+    localCodeModel: "localllm-code",
+    localAvailableModels: ["localllm-fast", "localllm-deep", "localllm-code"],
+  },
+  repeatedSemanticTestState
+);
+assert.equal(
+  repeatedSemanticTestRecovery.active,
+  true,
+  "repeated identical verifier failures across real mutations did not recover the local route"
+);
+assert.equal(repeatedSemanticTestRecovery.model, "localllm-code");
+assert.equal(repeatedSemanticTestRecovery.semanticTestFailureCount, 3);
+assert(repeatedSemanticTestRecovery.failedTools.includes("project_test"));
+
+const variedSemanticTestState = {
+  meta: {
+    goalContract: { currentHash: "varied-java-goal" },
+    toolLoop: { recent: [] },
+    projectVerification: {
+      testRuns: [1, 2, 3, 4].map((mutationRevision) => ({
+        command: "scripts/test.sh",
+        passed: false,
+        failureSignature: `different-java-failure-${mutationRevision}`,
+        mutationRevision,
+      })),
+    },
+  },
+};
+const variedSemanticTestRecovery = decideLocalFailureRecovery(
+  {
+    ...baseConfig,
+    model: "localllm-deep",
+    localCodeModel: "localllm-code",
+    localAvailableModels: ["localllm-fast", "localllm-deep", "localllm-code"],
+  },
+  variedSemanticTestState
+);
+assert.equal(
+  variedSemanticTestRecovery.active,
+  true,
+  "varied failures from one verifier across four source revisions did not recover the local route"
+);
+assert.equal(variedSemanticTestRecovery.model, "localllm-code");
+assert.equal(variedSemanticTestRecovery.semanticTestFailureCount, 1);
+assert.equal(variedSemanticTestRecovery.semanticTestMutationFailureCount, 4);
+
+const variedSemanticNoCodeRecovery = decideLocalFailureRecovery(
+  {
+    ...baseConfig,
+    model: "localllm-deep",
+    localCodeModel: "localllm-code",
+    localAvailableModels: ["localllm-fast", "localllm-deep"],
+  },
+  variedSemanticTestState
+);
+assert.equal(variedSemanticNoCodeRecovery.active, false);
+assert.equal(variedSemanticNoCodeRecovery.reason, "no-strong-local-recovery-model");
+assert.equal(variedSemanticNoCodeRecovery.semanticTestMutationFailureCount, 4);
+
+const repeatedAuthoritativeTestMutationState = stateWithRecent([
+  failed("apply_patch", "test-write-1", {
+    blocked: true,
+    category: "failed-test-specification-mutation",
+  }),
+  failed("apply_patch", "test-write-2", {
+    blocked: true,
+    category: "failed-test-specification-mutation",
+  }),
+  failed("apply_patch", "test-write-3", {
+    blocked: true,
+    category: "failed-test-specification-mutation",
+  }),
+]);
+const repeatedAuthoritativeTestMutationRecovery = decideLocalFailureRecovery(
+  {
+    ...baseConfig,
+    model: "localllm-deep",
+    localCodeModel: "localllm-code",
+    localAvailableModels: ["localllm-fast", "localllm-deep", "localllm-code"],
+  },
+  repeatedAuthoritativeTestMutationState
+);
+assert.equal(repeatedAuthoritativeTestMutationRecovery.active, true);
+assert.equal(repeatedAuthoritativeTestMutationRecovery.model, "localllm-code");
+assert.equal(
+  repeatedAuthoritativeTestMutationRecovery.blockedTestSpecificationMutationCount,
+  3
+);
+
+const repeatedAuthoritativeTestMutationNoCodeRecovery = decideLocalFailureRecovery(
+  {
+    ...baseConfig,
+    model: "localllm-deep",
+    localCodeModel: "localllm-code",
+    localAvailableModels: ["localllm-fast", "localllm-deep"],
+  },
+  repeatedAuthoritativeTestMutationState
+);
+assert.equal(repeatedAuthoritativeTestMutationNoCodeRecovery.active, false);
+assert.equal(
+  repeatedAuthoritativeTestMutationNoCodeRecovery.reason,
+  "no-strong-local-recovery-model"
+);
+assert.equal(
+  repeatedAuthoritativeTestMutationNoCodeRecovery.blockedTestSpecificationMutationCount,
+  3
+);
+
+const automaticHandoffVariedState = structuredClone(variedSemanticTestState);
+automaticHandoffVariedState.meta.providerHandoff = {
+  status: "active",
+  sourceProvider: "deepseek",
+  sourceModel: "deepseek-v4-pro",
+  sourceRoutingMode: "smart",
+  targetProvider: "localllm",
+  targetModel: "localllm-deep",
+  failureCode: "provider_tool_contract",
+};
+const automaticHandoffRecovery = decideLocalFailureRecovery(
+  {
+    ...baseConfig,
+    routingMode: "manual",
+    model: "localllm-deep",
+    localCodeModel: "localllm-code",
+    localAvailableModels: ["localllm-fast", "localllm-deep", "localllm-code"],
+  },
+  automaticHandoffVariedState
+);
+assert.equal(
+  automaticHandoffRecovery.model,
+  "localllm-code",
+  "an automatic hosted-to-local handoff was mistaken for an operator-selected manual route"
+);
+
 const manualRoute = decideLocalFailureRecovery(
   { ...baseConfig, routingMode: "manual" },
   stateWithRecent([
@@ -539,12 +707,12 @@ const focusedRecoveryState = {
       }],
     },
     failedTestRecoveryPacket: {
-      packetVersion: 16,
+      packetVersion: 17,
       mutationRevision: 4,
       failureSignature: "missing-service-seams",
       paths: ["tests/test_service_ctl.py", "service_ctl.py"],
       content: [
-        "Bounded failed-test evidence packet v16.",
+        "Bounded failed-test evidence packet v17.",
         'with mock.patch.object(service_ctl, "launch_service") as launch:',
         'with mock.patch.object(service_ctl, "wait_until_healthy", return_value=True):',
         "### service_ctl.py",
@@ -588,7 +756,7 @@ assert.match(
   focusedRecoveryText,
   /Required acceptance seams: service_ctl\.launch_service, service_ctl\.wait_until_healthy/
 );
-assert.match(focusedRecoveryText, /Bounded failed-test evidence packet v16/);
+assert.match(focusedRecoveryText, /Bounded failed-test evidence packet v17/);
 assert.match(focusedRecoveryText, /requires one coherent source mutation before verification/i);
 
 const durablePatchArgs = {

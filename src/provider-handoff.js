@@ -15,6 +15,20 @@ function enabled(value, fallback = true) {
   return !/^(?:0|false|off|no)$/i.test(String(value).trim());
 }
 
+function safeModel(value = "") {
+  const model = String(value || "").trim();
+  if (!model || model.length > 256 || /[\u0000-\u001f\u007f]/u.test(model)) return "";
+  return model;
+}
+
+function currentGoalKey(state = {}) {
+  return String(
+    state.meta?.goalContract?.currentHash ||
+      state.meta?.goalContract?.activeHash ||
+      ""
+  ).trim();
+}
+
 function providerErrorText(error) {
   return [
     error?.code,
@@ -125,6 +139,7 @@ export function resolveProviderHandoff(error, config = {}, { stage = "runtime" }
     spareModel: mainModel,
     failureCode: failure.code,
     status: failure.status,
+    sourceRoutingMode: String(config.routingMode || "smart").trim().toLowerCase(),
     runtimePatch: {
       provider: targetProvider,
       model: mainModel,
@@ -135,6 +150,77 @@ export function resolveProviderHandoff(error, config = {}, { stage = "runtime" }
       mainModel,
       spareProvider: targetProvider,
       spareModel: mainModel,
+    },
+  };
+}
+
+export function resolveProviderQualityRebound(config = {}, state = {}, localRecovery = {}) {
+  if (!enabled(config.allowProviderQualityRebound, true)) return null;
+  if (normalizeProviderId(config.provider, "") !== "localllm") return null;
+  if (String(config.integrationSessionProfile || "").trim()) return null;
+
+  const handoff = state.meta?.providerHandoff;
+  if (
+    !handoff ||
+    handoff.status !== "active" ||
+    handoff.failureCode !== "provider_tool_contract" ||
+    normalizeProviderId(handoff.targetProvider, "") !== "localllm"
+  ) {
+    return null;
+  }
+  if (String(handoff.sourceRoutingMode || "smart").trim().toLowerCase() !== "smart") {
+    return null;
+  }
+
+  const targetProvider = normalizeProviderId(handoff.sourceProvider, "");
+  const targetModel = safeModel(handoff.sourceModel);
+  if (!targetProvider || targetProvider === "localllm" || targetProvider === "mock" || !targetModel) {
+    return null;
+  }
+  if (String(localRecovery.reason || "") !== "no-strong-local-recovery-model") {
+    return null;
+  }
+  const mutationFailures = Math.max(
+    0,
+    Number(localRecovery.semanticTestMutationFailureCount || 0)
+  );
+  const blockedTestSpecificationMutations = Math.max(
+    0,
+    Number(localRecovery.blockedTestSpecificationMutationCount || 0)
+  );
+  if (mutationFailures < 4 && blockedTestSpecificationMutations < 3) return null;
+
+  const prior = state.meta?.providerQualityRebound;
+  if (Math.max(0, Number(prior?.attempts || 0)) >= 1) return null;
+
+  const sourceProvider = normalizeProviderId(config.provider, "");
+  const sourceModel = safeModel(config.model);
+  const goalKey = currentGoalKey(state);
+  return {
+    version: 1,
+    sourceProvider,
+    sourceModel,
+    targetProvider,
+    targetModel,
+    reasonCode: "local_quality_exhausted",
+    originalHandoffFailureCode: String(handoff.failureCode || ""),
+    semanticTestFailureCount: Math.max(
+      0,
+      Number(localRecovery.semanticTestFailureCount || 0)
+    ),
+    semanticTestMutationFailureCount: mutationFailures,
+    blockedTestSpecificationMutationCount: blockedTestSpecificationMutations,
+    goalKey,
+    runtimePatch: {
+      provider: targetProvider,
+      model: targetModel,
+      routingMode: "smart",
+      routeProvider: targetProvider,
+      routeModel: targetModel,
+      mainProvider: targetProvider,
+      mainModel: targetModel,
+      spareProvider: targetProvider,
+      spareModel: targetModel,
     },
   };
 }

@@ -31,6 +31,7 @@ import {
   buildFailedTestRecoveryPacket,
   buildKnownConstrainedPhasePlan,
   buildTaskOwnedCommitCommand,
+  buildTaskOwnedHeadRestoreCommand,
   changedGitStatusPaths,
   bindPatchContextRepairArguments,
   canonicalizeVerifiedArtifactCompletion,
@@ -45,6 +46,7 @@ import {
   failedTestWorkspaceDiagnosticReadPaths,
   failedTestRequiresCleanRepositoryState,
   failedTestRepairPatchBlock,
+  failedTestSpecificationMutationBlock,
   failedTestAliasedIndexComparisons,
   failedTestIndexComparisons,
   failedTestLiteralOperands,
@@ -78,6 +80,7 @@ import {
   runtimeMessagesSinceLatestContinuationBoundary,
   shellDiagnosticHint,
   rememberCompletedDeepResearch,
+  forbiddenCurrentTestRerunBlock,
   unchangedFailedTestRerunBlock,
   repeatedNoProgressToolBlock,
   redundantCadValidationAliasPatchBlock,
@@ -101,6 +104,7 @@ import {
   successfulGitCommitProvesFileMutation,
   parseExplicitExitStatus,
   parseNonMutatingExitStatusWrapper,
+  evaluateScsSemanticContract,
 } from "../src/scs-evidence.js";
 import {
   repositoryGroundingState,
@@ -119,6 +123,47 @@ import { SessionStore } from "../src/session-store.js";
 import { recommendedMaxStepsForTask } from "../src/engineering-guidance.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const customVerifierSemanticEvidence = evaluateScsSemanticContract(
+  {},
+  {
+    events: [
+      {
+        type: "tool.completed",
+        data: {
+          toolName: "inspect_project",
+          ok: true,
+          testFiles: [{ path: "src/test/java/example/ServiceTest.java" }],
+        },
+      },
+      {
+        type: "file.changed",
+        data: { path: "src/main/java/example/Service.java" },
+      },
+      {
+        type: "tool.completed",
+        data: {
+          toolName: "run_command",
+          ok: true,
+          exitCode: 0,
+          args: { command: "scripts/test.sh" },
+          projectTest: {
+            command: "scripts/test.sh",
+            passed: true,
+            mutationRevision: 4,
+          },
+        },
+      },
+    ],
+  }
+);
+assertStrict.equal(
+  customVerifierSemanticEvidence.ok === true &&
+    customVerifierSemanticEvidence.projectTestVerification?.testRuns?.at(-1)
+      ?.source === "project-verification-ledger",
+  true,
+  "SCS ignored a runtime-verified custom project test command after a source change"
+);
 
 const supersededOutputState = {
   goal: "Repair the service lifecycle.",
@@ -272,6 +317,49 @@ try {
     readOnlyGitEvaluation.missingGitActions.length === 0,
     "a prior verified same-task commit did not satisfy a read-only completion continuation"
   );
+  const cleanupOnlyGoal = [
+    "Resume the same completed repair from its current verified state.",
+    "Do not alter production source, tests, or commits.",
+    "Remove only disposable .build output, confirm git status is clean, and finish.",
+  ].join(" ");
+  const cleanupOnlyState = structuredClone(readOnlyVerificationState);
+  cleanupOnlyState.goal = cleanupOnlyGoal;
+  cleanupOnlyState.meta.goalContract.revision = 16;
+  cleanupOnlyState.meta.goalContract.activeGoalRevision = 16;
+  cleanupOnlyState.meta.goalContract.activeGoal = cleanupOnlyGoal;
+  cleanupOnlyState.meta.goalContract.currentRequest = cleanupOnlyGoal;
+  cleanupOnlyState.meta.goalContract.currentPreview = cleanupOnlyGoal;
+  cleanupOnlyState.meta.goalContract.history = [
+    { revision: 16, refreshExecutionContract: true },
+  ];
+  cleanupOnlyState.meta.activeExecutionContract = {
+    revision: 16,
+    startedMutationRevision: 23,
+    requiresWorkspaceMutation: true,
+    requiresFileMutation: false,
+    requiresSourceGrounding: false,
+    requiredProjectCommands: [],
+  };
+  const cleanupOnlyContract = completionTaskContract(
+    { taskProfile: "java" },
+    cleanupOnlyState
+  );
+  const cleanupFileEvidence = cleanupOnlyContract.requiredEvidence.find(
+    (item) => item.category === "file"
+  );
+  const cleanupCommandEvidence = cleanupOnlyContract.requiredEvidence.find(
+    (item) => item.category === "command"
+  );
+  assert(
+    cleanupOnlyContract.requiresWorkspaceMutation === true &&
+      cleanupOnlyContract.requiresFileMutation === false &&
+      cleanupOnlyContract.requiresSourceGrounding === false &&
+      Number(cleanupFileEvidence?.minimumGoalRevision || 0) === 0 &&
+      Number(cleanupCommandEvidence?.minimumGoalRevision || 0) === 16 &&
+      Number(cleanupOnlyContract.requiredGitRevision || 0) === 0 &&
+      Number(cleanupOnlyContract.requiredGitMutationRevision || 0) === 0,
+    "a disposable cleanup-only continuation demanded a fresh source edit or commit"
+  );
 
   const runLockConfig = {
     sessionsDir: path.join(tempRoot, "run-lock-sessions"),
@@ -361,7 +449,7 @@ try {
         }],
       },
       failedTestDiagnostic: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 0,
         failureSignature: "python-entrypoint-order",
         focuses: [{
@@ -580,6 +668,277 @@ try {
       ) &&
       baselineFocus?.missingDeclarations?.some((item) => item.name === "main"),
     "a severely truncated task-mutated tracked Python source was not promoted to exact baseline recovery"
+  );
+  const authoritativeRestoreWorkspace = path.join(
+    tempRoot,
+    "authoritative-test-restore-workspace"
+  );
+  const authoritativeTestPath = "src/test/java/example/AuthoritativeTest.java";
+  const authoritativeSourcePath = "src/main/java/example/Service.java";
+  const authoritativeTestBaseline = [
+    "package example;",
+    "public final class AuthoritativeTest {",
+    "    static void verifiesContract() { Service.answer(); }",
+    "}",
+    "",
+  ].join("\n");
+  const authoritativeTestDamaged = [
+    "package example;",
+    "public final class AuthoritativeTest {",
+    "    static void answer() { throw new AssertionError(); }",
+    "}",
+    "",
+  ].join("\n");
+  await fs.mkdir(
+    path.join(authoritativeRestoreWorkspace, path.dirname(authoritativeTestPath)),
+    { recursive: true }
+  );
+  await fs.mkdir(
+    path.join(authoritativeRestoreWorkspace, path.dirname(authoritativeSourcePath)),
+    { recursive: true }
+  );
+  await fs.writeFile(
+    path.join(authoritativeRestoreWorkspace, authoritativeTestPath),
+    authoritativeTestBaseline,
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(authoritativeRestoreWorkspace, authoritativeSourcePath),
+    "package example; public final class Service { }\n",
+    "utf8"
+  );
+  for (const args of [
+    ["init"],
+    ["config", "user.email", "smoke@example.invalid"],
+    ["config", "user.name", "AgInTi Smoke"],
+    ["config", "commit.gpgsign", "false"],
+    ["add", authoritativeTestPath, authoritativeSourcePath],
+    ["commit", "-m", "baseline"],
+  ]) {
+    const result = spawnSync("git", args, {
+      cwd: authoritativeRestoreWorkspace,
+      encoding: "utf8",
+    });
+    assert(
+      result.status === 0,
+      `failed to prepare authoritative-test restore fixture: git ${args.join(" ")} ${result.stderr || ""}`
+    );
+  }
+  await fs.writeFile(
+    path.join(authoritativeRestoreWorkspace, authoritativeTestPath),
+    authoritativeTestDamaged,
+    "utf8"
+  );
+  const authoritativePacketState = {
+    goal: "Repair production while preserving the existing authoritative test.",
+    meta: {
+      goalContract: {
+        taskGoal: "Repair production while preserving the existing authoritative test.",
+      },
+      projectVerification: {
+        mutationRevision: 3,
+        commandRuns: [
+          {
+            command: `git checkout HEAD -- '${authoritativeTestPath}'`,
+            ok: true,
+            mutationRevision: 1,
+          },
+        ],
+        mutationHistory: [
+          {
+            revision: 1,
+            toolName: "run_command",
+            paths: [],
+            commandCategory: "destructive",
+          },
+          {
+            revision: 2,
+            toolName: "apply_patch",
+            paths: [authoritativeTestPath],
+            patch: {
+              afterContentSha256: crypto
+                .createHash("sha256")
+                .update(authoritativeTestDamaged)
+                .digest("hex"),
+            },
+          },
+          {
+            revision: 3,
+            toolName: "apply_patch",
+            paths: [authoritativeSourcePath],
+          },
+        ],
+        discoveredTests: [authoritativeTestPath, authoritativeSourcePath],
+        testRuns: [
+          {
+            command: "scripts/test.sh",
+            mutationRevision: 3,
+            passed: false,
+            failureEvidenceVersion: 2,
+            failureSignature: "authoritative-test-damaged-by-agent",
+            failureSummary: "cannot find symbol: method answer() in Service",
+          },
+        ],
+      },
+    },
+  };
+  const authoritativePacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: authoritativeRestoreWorkspace },
+    authoritativePacketState
+  );
+  assertStrict.deepEqual(
+    authoritativePacket.authoritativeTestRestores,
+    [
+      {
+        path: authoritativeTestPath,
+        restoredRevision: 1,
+        agentMutationRevision: 2,
+        afterContentSha256: crypto
+          .createHash("sha256")
+          .update(authoritativeTestDamaged)
+          .digest("hex"),
+        currentSha256: crypto
+          .createHash("sha256")
+          .update(authoritativeTestDamaged)
+          .digest("hex"),
+        baselineSha256: crypto
+          .createHash("sha256")
+          .update(authoritativeTestBaseline)
+          .digest("hex"),
+        currentBytes: Buffer.byteLength(authoritativeTestDamaged, "utf8"),
+        baselineBytes: Buffer.byteLength(authoritativeTestBaseline, "utf8"),
+      },
+    ],
+    "failed-test packet did not retain a hash-bound restore candidate for a same-session damaged authoritative test"
+  );
+  const authoritativeSourceBaseline =
+    "package example; public final class Service { }\n";
+  const authoritativeSourceDamaged =
+    "package example; public final class Service { static int wrong() { return -1; } }\n";
+  await fs.writeFile(
+    path.join(authoritativeRestoreWorkspace, authoritativeSourcePath),
+    authoritativeSourceDamaged,
+    "utf8"
+  );
+  const explicitHeadRestoreState = {
+    goal: `Restore ${authoritativeSourcePath} exactly to HEAD.`,
+    meta: {
+      goalContract: {
+        revision: 4,
+        currentRequest: `Restore ${authoritativeSourcePath} exactly to HEAD.`,
+      },
+      activeExecutionContract: {
+        revision: 4,
+        requiresFileMutation: true,
+        requiresSourceGrounding: true,
+        baselineMutationRevision: 3,
+        materialMutationRevision: 3,
+      },
+      projectVerification: {
+        mutationRevision: 3,
+        lastMutation: {
+          revision: 3,
+          paths: [authoritativeSourcePath],
+        },
+        mutationHistory: [
+          {
+            revision: 3,
+            toolName: "apply_patch",
+            paths: [authoritativeSourcePath],
+          },
+        ],
+      },
+    },
+  };
+  const explicitHeadRestoreConfig = nextStepRuntimeConfig(
+    { commandCwd: authoritativeRestoreWorkspace },
+    explicitHeadRestoreState
+  );
+  const expectedHeadRestoreCommand =
+    `git checkout HEAD -- '${authoritativeSourcePath}'`;
+  assert(
+    explicitHeadRestoreConfig.completionFreshMutationRequired === true &&
+      explicitHeadRestoreConfig.completionFreshMutationRestorePending === true &&
+      explicitHeadRestoreConfig.completionFreshMutationNeedsSourceRead === false &&
+      explicitHeadRestoreConfig.completionFreshMutationRestoreCommand ===
+        expectedHeadRestoreCommand &&
+      explicitHeadRestoreConfig.completionFreshMutationRestorePaths?.[0] ===
+        authoritativeSourcePath,
+    `an explicit dirty tracked HEAD restore did not become an exact constrained recovery phase: ${JSON.stringify({
+      required: explicitHeadRestoreConfig.completionFreshMutationRequired,
+      pending: explicitHeadRestoreConfig.completionFreshMutationRestorePending,
+      needsRead: explicitHeadRestoreConfig.completionFreshMutationNeedsSourceRead,
+      command: explicitHeadRestoreConfig.completionFreshMutationRestoreCommand,
+      paths: explicitHeadRestoreConfig.completionFreshMutationRestorePaths,
+      candidates: explicitHeadRestoreConfig.completionFreshMutationPaths,
+    })}`
+  );
+  const explicitHeadRestoreWithFailureState = structuredClone(
+    explicitHeadRestoreState
+  );
+  explicitHeadRestoreWithFailureState.meta.projectVerification.requiredCommands = [
+    "scripts/test.sh",
+  ];
+  explicitHeadRestoreWithFailureState.meta.projectVerification.testRuns = [
+    {
+      command: "scripts/test.sh",
+      mutationRevision: 3,
+      privateMutationRevision: 0,
+      passed: false,
+      failureEvidenceVersion: 2,
+      failureSignature: "retained-source-failure",
+      failureSummary: "retained source failure",
+    },
+  ];
+  const explicitHeadRestoreWithFailureConfig = nextStepRuntimeConfig(
+    { commandCwd: authoritativeRestoreWorkspace },
+    explicitHeadRestoreWithFailureState
+  );
+  const explicitHeadRestoreWithFailurePhase = buildKnownConstrainedPhasePlan(
+    { commandCwd: authoritativeRestoreWorkspace },
+    explicitHeadRestoreWithFailureState,
+    explicitHeadRestoreWithFailureConfig
+  );
+  assert(
+    explicitHeadRestoreWithFailurePhase?.mode === "fresh-source-mutation" &&
+      explicitHeadRestoreWithFailurePhase.command === expectedHeadRestoreCommand,
+    "a retained failed test preempted an explicit provenance-bound HEAD restore"
+  );
+  const explicitHeadRestoreResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: expectedHeadRestoreCommand },
+    projectMutationPaths: [authoritativeSourcePath],
+  };
+  recordProjectVerificationOutcome(
+    explicitHeadRestoreState,
+    explicitHeadRestoreResult,
+    {
+      commandCwd: authoritativeRestoreWorkspace,
+      ...explicitHeadRestoreConfig,
+    }
+  );
+  assert(
+    explicitHeadRestoreResult.explicitHeadRestore === true &&
+      explicitHeadRestoreState.meta.projectVerification.mutationRevision === 4 &&
+      explicitHeadRestoreState.meta.activeExecutionContract.materialMutationRevision === 4 &&
+      explicitHeadRestoreState.meta.activeExecutionContract.materialMutationPaths.includes(
+        authoritativeSourcePath
+      ),
+    "a successful exact HEAD restore did not satisfy the active material-mutation contract"
+  );
+  assert(
+    buildTaskOwnedHeadRestoreCommand([authoritativeSourcePath]) ===
+      expectedHeadRestoreCommand &&
+      buildTaskOwnedHeadRestoreCommand(["../outside.java"]) === "" &&
+      buildTaskOwnedHeadRestoreCommand([".private/token.txt"]) === "",
+    "task-owned HEAD restore command construction accepted an unsafe path"
+  );
+  await fs.writeFile(
+    path.join(authoritativeRestoreWorkspace, authoritativeSourcePath),
+    authoritativeSourceBaseline,
+    "utf8"
   );
   const baselineTracebackRecoveryState = {
     meta: {
@@ -1652,6 +2011,56 @@ try {
       correctiveContract.requiredFreshMutationRevision === 17,
     "the current correction contract did not require one fresh project mutation"
   );
+  const failedNoMutationCommandState = structuredClone(correctiveState);
+  recordProjectVerificationOutcome(
+    failedNoMutationCommandState,
+    {
+      ok: false,
+      toolName: "run_command",
+      args: { command: ".build" },
+      exitCode: 127,
+      stderr: "/bin/bash: .build: command not found",
+      commandPolicy: {
+        category: "general-shell",
+        writesWorkspace: true,
+      },
+      projectMutationPaths: [],
+    },
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace }
+  );
+  assert(
+    failedNoMutationCommandState.meta.projectVerification.mutationRevision === 16,
+    "a failed shell command with no observed mutation fabricated a fresh project revision"
+  );
+  const missingVerifierInvocationState = structuredClone(correctiveState);
+  const missingVerifierInvocationResult = {
+    ok: false,
+    toolName: "run_command",
+    args: { command: ".build" },
+    exitCode: 127,
+    stderr: "/bin/bash: line 1: .build: command not found",
+    commandPolicy: {
+      category: "general-shell",
+      writesWorkspace: true,
+    },
+    projectMutationPaths: [],
+  };
+  recordProjectVerificationOutcome(
+    missingVerifierInvocationState,
+    missingVerifierInvocationResult,
+    {
+      goal: correctiveGoal,
+      taskProfile: "devops",
+      commandCwd: workspace,
+      testVerificationPending: true,
+      testVerificationCommand: ".build",
+    }
+  );
+  assert(
+    missingVerifierInvocationResult.projectTestDiscoveryFailure?.invalidInvocation === true &&
+      projectTestVerificationFinishBlock(missingVerifierInvocationState) === null,
+    "a missing shell command was misclassified as a project source-test failure"
+  );
   const heuristicFalseContractState = structuredClone(correctiveState);
   heuristicFalseContractState.meta.goalContract.history = [
     { revision: 7, refreshExecutionContract: false },
@@ -1792,6 +2201,43 @@ try {
     requiredCommandRuntime.requiredProjectCommandPending === true &&
       requiredCommandRuntime.requiredProjectCommand === requiredCorrectionCommand,
     "the required final test did not become pending after implementation requested completion"
+  );
+  const equivalentShellVerifierState = structuredClone(commandAfterMutationState);
+  equivalentShellVerifierState.meta.activeExecutionContract.requiredProjectCommands = [
+    "bash scripts/test.sh",
+  ];
+  equivalentShellVerifierState.meta.projectVerification.requiredCommands = [
+    "scripts/test.sh",
+  ];
+  equivalentShellVerifierState.meta.projectVerification.commandRuns = [
+    {
+      command: "bash scripts/test.sh",
+      mutationRevision: 17,
+      privateMutationRevision: 0,
+      ok: true,
+      requiredProjectCommand: "bash scripts/test.sh",
+    },
+  ];
+  equivalentShellVerifierState.meta.projectVerification.testRuns = [
+    {
+      command: "bash scripts/test.sh",
+      mutationRevision: 17,
+      privateMutationRevision: 0,
+      passed: true,
+      requiredProjectCommand: "bash scripts/test.sh",
+    },
+  ];
+  equivalentShellVerifierState.meta.completionEvidenceRepair = {
+    key: "equivalent-shell-verifier-complete",
+    at: "2026-08-26T10:03:00.000Z",
+  };
+  const equivalentShellVerifierRuntime = nextStepRuntimeConfig(
+    { goal: correctiveGoal, taskProfile: "devops", commandCwd: workspace },
+    equivalentShellVerifierState
+  );
+  assert(
+    equivalentShellVerifierRuntime.requiredProjectCommandPending !== true,
+    "bash script and direct script spellings became duplicate required verifier runs"
   );
   const mutatingRequiredCommand = "python3 scripts/generate_fixture.py";
   const mutatingCommandState = structuredClone(correctiveState);
@@ -2251,6 +2697,54 @@ try {
   assert(
     evaluateScsEvidence(correctiveContract, freshCorrectiveLedger).ok,
     "fresh post-correction mutation, test, command, and commit evidence was rejected"
+  );
+  const exactHeadRestoreLedger = buildScsEvidenceLedger({
+    state: {
+      messages: [
+        toolMessage({
+          ok: true,
+          toolName: "run_command",
+          args: {
+            command: "git checkout HEAD -- 'src/main/java/example/WindowSummary.java'",
+          },
+          exitCode: 0,
+          goalRevision: 25,
+          projectMutationRevision: 43,
+          explicitHeadRestore: true,
+          explicitHeadRestorePaths: [
+            "src/main/java/example/WindowSummary.java",
+          ],
+        }),
+      ],
+    },
+  });
+  const exactHeadRestoreFileEvidence = exactHeadRestoreLedger.items.find(
+    (item) => item.category === "file" && item.explicitHeadRestore === true
+  );
+  assert(
+    exactHeadRestoreFileEvidence?.target ===
+      "src/main/java/example/WindowSummary.java" &&
+      exactHeadRestoreFileEvidence?.mutationRevision === 43,
+    "a runtime-verified exact HEAD restore did not become fresh path-scoped file evidence"
+  );
+  assert(
+    evaluateScsEvidence(
+      {
+        requiresExternalEvidence: true,
+        requiredEvidence: [{
+          id: "file",
+          category: "file",
+          description: "workspace file mutation",
+          minimumGoalRevision: 25,
+          minimumMutationRevision: 43,
+        }],
+        requiredToolCalls: [],
+        requiredGitActions: [],
+        requiredProjectCommands: [],
+      },
+      exactHeadRestoreLedger
+    ).ok,
+    "fresh completion evidence rejected a runtime-verified exact HEAD restore"
   );
   const pythonQualityWorkspace = path.join(tempRoot, "python-quality-workspace");
   await fs.mkdir(pythonQualityWorkspace, { recursive: true });
@@ -4180,6 +4674,7 @@ try {
     args: { command: "sed -i 's/old/new/' report.md; false" },
     stdout: "",
     stderr: "",
+    projectMutationPaths: ["report.md"],
   };
   recordProjectVerificationOutcome(failedShellMutationState, failedShellMutationResult, {
     commandCwd: workspace,
@@ -4191,7 +4686,251 @@ try {
   assert(
     failedShellMutationState.meta.projectVerification?.mutationRevision === 1 &&
       failedShellMutationResult.projectMutationRevision === 1,
-    "a failed shell command that could already have edited files preserved stale verification"
+    "a failed shell command with an observed partial edit preserved stale verification"
+  );
+  const generatedCleanupState = {
+    meta: {
+      goalContract: { revision: 1 },
+      projectVerification: {
+        mutationRevision: 3,
+        privateMutationRevision: 0,
+        requiredCommands: ["scripts/test.sh"],
+        commandRuns: [{
+          command: "scripts/test.sh",
+          ok: true,
+          mutationRevision: 3,
+          privateMutationRevision: 0,
+        }],
+        testRuns: [{
+          command: "scripts/test.sh",
+          passed: true,
+          ok: true,
+          mutationRevision: 3,
+          privateMutationRevision: 0,
+        }],
+      },
+    },
+  };
+  const generatedCleanupResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        'rm -rf .build && echo "---STATUS---" && git status --short && git log --oneline -3',
+    },
+    stdout: "",
+    stderr: "",
+    projectMutationPaths: [
+      ".build/classes/example/Reading.class",
+      ".build/classes/example/WindowSummary.class",
+    ],
+  };
+  recordProjectVerificationOutcome(generatedCleanupState, generatedCleanupResult, {
+    commandCwd: workspace,
+    taskProfile: "java",
+    allowShellTool: true,
+    allowDestructive: true,
+    sandboxMode: "host",
+  });
+  assert(
+    generatedCleanupState.meta.projectVerification?.mutationRevision === 3 &&
+      generatedCleanupResult.disposableGeneratedCleanup === true,
+    "cleaning only disposable build output invalidated fresh semantic test evidence"
+  );
+  const conditionalGeneratedCleanupState = structuredClone(generatedCleanupState);
+  const conditionalGeneratedCleanupResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        'if [ -d .build ]; then echo "BUILD_PRESENT"; rm -rf .build; else echo "BUILD_ABSENT"; fi; git status --short',
+    },
+    stdout: "BUILD_PRESENT\n",
+    stderr: "",
+    projectMutationPaths: [
+      ".build/classes/example/Reading.class",
+      ".build/classes/example/WindowSummary.class",
+    ],
+  };
+  recordProjectVerificationOutcome(
+    conditionalGeneratedCleanupState,
+    conditionalGeneratedCleanupResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "java",
+      allowShellTool: true,
+      allowDestructive: true,
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    conditionalGeneratedCleanupState.meta.projectVerification?.mutationRevision === 3 &&
+      conditionalGeneratedCleanupResult.disposableGeneratedCleanup === true,
+    "a conditional disposable-build cleanup fabricated a new semantic mutation revision"
+  );
+  const generatedTestSideEffectState = {
+    meta: {
+      goalContract: { revision: 1 },
+      projectVerification: {
+        mutationRevision: 3,
+        privateMutationRevision: 0,
+        requiredCommands: ["scripts/test.sh"],
+      },
+    },
+  };
+  const generatedTestSideEffectResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: "scripts/test.sh" },
+    stdout: "PASS duration units and decimals\nall telemetry window tests passed\n",
+    stderr: "",
+    projectMutationPaths: [
+      ".build/classes/example/Reading.class",
+      ".build/classes/example/WindowSummary.class",
+    ],
+  };
+  recordProjectVerificationOutcome(
+    generatedTestSideEffectState,
+    generatedTestSideEffectResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "java",
+      allowShellTool: true,
+      allowDestructive: true,
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    generatedTestSideEffectState.meta.projectVerification?.mutationRevision === 3 &&
+      generatedTestSideEffectResult.disposableGeneratedVerificationSideEffects === true &&
+      generatedTestSideEffectResult.projectTest?.passed === true &&
+      generatedTestSideEffectResult.projectTest?.mutationRevision === 3,
+    "a required Java verifier invalidated itself by compiling disposable class files"
+  );
+  const generatedTestSourceMutationState = {
+    meta: {
+      goalContract: { revision: 1 },
+      projectVerification: {
+        mutationRevision: 3,
+        privateMutationRevision: 0,
+        requiredCommands: ["scripts/test.sh"],
+      },
+    },
+  };
+  const generatedTestSourceMutationResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: "scripts/test.sh" },
+    stdout: "all telemetry window tests passed\n",
+    stderr: "",
+    projectMutationPaths: [
+      ".build/classes/example/WindowSummary.class",
+      "src/main/java/example/WindowSummary.java",
+    ],
+  };
+  recordProjectVerificationOutcome(
+    generatedTestSourceMutationState,
+    generatedTestSourceMutationResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "java",
+      allowShellTool: true,
+      allowDestructive: true,
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    generatedTestSourceMutationState.meta.projectVerification?.mutationRevision === 4 &&
+      generatedTestSourceMutationResult.disposableGeneratedVerificationSideEffects !== true &&
+      generatedTestSourceMutationResult.projectTest?.mutationRevision === 4,
+    "a source-changing verifier was mistaken for disposable build output"
+  );
+  const generatedTestRequiredOutputState = {
+    meta: {
+      goalContract: { revision: 1 },
+      artifactProgress: { exactOutputPaths: [".build/test-results.xml"] },
+      projectVerification: {
+        mutationRevision: 3,
+        privateMutationRevision: 0,
+        requiredCommands: ["scripts/test.sh"],
+      },
+    },
+  };
+  const generatedTestRequiredOutputResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: "scripts/test.sh" },
+    stdout: "all telemetry window tests passed\n",
+    stderr: "",
+    projectMutationPaths: [".build/test-results.xml"],
+  };
+  recordProjectVerificationOutcome(
+    generatedTestRequiredOutputState,
+    generatedTestRequiredOutputResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "java",
+      allowShellTool: true,
+      allowDestructive: true,
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    generatedTestRequiredOutputState.meta.projectVerification?.mutationRevision === 4 &&
+      generatedTestRequiredOutputResult.disposableGeneratedVerificationSideEffects !== true &&
+      generatedTestRequiredOutputResult.projectTest?.mutationRevision === 4,
+    "a verifier-generated declared artifact was discarded as a disposable side effect"
+  );
+  const requiredGeneratedOutputState = {
+    meta: {
+      goalContract: { revision: 1 },
+      artifactProgress: { exactOutputPaths: [".build/release.jar"] },
+      projectVerification: {
+        mutationRevision: 3,
+        privateMutationRevision: 0,
+        requiredCommands: ["scripts/test.sh"],
+        testRuns: [{
+          command: "scripts/test.sh",
+          passed: true,
+          ok: true,
+          mutationRevision: 3,
+          privateMutationRevision: 0,
+        }],
+      },
+    },
+  };
+  const requiredGeneratedOutputCleanup = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        'rm -rf .build && echo "---STATUS---" && git status --short && git log --oneline -3',
+    },
+    stdout: "",
+    stderr: "",
+    projectMutationPaths: [".build/release.jar"],
+  };
+  recordProjectVerificationOutcome(
+    requiredGeneratedOutputState,
+    requiredGeneratedOutputCleanup,
+    {
+      commandCwd: workspace,
+      taskProfile: "java",
+      allowShellTool: true,
+      allowDestructive: true,
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    requiredGeneratedOutputState.meta.projectVerification?.mutationRevision === 4 &&
+      requiredGeneratedOutputCleanup.disposableGeneratedCleanup !== true,
+    "cleanup of a declared output incorrectly preserved stale completion evidence"
   );
   const testThenEditState = {
     meta: {
@@ -5832,6 +6571,68 @@ try {
     activeTaskContinuationState.meta.projectVerification === retainedActiveTaskVerification,
     "an exact active-task continuation discarded durable verification evidence"
   );
+  const recoverPrompt =
+    "Recover the same unfinished task from its current broken intermediate state. Re-read the current production source and tests, replace the accumulated partial edits with one coherent minimal implementation, run the canonical checks, clean generated outputs, and commit only after the repository is verified.";
+  const recoverContinuationState = {
+    goal: "Implement and verify the Java event-window summary.",
+    plan: "Repair the production source, run scripts/test.sh, and commit the verified result.",
+    meta: {
+      taskProfile: "coding",
+      goalContract: {
+        version: 3,
+        revision: 4,
+        status: "paused",
+        currentRequest: "Implement and verify the Java event-window summary.",
+        taskGoal: "Implement and verify the Java event-window summary.",
+        activeGoal: "Implement and verify the Java event-window summary.",
+        activeGoalRevision: 4,
+        history: [],
+        lifecycle: [],
+      },
+      projectVerification: {
+        mutationRevision: 7,
+        requiredOutputs: [],
+        requiredCommands: ["bash scripts/test.sh"],
+        testRuns: [{
+          command: "bash scripts/test.sh",
+          mutationRevision: 7,
+          passed: false,
+        }],
+      },
+      failedTestRecoveryPacket: {
+        command: "bash scripts/test.sh",
+        mutationRevision: 7,
+      },
+    },
+  };
+  const retainedRecoverVerification = recoverContinuationState.meta.projectVerification;
+  const recoverContinuationUpdate = applyContinuationContractTransition(
+    recoverContinuationState,
+    recoverPrompt,
+    { at: "2026-08-29T03:10:00.000Z" }
+  );
+  assert(
+    preservesCurrentTaskBoundary(
+      {
+        goal: "Implement and verify the Java event-window summary.",
+        meta: {
+          goalContract: {
+            taskGoal: "Implement and verify the Java event-window summary.",
+          },
+        },
+      },
+      recoverPrompt
+    ),
+    "an explicit recover-the-same-task prompt opened a new task boundary"
+  );
+  assert(
+    recoverContinuationUpdate?.preserveTaskBoundary === true &&
+      recoverContinuationState.meta.goalContract.taskRelation === "same-task" &&
+      recoverContinuationState.meta.goalContract.taskGoal ===
+        "Implement and verify the Java event-window summary." &&
+      recoverContinuationState.meta.projectVerification === retainedRecoverVerification,
+    "same-task recovery discarded the original goal or durable verifier evidence"
+  );
   const postMutationVerifier = "python3 -m unittest discover -s tests -v";
   const postMutationVerificationState = {
     goal: "Repair and verify the current service controller.",
@@ -5858,10 +6659,10 @@ try {
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 7,
         failureSignature: "pre-repair-failure",
-        content: "Bounded failed-test evidence packet v16.",
+        content: "Bounded failed-test evidence packet v17.",
       },
     },
   };
@@ -6267,7 +7068,7 @@ try {
     "a fresh generated-artifact failure dropped its latest mutable producer or retained an explicitly immutable input"
   );
   failedAfterProducerState.meta.failedTestRecoveryPacket = {
-    packetVersion: 16,
+    packetVersion: 17,
     content: failedAfterProducerPacket.content,
     paths: failedAfterProducerPacket.paths,
     repairPaths: failedAfterProducerPacket.repairPaths,
@@ -6376,7 +7177,7 @@ try {
     "manifest lacks STEP/STL/3MF validation evidence",
   ];
   generatedManifestFailureState.meta.failedTestRecoveryPacket = {
-    packetVersion: 16,
+    packetVersion: 17,
     content: "Current source packet for the generated manifest failure.",
     paths: ["build_deck.py"],
     repairPaths: ["build_deck.py"],
@@ -6752,7 +7553,7 @@ try {
     "explicit pass/outcome/measurement evidence was mistaken for semantic drift"
   );
   generatedManifestFailureState.meta.failedTestRecoveryPacket = {
-    packetVersion: 16,
+    packetVersion: 17,
     content: generatedManifestSemanticPacket.content,
     paths: generatedManifestSemanticPacket.paths,
     repairPaths: generatedManifestSemanticPacket.repairPaths,
@@ -7345,6 +8146,32 @@ try {
     !readOnlyCheckerContract.requiredEvidence.some((item) => item.category === "file"),
     "a read-only checker path was mistaken for a requested file change"
   );
+  const completedJavaVerificationContract = deriveScsTaskContract({
+    goal:
+      "Resume the same completed Java repair from its current committed state. Do not alter production source or authoritative tests. Run the retained project verifier once, remove only disposable generated build output, confirm the repository is clean, and finish without repeating completed commits.",
+    taskProfile: "java",
+  });
+  assert(
+    completedJavaVerificationContract.requiresWorkspaceMutation === false &&
+      completedJavaVerificationContract.requiresFileMutation === false &&
+      !completedJavaVerificationContract.requiredEvidence.some(
+        (item) => item.category === "artifact"
+      ) &&
+      completedJavaVerificationContract.forbiddenActions.some((item) =>
+        /alter production source/i.test(item)
+      ),
+    "a completed verification-only Java continuation was mistaken for a new source repair"
+  );
+  const completedJavaFollowupRepairContract = deriveScsTaskContract({
+    goal:
+      "Resume the completed Java repair, but fix src/main/java/example/WindowSummary.java if the overflow guard is still missing, then run the tests.",
+    taskProfile: "java",
+  });
+  assert(
+    completedJavaFollowupRepairContract.requiresWorkspaceMutation === true &&
+      completedJavaFollowupRepairContract.requiresFileMutation === true,
+    "a concrete follow-up source repair was suppressed as completed-work narration"
+  );
   const canvasOnlyContract = deriveScsTaskContract({
     goal: "Create a canvas artifact preview for this smoke test.",
   });
@@ -7702,6 +8529,41 @@ try {
     }).length === 0,
     "an ordinary recoverable tool failure was incorrectly suppressed"
   );
+  const noVerifierRerunState = {
+    meta: {
+      goalContract: {
+        currentRequest:
+          "Do not rerun the verifier. Remove the generated build directory and finish.",
+      },
+      projectVerification: {
+        requiredCommands: ["scripts/test.sh"],
+        testRuns: [
+          {
+            command: "bash scripts/test.sh",
+            passed: true,
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    forbiddenCurrentTestRerunBlock(
+      noVerifierRerunState,
+      "run_command",
+      { command: "./scripts/test.sh" },
+      { commandCwd: workspace }
+    )?.category === "current-request-forbidden-test-rerun",
+    "an explicit current-request ban did not block the known verifier"
+  );
+  assert(
+    forbiddenCurrentTestRerunBlock(
+      noVerifierRerunState,
+      "run_command",
+      { command: "rm -rf .build && git status --short" },
+      { commandCwd: workspace }
+    ) === null,
+    "an explicit verifier-rerun ban incorrectly blocked cleanup or status work"
+  );
   const repeatedProbeArgs = { command: "python -c \"print(100.0)\"" };
   const repeatedProbeSignature = staticToolCallSignature("run_command", repeatedProbeArgs, {
     commandCwd: workspace,
@@ -7946,6 +8808,23 @@ try {
     ),
     ["build_deck.py", "dist/deck.pdf", "output/deck.pptx"],
     "command-bound Git capture included untouched pre-existing dirt or lost generated relocation paths"
+  );
+  assertStrict.deepEqual(
+    changedGitStatusPaths(
+      {
+        entries: [
+          { status: " M", path: "tests/AuthoritativeTest.java", fingerprint: "dirty" },
+          { status: " M", path: "unrelated.md", fingerprint: "same" },
+        ],
+      },
+      {
+        entries: [
+          { status: " M", path: "unrelated.md", fingerprint: "same" },
+        ],
+      }
+    ),
+    ["tests/AuthoritativeTest.java"],
+    "restoring a dirty task-owned path to HEAD disappeared from command mutation evidence"
   );
   const producerMutationState = {
     goal: "Rebuild the generated presentation.",
@@ -8600,6 +9479,33 @@ try {
     projectTestVerificationFinishBlock(repairedValidationState) === null,
     "a passing rerun at the current real mutation revision did not reopen completion"
   );
+  const supersededDiscoveryFailureState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 7,
+        privateMutationRevision: 0,
+        testRuns: [
+          {
+            command: "mvn test",
+            mutationRevision: 1,
+            privateMutationRevision: 0,
+            passed: false,
+            failureSignature: "missing-maven",
+          },
+          {
+            command: "scripts/test.sh",
+            mutationRevision: 7,
+            privateMutationRevision: 0,
+            passed: true,
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    projectTestVerificationFinishBlock(supersededDiscoveryFailureState) === null,
+    "an obsolete failed discovery command blocked a canonical verifier that passed at the current revision"
+  );
   const presentationWrappedValidationState = {
     meta: {
       projectVerification: {
@@ -8719,8 +9625,8 @@ try {
     "a same-task refresh could not rebuild a missing failed-test evidence packet"
   );
   missingRecoveryPacketState.meta.failedTestRecoveryPacket = {
-    packetVersion: 16,
-    content: "Bounded failed-test evidence packet v16.",
+    packetVersion: 17,
+    content: "Bounded failed-test evidence packet v17.",
     mutationRevision: 6,
     failureSignature: "same-failure",
   };
@@ -9578,7 +10484,7 @@ try {
         ],
       },
       failedTestDiagnostic: {
-        packetVersion: 16,
+        packetVersion: 17,
         mutationRevision: 0,
         failureSignature: "partial-derived-order",
         focuses: [
@@ -10221,6 +11127,293 @@ try {
     )?.category === "artifact-validation-scope",
     "the correction source allowance leaked to unrelated files"
   );
+  const failedTestDuringArtifactValidationState = {
+    commandCwd: workspace,
+    meta: {
+      artifactProgress: {
+        exactOutputPaths: ["AGINTI.md"],
+        needsRepair: false,
+      },
+    },
+  };
+  assert(
+    artifactValidationScopeBlock(
+      failedTestDuringArtifactValidationState,
+      "read_file",
+      { path: "src/main/java/example/WindowSummary.java" },
+      {
+        commandCwd: workspace,
+        artifactValidationPhase: true,
+        testFailureRepairActive: true,
+        testFailureRepairMutationRequired: true,
+      }
+    ) === null,
+    "artifact validation blocked a source read reopened by an active failed-test contract"
+  );
+  const authoritativeTestState = {
+    goal: "Repair the production implementation and run the existing tests.",
+    commandCwd: workspace,
+    meta: {
+      goalContract: {
+        taskGoal: "Repair the production implementation and run the existing tests.",
+        activeGoal: "Recover the same unfinished task. Re-read production source and tests.",
+        currentRequest: "Recover the same unfinished task. Re-read production source and tests.",
+      },
+    },
+  };
+  const authoritativeTestConfig = {
+    commandCwd: workspace,
+    testFailureRepairActive: true,
+  };
+  assert(
+    failedTestSpecificationMutationBlock(
+      authoritativeTestState,
+      "apply_patch",
+      {
+        path: "src/test/java/example/WindowSummaryTest.java",
+        search: "expected",
+        replace: "observed",
+      },
+      authoritativeTestConfig
+    )?.category === "failed-test-specification-mutation",
+    "failed-test repair allowed an unsolicited mutation of an authoritative Java test"
+  );
+  assert(
+    failedTestSpecificationMutationBlock(
+      authoritativeTestState,
+      "apply_patch",
+      {
+        path: "src/main/java/example/WindowSummary.java",
+        search: "broken",
+        replace: "fixed",
+      },
+      authoritativeTestConfig
+    ) === null,
+    "failed-test test-specification protection blocked production-source repair"
+  );
+  assert(
+    failedTestSpecificationMutationBlock(
+      {
+        ...authoritativeTestState,
+        goal: "Update the existing test harness to use the project-local executable.",
+        meta: {
+          goalContract: {
+            taskGoal: "Update the existing test harness to use the project-local executable.",
+          },
+        },
+      },
+      "apply_patch",
+      {
+        path: "tests/test_harness.py",
+        search: "old_path",
+        replace: "new_path",
+      },
+      authoritativeTestConfig
+    ) === null,
+    "an explicit user request to update a test harness was incorrectly blocked"
+  );
+  assert(
+    failedTestSpecificationMutationBlock(
+      authoritativeTestState,
+      "apply_patch",
+      {
+        path: "tests/test_harness.py",
+        search: "old_path",
+        replace: "new_path",
+      },
+      {
+        ...authoritativeTestConfig,
+        testFailureRepairPatchTargets: [{
+          kind: "python-agent-test-harness-path",
+          path: "tests/test_harness.py",
+          search: "old_path",
+        }],
+      }
+    ) === null,
+    "an exact deterministic test-harness repair target was incorrectly blocked"
+  );
+  const ownedTestPath = "src/test/java/example/WindowSummaryTest.java";
+  const ownedProductionPath = "src/main/java/example/WindowSummary.java";
+  const ownedDependencyPath = "src/main/java/example/Reading.java";
+  const ownedVerifierPath = "scripts/test.sh";
+  const ownedTestSource =
+    "final class WindowSummaryTest { Reading reading; WindowSummary summary; broken agent edit; }\n";
+  await fs.mkdir(path.join(workspace, path.dirname(ownedTestPath)), { recursive: true });
+  await fs.mkdir(path.join(workspace, path.dirname(ownedProductionPath)), { recursive: true });
+  await fs.mkdir(path.join(workspace, path.dirname(ownedVerifierPath)), { recursive: true });
+  await fs.writeFile(path.join(workspace, ownedTestPath), ownedTestSource, "utf8");
+  await fs.writeFile(
+    path.join(workspace, ownedProductionPath),
+    "final class WindowSummary { }\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(workspace, ownedDependencyPath),
+    "record Reading(long timestampMillis, String sensorId, double value) { }\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(workspace, ownedVerifierPath),
+    "#!/usr/bin/env bash\nset -euo pipefail\n",
+    "utf8"
+  );
+  const compilerFailurePacket = await buildFailedTestRecoveryPacket(
+    { provider: "deepseek", commandCwd: workspace },
+    {
+      goal: "Repair the production implementation from the existing Java tests.",
+      commandCwd: workspace,
+      meta: {
+        projectVerification: {
+          mutationRevision: 3,
+          mutationHistory: [{
+            revision: 3,
+            toolName: "apply_patch",
+            paths: [ownedProductionPath],
+          }],
+          testRuns: [{
+            command: "scripts/test.sh",
+            passed: false,
+            ok: false,
+            mutationRevision: 3,
+            failureSignature: "java-compiler-source-path",
+            failureSummary: [
+              `./${ownedTestPath}:30: error: cannot find symbol`,
+              "WindowSummary.percentile(values, 0.5);",
+            ].join("\n"),
+          }],
+        },
+      },
+    }
+  );
+  assert(
+    compilerFailurePacket.paths.includes(ownedTestPath) &&
+      compilerFailurePacket.paths.includes(ownedProductionPath),
+    "a compiler-reported authoritative test path was omitted from bounded failed-test evidence"
+  );
+  assert(
+    compilerFailurePacket.paths.includes(ownedDependencyPath) &&
+      compilerFailurePacket.paths.includes(ownedVerifierPath),
+    "failed-test recovery omitted a same-package Java dependency or the exact verifier script"
+  );
+  assert(
+    compilerFailurePacket.repairPaths.includes(ownedProductionPath) &&
+      !compilerFailurePacket.repairPaths.includes(ownedTestPath),
+    "compiler evidence made an authoritative test writable during production repair"
+  );
+  const ownedTestSha256 = crypto
+    .createHash("sha256")
+    .update(ownedTestSource)
+    .digest("hex");
+  const authoritativeRestoreState = {
+    goal: "Repair the production implementation and preserve the authoritative tests.",
+    commandCwd: workspace,
+    meta: {
+      goalContract: {
+        revision: 4,
+        taskGoal: "Repair the production implementation and preserve the authoritative tests.",
+        activeGoal: "Continue the same production repair.",
+        currentRequest: "Continue the same production repair.",
+      },
+      activeExecutionContract: { revision: 4 },
+      projectVerification: {
+        mutationRevision: 2,
+        privateMutationRevision: 0,
+        requiredCommands: ["scripts/test.sh"],
+        commandRuns: [
+          {
+            command: `git checkout HEAD -- '${ownedTestPath}'`,
+            ok: true,
+            mutationRevision: 1,
+          },
+        ],
+        mutationHistory: [
+          {
+            revision: 1,
+            toolName: "run_command",
+            paths: [],
+            commandCategory: "destructive",
+          },
+          {
+            revision: 2,
+            toolName: "apply_patch",
+            paths: [ownedTestPath],
+            patch: { afterContentSha256: ownedTestSha256 },
+          },
+        ],
+        testRuns: [
+          {
+            command: "scripts/test.sh",
+            passed: false,
+            ok: false,
+            mutationRevision: 2,
+            privateMutationRevision: 0,
+            failureSignature: "authoritative-test-corruption",
+            failureSummary: "cannot find symbol in WindowSummaryTest",
+          },
+        ],
+      },
+      failedTestRecoveryPacket: {
+        packetVersion: 17,
+        content: "bounded packet",
+        paths: [ownedTestPath, ownedProductionPath],
+        repairPaths: [ownedProductionPath],
+        mutationRevision: 2,
+        failureSignature: "authoritative-test-corruption",
+        command: "scripts/test.sh",
+        generatedAt: "2026-08-29T03:00:00.000Z",
+        authoritativeTestRestores: [
+          {
+            path: ownedTestPath,
+            currentSha256: ownedTestSha256,
+            baselineSha256: "baseline-sha256",
+            restoredRevision: 1,
+            agentMutationRevision: 2,
+          },
+        ],
+      },
+      toolLoop: {
+        recent: [0, 1, 2].map((index) => ({
+          toolName: "apply_patch",
+          ok: false,
+          blocked: true,
+          category: "failed-test-specification-mutation",
+          mutationRevision: 2,
+          at: `2026-08-29T03:00:0${index + 1}.000Z`,
+        })),
+      },
+    },
+  };
+  const authoritativeRestoreRuntime = nextStepRuntimeConfig(
+    { provider: "deepseek", commandCwd: workspace },
+    authoritativeRestoreState
+  );
+  assert(
+    authoritativeRestoreRuntime.testFailureAuthoritativeRestorePending === true,
+    "three rejected authoritative-test rewrites did not expose a provenance-bound restoration"
+  );
+  assertStrict.deepEqual(
+    authoritativeRestoreRuntime.testFailureAuthoritativeRestorePaths,
+    [ownedTestPath],
+    "authoritative-test restoration broadened beyond the exact task-owned damaged path"
+  );
+  assertStrict.equal(
+    authoritativeRestoreRuntime.testFailureAuthoritativeRestoreCommand,
+    `git checkout HEAD -- '${ownedTestPath}'`,
+    "authoritative-test restoration was not bound to one exact HEAD command"
+  );
+  await fs.writeFile(
+    path.join(workspace, ownedTestPath),
+    `${ownedTestSource}// external change\n`,
+    "utf8"
+  );
+  assert(
+    nextStepRuntimeConfig(
+      { provider: "deepseek", commandCwd: workspace },
+      authoritativeRestoreState
+    ).testFailureAuthoritativeRestorePending !== true,
+    "authoritative-test restoration ignored a post-packet content-hash change"
+  );
+  await fs.writeFile(path.join(workspace, ownedTestPath), ownedTestSource, "utf8");
   const artifactProgress = recordExactOutputProgress(
     artifactState,
     {
@@ -10700,6 +11893,49 @@ try {
     JSON.stringify(coordinatedExplicitRunContract.requiredProjectCommands) ===
       JSON.stringify(["python demo.py"]),
     "a coordinated explicit inline command was lost"
+  );
+  const exactVerifierWithCleanupContract = deriveScsTaskContract({
+    goal:
+      "Run the canonical verifier `scripts/test.sh` exactly once, retain its result, remove only disposable `.build` output, confirm `git status --short` is clean, and finish.",
+    taskProfile: "code",
+  });
+  assert(
+    JSON.stringify(exactVerifierWithCleanupContract.requiredProjectCommands) ===
+      JSON.stringify(["scripts/test.sh", "git status --short"]) &&
+      exactVerifierWithCleanupContract.exactOutputPaths.length === 0,
+    "a backticked cleanup path displaced the explicitly requested verifier"
+  );
+  const staleTurnCommandState = {
+    goal:
+      "Run the canonical verifier `scripts/test.sh` exactly once and confirm `git status --short` is clean.",
+    meta: {
+      taskProfile: "code",
+      goalContract: {
+        revision: 8,
+        currentRequest:
+          "Run the canonical verifier `scripts/test.sh` exactly once and confirm `git status --short` is clean.",
+      },
+      projectVerification: {
+        mutationRevision: 4,
+        contractRequiredCommands: [".build"],
+        requiredCommands: ["scripts/test.sh"],
+        requiredCommandBatch: {
+          id: "required-command-batch-stale",
+          key: JSON.stringify([".build"]),
+          requiredCommands: [".build"],
+        },
+      },
+    },
+  };
+  resetSameTaskExecutionContract(staleTurnCommandState, 8);
+  assert(
+    JSON.stringify(
+      staleTurnCommandState.meta.projectVerification.contractRequiredCommands
+    ) === JSON.stringify(["scripts/test.sh", "git status --short"]) &&
+      !staleTurnCommandState.meta.projectVerification.requiredCommandBatch.requiredCommands.includes(
+        ".build"
+      ),
+    "a refreshed continuation retained superseded turn-scoped project commands"
   );
   const bareVerifierPath =
     "/home/lachlan/ProjectsLFS/Aginti-Test/supervision/acceptance/security_labshare_contract.py";
@@ -12048,7 +13284,7 @@ Do not prefix, suffix, wrap, redirect, pipe, or combine that validator command.`
         },
       },
       failedTestRecoveryPacket: {
-        packetVersion: 16,
+        packetVersion: 17,
         content: "Fresh exact failure-scoped source and artifact evidence.",
         command: stagnantValidatorCommand,
         failureSignature: "unchanged-validator-diagnostic",
