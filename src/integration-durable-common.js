@@ -204,6 +204,106 @@ function assertProtectedFileStat(stat, filePath, { ownerUid = currentUid(), maxB
   if (stat.size < 0 || stat.size > maxBytes) authorityFail("INTEGRATION_AUTHORITY_CORRUPT", `${filePath} size is invalid.`);
 }
 
+function escapeRegularExpression(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+async function requireDeadPrivateTemporaryCreator(pid, testHooks = {}, label = "temporary authority") {
+  const numericPid = Number(pid);
+  if (!Number.isSafeInteger(numericPid) || numericPid < 1) {
+    authorityFail("INTEGRATION_AUTHORITY_CORRUPT", `${label} creator PID is invalid.`);
+  }
+  const identity = await processIdentityForPid(numericPid, testHooks);
+  if (identity !== null) {
+    authorityFail(
+      identity === undefined ? "INTEGRATION_AUTHORITY_UNAVAILABLE" : "INTEGRATION_AUTHORITY_BUSY",
+      `${label} creator is not proven dead.`,
+      { status: 503 }
+    );
+  }
+}
+
+export async function reconcileProtectedJsonTemporaryFile(
+  filePath,
+  temporaryPath,
+  { maxBytes = 1024 * 1024, testHooks = {}, exclusiveAuthority = false } = {}
+) {
+  const dir = path.dirname(filePath);
+  const basename = path.basename(filePath);
+  const pattern = new RegExp(
+    `^\\.${escapeRegularExpression(basename)}\\.([1-9][0-9]{0,11})\\.([a-f0-9]{16})\\.tmp$`,
+    "u"
+  );
+  if (path.dirname(temporaryPath) !== dir) {
+    authorityFail("INTEGRATION_AUTHORITY_CORRUPT", `${filePath} temporary authority path is invalid.`);
+  }
+  const name = path.basename(temporaryPath);
+  const match = pattern.exec(name);
+  if (!match) {
+    authorityFail("INTEGRATION_AUTHORITY_CORRUPT", `${filePath} temporary authority name is invalid.`);
+  }
+  if (!exclusiveAuthority) {
+    await requireDeadPrivateTemporaryCreator(match[1], testHooks, `${filePath} temporary authority`);
+  }
+  let handle;
+  try {
+    handle = await fs.open(temporaryPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    assertProtectedFileStat(opened, temporaryPath, { maxBytes });
+    const named = await fs.lstat(temporaryPath);
+    if (named.dev !== opened.dev || named.ino !== opened.ino || named.size !== opened.size) {
+      authorityFail("INTEGRATION_AUTHORITY_CORRUPT", `${filePath} temporary authority changed during recovery.`);
+    }
+    if (typeof testHooks.beforeTemporaryUnlink === "function") {
+      await testHooks.beforeTemporaryUnlink({ filePath, temporaryPath, stat: opened });
+    }
+    await fs.unlink(temporaryPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+  await fsyncDirectory(dir);
+  return true;
+}
+
+export async function reconcileProtectedJsonTemporaryFiles(
+  filePath,
+  { maxBytes = 1024 * 1024, maximumFiles = 16, testHooks = {}, exclusiveAuthority = false } = {}
+) {
+  const dir = path.dirname(filePath);
+  const basename = path.basename(filePath);
+  const pattern = new RegExp(
+    `^\\.${escapeRegularExpression(basename)}\\.([1-9][0-9]{0,11})\\.([a-f0-9]{16})\\.tmp$`,
+    "u"
+  );
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch((error) => {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  });
+  const candidates = entries
+    .map((entry) => Object.freeze({ entry, match: pattern.exec(entry.name) }))
+    .filter(({ match }) => match !== null)
+    .sort((left, right) => left.entry.name.localeCompare(right.entry.name));
+  if (candidates.length > maximumFiles) {
+    authorityFail("INTEGRATION_AUTHORITY_CORRUPT", `${filePath} has too many abandoned temporary files.`);
+  }
+  let removed = 0;
+  for (const { entry, match } of candidates) {
+    if (!entry.isFile() || entry.isSymbolicLink()) {
+      authorityFail("INTEGRATION_AUTHORITY_CORRUPT", `${filePath} temporary authority type is invalid.`);
+    }
+    const temporaryPath = path.join(dir, entry.name);
+    if (await reconcileProtectedJsonTemporaryFile(filePath, temporaryPath, {
+      maxBytes,
+      testHooks,
+      exclusiveAuthority,
+    })) removed += 1;
+  }
+  return removed;
+}
+
 export async function readProtectedUtf8File(filePath, { optional = false, maxBytes = 1024 * 1024 } = {}) {
   let handle;
   try {
@@ -414,6 +514,102 @@ async function releaseDirectoryLock(lockDir, token) {
   await fs.rm(lockDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 10 }).catch(() => {});
 }
 
+async function requirePrivateLockQuarantineDirectory(quarantinePath) {
+  const stat = await fs.lstat(quarantinePath).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat) return null;
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    !ownerOk(stat) ||
+    (stat.mode & 0o077) !== 0
+  ) {
+    authorityFail(
+      "INTEGRATION_AUTHORITY_LOCK_CORRUPT",
+      "Integration authority lock quarantine metadata is unsafe."
+    );
+  }
+  return Object.freeze({ dev: stat.dev, ino: stat.ino, ctimeMs: stat.ctimeMs });
+}
+
+async function reconcileAbandonedDirectoryLockQuarantines(
+  lockDir,
+  staleMs,
+  testHooks = {},
+  { requireValidatedOwnerForRecovery = false } = {}
+) {
+  const parent = path.dirname(lockDir);
+  const basename = path.basename(lockDir);
+  const pattern = new RegExp(
+    `^${escapeRegularExpression(basename)}\\.(stale|ownerless)-([1-9][0-9]{0,11})-([a-f0-9]{16})$`,
+    "u"
+  );
+  const entries = await fs.readdir(parent, { withFileTypes: true });
+  const quarantines = entries
+    .map((entry) => Object.freeze({ entry, match: pattern.exec(entry.name) }))
+    .filter(({ match }) => match !== null)
+    .sort((left, right) => left.entry.name.localeCompare(right.entry.name));
+  if (quarantines.length > 64) {
+    authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Too many abandoned lock quarantines exist.");
+  }
+  for (const { entry, match } of quarantines) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Integration authority lock quarantine type is unsafe.");
+    }
+    const quarantinePath = path.join(parent, entry.name);
+    const before = await requirePrivateLockQuarantineDirectory(quarantinePath);
+    if (!before) continue;
+    const children = await fs.readdir(quarantinePath, { withFileTypes: true });
+    if (match[1] === "stale") {
+      if (children.length > 1 || (children.length === 1 && (
+        children[0].name !== "owner.json" ||
+        !children[0].isFile() ||
+        children[0].isSymbolicLink()
+      ))) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Stale lock quarantine entries are invalid.");
+      }
+      if (children.length === 1) {
+        const owner = await readLockOwner(quarantinePath);
+        const token = lockRecoveryOwnerToken(owner, requireValidatedOwnerForRecovery);
+        const acquiredMs = owner?.acquiredAt ? Date.parse(owner.acquiredAt) : Number(before.ctimeMs || 0);
+        const liveness = await processOwnerLiveness(owner, { testHooks });
+        if (!token || !Number.isFinite(acquiredMs) || Date.now() - acquiredMs <= staleMs || liveness !== "dead") {
+          authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Stale lock quarantine is not reclaimable.");
+        }
+      }
+    } else {
+      if (
+        children.length > 1 ||
+        children.some((child) =>
+          !child.isFile() ||
+          child.isSymbolicLink() ||
+          !/^\.owner\.json\.[1-9][0-9]{0,11}\.[a-f0-9]{16}\.tmp$/u.test(child.name)
+        )
+      ) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Ownerless lock quarantine entries are invalid.");
+      }
+      for (const child of children) {
+        const childPath = path.join(quarantinePath, child.name);
+        await readProtectedUtf8File(childPath, { maxBytes: 4096 });
+      }
+      if (Date.now() - Number(before.ctimeMs || 0) <= staleMs) {
+        authorityFail("INTEGRATION_AUTHORITY_BUSY", "Ownerless lock quarantine is not yet stale.", { status: 503 });
+      }
+    }
+    const stable = await requirePrivateLockQuarantineDirectory(quarantinePath);
+    if (!sameLockIdentity(before, stable)) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine changed during recovery.");
+    }
+    if (typeof testHooks.beforeAbandonedQuarantineRemove === "function") {
+      await testHooks.beforeAbandonedQuarantineRemove({ lockDir, quarantinePath, kind: match[1] });
+    }
+    await fs.rm(quarantinePath, { recursive: true, force: false, maxRetries: 5, retryDelay: 10 });
+    await fsyncDirectory(parent);
+  }
+}
+
 async function breakStaleDirectoryLock(
   lockDir,
   staleMs,
@@ -429,7 +625,7 @@ async function breakStaleDirectoryLock(
   if (!token) {
     if (requireValidatedOwnerForRecovery) return false;
     if (Number.isFinite(acquiredMs) && nowMs - acquiredMs <= staleMs) return false;
-    return breakOwnerlessStaleDirectoryLock(lockDir, before, staleMs, nowMs);
+    return breakOwnerlessStaleDirectoryLock(lockDir, before, staleMs, nowMs, testHooks);
   }
   if (!(
     await lockIsBreakable(
@@ -449,6 +645,10 @@ async function breakStaleDirectoryLock(
     if (error?.code === "EEXIST") return false;
     throw error;
   }
+  await fsyncDirectory(path.dirname(lockDir));
+  if (typeof testHooks.afterStaleQuarantineRename === "function") {
+    await testHooks.afterStaleQuarantineRename({ lockDir, quarantine });
+  }
 
   const quarantined = await lockDirectoryIdentity(quarantine);
   const quarantinedOwner = await readLockOwner(quarantine);
@@ -457,6 +657,7 @@ async function breakStaleDirectoryLock(
     lockRecoveryOwnerToken(quarantinedOwner, requireValidatedOwnerForRecovery) !== token
   ) {
     await fs.rename(quarantine, lockDir).catch(() => {});
+    await fsyncDirectory(path.dirname(lockDir)).catch(() => {});
     authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Integration authority stale lock changed during recovery.");
   }
   const quarantinedAcquiredMs = quarantinedOwner?.acquiredAt ? Date.parse(quarantinedOwner.acquiredAt) : Number(quarantined?.ctimeMs || 0);
@@ -464,6 +665,7 @@ async function breakStaleDirectoryLock(
   const liveness = await processOwnerLiveness(quarantinedOwner, { testHooks });
   if (!stillExpired || liveness !== "dead") {
     await fs.rename(quarantine, lockDir).catch(() => {});
+    await fsyncDirectory(path.dirname(lockDir)).catch(() => {});
     return false;
   }
   await fs.rm(quarantine, { recursive: true, force: true, maxRetries: 5, retryDelay: 10 });
@@ -471,7 +673,7 @@ async function breakStaleDirectoryLock(
   return true;
 }
 
-async function breakOwnerlessStaleDirectoryLock(lockDir, before, staleMs, nowMs) {
+async function breakOwnerlessStaleDirectoryLock(lockDir, before, staleMs, nowMs, testHooks = {}) {
   const quarantine = `${lockDir}.ownerless-${process.pid}-${randomHex(8)}`;
   try {
     await fs.rename(lockDir, quarantine);
@@ -480,20 +682,27 @@ async function breakOwnerlessStaleDirectoryLock(lockDir, before, staleMs, nowMs)
     if (error?.code === "EEXIST") return false;
     throw error;
   }
+  await fsyncDirectory(path.dirname(lockDir));
+  if (typeof testHooks.afterOwnerlessQuarantineRename === "function") {
+    await testHooks.afterOwnerlessQuarantineRename({ lockDir, quarantine });
+  }
 
   const quarantined = await lockDirectoryIdentity(quarantine);
   if (!sameLockIdentity(before, quarantined)) {
     await fs.rename(quarantine, lockDir).catch(() => {});
+    await fsyncDirectory(path.dirname(lockDir)).catch(() => {});
     authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Integration authority ownerless lock changed during recovery.");
   }
   const quarantinedOwner = await readLockOwner(quarantine);
   if (lockOwnerToken(quarantinedOwner)) {
     await fs.rename(quarantine, lockDir).catch(() => {});
+    await fsyncDirectory(path.dirname(lockDir)).catch(() => {});
     return false;
   }
   const acquiredMs = Number(before?.ctimeMs || quarantined?.ctimeMs || 0);
   if (!Number.isFinite(acquiredMs) || nowMs - acquiredMs <= staleMs) {
     await fs.rename(quarantine, lockDir).catch(() => {});
+    await fsyncDirectory(path.dirname(lockDir)).catch(() => {});
     return false;
   }
   await fs.rm(quarantine, { recursive: true, force: true, maxRetries: 5, retryDelay: 10 });
@@ -556,6 +765,12 @@ export async function withDirectoryLock(lockDir, operation, options = {}) {
         throw error;
       }
       try {
+        await reconcileAbandonedDirectoryLockQuarantines(
+          lockDir,
+          staleMs,
+          testHooks,
+          { requireValidatedOwnerForRecovery }
+        );
         return await operation();
       } finally {
         await releaseDirectoryLock(lockDir, token);

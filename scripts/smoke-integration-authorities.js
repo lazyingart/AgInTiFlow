@@ -584,6 +584,84 @@ async function smokeDirectoryLock(root) {
     (error) => assert.equal(error.code, "ENOENT")
   );
 
+  const staleQuarantineRetryLock = path.join(lockRoot, "stale-quarantine-retry.lock");
+  await fs.mkdir(staleQuarantineRetryLock, { mode: 0o700 });
+  await atomicWriteProtectedJson(path.join(staleQuarantineRetryLock, "owner.json"), {
+    schemaVersion: "aginti-directory-lock-v1",
+    pid: 999999999,
+    token: "8".repeat(32),
+    acquiredAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+  await assert.rejects(
+    () => withDirectoryLock(
+      staleQuarantineRetryLock,
+      async () => assert.fail("faulted stale quarantine must not enter its operation"),
+      {
+        staleMs: 1,
+        waitMs: 2_000,
+        testHooks: {
+          async afterStaleQuarantineRename() {
+            throw new Error("synthetic crash after stale quarantine rename");
+          },
+        },
+      }
+    ),
+    /synthetic crash after stale quarantine rename/u
+  );
+  const staleQuarantineName = (await fs.readdir(lockRoot)).find((name) =>
+    name.startsWith("stale-quarantine-retry.lock.stale-")
+  );
+  assert.ok(staleQuarantineName);
+  await fs.unlink(path.join(lockRoot, staleQuarantineName, "owner.json"));
+  let staleQuarantineRetried = false;
+  await withDirectoryLock(
+    staleQuarantineRetryLock,
+    async () => {
+      staleQuarantineRetried = true;
+    },
+    { staleMs: 1, waitMs: 2_000 }
+  );
+  assert.equal(staleQuarantineRetried, true);
+  assert.equal(
+    (await fs.readdir(lockRoot)).some((name) => name.startsWith("stale-quarantine-retry.lock.")),
+    false,
+    "empty stale quarantine left by interrupted recursive removal must be reclaimed"
+  );
+
+  const ownerlessQuarantineRetryLock = path.join(lockRoot, "ownerless-quarantine-retry.lock");
+  await fs.mkdir(ownerlessQuarantineRetryLock, { mode: 0o700 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await assert.rejects(
+    () => withDirectoryLock(
+      ownerlessQuarantineRetryLock,
+      async () => assert.fail("faulted ownerless quarantine must not enter its operation"),
+      {
+        staleMs: 1,
+        waitMs: 2_000,
+        testHooks: {
+          async afterOwnerlessQuarantineRename() {
+            throw new Error("synthetic crash after ownerless quarantine rename");
+          },
+        },
+      }
+    ),
+    /synthetic crash after ownerless quarantine rename/u
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  let ownerlessQuarantineRetried = false;
+  await withDirectoryLock(
+    ownerlessQuarantineRetryLock,
+    async () => {
+      ownerlessQuarantineRetried = true;
+    },
+    { staleMs: 1, waitMs: 2_000 }
+  );
+  assert.equal(ownerlessQuarantineRetried, true);
+  assert.equal(
+    (await fs.readdir(lockRoot)).some((name) => name.startsWith("ownerless-quarantine-retry.lock.")),
+    false
+  );
+
   const ownerlessRaceLock = path.join(lockRoot, "ownerless-race.lock");
   await fs.mkdir(ownerlessRaceLock, { mode: 0o700 });
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1339,6 +1417,235 @@ async function smokeIdempotency(root) {
       })
     );
   }
+
+  const startupBeforeRoot = path.join(root, "idempotency-startup-before-dispatch");
+  const startupBeforeContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "startup-before-dispatch"
+  );
+  await seedExpiredPendingRecord(startupBeforeRoot, startupBeforeContext, "before-dispatch");
+  let startupBeforeCallbacks = 0;
+  const startupBeforeStore = createFileIntegrationIdempotencyStore({
+    rootDir: startupBeforeRoot,
+    pendingLeaseMs: 1_000,
+    recoveryAuthority: fullRecoveryAuthority(),
+    recoverPending: async () => {
+      startupBeforeCallbacks += 1;
+      return threadResponse("before-dispatch must not redispatch");
+    },
+  });
+  const startupBeforeProof = await startupBeforeStore.recoverBeforeListen({ timeoutMs: 1_000 });
+  assert.equal(startupBeforeCallbacks, 0);
+  assert.equal(startupBeforeProof.beforeListen, true);
+  assert.equal(startupBeforeProof.pendingObserved, 1);
+  assert.equal(startupBeforeProof.pendingRecovered, 1);
+  assert.equal(startupBeforeProof.pendingRemaining, 0);
+  assert.equal(startupBeforeProof.stagesObserved["before-dispatch"], 1);
+  assert.equal(startupBeforeStore.getStartupRecoveryProof(), startupBeforeProof);
+
+  const startupAfterDispatchRoot = path.join(root, "idempotency-startup-after-dispatch");
+  const startupAfterDispatchContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "startup-after-dispatch"
+  );
+  await seedExpiredPendingRecord(
+    startupAfterDispatchRoot,
+    startupAfterDispatchContext,
+    "after-dispatch-before-result"
+  );
+  let startupAfterDispatchCallbacks = 0;
+  const startupAfterDispatchStore = createFileIntegrationIdempotencyStore({
+    rootDir: startupAfterDispatchRoot,
+    pendingLeaseMs: 1_000,
+    recoveryAuthority: fullRecoveryAuthority(),
+    recoverPending: async () => {
+      startupAfterDispatchCallbacks += 1;
+      return threadResponse("Recovered before listener construction");
+    },
+  });
+  const startupAfterDispatchProof = await startupAfterDispatchStore.recoverBeforeListen({ timeoutMs: 1_000 });
+  assert.equal(startupAfterDispatchCallbacks, 1);
+  assert.equal(startupAfterDispatchProof.pendingObserved, 1);
+  assert.equal(startupAfterDispatchProof.pendingRecovered, 1);
+  assert.equal(startupAfterDispatchProof.stagesObserved["after-dispatch-before-result"], 1);
+  assert.equal(
+    (await startupAfterDispatchStore.inspectRecord(startupAfterDispatchContext)).state,
+    "completed"
+  );
+
+  const startupAfterResultRoot = path.join(root, "idempotency-startup-after-result");
+  const startupAfterResultContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "startup-after-result"
+  );
+  const startupAfterResultSeed = createFileIntegrationIdempotencyStore({
+    rootDir: startupAfterResultRoot,
+    pendingLeaseMs: 1_000,
+  });
+  await startupAfterResultSeed.runMutation(
+    startupAfterResultContext,
+    async () => threadResponse("Persisted response before restart")
+  );
+  const startupAfterResultCompleted = await startupAfterResultSeed.inspectRecord(startupAfterResultContext);
+  await atomicWriteProtectedJson(
+    startupAfterResultSeed.pathsForRequest(startupAfterResultContext).record,
+    createSealedIntegrationIdempotencyRecord({
+      ...startupAfterResultCompleted,
+      state: "pending",
+      recoveryStage: "after-result-before-public-response",
+      leaseExpiresAt: past,
+      updatedAt: past,
+      pendingOwner: await deadPendingOwner({
+        acquiredAt: past,
+        heartbeatAt: past,
+        token: "6".repeat(32),
+      }),
+    })
+  );
+  let startupAfterResultCallbacks = 0;
+  const startupAfterResultStore = createFileIntegrationIdempotencyStore({
+    rootDir: startupAfterResultRoot,
+    pendingLeaseMs: 1_000,
+    recoveryAuthority: fullRecoveryAuthority(),
+    recoverPending: async () => {
+      startupAfterResultCallbacks += 1;
+      return threadResponse("replacement must not win");
+    },
+  });
+  const startupAfterResultProof = await startupAfterResultStore.recoverBeforeListen({ timeoutMs: 1_000 });
+  assert.equal(startupAfterResultCallbacks, 0);
+  assert.equal(startupAfterResultProof.pendingObserved, 1);
+  assert.equal(startupAfterResultProof.pendingRecovered, 1);
+  assert.equal(startupAfterResultProof.stagesObserved["after-result-before-public-response"], 1);
+  assert.equal((await startupAfterResultStore.inspectRecord(startupAfterResultContext)).state, "completed");
+
+  const startupResidueRoot = path.join(root, "idempotency-startup-private-residue");
+  const startupResidueContext = mutationContext(
+    INTEGRATION_RPC_PATHS.threadsCreate,
+    {},
+    "startup-private-residue"
+  );
+  const startupResidueSeed = createFileIntegrationIdempotencyStore({
+    rootDir: startupResidueRoot,
+    pendingLeaseMs: 1_000,
+  });
+  let startupResidueSemanticCalls = 0;
+  const startupResidueResponse = await startupResidueSeed.runMutation(startupResidueContext, async () => {
+    startupResidueSemanticCalls += 1;
+    return threadResponse("Stable response across startup residue cleanup");
+  });
+  const startupResidueRecord = await startupResidueSeed.inspectRecord(startupResidueContext);
+  const startupResiduePaths = startupResidueSeed.pathsForRequest(startupResidueContext);
+  const startupResidueResponsePath = path.join(startupResidueRoot, startupResidueRecord.result.pointer);
+  async function seedJsonTemporary(target, pid, suffix, bytes) {
+    const temporary = path.join(path.dirname(target), `.${path.basename(target)}.${pid}.${suffix}.tmp`);
+    await fs.writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
+    await fs.chmod(temporary, 0o600);
+    return temporary;
+  }
+  const startupResidueTemporaries = [
+    await seedJsonTemporary(path.join(startupResidueRoot, "store.json"), 999999999, "1".repeat(16), Buffer.alloc(0)),
+    await seedJsonTemporary(startupResiduePaths.record, process.pid, "2".repeat(16), Buffer.from("partial", "utf8")),
+    await seedJsonTemporary(startupResidueResponsePath, 999999998, "3".repeat(16), await fs.readFile(startupResidueResponsePath)),
+  ];
+  const startupResidueLocks = path.join(startupResidueRoot, "locks");
+  async function seedLockOwner(directory, token) {
+    await fs.mkdir(directory, { mode: 0o700 });
+    await fs.writeFile(path.join(directory, "owner.json"), `${JSON.stringify({
+      schemaVersion: "aginti-directory-lock-v1",
+      pid: 999999997,
+      token,
+      acquiredAt: "2020-01-01T00:00:00.000Z",
+    })}\n`, { flag: "wx", mode: 0o600 });
+  }
+  await seedLockOwner(path.join(startupResidueLocks, `${"c".repeat(64)}.lock`), "c".repeat(32));
+  await seedLockOwner(
+    path.join(startupResidueLocks, `${startupResiduePaths.index}.lock.stale-999999996-${"d".repeat(16)}`),
+    "d".repeat(32)
+  );
+  await seedLockOwner(
+    path.join(startupResidueLocks, `transactions.lock.stale-999999995-${"e".repeat(16)}`),
+    "e".repeat(32)
+  );
+  await fs.mkdir(
+    path.join(startupResidueLocks, `responses.lock.ownerless-999999994-${"f".repeat(16)}`),
+    { mode: 0o700 }
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const startupResidueStore = createFileIntegrationIdempotencyStore({
+    rootDir: startupResidueRoot,
+    pendingLeaseMs: 1_000,
+    staleLockMs: 1,
+    lockWaitMs: 2_000,
+  });
+  const startupResidueProof = await startupResidueStore.recoverBeforeListen({ timeoutMs: 5_000 });
+  assert.equal(startupResidueProof.pendingObserved, 0);
+  assert.equal(startupResidueProof.pendingRemaining, 0);
+  assert.deepEqual(await fs.readdir(startupResidueLocks), []);
+  for (const temporary of startupResidueTemporaries) {
+    await fs.access(temporary).then(
+      () => assert.fail("private JSON crash temporary must be reclaimed before listener activation"),
+      (error) => assert.equal(error.code, "ENOENT")
+    );
+  }
+  const startupResidueReplay = await startupResidueStore.runMutation(startupResidueContext, async () => {
+    startupResidueSemanticCalls += 1;
+    return threadResponse("replacement must not dispatch");
+  });
+  assert.deepEqual(startupResidueReplay, startupResidueResponse);
+  assert.equal(startupResidueSemanticCalls, 1);
+
+  const wrongShardRoot = path.join(root, "idempotency-startup-wrong-shard");
+  await fs.cp(startupResidueRoot, wrongShardRoot, { recursive: true });
+  const wrongShardName = startupResiduePaths.index.startsWith("ff") ? "00" : "ff";
+  const wrongShardDirectory = path.join(wrongShardRoot, "records", wrongShardName);
+  await fs.mkdir(wrongShardDirectory, { mode: 0o700 });
+  await fs.copyFile(
+    startupResiduePaths.record,
+    path.join(wrongShardDirectory, `${startupResiduePaths.index}.json`)
+  );
+  await assertRejectsCode(
+    () => createFileIntegrationIdempotencyStore({ rootDir: wrongShardRoot }).recoverBeforeListen({ timeoutMs: 1_000 }),
+    "IDEMPOTENCY_STORE_CORRUPT",
+    "wrong-shard canonical record refuses startup proof"
+  );
+
+  const unknownResponseRoot = path.join(root, "idempotency-startup-unknown-response-action");
+  await fs.cp(startupResidueRoot, unknownResponseRoot, { recursive: true });
+  await fs.mkdir(path.join(unknownResponseRoot, "responses", "0".repeat(64)), { mode: 0o700 });
+  await assertRejectsCode(
+    () => createFileIntegrationIdempotencyStore({ rootDir: unknownResponseRoot }).recoverBeforeListen({ timeoutMs: 1_000 }),
+    "IDEMPOTENCY_STORE_CORRUPT",
+    "unknown response action directory refuses startup proof"
+  );
+
+  const startupTimeoutStore = createFileIntegrationIdempotencyStore({
+    rootDir: path.join(root, "idempotency-startup-timeout"),
+    pendingLeaseMs: 1_000,
+    faultInjector: async ({ phase }) => {
+      if (phase === "startup-pending-inventory-after") {
+        await new Promise((resolve) => setTimeout(resolve, 125));
+      }
+    },
+  });
+  await assertRejectsCode(
+    () => startupTimeoutStore.recoverBeforeListen({ timeoutMs: 100 }),
+    "IDEMPOTENCY_STARTUP_RECOVERY_TIMEOUT",
+    "a zero-pending final inventory that completes beyond the deadline must fail closed"
+  );
+  const monotonicRegressionTicks = [100, 90];
+  const startupMonotonicRegressionStore = createFileIntegrationIdempotencyStore({
+    rootDir: path.join(root, "idempotency-startup-monotonic-regression"),
+    monotonicNow: () => monotonicRegressionTicks.shift() ?? 90,
+  });
+  await assertRejectsCode(
+    () => startupMonotonicRegressionStore.recoverBeforeListen({ timeoutMs: 1_000 }),
+    "IDEMPOTENCY_STARTUP_RECOVERY_TIMEOUT",
+    "a regressed recovery clock must not extend the startup deadline"
+  );
 
   const beforeDispatchRoot = path.join(root, "idempotency-crash-before-dispatch");
   const beforeDispatchContext = mutationContext(

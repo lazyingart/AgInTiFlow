@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import {
   INTEGRATION_IDEMPOTENCY_CONTRACT_VERSION,
   INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS,
@@ -25,6 +26,8 @@ import {
   nowIso,
   parseIsoMs,
   processOwnerLiveness,
+  reconcileProtectedJsonTemporaryFile,
+  reconcileProtectedJsonTemporaryFiles,
   readProtectedJsonFile,
   relativePointer,
   sealObject,
@@ -40,6 +43,9 @@ export const IDEMPOTENCY_RESPONSE_INTEGRITY_DOMAIN = "aginti-integration-idempot
 export const IDEMPOTENCY_REQUEST_HASH_ALGORITHM = "canonical-json-v1";
 export const IDEMPOTENCY_RESPONSE_ENVELOPE = "aginti-agent-rpc-v1";
 export const IDEMPOTENCY_RECOVERY_AUTHORITY_VERSION = "aginti-integration-idempotency-recovery-authority-v1";
+export const IDEMPOTENCY_STARTUP_RECOVERY_SCHEMA_VERSION =
+  "aginti-integration-idempotency-startup-recovery-v1";
+export const IDEMPOTENCY_STARTUP_RECOVERY_TIMEOUT_MS = 120_000;
 
 const DEFAULT_PENDING_LEASE_MS = 30_000;
 const DEFAULT_LOCK_WAIT_MS = 5000;
@@ -422,6 +428,7 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
   const lockWaitMs = Number(options.lockWaitMs || DEFAULT_LOCK_WAIT_MS);
   const staleLockMs = Number(options.staleLockMs || DEFAULT_STALE_LOCK_MS);
   const now = typeof options.now === "function" ? options.now : () => new Date();
+  const monotonicNow = typeof options.monotonicNow === "function" ? options.monotonicNow : () => performance.now();
   const recoverPending = typeof options.recoverPending === "function" ? options.recoverPending : null;
   const recoveryAuthority = options.recoveryAuthority || {};
   const recoveryProof = recoveryAuthoritySnapshot(recoveryAuthority, recoverPending !== null);
@@ -439,6 +446,8 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
   }
 
   let layoutPromise = null;
+  let startupRecoveryProof = null;
+  let startupRecoveryPromise = null;
   async function layout() {
     layoutPromise ||= ensureStoreLayout(rootDir, ["records", "responses", "locks"]).then(async (dirs) => {
       const metaPath = path.join(dirs.root, "store.json");
@@ -450,7 +459,22 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
         responseEnvelope: IDEMPOTENCY_RESPONSE_ENVELOPE,
         createdAt: nowIso(now),
       };
-      const existing = await readProtectedJsonFile(metaPath, { optional: true, maxBytes: 4096 });
+      let existing = await readProtectedJsonFile(metaPath, { optional: true, maxBytes: 4096 });
+      if (!existing) {
+        await withDirectoryLock(
+          path.join(dirs.locks, "transactions.lock"),
+          async () => {
+            await reconcileProtectedJsonTemporaryFiles(metaPath, {
+              maxBytes: 4096,
+              exclusiveAuthority: true,
+            });
+            existing = await readProtectedJsonFile(metaPath, { optional: true, maxBytes: 4096 });
+            if (!existing) await atomicWriteProtectedJson(metaPath, meta);
+          },
+          { waitMs: lockWaitMs, staleMs: staleLockMs }
+        );
+        existing = await readProtectedJsonFile(metaPath, { maxBytes: 4096 });
+      }
       if (existing) {
         if (
           existing.schemaVersion !== IDEMPOTENCY_STORE_SCHEMA_VERSION ||
@@ -461,12 +485,177 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
         ) {
           authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency store metadata is unsupported.");
         }
-      } else {
-        await atomicWriteProtectedJson(metaPath, meta);
       }
       return dirs;
     });
     return layoutPromise;
+  }
+
+  async function reconcileStartupStoreResidue(dirs, requireDeadline) {
+    const lockBasePattern = /^(?:transactions|responses|[a-f0-9]{64})\.lock$/u;
+    const lockQuarantinePattern = /^((?:transactions|responses|[a-f0-9]{64})\.lock)\.(?:stale|ownerless)-[1-9][0-9]{0,11}-[a-f0-9]{16}$/u;
+    const recordPattern = /^[a-f0-9]{64}\.json$/u;
+    const temporaryPattern = /^\.([a-f0-9]{64}\.json)\.[1-9][0-9]{0,11}\.[a-f0-9]{16}\.tmp$/u;
+    const maximumInventoryEntries = Math.min(recordCap * 2 + 1024, 25_000);
+    const validResponseActions = new Set(
+      Object.values(INTEGRATION_RPC_PATHS)
+        .filter((pathname) => integrationRpcPathIsMutation(pathname))
+        .map((pathname) => responseActionDigest(pathname))
+    );
+
+    await withDirectoryLock(
+      path.join(dirs.locks, "transactions.lock"),
+      async () => {
+        requireDeadline();
+        const lockEntries = await fs.readdir(dirs.locks, { withFileTypes: true });
+        if (lockEntries.length > recordCap + 130) {
+          authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency lock residue exceeds its bounded inventory.");
+        }
+        const lockBases = new Set();
+        for (const entry of lockEntries) {
+          const quarantine = lockQuarantinePattern.exec(entry.name);
+          const base = lockBasePattern.test(entry.name) ? entry.name : quarantine?.[1];
+          if (!base || !entry.isDirectory() || entry.isSymbolicLink()) {
+            authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency lock residue is invalid.");
+          }
+          if (base !== "transactions.lock") lockBases.add(base);
+        }
+        for (const base of [...lockBases].sort()) {
+          requireDeadline();
+          await withDirectoryLock(
+            path.join(dirs.locks, base),
+            async () => {},
+            { waitMs: lockWaitMs, staleMs: staleLockMs }
+          );
+        }
+
+        requireDeadline();
+        await reconcileProtectedJsonTemporaryFiles(path.join(dirs.root, "store.json"), {
+          maxBytes: 4096,
+          exclusiveAuthority: true,
+        });
+
+        const recordShards = await fs.readdir(dirs.records, { withFileTypes: true });
+        if (recordShards.length > 256) {
+          authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency record shard inventory is invalid.");
+        }
+        let aggregateRecordEntries = 0;
+        for (const shard of recordShards.sort((left, right) => left.name.localeCompare(right.name))) {
+          requireDeadline();
+          if (!/^[a-f0-9]{2}$/u.test(shard.name) || !shard.isDirectory() || shard.isSymbolicLink()) {
+            authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency record shard is invalid.");
+          }
+          const shardPath = path.join(dirs.records, shard.name);
+          await ensureOwnerOnlyDirectory(shardPath, { create: false, label: "idempotency record shard" });
+          const entries = await fs.readdir(shardPath, { withFileTypes: true });
+          aggregateRecordEntries += entries.length;
+          if (aggregateRecordEntries > maximumInventoryEntries) {
+            authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency record residue exceeds its bound.");
+          }
+          const targets = new Map();
+          for (const entry of entries) {
+            const temporary = temporaryPattern.exec(entry.name);
+            if (recordPattern.test(entry.name)) {
+              if (!entry.name.startsWith(shard.name) || !entry.isFile() || entry.isSymbolicLink()) {
+                authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency record type is invalid.");
+              }
+              continue;
+            }
+            if (!temporary || !entry.isFile() || entry.isSymbolicLink()) {
+              authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency record residue is invalid.");
+            }
+            if (!temporary[1].startsWith(shard.name)) {
+              authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency record residue shard is invalid.");
+            }
+            const target = path.join(shardPath, temporary[1]);
+            const list = targets.get(target) || [];
+            list.push(path.join(shardPath, entry.name));
+            if (list.length > 16) {
+              authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Too many idempotency record temporaries exist.");
+            }
+            targets.set(target, list);
+          }
+          for (const [target, temporaryFiles] of [...targets.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+            requireDeadline();
+            const index = path.basename(target, ".json");
+            await withDirectoryLock(
+              path.join(dirs.locks, `${index}.lock`),
+              async () => {
+                for (const temporaryPath of temporaryFiles.sort()) {
+                  requireDeadline();
+                  await reconcileProtectedJsonTemporaryFile(target, temporaryPath, {
+                    maxBytes: 64 * 1024,
+                    exclusiveAuthority: true,
+                  });
+                }
+              },
+              { waitMs: lockWaitMs, staleMs: staleLockMs }
+            );
+          }
+        }
+
+        await withDirectoryLock(
+          path.join(dirs.locks, "responses.lock"),
+          async () => {
+            const actionDirectories = await fs.readdir(dirs.responses, { withFileTypes: true });
+            if (actionDirectories.length > validResponseActions.size) {
+              authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency response action inventory is invalid.");
+            }
+            let aggregateResponseEntries = 0;
+            for (const action of actionDirectories.sort((left, right) => left.name.localeCompare(right.name))) {
+              requireDeadline();
+              if (!validResponseActions.has(action.name) || !action.isDirectory() || action.isSymbolicLink()) {
+                authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency response action directory is invalid.");
+              }
+              const actionPath = path.join(dirs.responses, action.name);
+              await ensureOwnerOnlyDirectory(actionPath, { create: false, label: "idempotency response action directory" });
+              const entries = await fs.readdir(actionPath, { withFileTypes: true });
+              aggregateResponseEntries += entries.length;
+              if (aggregateRecordEntries + aggregateResponseEntries > maximumInventoryEntries) {
+                authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency response residue exceeds its bound.");
+              }
+              const targets = new Map();
+              for (const entry of entries) {
+                const temporary = temporaryPattern.exec(entry.name);
+                if (recordPattern.test(entry.name)) {
+                  if (!entry.isFile() || entry.isSymbolicLink()) {
+                    authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency response type is invalid.");
+                  }
+                  continue;
+                }
+                if (!temporary || !entry.isFile() || entry.isSymbolicLink()) {
+                  authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency response residue is invalid.");
+                }
+                const target = path.join(actionPath, temporary[1]);
+                const list = targets.get(target) || [];
+                list.push(path.join(actionPath, entry.name));
+                if (list.length > 16) {
+                  authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Too many idempotency response temporaries exist.");
+                }
+                targets.set(target, list);
+              }
+              for (const [target, temporaryFiles] of [...targets.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+                requireDeadline();
+                for (const temporaryPath of temporaryFiles.sort()) {
+                  requireDeadline();
+                  await reconcileProtectedJsonTemporaryFile(target, temporaryPath, {
+                    maxBytes: RESPONSE_MAX_BYTES + 4096,
+                    exclusiveAuthority: true,
+                  });
+                }
+              }
+            }
+          },
+          { waitMs: lockWaitMs, staleMs: staleLockMs }
+        );
+        requireDeadline();
+      },
+      { waitMs: lockWaitMs, staleMs: staleLockMs }
+    );
+    const remainingLocks = await fs.readdir(dirs.locks);
+    if (remainingLocks.length !== 0) {
+      authorityFail("IDEMPOTENCY_STORE_CORRUPT", "Idempotency startup lock residue remained after recovery.");
+    }
   }
 
   function pathsForIndex(dirs, index) {
@@ -1116,6 +1305,145 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
     return Object.freeze({ recovered: Object.freeze(recovered) });
   }
 
+  async function pendingRecoveryInventory() {
+    if (faultInjector) await faultInjector({ phase: "startup-pending-inventory-before" });
+    const dirs = await layout();
+    const files = await withDirectoryLock(
+      path.join(dirs.locks, "transactions.lock"),
+      () => listFilesRecursive(dirs.records, { suffix: ".json" }),
+      { waitMs: lockWaitMs, staleMs: staleLockMs }
+    );
+    const pending = [];
+    for (const file of files.sort((left, right) => left.localeCompare(right))) {
+      const index = path.basename(file, ".json");
+      const paths = pathsForIndex(dirs, index);
+      await withDirectoryLock(
+        paths.lock,
+        async () => {
+          const record = await readRecord(paths.record, index);
+          if (!record || record.state !== "pending") return;
+          pending.push(Object.freeze({
+            index,
+            recoveryStage: record.recoveryStage,
+            leaseExpiresAt: record.leaseExpiresAt,
+          }));
+        },
+        { waitMs: lockWaitMs, staleMs: staleLockMs }
+      );
+    }
+    if (faultInjector) await faultInjector({ phase: "startup-pending-inventory-after" });
+    return Object.freeze(pending);
+  }
+
+  async function recoverBeforeListen(optionsValue = {}) {
+    if (
+      !optionsValue || typeof optionsValue !== "object" || Array.isArray(optionsValue) ||
+      Reflect.ownKeys(optionsValue).some((key) => key !== "timeoutMs")
+    ) {
+      authorityFail("IDEMPOTENCY_STARTUP_RECOVERY_INVALID", "Idempotency startup recovery options are invalid.");
+    }
+    const timeoutMs = Number(optionsValue.timeoutMs ?? IDEMPOTENCY_STARTUP_RECOVERY_TIMEOUT_MS);
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) {
+      authorityFail("IDEMPOTENCY_STARTUP_RECOVERY_INVALID", "Idempotency startup recovery timeout is invalid.");
+    }
+    if (startupRecoveryProof) return startupRecoveryProof;
+    if (startupRecoveryPromise) return startupRecoveryPromise;
+    const operation = (async () => {
+      const started = monotonicNow();
+      if (!Number.isFinite(started)) {
+        authorityFail("IDEMPOTENCY_STARTUP_RECOVERY_INVALID", "Idempotency monotonic clock is unavailable.");
+      }
+      const deadline = started + timeoutMs;
+      let lastMonotonic = started;
+      const monotonic = () => {
+        const value = monotonicNow();
+        if (!Number.isFinite(value) || value < lastMonotonic) {
+          authorityFail("IDEMPOTENCY_STARTUP_RECOVERY_TIMEOUT", "Idempotency monotonic recovery clock regressed.", {
+            status: 504,
+          });
+        }
+        lastMonotonic = value;
+        return value;
+      };
+      const requireDeadline = () => {
+        if (monotonic() >= deadline) {
+          authorityFail(
+            "IDEMPOTENCY_STARTUP_RECOVERY_TIMEOUT",
+            "Durable idempotency startup recovery exceeded its bounded deadline.",
+            { status: 504 }
+          );
+        }
+      };
+      requireDeadline();
+      const dirs = await layout();
+      requireDeadline();
+      await reconcileStartupStoreResidue(dirs, requireDeadline);
+      requireDeadline();
+      const initial = await pendingRecoveryInventory();
+      requireDeadline();
+      const authorityIndexes = new Set(initial.map(({ index }) => index));
+      const recoveredIndexes = new Set();
+      let remaining = initial;
+      while (remaining.length > 0) {
+        requireDeadline();
+        const recovered = await recoverExpiredPending();
+        requireDeadline();
+        for (const index of recovered.recovered) recoveredIndexes.add(index);
+        remaining = await pendingRecoveryInventory();
+        requireDeadline();
+        if (remaining.some(({ index }) => !authorityIndexes.has(index))) {
+          authorityFail(
+            "IDEMPOTENCY_STARTUP_RECOVERY_RACE",
+            "A new idempotency mutation appeared before listener activation."
+          );
+        }
+        if (remaining.length === 0) break;
+        const left = deadline - monotonic();
+        if (left <= 0) {
+          authorityFail(
+            "IDEMPOTENCY_STARTUP_RECOVERY_TIMEOUT",
+            "Durable idempotency startup recovery exceeded its bounded deadline.",
+            { status: 504 }
+          );
+        }
+        const current = Date.parse(nowIso(now));
+        const nextLease = Math.min(...remaining.map(({ leaseExpiresAt }) => parseIsoMs(
+          leaseExpiresAt,
+          "record leaseExpiresAt"
+        )));
+        const waitMs = Math.max(1, Math.min(250, left, nextLease - current));
+        await delay(waitMs);
+        requireDeadline();
+      }
+      requireDeadline();
+      const stagesObserved = Object.freeze(Object.fromEntries(
+        [...RECOVERY_STAGES].sort().map((stage) => [
+          stage,
+          initial.filter((item) => item.recoveryStage === stage).length,
+        ])
+      ));
+      const unsigned = Object.freeze({
+        schemaVersion: IDEMPOTENCY_STARTUP_RECOVERY_SCHEMA_VERSION,
+        owner: "aginti",
+        beforeListen: true,
+        pendingObserved: initial.length,
+        pendingRecovered: recoveredIndexes.size,
+        pendingRemaining: 0,
+        stagesObserved,
+        recoveredIndexesDigest: contractDigest([...recoveredIndexes].sort()),
+        bounded: true,
+        timeoutMs,
+      });
+      startupRecoveryProof = Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+      return startupRecoveryProof;
+    })();
+    startupRecoveryPromise = operation.catch((error) => {
+      startupRecoveryPromise = null;
+      throw error;
+    });
+    return startupRecoveryPromise;
+  }
+
   const surface = Object.freeze({
     owner: "aginti",
     rootDirDigest,
@@ -1139,6 +1467,16 @@ export function createFileIntegrationIdempotencyStore(options = {}) {
     recoveryAuthority: recoveryProof,
     runMutation,
     recoverExpiredPending,
+    recoverBeforeListen,
+    getStartupRecoveryProof() {
+      if (!startupRecoveryProof) {
+        authorityFail(
+          "IDEMPOTENCY_STARTUP_RECOVERY_REQUIRED",
+          "Durable idempotency startup recovery must complete before listener activation."
+        );
+      }
+      return startupRecoveryProof;
+    },
     pathsForRequest: (context) => integrationIdempotencyPaths(rootDir, context),
     inspectRecord: async (context) => {
       const dirs = await layout();

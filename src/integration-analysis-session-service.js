@@ -100,6 +100,9 @@ export { INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION } from "./integration-analy
 export const INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = INTEGRATION_ANALYSIS_STATE_STORAGE_V3;
 const LEGACY_INTEGRATION_ANALYSIS_SESSION_STORAGE_VERSION = INTEGRATION_ANALYSIS_STATE_STORAGE_V2;
 export const DEFAULT_INTEGRATION_ANALYSIS_STATE_ROOT = "/var/lib/agintiflow-integration/analysis";
+export const INTEGRATION_ANALYSIS_STARTUP_RECOVERY_SCHEMA_VERSION =
+  "aginti-integration-analysis-startup-recovery-v1";
+export const INTEGRATION_ANALYSIS_STARTUP_RECOVERY_TIMEOUT_MS = 180_000;
 
 export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
   maximumScopes: 1024,
@@ -164,6 +167,8 @@ const ATTACHMENT_REFERENCE_ID_DOMAIN = "aginti-analysis-attachment-reference-v1"
 const ATTACHMENT_BLOB_DIRECTORY = "attachments";
 const ATTACHMENT_BLOB_FILE_PATTERN = /^aimg_[a-f0-9]{64}\.bin$/u;
 const ATTACHMENT_BLOB_TEMP_PATTERN = /^\.aimg_[a-f0-9]{64}\.[1-9][0-9]{0,11}\.[a-f0-9]{24}\.tmp$/u;
+const STATE_FILE_TEMP_PATTERN = /^\.state\.([1-9][0-9]{0,11})\.[a-f0-9]{24}\.tmp$/u;
+const STATE_SCOPE_TEMP_PATTERN = /^\.scope\.([a-f0-9]{64})\.([1-9][0-9]{0,11})\.[a-f0-9]{24}\.tmp$/u;
 const ATTACHMENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/u;
 const STATE_SCOPE_DIGEST_VERSION = "aginti-analysis-state-scope-v1";
 const MUTATION_RECEIPT_SCHEMA_VERSION = "aginti-analysis-mutation-receipt-v1";
@@ -3021,6 +3026,7 @@ function createService(options, { testOnly }) {
   const attachmentStatfs = testOnly && options.attachmentStatfs !== undefined
     ? options.attachmentStatfs
     : fs.statfs;
+  const beforeStartupRecoveryScope = testOnly ? options.beforeStartupRecoveryScope : undefined;
   if (attachmentBufferLifecycle !== undefined && typeof attachmentBufferLifecycle !== "function") {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Test attachment buffer lifecycle observer is invalid.", {
       status: 500,
@@ -3033,6 +3039,11 @@ function createService(options, { testOnly }) {
   }
   if (typeof attachmentStatfs !== "function") {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Test attachment filesystem probe is invalid.", {
+      status: 500,
+    });
+  }
+  if (beforeStartupRecoveryScope !== undefined && typeof beforeStartupRecoveryScope !== "function") {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Test startup recovery observer is invalid.", {
       status: 500,
     });
   }
@@ -3157,6 +3168,8 @@ function createService(options, { testOnly }) {
   let drainPromise = null;
   let stateAccessClosed = false;
   let closed = false;
+  let startupRecoveryProof = null;
+  let startupRecoveryPromise = null;
 
   function timestamp() {
     const value = now();
@@ -3248,7 +3261,7 @@ function createService(options, { testOnly }) {
     }
   }
 
-  async function ensureRoot() {
+  async function ensureRoot({ allowStartupResidue = false } = {}) {
     await ensureOwnership();
     const { scopesDirectory } = stateFilePaths(stateRoot, {
       principalId: "a".repeat(16),
@@ -3261,10 +3274,293 @@ function createService(options, { testOnly }) {
     } catch (error) {
       unavailable(error);
     }
-    if (entries.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumScopes) corrupt();
+    if (entries.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumScopes + (allowStartupResidue ? 16 : 0)) corrupt();
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[a-f0-9]{64}$/u.test(entry.name)) corrupt();
+      if (
+        !entry.isDirectory() ||
+        entry.isSymbolicLink() ||
+        (!/^[a-f0-9]{64}$/u.test(entry.name) && !(allowStartupResidue && STATE_SCOPE_TEMP_PATTERN.test(entry.name)))
+      ) corrupt();
     }
+  }
+
+  function startupRecoveryTimeout() {
+    fail(
+      "ANALYSIS_STARTUP_RECOVERY_TIMEOUT",
+      "Durable analysis startup recovery exceeded its bounded deadline.",
+      { status: 504 }
+    );
+  }
+
+  function throwIfStartupRecoveryExpired(signal) {
+    if (signal.aborted) startupRecoveryTimeout();
+  }
+
+  async function reclaimStartupStateResidue(signal) {
+    throwIfStartupRecoveryExpired(signal);
+    await ensureRoot({ allowStartupResidue: true });
+    const scopesDirectory = path.join(stateRoot, "scopes");
+    const entries = await fs.readdir(scopesDirectory, { withFileTypes: true }).catch((error) => {
+      unavailable(error);
+    });
+    if (entries.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumScopes + 16) corrupt();
+    let temporaryFiles = 0;
+    let temporaryScopes = 0;
+    const staged = entries.filter((entry) => STATE_SCOPE_TEMP_PATTERN.test(entry.name));
+    if (staged.length > 16) corrupt();
+    for (const entry of staged.sort((left, right) => left.name.localeCompare(right.name))) {
+      throwIfStartupRecoveryExpired(signal);
+      if (!entry.isDirectory() || entry.isSymbolicLink()) corrupt();
+      const stagedMatch = STATE_SCOPE_TEMP_PATTERN.exec(entry.name);
+      const temporaryScope = path.join(scopesDirectory, entry.name);
+      const identity = await assertDirectory(temporaryScope, { leaf: true, testOnly });
+      if (!identity) corrupt();
+      const children = await fs.readdir(temporaryScope, { withFileTypes: true });
+      const invalidStagedChildren =
+        children.length > 1 ||
+        children.some((child) =>
+          child.isSymbolicLink() ||
+          !child.isFile() ||
+          (child.name !== "state.json" && STATE_FILE_TEMP_PATTERN.exec(child.name)?.[1] !== stagedMatch[2])
+        );
+      if (invalidStagedChildren) corrupt();
+      for (const child of children) {
+        let handle;
+        const target = path.join(temporaryScope, child.name);
+        try {
+          handle = await fs.open(target, openFlags(fsConstants.O_RDONLY));
+          await verifyRegularPrivateFile(handle, target);
+        } finally {
+          await handle?.close().catch(() => {});
+        }
+      }
+      const stable = await assertDirectory(temporaryScope, { leaf: true, testOnly });
+      if (!stable || stable.dev !== identity.dev || stable.ino !== identity.ino) corrupt();
+      await fs.rm(temporaryScope, { recursive: true, force: false, maxRetries: 5, retryDelay: 10 });
+      await syncDirectory(scopesDirectory);
+      temporaryScopes += 1;
+    }
+    const canonicalEntries = await fs.readdir(scopesDirectory, { withFileTypes: true });
+    for (const entry of canonicalEntries.sort((left, right) => left.name.localeCompare(right.name))) {
+      throwIfStartupRecoveryExpired(signal);
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[a-f0-9]{64}$/u.test(entry.name)) corrupt();
+      const scopeDirectory = path.join(scopesDirectory, entry.name);
+      if (!(await assertDirectory(scopeDirectory, { leaf: true, testOnly }))) corrupt();
+      const names = await fs.readdir(scopeDirectory, { withFileTypes: true });
+      const temporary = names.filter(({ name }) => STATE_FILE_TEMP_PATTERN.test(name));
+      if (temporary.length > 16) corrupt();
+      if (!names.some((item) => item.name === "state.json" && item.isFile() && !item.isSymbolicLink())) {
+        corrupt();
+      }
+      for (const candidate of temporary.sort((left, right) => left.name.localeCompare(right.name))) {
+        throwIfStartupRecoveryExpired(signal);
+        if (!candidate.isFile() || candidate.isSymbolicLink()) corrupt();
+        const temporaryPath = path.join(scopeDirectory, candidate.name);
+        let handle;
+        try {
+          handle = await fs.open(temporaryPath, openFlags(fsConstants.O_RDONLY));
+          const opened = await verifyRegularPrivateFile(handle, temporaryPath);
+          const named = await fs.lstat(temporaryPath);
+          if (named.dev !== opened.dev || named.ino !== opened.ino || named.size !== opened.size) corrupt();
+          await fs.unlink(temporaryPath);
+          temporaryFiles += 1;
+        } catch (error) {
+          if (error instanceof IntegrationAnalysisSessionError) throw error;
+          if (error?.code !== "ENOENT") unavailable(error);
+        } finally {
+          await handle?.close().catch(() => {});
+        }
+        await syncDirectory(scopeDirectory);
+      }
+      const remaining = await fs.readdir(scopeDirectory, { withFileTypes: true });
+      if (remaining.some(({ name }) => name.startsWith(".state."))) corrupt();
+      if (!remaining.some((item) => item.name === "state.json" && item.isFile() && !item.isSymbolicLink())) corrupt();
+    }
+    throwIfStartupRecoveryExpired(signal);
+    return Object.freeze({ temporaryFiles, temporaryScopes });
+  }
+
+  async function startupScopeInventory(signal) {
+    throwIfStartupRecoveryExpired(signal);
+    await ensureRoot();
+    const scopesDirectory = path.join(stateRoot, "scopes");
+    let entries;
+    try {
+      entries = await fs.readdir(scopesDirectory, { withFileTypes: true });
+    } catch (error) {
+      unavailable(error);
+    }
+    if (
+      entries.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumScopes ||
+      entries.some((entry) =>
+        !entry.isDirectory() || entry.isSymbolicLink() || !/^[a-f0-9]{64}$/u.test(entry.name)
+      )
+    ) {
+      corrupt();
+    }
+    const scopes = [];
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      throwIfStartupRecoveryExpired(signal);
+      const scopeDirectory = path.join(scopesDirectory, entry.name);
+      if (path.dirname(scopeDirectory) !== scopesDirectory) corrupt();
+      const directory = await assertDirectory(scopeDirectory, { leaf: true, testOnly });
+      if (!directory) corrupt();
+      const stateFile = path.join(scopeDirectory, "state.json");
+      let handle;
+      try {
+        handle = await fs.open(stateFile, openFlags(fsConstants.O_RDONLY));
+        const opened = await verifyRegularPrivateFile(handle, stateFile);
+        if (opened.size < 1 || opened.size > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumStateBytes) corrupt();
+        const text = await handle.readFile("utf8");
+        if (Buffer.byteLength(text, "utf8") !== opened.size) corrupt();
+        let candidate;
+        try {
+          candidate = JSON.parse(text)?.state?.scope;
+        } catch (error) {
+          corrupt(error);
+        }
+        const scope = normalizeScopeFromContext(candidate);
+        if (scopeDigest(scope) !== entry.name) corrupt();
+        const state = parseStateEnvelope(text, scope, statePersistenceMode);
+        scopes.push(Object.freeze({
+          digest: entry.name,
+          scope,
+          nonterminalRuns: state.runs.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status)).length,
+          pendingDocumentIntents: state.documentCommitIntents.filter((intent) => intent.status === "pending").length,
+        }));
+      } catch (error) {
+        if (error instanceof IntegrationAnalysisSessionError) throw error;
+        if (error?.code === "ENOENT") corrupt(error);
+        unavailable(error);
+      } finally {
+        await handle?.close().catch(() => {});
+      }
+    }
+    throwIfStartupRecoveryExpired(signal);
+    return Object.freeze(scopes);
+  }
+
+  async function recoverBeforeListen(optionsValue = {}) {
+    const options = exact(
+      optionsValue,
+      ["timeoutMs"],
+      [],
+      "analysis startup recovery options"
+    );
+    const timeoutMs = integrationBoundedInteger(
+      options.timeoutMs ?? INTEGRATION_ANALYSIS_STARTUP_RECOVERY_TIMEOUT_MS,
+      "analysis startup recovery timeoutMs",
+      { minimum: 100, maximum: 300_000 }
+    );
+    if (startupRecoveryProof) return startupRecoveryProof;
+    if (startupRecoveryPromise) return startupRecoveryPromise;
+    const operation = serialized(async () => {
+      if (closed || stateAccessClosed) {
+        fail("ANALYSIS_SERVICE_CLOSED", "Durable analysis startup recovery is unavailable after close.", {
+          status: 503,
+        });
+      }
+      const native = statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(new Error("analysis startup recovery deadline")), timeoutMs);
+      timer.unref?.();
+      try {
+        await reclaimStartupStateResidue(controller.signal);
+        if (!native) {
+          const unsigned = Object.freeze({
+            schemaVersion: INTEGRATION_ANALYSIS_STARTUP_RECOVERY_SCHEMA_VERSION,
+            owner: "aginti",
+            beforeListen: true,
+            performed: false,
+            statePersistenceMode,
+            scopeCount: null,
+            nonterminalRunsObserved: null,
+            nonterminalRunsRecovered: 0,
+            nonterminalRunsRemaining: null,
+            pendingDocumentIntentsObserved: null,
+            recoveryScopeDigests: Object.freeze([]),
+            bounded: true,
+            timeoutMs,
+          });
+          startupRecoveryProof = Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+          return startupRecoveryProof;
+        }
+        const before = await startupScopeInventory(controller.signal);
+        let recoveredRuns = 0;
+        const recoveryScopeDigests = [];
+        for (let index = 0; index < before.length; index += 1) {
+          throwIfStartupRecoveryExpired(controller.signal);
+          const item = before[index];
+          if (beforeStartupRecoveryScope) {
+            await beforeStartupRecoveryScope(Object.freeze({
+              index,
+              scopeDigest: item.digest,
+              signal: controller.signal,
+            }));
+            throwIfStartupRecoveryExpired(controller.signal);
+          }
+          const state = await loadRecoveredState(item.scope, {
+            recoverySignal: controller.signal,
+          });
+          throwIfStartupRecoveryExpired(controller.signal);
+          if (!state) corrupt();
+          const remaining = state.runs.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status)).length;
+          if (remaining > 0) {
+            fail(
+              "ANALYSIS_STARTUP_RECOVERY_INCOMPLETE",
+              "Durable analysis startup recovery left a nonterminal run unresolved.",
+              { status: 503 }
+            );
+          }
+          if (item.nonterminalRuns > 0 || item.pendingDocumentIntents > 0) {
+            recoveryScopeDigests.push(item.digest);
+          }
+          recoveredRuns += item.nonterminalRuns;
+        }
+        const after = await startupScopeInventory(controller.signal);
+        if (
+          after.length !== before.length ||
+          after.some((item, index) => item.digest !== before[index].digest) ||
+          after.some((item) => item.nonterminalRuns !== 0)
+        ) {
+          fail(
+            "ANALYSIS_STARTUP_RECOVERY_INCOMPLETE",
+            "Durable analysis state changed outside the bounded startup recovery authority.",
+            { status: 503 }
+          );
+        }
+        const unsigned = Object.freeze({
+          schemaVersion: INTEGRATION_ANALYSIS_STARTUP_RECOVERY_SCHEMA_VERSION,
+          owner: "aginti",
+          beforeListen: true,
+          performed: true,
+          statePersistenceMode,
+          scopeCount: before.length,
+          nonterminalRunsObserved: before.reduce((total, item) => total + item.nonterminalRuns, 0),
+          nonterminalRunsRecovered: recoveredRuns,
+          nonterminalRunsRemaining: 0,
+          pendingDocumentIntentsObserved: before.reduce(
+            (total, item) => total + item.pendingDocumentIntents,
+            0
+          ),
+          recoveryScopeDigests: Object.freeze(recoveryScopeDigests),
+          bounded: true,
+          timeoutMs,
+        });
+        startupRecoveryProof = Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+        return startupRecoveryProof;
+      } catch (error) {
+        if (controller.signal.aborted) startupRecoveryTimeout();
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+    startupRecoveryPromise = operation.catch((error) => {
+      startupRecoveryPromise = null;
+      throw error;
+    });
+    return startupRecoveryPromise;
   }
 
   async function readState(scope, { create = false } = {}) {
@@ -3282,12 +3578,10 @@ function createService(options, { testOnly }) {
       if (entries.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumScopes) {
         conflict("ANALYSIS_SCOPE_CAPACITY_EXHAUSTED", "Analysis scope capacity is exhausted.");
       }
-      await ensurePrivateDirectory(locations.scopeDirectory, stateRoot, { testOnly });
-      scopeStat = await assertDirectory(locations.scopeDirectory, { leaf: true, testOnly });
-      if (!scopeStat) unavailable();
+      return initialState(scope);
     }
     const named = await lstatOrNull(locations.stateFile);
-    if (!named) return create ? initialState(scope) : null;
+    if (!named) corrupt();
     if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1) corrupt();
     let handle;
     try {
@@ -3308,14 +3602,50 @@ function createService(options, { testOnly }) {
     const serializedState = serializeStateEnvelope(state, scope, statePersistenceMode);
     const locations = stateFilePaths(stateRoot, scope);
     await ensureRoot();
-    await ensurePrivateDirectory(locations.scopeDirectory, stateRoot, { testOnly });
-    const temporary = path.join(
-      locations.scopeDirectory,
-      `.state.${process.pid}.${crypto.randomBytes(12).toString("hex")}.tmp`
-    );
-    await atomicReplacePrivateIntegrationAnalysisStateFile(locations.stateFile, serializedState, {
-      temporaryPath: temporary,
-    });
+    const scopeDirectory = await assertDirectory(locations.scopeDirectory, { leaf: true, testOnly });
+    if (!scopeDirectory) {
+      const scopeId = path.basename(locations.scopeDirectory);
+      const stagedDirectory = path.join(
+        locations.scopesDirectory,
+        `.scope.${scopeId}.${process.pid}.${crypto.randomBytes(12).toString("hex")}.tmp`
+      );
+      let published = false;
+      try {
+        await fs.mkdir(stagedDirectory, { mode: 0o700 });
+        const stagedIdentity = await assertDirectory(stagedDirectory, { leaf: true, testOnly });
+        if (!stagedIdentity) unavailable();
+        const stagedState = path.join(stagedDirectory, "state.json");
+        const stagedTemporary = path.join(
+          stagedDirectory,
+          `.state.${process.pid}.${crypto.randomBytes(12).toString("hex")}.tmp`
+        );
+        await atomicReplacePrivateIntegrationAnalysisStateFile(stagedState, serializedState, {
+          temporaryPath: stagedTemporary,
+        });
+        await syncDirectory(stagedDirectory);
+        if (await lstatOrNull(locations.scopeDirectory)) corrupt();
+        await fs.rename(stagedDirectory, locations.scopeDirectory);
+        published = true;
+        const named = await assertDirectory(locations.scopeDirectory, { leaf: true, testOnly });
+        if (!named || named.dev !== stagedIdentity.dev || named.ino !== stagedIdentity.ino) corrupt();
+        await syncDirectory(locations.scopesDirectory);
+      } catch (error) {
+        if (!published) {
+          await fs.rm(stagedDirectory, { recursive: true, force: true, maxRetries: 5, retryDelay: 10 }).catch(() => {});
+          await syncDirectory(locations.scopesDirectory).catch(() => {});
+        }
+        if (error instanceof IntegrationAnalysisSessionError) throw error;
+        unavailable(error);
+      }
+    } else {
+      const temporary = path.join(
+        locations.scopeDirectory,
+        `.state.${process.pid}.${crypto.randomBytes(12).toString("hex")}.tmp`
+      );
+      await atomicReplacePrivateIntegrationAnalysisStateFile(locations.stateFile, serializedState, {
+        temporaryPath: temporary,
+      });
+    }
     await pruneUnreferencedAttachmentBlobs(scope, state, stateRoot, { testOnly });
   }
 
@@ -3428,7 +3758,7 @@ function createService(options, { testOnly }) {
     return changed;
   }
 
-  async function reconcileDocumentCommitIntents(scope, state) {
+  async function reconcileDocumentCommitIntents(scope, state, { signal } = {}) {
     if (!documentWorkerClient) return false;
     let changed = false;
     const irrecoverableReceipts = new Set();
@@ -3451,7 +3781,8 @@ function createService(options, { testOnly }) {
       try {
         const ack = await documentWorkerClient.commitArtifacts(
           scopeWithRun(scope, intent.threadId, intent.runId),
-          { receiptDigest: intent.receiptDigest, objects: documentWorkerCommitObjects(intent.objects) }
+          { receiptDigest: intent.receiptDigest, objects: documentWorkerCommitObjects(intent.objects) },
+          { signal }
         );
         intent.status = "committed";
         intent.updatedAt = timestamp();
@@ -3528,7 +3859,7 @@ function createService(options, { testOnly }) {
     return true;
   }
 
-  async function reconcileDocumentDeletionIntents(scope, state) {
+  async function reconcileDocumentDeletionIntents(scope, state, { signal } = {}) {
     if (!documentWorkerClient) return false;
     let changed = false;
     for (const intent of state.documentDeletionIntents.filter(
@@ -3541,11 +3872,15 @@ function createService(options, { testOnly }) {
       });
       try {
         if (intent.status === "pending") {
-          const prepared = await documentWorkerClient.deleteObjects(workerScope, {
-            deletionId: intent.deletionId,
-            phase: "prepare",
-            objects: intent.objects,
-          });
+          const prepared = await documentWorkerClient.deleteObjects(
+            workerScope,
+            {
+              deletionId: intent.deletionId,
+              phase: "prepare",
+              objects: intent.objects,
+            },
+            { signal }
+          );
           intent.status = prepared.status === "committed" ? "committed" : "prepared";
           intent.updatedAt = timestamp();
           intent.workerAckDigest = prepared.digest;
@@ -3554,11 +3889,15 @@ function createService(options, { testOnly }) {
           changed = true;
         }
         if (intent.status === "prepared") {
-          const committed = await documentWorkerClient.deleteObjects(workerScope, {
-            deletionId: intent.deletionId,
-            phase: "commit",
-            objects: intent.objects,
-          });
+          const committed = await documentWorkerClient.deleteObjects(
+            workerScope,
+            {
+              deletionId: intent.deletionId,
+              phase: "commit",
+              objects: intent.objects,
+            },
+            { signal }
+          );
           if (committed.status !== "committed") {
             fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "Document deletion is still pending.", { status: 503 });
           }
@@ -3606,12 +3945,16 @@ function createService(options, { testOnly }) {
     return changed;
   }
 
-  async function loadRecoveredState(scope, { create = false } = {}) {
+  async function loadRecoveredState(scope, { create = false, recoverySignal } = {}) {
     const state = await readState(scope, { create });
     if (!state) return null;
-    const reconciledDocuments = await reconcileDocumentCommitIntents(scope, state);
+    const reconciledDocuments = await reconcileDocumentCommitIntents(scope, state, {
+      signal: recoverySignal,
+    });
     const recoveredRuns = recoverInterruptedRuns(state);
-    const reconciledDeletions = await reconcileDocumentDeletionIntents(scope, state);
+    const reconciledDeletions = await reconcileDocumentDeletionIntents(scope, state, {
+      signal: recoverySignal,
+    });
     if (recoveredRuns || reconciledDocuments || reconciledDeletions) {
       state.revision += 1;
       await writeState(scope, state);
@@ -5156,7 +5499,27 @@ function createService(options, { testOnly }) {
   }
 
   const service = Object.freeze({
+    recoverBeforeListen,
+
+    getStartupRecoveryProof() {
+      if (!startupRecoveryProof) {
+        fail(
+          "ANALYSIS_STARTUP_RECOVERY_REQUIRED",
+          "Durable analysis startup recovery must complete before listener activation.",
+          { status: 503 }
+        );
+      }
+      return startupRecoveryProof;
+    },
+
     async getIntegrationCapabilities() {
+      if (!startupRecoveryProof && !testOnly) {
+        fail(
+          "ANALYSIS_STARTUP_RECOVERY_REQUIRED",
+          "Durable analysis startup recovery must complete before listener activation.",
+          { status: 503 }
+        );
+      }
       const proof = await attestation();
       return Object.freeze({
         analysisSessionAuthority: proof,
@@ -5908,7 +6271,7 @@ export function createTestOnlyIntegrationAnalysisSessionService(value = {}) {
       "analysisRunner", "stateRoot", "statePersistenceMode", "now", "activationProof", "searchEnabled",
       "documentWorkerClient", "documentWorkerEnabled", "visionClient", "visionActivation",
       "attachmentBufferLifecycle", "beforeAttachmentRetryCreate", "attachmentStoragePolicy",
-      "attachmentStatfs",
+      "attachmentStatfs", "beforeStartupRecoveryScope",
     ],
     ["analysisRunner", "stateRoot"],
     "test analysis session service configuration"

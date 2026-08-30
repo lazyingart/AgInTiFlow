@@ -62,6 +62,7 @@ import {
 } from "./integration-events.js";
 import {
   INTEGRATION_ANALYSIS_ATTACHMENT_AUTHORITY_SCHEMA_VERSION,
+  INTEGRATION_ANALYSIS_STARTUP_RECOVERY_SCHEMA_VERSION,
   assertIntegrationAnalysisSessionService,
 } from "./integration-analysis-session-service.js";
 import {
@@ -74,7 +75,10 @@ import {
   INTEGRATION_ANALYSIS_STATE_STORAGE_V2,
   INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
 } from "./integration-analysis-state-persistence.js";
-import { assertFileIntegrationIdempotencyStore } from "./integration-idempotency-store.js";
+import {
+  IDEMPOTENCY_STARTUP_RECOVERY_SCHEMA_VERSION,
+  assertFileIntegrationIdempotencyStore,
+} from "./integration-idempotency-store.js";
 import { redactSensitiveText } from "./redaction.js";
 
 export const INTEGRATION_SERVICE_METHODS = Object.freeze({
@@ -101,9 +105,11 @@ export const INTEGRATION_IDEMPOTENCY_MAX_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const INTEGRATION_PUBLIC_JSON_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
 export const INTEGRATION_ANALYSIS_MAX_CONCURRENT_ATTACHMENT_REQUESTS = 1;
 export const INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION =
-  "aginti-integration-analysis-router-activation-v3";
+  "aginti-integration-analysis-router-activation-v4";
 export const INTEGRATION_ANALYSIS_MUTATION_RECOVERY_SCHEMA_VERSION =
   "aginti-analysis-mutation-recovery-v1";
+export const INTEGRATION_ANALYSIS_PRELISTEN_RECOVERY_SCHEMA_VERSION =
+  "aginti-integration-analysis-prelisten-recovery-v1";
 const INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION = "aginti-integration-analysis-coordinator-v1";
 const ANALYSIS_ROUTER_ACTIVATIONS = new WeakMap();
 const ABSOLUTE_PATH_PATTERN =
@@ -889,6 +895,113 @@ function assertAnalysisMutationRecoveryAuthority(value) {
   return assertCanonicalProofDigest(proof, "analysis mutation recovery authority");
 }
 
+function assertAnalysisPrelistenRecoveryProof(value, sessionService, idempotencyStore) {
+  let stateRecovery;
+  let idempotencyRecovery;
+  try {
+    stateRecovery = sessionService.getStartupRecoveryProof();
+    idempotencyRecovery = idempotencyStore.getStartupRecoveryProof();
+  } catch (error) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Startup recovery proof is unavailable.", {
+      status: 503,
+      cause: error,
+    });
+  }
+  const keys = [
+    "schemaVersion", "owner", "beforeListen", "listenerCreatedBeforeRecovery",
+    "statePersistenceMode", "stateRecovery", "idempotencyRecovery", "bounded", "timeoutMs", "digest",
+  ];
+  const proof = exactDataObject(value, keys, keys, "analysis pre-listen recovery proof", { frozen: true });
+  const stateKeys = [
+    "schemaVersion", "owner", "beforeListen", "performed", "statePersistenceMode", "scopeCount",
+    "nonterminalRunsObserved", "nonterminalRunsRecovered", "nonterminalRunsRemaining",
+    "pendingDocumentIntentsObserved", "recoveryScopeDigests", "bounded", "timeoutMs", "digest",
+  ];
+  const state = exactDataObject(
+    proof.stateRecovery,
+    stateKeys,
+    stateKeys,
+    "analysis state startup recovery proof",
+    { frozen: true }
+  );
+  const idempotencyKeys = [
+    "schemaVersion", "owner", "beforeListen", "pendingObserved", "pendingRecovered",
+    "pendingRemaining", "stagesObserved", "recoveredIndexesDigest", "bounded", "timeoutMs", "digest",
+  ];
+  const idempotency = exactDataObject(
+    proof.idempotencyRecovery,
+    idempotencyKeys,
+    idempotencyKeys,
+    "analysis idempotency startup recovery proof",
+    { frozen: true }
+  );
+  const native = proof.statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3;
+  const compatible =
+    proof.statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2;
+  if (
+    proof.schemaVersion !== INTEGRATION_ANALYSIS_PRELISTEN_RECOVERY_SCHEMA_VERSION ||
+    proof.owner !== "aginti" || proof.beforeListen !== true ||
+    proof.listenerCreatedBeforeRecovery !== false || (!native && !compatible) || proof.bounded !== true ||
+    !Number.isSafeInteger(proof.timeoutMs) || proof.timeoutMs < 100 || proof.timeoutMs > 300_000 ||
+    state !== stateRecovery || idempotency !== idempotencyRecovery ||
+    state.schemaVersion !== INTEGRATION_ANALYSIS_STARTUP_RECOVERY_SCHEMA_VERSION ||
+    state.owner !== "aginti" || state.beforeListen !== true || state.bounded !== true ||
+    state.statePersistenceMode !== proof.statePersistenceMode ||
+    state.performed !== native ||
+    (native
+      ? (!Number.isSafeInteger(state.scopeCount) || state.scopeCount < 0 ||
+        !Number.isSafeInteger(state.nonterminalRunsObserved) || state.nonterminalRunsObserved < 0 ||
+        !Number.isSafeInteger(state.nonterminalRunsRecovered) || state.nonterminalRunsRecovered < 0 ||
+        state.nonterminalRunsRecovered !== state.nonterminalRunsObserved ||
+        state.nonterminalRunsRemaining !== 0 ||
+        !Number.isSafeInteger(state.pendingDocumentIntentsObserved) ||
+        state.pendingDocumentIntentsObserved < 0)
+      : (state.scopeCount !== null || state.nonterminalRunsObserved !== null ||
+        state.nonterminalRunsRecovered !== 0 || state.nonterminalRunsRemaining !== null ||
+        state.pendingDocumentIntentsObserved !== null)) ||
+    !Array.isArray(state.recoveryScopeDigests) || !Object.isFrozen(state.recoveryScopeDigests) ||
+    state.recoveryScopeDigests.some((digest) => typeof digest !== "string" || !/^[a-f0-9]{64}$/u.test(digest)) ||
+    new Set(state.recoveryScopeDigests).size !== state.recoveryScopeDigests.length ||
+    [...state.recoveryScopeDigests].sort().some((digest, index) => digest !== state.recoveryScopeDigests[index]) ||
+    !Number.isSafeInteger(state.timeoutMs) || state.timeoutMs < 100 || state.timeoutMs > 300_000 ||
+    state.digest !== contractDigest(Object.fromEntries(Object.entries(state).filter(([key]) => key !== "digest"))) ||
+    idempotency.schemaVersion !== IDEMPOTENCY_STARTUP_RECOVERY_SCHEMA_VERSION ||
+    idempotency.owner !== "aginti" || idempotency.beforeListen !== true || idempotency.bounded !== true ||
+    !Number.isSafeInteger(idempotency.pendingObserved) || idempotency.pendingObserved < 0 ||
+    !Number.isSafeInteger(idempotency.pendingRecovered) || idempotency.pendingRecovered < 0 ||
+    idempotency.pendingRecovered !== idempotency.pendingObserved || idempotency.pendingRemaining !== 0 ||
+    !Number.isSafeInteger(idempotency.timeoutMs) || idempotency.timeoutMs < 100 ||
+    idempotency.timeoutMs > 300_000 ||
+    typeof idempotency.recoveredIndexesDigest !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(idempotency.recoveredIndexesDigest) ||
+    idempotency.digest !== contractDigest(
+      Object.fromEntries(Object.entries(idempotency).filter(([key]) => key !== "digest"))
+    ) ||
+    proof.digest !== contractDigest(Object.fromEntries(Object.entries(proof).filter(([key]) => key !== "digest")))
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Startup recovery proof is invalid.", { status: 503 });
+  }
+  const stageKeys = [
+    "after-dispatch-before-result", "after-result-before-public-response", "before-dispatch",
+  ];
+  const stages = exactDataObject(
+    idempotency.stagesObserved,
+    stageKeys,
+    stageKeys,
+    "idempotency startup recovery stages",
+    { frozen: true }
+  );
+  if (
+    stageKeys.some((key) => !Number.isSafeInteger(stages[key]) || stages[key] < 0) ||
+    stageKeys.reduce((total, key) => total + stages[key], 0) !== idempotency.pendingObserved
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Startup idempotency recovery proof is invalid.", {
+      status: 503,
+    });
+  }
+  return proof;
+}
+
 function assertAnalysisAttachmentAuthority(value) {
   const keys = [
     "schemaVersion", "owner", "ready", "transport", "acceptedMediaTypes", "maximumCount",
@@ -1194,7 +1307,10 @@ export function assertIntegrationAnalysisActivationStorage(activation, value = {
 export async function createIntegrationAnalysisRouterActivation(options = {}) {
   exactDataObject(
     options,
-    ["sessionService", "idempotencyStore", "startupProof", "policy", "stateRoot", "idempotencyRoot", "statePersistenceMode"],
+    [
+      "sessionService", "idempotencyStore", "startupProof", "startupRecoveryProof", "policy",
+      "stateRoot", "idempotencyRoot", "statePersistenceMode",
+    ],
     ["sessionService", "idempotencyStore", "startupProof", "stateRoot", "idempotencyRoot", "statePersistenceMode"],
     "analysis router activation options"
   );
@@ -1215,6 +1331,11 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
     });
   }
   assertIntegrationTransactionalIdempotencyStore(idempotencyStore);
+  const startupRecoveryProof = assertAnalysisPrelistenRecoveryProof(
+    options.startupRecoveryProof,
+    sessionService,
+    idempotencyStore
+  );
   const startupProof = assertAnalysisStartupProof(options.startupProof);
   if (
     !sessionService ||
@@ -1309,6 +1430,8 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
       recoveryAuthority?.digest,
       "idempotency recovery authority digest"
     ),
+    startupRecoveryDigest: startupRecoveryProof.digest,
+    startupRecoveryBeforeListen: true,
     policyDigest: contractDigest(policy),
     exclusiveSessionAuthority: true,
     exactDependencyIdentity: true,
@@ -1331,6 +1454,7 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   const activation = Object.freeze({
     schemaVersion: INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION,
     digest: proof.digest,
+    startupRecoveryDigest: startupRecoveryProof.digest,
   });
   ANALYSIS_ROUTER_ACTIVATIONS.set(
     activation,
@@ -1338,6 +1462,7 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
       sessionService,
       idempotencyStore,
       startupProof,
+      startupRecoveryProof,
       policy,
       serviceCapabilities,
       proof,

@@ -418,7 +418,7 @@ assert.deepEqual(integrationAnalysisListenOptions(checkedConfig), {
 assert.equal(INTEGRATION_ANALYSIS_SERVER_ENABLED, true);
 assert.equal(
   INTEGRATION_ANALYSIS_ROUTER_ACTIVATION_SCHEMA_VERSION,
-  "aginti-integration-analysis-router-activation-v3"
+  "aginti-integration-analysis-router-activation-v4"
 );
 const configuredHttpServer = http.createServer();
 configureIntegrationAnalysisHttpServer(configuredHttpServer);

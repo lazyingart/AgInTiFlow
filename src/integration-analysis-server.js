@@ -1,10 +1,12 @@
 import http from "node:http";
+import { performance } from "node:perf_hooks";
 import { types as utilTypes } from "node:util";
 
 import express from "express";
 
 import { createIntegrationClient, writeIntegrationErrorJson } from "./integration-auth.js";
 import {
+  INTEGRATION_ANALYSIS_PRELISTEN_RECOVERY_SCHEMA_VERSION,
   assertIntegrationAnalysisActivationStorage,
   createActivatedIntegrationAnalysisRouter,
   createIntegrationAnalysisRouterActivation,
@@ -26,6 +28,7 @@ import { INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES } from "./integration-anal
 import {
   INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS,
   buildFixedIntegrationPolicy,
+  contractDigest,
 } from "./integration-policy.js";
 import {
   createExactIntegrationRouteBoundary,
@@ -36,6 +39,7 @@ export const INTEGRATION_ANALYSIS_SERVER_SCHEMA_VERSION = "aginti-integration-an
 export const INTEGRATION_ANALYSIS_SERVER_ENABLED = true;
 export const DEFAULT_INTEGRATION_ANALYSIS_START_TIMEOUT_MS = 5_000;
 export const DEFAULT_INTEGRATION_ANALYSIS_CLOSE_TIMEOUT_MS = 5_000;
+export const DEFAULT_INTEGRATION_ANALYSIS_PRELISTEN_RECOVERY_TIMEOUT_MS = 180_000;
 
 export function integrationAnalysisVisionEligibleForStatePersistenceMode(mode, enabled = false) {
   if (!Object.values(INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES).includes(mode)) {
@@ -190,7 +194,100 @@ async function closeProductionResources({ server, sessionService, coordinator, t
   return serverResult;
 }
 
-function createManagedProductionServer({ server, sessionService, coordinator, activation }) {
+function remainingPrelistenRecoveryMs(deadlineMs, monotonicNow, previousValue) {
+  const current = monotonicNow();
+  if (!Number.isFinite(current) || current < previousValue.value) {
+    fail(
+      "ANALYSIS_STARTUP_RECOVERY_TIMEOUT",
+      "Durable analysis startup recovery monotonic clock regressed."
+    );
+  }
+  previousValue.value = current;
+  const remaining = deadlineMs - current;
+  if (remaining < 100) {
+    fail(
+      "ANALYSIS_STARTUP_RECOVERY_TIMEOUT",
+      "Durable analysis startup recovery exceeded its shared pre-listen deadline."
+    );
+  }
+  return Math.min(300_000, remaining);
+}
+
+async function activateRecoveredAnalysisDependencies({
+  config,
+  trustedPrincipalProxyClient,
+  sessionService,
+  idempotencyStore,
+  startupProof,
+  recoveryTimeoutMs = DEFAULT_INTEGRATION_ANALYSIS_PRELISTEN_RECOVERY_TIMEOUT_MS,
+  monotonicNow = () => performance.now(),
+  activationFactory = createIntegrationAnalysisRouterActivation,
+  serverFactory = createIntegrationAnalysisServer,
+}) {
+  if (!Number.isSafeInteger(recoveryTimeoutMs) || recoveryTimeoutMs < 100 || recoveryTimeoutMs > 300_000) {
+    fail("ANALYSIS_SERVER_INVALID", "Analysis pre-listen recovery timeout is invalid.");
+  }
+  const started = monotonicNow();
+  if (!Number.isFinite(started)) {
+    fail("ANALYSIS_SERVER_INVALID", "Analysis pre-listen monotonic clock is unavailable.");
+  }
+  const previousMonotonic = { value: started };
+  const deadlineMs = started + recoveryTimeoutMs;
+  const stateStartupRecovery = await sessionService.recoverBeforeListen({
+    timeoutMs: remainingPrelistenRecoveryMs(deadlineMs, monotonicNow, previousMonotonic),
+  });
+  const idempotencyStartupRecovery = await idempotencyStore.recoverBeforeListen({
+    timeoutMs: remainingPrelistenRecoveryMs(deadlineMs, monotonicNow, previousMonotonic),
+  });
+  const startupRecoveryUnsigned = Object.freeze({
+    schemaVersion: INTEGRATION_ANALYSIS_PRELISTEN_RECOVERY_SCHEMA_VERSION,
+    owner: "aginti",
+    beforeListen: true,
+    listenerCreatedBeforeRecovery: false,
+    statePersistenceMode: config.statePersistence.mode,
+    stateRecovery: stateStartupRecovery,
+    idempotencyRecovery: idempotencyStartupRecovery,
+    bounded: true,
+    timeoutMs: recoveryTimeoutMs,
+  });
+  const startupRecoveryProof = Object.freeze({
+    ...startupRecoveryUnsigned,
+    digest: contractDigest(startupRecoveryUnsigned),
+  });
+  const serviceCapabilities = await sessionService.getIntegrationCapabilities();
+  const mutationRecoveryAuthority = serviceCapabilities?.mutationRecoveryAuthority;
+  if (!mutationRecoveryAuthority || mutationRecoveryAuthority.atomicWithMutation !== true) {
+    fail(
+      "ANALYSIS_MUTATION_RECOVERY_UNAVAILABLE",
+      "Durable mutation receipt authority is required before the analysis listener may start."
+    );
+  }
+  const policy = buildFixedIntegrationPolicy();
+  const activation = await activationFactory({
+    sessionService,
+    idempotencyStore,
+    startupProof,
+    startupRecoveryProof,
+    policy,
+    stateRoot: config.stateRoot,
+    idempotencyRoot: config.idempotencyRoot,
+    statePersistenceMode: config.statePersistence.mode,
+  });
+  const server = serverFactory({
+    config,
+    trustedPrincipalProxyClient,
+    activation,
+  });
+  return Object.freeze({ activation, server, startupRecoveryProof });
+}
+
+function createManagedProductionServer({
+  server,
+  sessionService,
+  coordinator,
+  activation,
+  startupRecoveryProof,
+}) {
   let closePromise = null;
 
   async function close(closeOptions) {
@@ -206,6 +303,7 @@ function createManagedProductionServer({ server, sessionService, coordinator, ac
     server: server.server,
     config: server.config,
     activation,
+    startupRecoveryProof,
     async start() {
       try {
         return await server.start();
@@ -245,6 +343,67 @@ export function createTestOnlyIntegrationAnalysisServerLifecycle(options = {}) {
     fail("ANALYSIS_SERVER_INVALID", "Test analysis server lifecycle dependencies are invalid.");
   }
   return createManagedProductionServer(options);
+}
+
+export async function createTestOnlyIntegrationAnalysisPrelistenComposition(options = {}) {
+  exactOptions(
+    options,
+    [
+      "config", "trustedPrincipalProxyClient", "sessionService", "idempotencyStore", "coordinator",
+      "startupProof", "recoveryTimeoutMs", "monotonicNow", "activationFactory", "serverFactory",
+    ],
+    [
+      "config", "trustedPrincipalProxyClient", "sessionService", "idempotencyStore", "coordinator",
+      "startupProof", "activationFactory", "serverFactory",
+    ],
+    "test analysis pre-listen composition options"
+  );
+  if (
+    typeof options.sessionService?.recoverBeforeListen !== "function" ||
+    typeof options.sessionService?.getIntegrationCapabilities !== "function" ||
+    typeof options.sessionService?.close !== "function" ||
+    typeof options.idempotencyStore?.recoverBeforeListen !== "function" ||
+    typeof options.coordinator?.close !== "function" ||
+    typeof options.activationFactory !== "function" ||
+    typeof options.serverFactory !== "function"
+  ) {
+    fail("ANALYSIS_SERVER_INVALID", "Test pre-listen composition dependencies are invalid.");
+  }
+  const config = validateIntegrationAnalysisServiceConfig(options.config);
+  let server;
+  try {
+    const completed = await activateRecoveredAnalysisDependencies({
+      config,
+      trustedPrincipalProxyClient: options.trustedPrincipalProxyClient,
+      sessionService: options.sessionService,
+      idempotencyStore: options.idempotencyStore,
+      startupProof: options.startupProof,
+      recoveryTimeoutMs: options.recoveryTimeoutMs,
+      monotonicNow: options.monotonicNow,
+      activationFactory: options.activationFactory,
+      serverFactory: options.serverFactory,
+    });
+    server = completed.server;
+    return createManagedProductionServer({
+      server,
+      sessionService: options.sessionService,
+      coordinator: options.coordinator,
+      activation: completed.activation,
+      startupRecoveryProof: completed.startupRecoveryProof,
+    });
+  } catch (error) {
+    try {
+      await closeProductionResources({
+        server,
+        sessionService: options.sessionService,
+        coordinator: options.coordinator,
+        timeoutMs: DEFAULT_INTEGRATION_ANALYSIS_CLOSE_TIMEOUT_MS,
+      });
+    } catch {
+      // Preserve the exact pre-listen recovery failure after exhausting teardown.
+    }
+    throw error;
+  }
 }
 
 export function integrationAnalysisListenOptions(configInput) {
@@ -525,40 +684,25 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
         "Durable mutation receipt recovery is required before the analysis listener may start."
       );
     }
-    const serviceCapabilities = await sessionService.getIntegrationCapabilities();
-    const mutationRecoveryAuthority = serviceCapabilities?.mutationRecoveryAuthority;
-    if (!mutationRecoveryAuthority || mutationRecoveryAuthority.atomicWithMutation !== true) {
-      fail(
-        "ANALYSIS_MUTATION_RECOVERY_UNAVAILABLE",
-        "Durable mutation receipt authority is required before the analysis listener may start."
-      );
-    }
     const idempotencyStore = createFileIntegrationIdempotencyStore({
       rootDir: config.idempotencyRoot,
       recoveryAuthority: IDEMPOTENCY_RECOVERY_AUTHORITY,
       recoverPending: (record) => sessionService.recoverMutation(record),
     });
-    await idempotencyStore.recoverExpiredPending();
-    const policy = buildFixedIntegrationPolicy();
-    const activation = await createIntegrationAnalysisRouterActivation({
+    const completed = await activateRecoveredAnalysisDependencies({
+      config,
+      trustedPrincipalProxyClient: options.trustedPrincipalProxyClient,
       sessionService,
       idempotencyStore,
       startupProof,
-      policy,
-      stateRoot: config.stateRoot,
-      idempotencyRoot: config.idempotencyRoot,
-      statePersistenceMode: config.statePersistence.mode,
     });
-    server = createIntegrationAnalysisServer({
-      config,
-      trustedPrincipalProxyClient: options.trustedPrincipalProxyClient,
-      activation,
-    });
+    server = completed.server;
     return createManagedProductionServer({
       server,
       sessionService,
       coordinator,
-      activation,
+      activation: completed.activation,
+      startupRecoveryProof: completed.startupRecoveryProof,
     });
   } catch (error) {
     try {
