@@ -470,21 +470,147 @@ async function smokeDirectoryLock(root) {
   });
   assert.equal(reacquired, true);
 
+  const releaseQuarantineLock = path.join(lockRoot, "release-quarantine.lock");
+  let releaseQuarantineRenamed = false;
+  let resumeReleaseQuarantine;
+  const releaseQuarantineGate = new Promise((resolve) => {
+    resumeReleaseQuarantine = resolve;
+  });
+  const firstRelease = withDirectoryLock(
+    releaseQuarantineLock,
+    async () => {},
+    {
+      waitMs: 3000,
+      testHooks: {
+        async afterReleaseQuarantineRename() {
+          releaseQuarantineRenamed = true;
+          await releaseQuarantineGate;
+        },
+      },
+    }
+  );
+  await waitFor(() => releaseQuarantineRenamed, "release quarantine rename did not occur");
+  let releaseSuccessorEntered = false;
+  let resumeReleaseSuccessor;
+  const releaseSuccessorGate = new Promise((resolve) => {
+    resumeReleaseSuccessor = resolve;
+  });
+  const releaseSuccessor = withDirectoryLock(
+    releaseQuarantineLock,
+    async () => {
+      releaseSuccessorEntered = true;
+      await releaseSuccessorGate;
+    },
+    { waitMs: 3000 }
+  );
+  await waitFor(() => releaseSuccessorEntered, "successor did not acquire while prior release cleanup paused");
+  resumeReleaseQuarantine();
+  await firstRelease;
+  const successorOwner = await fs.readFile(path.join(releaseQuarantineLock, "owner.json"), "utf8");
+  assert.match(successorOwner, /aginti-directory-lock-v1/u, "prior release must not remove successor owner");
+  resumeReleaseSuccessor();
+  await releaseSuccessor;
+  assert.equal(
+    (await fs.readdir(lockRoot)).some((name) => name.startsWith("release-quarantine.lock.")),
+    false,
+    "release quarantine must be removed without touching the successor"
+  );
+
+  const interruptedReleaseLock = path.join(lockRoot, "interrupted-release.lock");
+  await assert.rejects(
+    () => withDirectoryLock(
+      interruptedReleaseLock,
+      async () => {
+        await fs.writeFile(
+          path.join(interruptedReleaseLock, `.owner.json.${process.pid}.${"1".repeat(16)}.tmp`),
+          "loser-one",
+          { mode: 0o600 }
+        );
+        await fs.writeFile(
+          path.join(interruptedReleaseLock, `.owner.json.${process.pid}.${"2".repeat(16)}.tmp`),
+          "loser-two",
+          { mode: 0o600 }
+        );
+      },
+      {
+        waitMs: 3000,
+        testHooks: {
+          async afterReleaseQuarantineRename() {
+            throw new Error("synthetic crash after release quarantine rename");
+          },
+        },
+      }
+    ),
+    /synthetic crash after release quarantine rename/u
+  );
+  assert.equal(
+    (await fs.readdir(lockRoot)).some((name) => name.startsWith("interrupted-release.lock.release-")),
+    true,
+    "interrupted release must preserve its quarantine"
+  );
+  let interruptedReleaseRecovered = false;
+  await withDirectoryLock(
+    interruptedReleaseLock,
+    async () => {
+      interruptedReleaseRecovered = true;
+    },
+    { waitMs: 3000 }
+  );
+  assert.equal(interruptedReleaseRecovered, true);
+  assert.equal(
+    (await fs.readdir(lockRoot)).some((name) => name.startsWith("interrupted-release.lock.")),
+    false,
+    "a successor must reconcile an interrupted release quarantine"
+  );
+
+  async function rejectUnsafeReleaseQuarantine(label, seed) {
+    const lock = path.join(lockRoot, `unsafe-release-${label}.lock`);
+    const quarantine = `${lock}.release-999999991-${"a".repeat(32)}`;
+    await fs.mkdir(quarantine, { mode: 0o700 });
+    await seed(quarantine);
+    await assertRejectsCode(
+      () => withDirectoryLock(lock, async () => assert.fail("unsafe release quarantine must not enter"), {
+        waitMs: 2_000,
+      }),
+      "INTEGRATION_AUTHORITY_LOCK_CORRUPT",
+      `unsafe release quarantine ${label}`
+    );
+    for (const name of await fs.readdir(lockRoot)) {
+      if (name.startsWith(`unsafe-release-${label}.lock`)) {
+        await fs.rm(path.join(lockRoot, name), { recursive: true, force: true });
+      }
+    }
+  }
+  await rejectUnsafeReleaseQuarantine("overbound", async (quarantine) => {
+    for (let index = 0; index < 66; index += 1) {
+      await fs.writeFile(
+        path.join(quarantine, `.owner.json.${800000000 + index}.${index.toString(16).padStart(16, "0")}.tmp`),
+        "",
+        { mode: 0o600 }
+      );
+    }
+  });
+  await rejectUnsafeReleaseQuarantine("hardlink", async (quarantine) => {
+    const source = path.join(lockRoot, "unsafe-release-hardlink-source");
+    await fs.writeFile(source, "unsafe", { mode: 0o600 });
+    await fs.link(source, path.join(quarantine, `.owner.json.999999991.${"b".repeat(16)}.tmp`));
+  });
+  await fs.rm(path.join(lockRoot, "unsafe-release-hardlink-source"), { force: true });
+  await rejectUnsafeReleaseQuarantine("type", async (quarantine) => {
+    await fs.mkdir(path.join(quarantine, `.owner.json.999999991.${"c".repeat(16)}.tmp`), { mode: 0o700 });
+  });
+
   const freshOwnerlessLock = path.join(lockRoot, "fresh-ownerless.lock");
   await fs.mkdir(freshOwnerlessLock, { mode: 0o700 });
-  await assertRejectsCode(
-    () =>
-      withDirectoryLock(
-        freshOwnerlessLock,
-        async () => {
-          assert.fail("fresh ownerless creation-window lock must not be acquired before stale bound");
-        },
-        { staleMs: 5000, waitMs: 40 }
-      ),
-    "INTEGRATION_AUTHORITY_BUSY",
-    "fresh ownerless lock waits instead of corrupting"
+  let freshOwnerlessClaimed = false;
+  await withDirectoryLock(
+    freshOwnerlessLock,
+    async () => {
+      freshOwnerlessClaimed = true;
+    },
+    { staleMs: 5000, waitMs: 2000 }
   );
-  await fs.rm(freshOwnerlessLock, { recursive: true, force: true });
+  assert.equal(freshOwnerlessClaimed, true, "fresh ownerless creation-window lock is atomically claimed");
 
   const ownerlessCrashLock = path.join(lockRoot, "ownerless-crash.lock");
   await fs.mkdir(ownerlessCrashLock, { mode: 0o700 });
@@ -592,6 +718,16 @@ async function smokeDirectoryLock(root) {
     token: "8".repeat(32),
     acquiredAt: new Date(Date.now() - 60_000).toISOString(),
   });
+  await fs.writeFile(
+    path.join(staleQuarantineRetryLock, `.owner.json.999999998.${"3".repeat(16)}.tmp`),
+    "stale-loser-one",
+    { mode: 0o600 }
+  );
+  await fs.writeFile(
+    path.join(staleQuarantineRetryLock, `.owner.json.999999997.${"4".repeat(16)}.tmp`),
+    "stale-loser-two",
+    { mode: 0o600 }
+  );
   await assert.rejects(
     () => withDirectoryLock(
       staleQuarantineRetryLock,
@@ -629,24 +765,8 @@ async function smokeDirectoryLock(root) {
   );
 
   const ownerlessQuarantineRetryLock = path.join(lockRoot, "ownerless-quarantine-retry.lock");
-  await fs.mkdir(ownerlessQuarantineRetryLock, { mode: 0o700 });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  await assert.rejects(
-    () => withDirectoryLock(
-      ownerlessQuarantineRetryLock,
-      async () => assert.fail("faulted ownerless quarantine must not enter its operation"),
-      {
-        staleMs: 1,
-        waitMs: 2_000,
-        testHooks: {
-          async afterOwnerlessQuarantineRename() {
-            throw new Error("synthetic crash after ownerless quarantine rename");
-          },
-        },
-      }
-    ),
-    /synthetic crash after ownerless quarantine rename/u
-  );
+  const ownerlessQuarantineRetry = `${ownerlessQuarantineRetryLock}.ownerless-${process.pid}-${"d".repeat(16)}`;
+  await fs.mkdir(ownerlessQuarantineRetry, { mode: 0o700 });
   await new Promise((resolve) => setTimeout(resolve, 20));
   let ownerlessQuarantineRetried = false;
   await withDirectoryLock(
@@ -697,11 +817,12 @@ async function smokeDirectoryLock(root) {
   const creatorReaperOrder = [];
   let activeCriticalSections = 0;
   let overlapped = false;
-  async function enterCriticalSection(label, delayMs = 20) {
+  async function enterCriticalSection(label, delayMs = 20, gate = null) {
     activeCriticalSections += 1;
     if (activeCriticalSections > 1) overlapped = true;
     creatorReaperOrder.push(label);
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (gate) await gate;
+    else await new Promise((resolve) => setTimeout(resolve, delayMs));
     activeCriticalSections -= 1;
   }
   const delayedCreator = withDirectoryLock(
@@ -720,18 +841,67 @@ async function smokeDirectoryLock(root) {
   );
   await waitFor(() => creatorReaperOrder.includes("creator-mkdir"), "creator mkdir hook did not run");
   await new Promise((resolve) => setTimeout(resolve, 20));
+  let releaseAtomicSuccessor;
+  const atomicSuccessorGate = new Promise((resolve) => {
+    releaseAtomicSuccessor = resolve;
+  });
   const reaper = withDirectoryLock(
     creatorReaperRaceLock,
-    () => enterCriticalSection("reaper-successor", 60),
+    () => enterCriticalSection("atomic-successor", 0, atomicSuccessorGate),
     { staleMs: 1, waitMs: 3000 }
   );
-  await waitFor(() => creatorReaperOrder.includes("reaper-successor"), "reaper successor did not acquire");
+  await waitFor(() => creatorReaperOrder.includes("atomic-successor"), "atomic successor did not acquire");
+  const thirdContender = withDirectoryLock(
+    creatorReaperRaceLock,
+    () => enterCriticalSection("third-contender"),
+    { staleMs: 1, waitMs: 3000 }
+  );
   releaseDelayedCreator();
-  await Promise.all([delayedCreator, reaper]);
-  assert.deepEqual(creatorReaperOrder.filter((item) => item !== "creator-mkdir").sort(), ["delayed-creator", "reaper-successor"]);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  releaseAtomicSuccessor();
+  await Promise.all([delayedCreator, reaper, thirdContender]);
+  assert.deepEqual(
+    creatorReaperOrder.filter((item) => item !== "creator-mkdir").sort(),
+    ["atomic-successor", "delayed-creator", "third-contender"]
+  );
   assert.equal(overlapped, false);
   await fs.access(creatorReaperRaceLock).then(
     () => assert.fail("creator/reaper race lock should have been released"),
+    (error) => assert.equal(error.code, "ENOENT")
+  );
+
+  const linkedPublicationCrashLock = path.join(lockRoot, "linked-publication-crash.lock");
+  await fs.mkdir(linkedPublicationCrashLock, { mode: 0o700 });
+  const linkedPublicationTemporary = path.join(
+    linkedPublicationCrashLock,
+    `.owner.json.999999991.${"e".repeat(16)}.tmp`
+  );
+  const linkedPublicationOwner = {
+    schemaVersion: "aginti-directory-lock-v1",
+    pid: 999999991,
+    token: "f".repeat(32),
+    processIdentity: {
+      schemaVersion: "aginti-process-identity-v1",
+      bootId: "deadbeef-dead-beef-dead-beefdeadbeef",
+      startTimeTicks: "12345",
+    },
+    acquiredAt: new Date(Date.now() - 10_000).toISOString(),
+  };
+  await fs.writeFile(linkedPublicationTemporary, `${JSON.stringify(linkedPublicationOwner)}\n`, { mode: 0o600 });
+  await fs.link(linkedPublicationTemporary, path.join(linkedPublicationCrashLock, "owner.json"));
+  const linkedBefore = await fs.lstat(linkedPublicationTemporary);
+  assert.equal(linkedBefore.nlink, 2, "crash-after-link fixture must retain both names");
+  let linkedPublicationRecovered = false;
+  await withDirectoryLock(
+    linkedPublicationCrashLock,
+    async () => {
+      linkedPublicationRecovered = true;
+    },
+    { staleMs: 1, waitMs: 3000 }
+  );
+  assert.equal(linkedPublicationRecovered, true);
+  await fs.access(linkedPublicationCrashLock).then(
+    () => assert.fail("linked owner publication crash lock should have been released"),
     (error) => assert.equal(error.code, "ENOENT")
   );
 }
@@ -1552,19 +1722,38 @@ async function smokeIdempotency(root) {
     await seedJsonTemporary(startupResidueResponsePath, 999999998, "3".repeat(16), await fs.readFile(startupResidueResponsePath)),
   ];
   const startupResidueLocks = path.join(startupResidueRoot, "locks");
-  async function seedLockOwner(directory, token) {
+  async function seedLockOwner(directory, token, { linked = false, losers = 0 } = {}) {
     await fs.mkdir(directory, { mode: 0o700 });
-    await fs.writeFile(path.join(directory, "owner.json"), `${JSON.stringify({
+    const owner = `${JSON.stringify({
       schemaVersion: "aginti-directory-lock-v1",
       pid: 999999997,
       token,
       acquiredAt: "2020-01-01T00:00:00.000Z",
-    })}\n`, { flag: "wx", mode: 0o600 });
+    })}\n`;
+    if (linked) {
+      const temporary = path.join(directory, `.owner.json.999999997.${"9".repeat(16)}.tmp`);
+      await fs.writeFile(temporary, owner, { flag: "wx", mode: 0o600 });
+      await fs.link(temporary, path.join(directory, "owner.json"));
+    } else {
+      await fs.writeFile(path.join(directory, "owner.json"), owner, { flag: "wx", mode: 0o600 });
+    }
+    for (let index = 0; index < losers; index += 1) {
+      await fs.writeFile(
+        path.join(directory, `.owner.json.${999999990 - index}.${index.toString(16).padStart(16, "0")}.tmp`),
+        index === 0 ? "" : "loser",
+        { flag: "wx", mode: 0o600 }
+      );
+    }
   }
-  await seedLockOwner(path.join(startupResidueLocks, `${"c".repeat(64)}.lock`), "c".repeat(32));
+  await seedLockOwner(
+    path.join(startupResidueLocks, `${"c".repeat(64)}.lock`),
+    "c".repeat(32),
+    { linked: true, losers: 2 }
+  );
   await seedLockOwner(
     path.join(startupResidueLocks, `${startupResiduePaths.index}.lock.stale-999999996-${"d".repeat(16)}`),
-    "d".repeat(32)
+    "d".repeat(32),
+    { losers: 2 }
   );
   await seedLockOwner(
     path.join(startupResidueLocks, `transactions.lock.stale-999999995-${"e".repeat(16)}`),

@@ -120,6 +120,34 @@ async function createStaleOwnerLockQuarantine(root, breakerPid = 999_999_999) {
   return quarantine;
 }
 
+async function createLinkedDeadOwnerLock(root) {
+  const lockRoot = path.join(root, ".analysis-session-owner.lock");
+  await fs.mkdir(lockRoot, { mode: 0o700 });
+  const owner = {
+    schemaVersion: "aginti-directory-lock-v1",
+    pid: 999_999_991,
+    token: "f".repeat(32),
+    processIdentity: {
+      schemaVersion: "aginti-process-identity-v1",
+      bootId: "deadbeef-dead-beef-dead-beefdeadbeef",
+      startTimeTicks: "12345",
+    },
+    acquiredAt: "2020-01-01T00:00:00.000Z",
+  };
+  const linked = path.join(lockRoot, `.owner.json.${owner.pid}.${"e".repeat(16)}.tmp`);
+  await writePrivateFile(linked, `${JSON.stringify(owner)}\n`);
+  await fs.link(linked, path.join(lockRoot, "owner.json"));
+  await writePrivateFile(
+    path.join(lockRoot, `.owner.json.999999990.${"1".repeat(16)}.tmp`),
+    ""
+  );
+  await writePrivateFile(
+    path.join(lockRoot, `.owner.json.999999989.${"2".repeat(16)}.tmp`),
+    "loser"
+  );
+  return lockRoot;
+}
+
 function serviceConfig() {
   return Object.freeze({
     schemaVersion: INTEGRATION_ANALYSIS_SERVICE_CONFIG_SCHEMA_VERSION,
@@ -462,6 +490,7 @@ try {
     Buffer.from("partial-state", "utf8")
   );
   const stateLockQuarantine = await createStaleOwnerLockQuarantine(residueRoot);
+  const linkedStateOwnerLock = await createLinkedDeadOwnerLock(residueRoot);
   residueService = createTestOnlyIntegrationAnalysisSessionService({
     analysisRunner: recoveryRunner,
     stateRoot: residueRoot,
@@ -484,8 +513,18 @@ try {
     () => assert.fail("stale state-owner lock quarantine must be removed before listener activation"),
     (error) => assert.equal(error.code, "ENOENT")
   );
+  assert.deepEqual(
+    await fs.readdir(linkedStateOwnerLock),
+    ["owner.json"],
+    "linked state-owner publication and loser temporaries must be canonicalized before listener activation"
+  );
+  assert.equal((await fs.lstat(path.join(linkedStateOwnerLock, "owner.json"))).nlink, 1);
   await residueService.close({ mode: "wait" });
   residueService = null;
+  await fs.access(linkedStateOwnerLock).then(
+    () => assert.fail("recovered state-owner lock must release after service close"),
+    (error) => assert.equal(error.code, "ENOENT")
+  );
 
   const missingStateRoot = path.join(temporaryRoot, "missing-canonical-state-refusal");
   await fs.cp(residueRoot, missingStateRoot, { recursive: true });

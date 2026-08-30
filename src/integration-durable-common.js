@@ -484,12 +484,91 @@ function sameLockIdentity(left, right) {
   );
 }
 
-async function atomicWriteLockOwnerInDirectoryHandle(dirHandle, owner) {
+async function inspectLockOwnerPublication(dirHandle) {
+  const dirPath = `/proc/self/fd/${dirHandle.fd}`;
+  const ownerPath = path.join(dirPath, "owner.json");
+  const temporaryPattern = /^\.owner\.json\.([1-9][0-9]{0,11})\.([a-f0-9]{16})\.tmp$/u;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    if (entries.length > 65) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Too many lock-owner publication files exist.");
+    }
+    const temporary = [];
+    let ownerEntry = null;
+    for (const entry of entries) {
+      if (!entry.isFile() || entry.isSymbolicLink()) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock-owner publication entry type is unsafe.");
+      }
+      if (entry.name === "owner.json") {
+        if (ownerEntry) authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Duplicate lock owner exists.");
+        ownerEntry = entry;
+      } else if (temporaryPattern.test(entry.name)) {
+        temporary.push(entry.name);
+      } else {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Unknown lock-owner publication residue exists.");
+      }
+    }
+
+    let ownerStat = null;
+    if (ownerEntry) {
+      ownerStat = await fs.lstat(ownerPath).catch((error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      if (!ownerStat) continue;
+      if (!ownerStat.isFile() || ownerStat.isSymbolicLink() || !ownerOk(ownerStat) || (ownerStat.mode & 0o077) !== 0 || ownerStat.size > 4096) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock-owner metadata is unsafe.");
+      }
+      if (ownerStat.nlink === 1) return readProtectedJsonFile(ownerPath, { maxBytes: 4096 });
+      if (ownerStat.nlink !== 2) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock-owner publication link count is invalid.");
+      }
+    }
+
+    let retry = false;
+    const linked = [];
+    for (const name of temporary.sort()) {
+      const temporaryPath = path.join(dirPath, name);
+      const stat = await fs.lstat(temporaryPath).catch((error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      if (!stat) {
+        retry = true;
+        break;
+      }
+      if (!stat.isFile() || stat.isSymbolicLink() || !ownerOk(stat) || (stat.mode & 0o077) !== 0 || stat.size > 4096) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock-owner temporary metadata is unsafe.");
+      }
+      if (ownerStat && stat.dev === ownerStat.dev && stat.ino === ownerStat.ino) linked.push({ path: temporaryPath, stat });
+      else if (stat.nlink !== 1) retry = true;
+    }
+    if (retry) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      continue;
+    }
+    if (!ownerStat) return null;
+    if (linked.length !== 1 || linked[0].stat.nlink !== 2) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      continue;
+    }
+    await fs.unlink(linked[0].path).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+    await dirHandle.sync();
+  }
+  authorityFail("INTEGRATION_AUTHORITY_BUSY", "Lock-owner publication is changing.", { status: 503 });
+}
+
+async function atomicClaimLockOwnerInDirectoryHandle(dirHandle, owner, testHooks = {}) {
+  const existing = await inspectLockOwnerPublication(dirHandle);
+  if (existing) return false;
   const dirPath = `/proc/self/fd/${dirHandle.fd}`;
   const tmpPath = path.join(dirPath, `.owner.json.${process.pid}.${randomHex(8)}.tmp`);
   const ownerPath = path.join(dirPath, "owner.json");
   const bytes = `${JSON.stringify(owner)}\n`;
   let handle;
+  let linked = false;
   try {
     handle = await fs.open(tmpPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
     await handle.writeFile(bytes, "utf8");
@@ -497,21 +576,104 @@ async function atomicWriteLockOwnerInDirectoryHandle(dirHandle, owner) {
   } finally {
     await handle?.close().catch(() => {});
   }
-  await fs.rename(tmpPath, ownerPath);
+  if (typeof testHooks.afterOwnerTemporarySync === "function") {
+    await testHooks.afterOwnerTemporarySync({ ownerPath, temporaryPath: tmpPath, token: owner.token });
+  }
+  try {
+    await fs.link(tmpPath, ownerPath);
+    linked = true;
+  } catch (error) {
+    if (error?.code !== "EEXIST" && error?.code !== "ENOENT") throw error;
+  }
+  if (!linked) {
+    await fs.unlink(tmpPath).catch((error) => {
+      if (error?.code !== "ENOENT") throw error;
+    });
+    await dirHandle.sync();
+    await inspectLockOwnerPublication(dirHandle);
+    return false;
+  }
   await dirHandle.sync();
+  if (typeof testHooks.afterOwnerLink === "function") {
+    await testHooks.afterOwnerLink({ ownerPath, temporaryPath: tmpPath, token: owner.token });
+  }
+  await fs.unlink(tmpPath).catch((error) => {
+    // A competing reader may already have resolved the exact two-name,
+    // same-inode publication after the link became authoritative.
+    if (error?.code !== "ENOENT") throw error;
+  });
+  await dirHandle.sync();
+  const published = await inspectLockOwnerPublication(dirHandle);
+  if (lockOwnerToken(published) !== owner.token) {
+    authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Published lock owner token changed.");
+  }
+  if (typeof testHooks.afterOwnerPublished === "function") {
+    await testHooks.afterOwnerPublished({ ownerPath, token: owner.token });
+  }
+  return true;
 }
 
-async function removeDirectoryLockIfSameIdentity(lockDir, identity) {
-  const current = await lockDirectoryIdentity(lockDir);
-  if (!sameLockIdentity(identity, current)) return;
-  await fs.rm(lockDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 10 }).catch(() => {});
-  await fsyncDirectory(path.dirname(lockDir)).catch(() => {});
-}
+async function releaseDirectoryLock(lockDir, token, testHooks = {}) {
+  const parent = path.dirname(lockDir);
+  const before = await lockDirectoryIdentity(lockDir);
+  if (!before) return;
 
-async function releaseDirectoryLock(lockDir, token) {
-  const owner = await readLockOwner(lockDir);
-  if (!owner || lockOwnerToken(owner) !== token) return;
-  await fs.rm(lockDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 10 }).catch(() => {});
+  let dirHandle;
+  try {
+    dirHandle = await fs.open(lockDir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+    const opened = lockIdentityFromStat(await dirHandle.stat());
+    if (!sameLockIdentity(before, opened)) return;
+    const owner = await inspectLockOwnerPublication(dirHandle);
+    if (!owner || lockOwnerToken(owner) !== token) return;
+    const named = await lockDirectoryIdentity(lockDir);
+    if (!sameLockIdentity(opened, named)) return;
+
+    const quarantine = `${lockDir}.release-${process.pid}-${token}`;
+    const preexisting = await fs.lstat(quarantine).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (preexisting) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock release quarantine already exists.");
+    }
+    if (typeof testHooks.beforeReleaseQuarantineRename === "function") {
+      await testHooks.beforeReleaseQuarantineRename({ lockDir, quarantine, token });
+    }
+    await fs.rename(lockDir, quarantine);
+    await fsyncDirectory(parent);
+    if (typeof testHooks.afterReleaseQuarantineRename === "function") {
+      await testHooks.afterReleaseQuarantineRename({ lockDir, quarantine, token });
+    }
+
+    const quarantined = await lockDirectoryIdentity(quarantine);
+    const canonical = await lockDirectoryIdentity(lockDir);
+    if (!quarantined) {
+      // A successor may already hold the new canonical lock and, while doing
+      // so, finish removal of this exact release quarantine.  Absence is the
+      // durable response-loss resolution; the old inode must never have been
+      // restored at the canonical name.
+      if (sameLockIdentity(opened, canonical)) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Released lock inode was restored unexpectedly.");
+      }
+      return;
+    }
+    if (!sameLockIdentity(opened, quarantined) || sameLockIdentity(opened, canonical)) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock release quarantine identity changed.");
+    }
+    const quarantinedPublication = await inspectLockQuarantinePublication(quarantine);
+    if (lockOwnerToken(quarantinedPublication.owner) !== token) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock release owner changed after quarantine rename.");
+    }
+    if (typeof testHooks.beforeReleaseQuarantineRemove === "function") {
+      await testHooks.beforeReleaseQuarantineRemove({ lockDir, quarantine, token });
+    }
+    await fs.rm(quarantine, { recursive: true, force: false, maxRetries: 5, retryDelay: 10 });
+    await fsyncDirectory(parent);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  } finally {
+    await dirHandle?.close().catch(() => {});
+  }
 }
 
 async function requirePrivateLockQuarantineDirectory(quarantinePath) {
@@ -534,6 +696,99 @@ async function requirePrivateLockQuarantineDirectory(quarantinePath) {
   return Object.freeze({ dev: stat.dev, ino: stat.ino, ctimeMs: stat.ctimeMs });
 }
 
+async function inspectLockQuarantinePublication(quarantinePath) {
+  const temporaryPattern = /^\.owner\.json\.([1-9][0-9]{0,11})\.([a-f0-9]{16})\.tmp$/u;
+  const names = (await fs.readdir(quarantinePath)).sort();
+  if (names.length > 65 || names.some((name) => name !== "owner.json" && !temporaryPattern.test(name))) {
+    authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine publication inventory is invalid.");
+  }
+  const ownerPath = path.join(quarantinePath, "owner.json");
+  const hasOwner = names.includes("owner.json");
+  let ownerStat = null;
+  if (hasOwner) {
+    ownerStat = await fs.lstat(ownerPath);
+    if (
+      !ownerStat.isFile() || ownerStat.isSymbolicLink() || !ownerOk(ownerStat)
+      || (ownerStat.mode & 0o077) !== 0 || ![1, 2].includes(ownerStat.nlink)
+      || ownerStat.size < 1 || ownerStat.size > 4096
+    ) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine owner metadata is unsafe.");
+    }
+  }
+
+  const temporaryStats = new Map();
+  const linked = [];
+  for (const name of names.filter((value) => value !== "owner.json")) {
+    const target = path.join(quarantinePath, name);
+    const stat = await fs.lstat(target);
+    if (
+      !stat.isFile() || stat.isSymbolicLink() || !ownerOk(stat)
+      || (stat.mode & 0o077) !== 0 || ![1, 2].includes(stat.nlink)
+      || stat.size < 0 || stat.size > 4096
+    ) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine owner temporary metadata is unsafe.");
+    }
+    if (ownerStat && stat.dev === ownerStat.dev && stat.ino === ownerStat.ino) linked.push(name);
+    else if (stat.nlink !== 1) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine contains a foreign hard link.");
+    }
+    temporaryStats.set(name, stat);
+  }
+  if (
+    (!ownerStat && linked.length !== 0)
+    || (ownerStat?.nlink === 1 && linked.length !== 0)
+    || (ownerStat?.nlink === 2 && linked.length !== 1)
+  ) {
+    authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine owner publication is incomplete.");
+  }
+
+  let owner = null;
+  if (ownerStat) {
+    let handle;
+    try {
+      handle = await fs.open(ownerPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const opened = await handle.stat();
+      if (
+        opened.dev !== ownerStat.dev || opened.ino !== ownerStat.ino
+        || opened.nlink !== ownerStat.nlink || opened.size !== ownerStat.size
+      ) authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine owner changed while opening.");
+      const raw = await handle.readFile("utf8");
+      if (Buffer.byteLength(raw, "utf8") !== ownerStat.size) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine owner changed while reading.");
+      }
+      try {
+        owner = JSON.parse(raw);
+      } catch {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine owner JSON is corrupt.");
+      }
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+    if (linked.length === 1 && temporaryPattern.exec(linked[0])?.[1] !== String(owner?.pid)) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine linked owner PID is invalid.");
+    }
+  }
+
+  if (JSON.stringify((await fs.readdir(quarantinePath)).sort()) !== JSON.stringify(names)) {
+    authorityFail("INTEGRATION_AUTHORITY_BUSY", "Lock quarantine publication is changing.", { status: 503 });
+  }
+  if (ownerStat) {
+    const current = await fs.lstat(ownerPath);
+    if (
+      current.dev !== ownerStat.dev || current.ino !== ownerStat.ino
+      || current.nlink !== ownerStat.nlink || current.size !== ownerStat.size
+    ) authorityFail("INTEGRATION_AUTHORITY_BUSY", "Lock quarantine owner is changing.", { status: 503 });
+  }
+  for (const [name, before] of temporaryStats) {
+    const current = await fs.lstat(path.join(quarantinePath, name));
+    if (
+      current.dev !== before.dev || current.ino !== before.ino
+      || current.nlink !== before.nlink || current.size !== before.size
+    ) authorityFail("INTEGRATION_AUTHORITY_BUSY", "Lock quarantine temporary is changing.", { status: 503 });
+  }
+  return Object.freeze({ names, owner });
+}
+
 async function reconcileAbandonedDirectoryLockQuarantines(
   lockDir,
   staleMs,
@@ -546,32 +801,50 @@ async function reconcileAbandonedDirectoryLockQuarantines(
     `^${escapeRegularExpression(basename)}\\.(stale|ownerless)-([1-9][0-9]{0,11})-([a-f0-9]{16})$`,
     "u"
   );
+  const releasePattern = new RegExp(
+    `^${escapeRegularExpression(basename)}\\.release-([1-9][0-9]{0,11})-([a-f0-9]{32})$`,
+    "u"
+  );
   const entries = await fs.readdir(parent, { withFileTypes: true });
   const quarantines = entries
-    .map((entry) => Object.freeze({ entry, match: pattern.exec(entry.name) }))
-    .filter(({ match }) => match !== null)
+    .map((entry) => {
+      const match = pattern.exec(entry.name);
+      const releaseMatch = releasePattern.exec(entry.name);
+      return Object.freeze({
+        entry,
+        kind: match?.[1] ?? (releaseMatch ? "release" : null),
+        pid: match?.[2] ?? releaseMatch?.[1] ?? null,
+        suffix: match?.[3] ?? releaseMatch?.[2] ?? null,
+      });
+    })
+    .filter(({ kind }) => kind !== null)
     .sort((left, right) => left.entry.name.localeCompare(right.entry.name));
   if (quarantines.length > 64) {
     authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Too many abandoned lock quarantines exist.");
   }
-  for (const { entry, match } of quarantines) {
+  for (const { entry, kind, pid, suffix } of quarantines) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) {
       authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Integration authority lock quarantine type is unsafe.");
     }
     const quarantinePath = path.join(parent, entry.name);
     const before = await requirePrivateLockQuarantineDirectory(quarantinePath);
     if (!before) continue;
-    const children = await fs.readdir(quarantinePath, { withFileTypes: true });
-    if (match[1] === "stale") {
-      if (children.length > 1 || (children.length === 1 && (
-        children[0].name !== "owner.json" ||
-        !children[0].isFile() ||
-        children[0].isSymbolicLink()
-      ))) {
-        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Stale lock quarantine entries are invalid.");
+    const publication = await inspectLockQuarantinePublication(quarantinePath);
+    const children = publication.names;
+    if (kind === "release") {
+      if (publication.owner) {
+        const owner = publication.owner;
+        if (
+          !validatedLockRecoveryOwnerToken(owner) ||
+          lockOwnerToken(owner) !== suffix ||
+          String(owner.pid) !== pid
+        ) {
+          authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Release lock quarantine owner is invalid.");
+        }
       }
-      if (children.length === 1) {
-        const owner = await readLockOwner(quarantinePath);
+    } else if (kind === "stale") {
+      if (publication.owner) {
+        const owner = publication.owner;
         const token = lockRecoveryOwnerToken(owner, requireValidatedOwnerForRecovery);
         const acquiredMs = owner?.acquiredAt ? Date.parse(owner.acquiredAt) : Number(before.ctimeMs || 0);
         const liveness = await processOwnerLiveness(owner, { testHooks });
@@ -580,22 +853,20 @@ async function reconcileAbandonedDirectoryLockQuarantines(
         }
       }
     } else {
-      if (
-        children.length > 1 ||
-        children.some((child) =>
-          !child.isFile() ||
-          child.isSymbolicLink() ||
-          !/^\.owner\.json\.[1-9][0-9]{0,11}\.[a-f0-9]{16}\.tmp$/u.test(child.name)
-        )
-      ) {
-        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Ownerless lock quarantine entries are invalid.");
-      }
-      for (const child of children) {
-        const childPath = path.join(quarantinePath, child.name);
-        await readProtectedUtf8File(childPath, { maxBytes: 4096 });
-      }
-      if (Date.now() - Number(before.ctimeMs || 0) <= staleMs) {
-        authorityFail("INTEGRATION_AUTHORITY_BUSY", "Ownerless lock quarantine is not yet stale.", { status: 503 });
+      const lateOwner = publication.owner !== null;
+      if (lateOwner) {
+        const owner = publication.owner;
+        if (!validatedLockRecoveryOwnerToken(owner)) {
+          authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Late ownerless-quarantine owner is invalid.");
+        }
+        const canonical = await lockDirectoryIdentity(lockDir);
+        if (!canonical || sameLockIdentity(before, canonical)) {
+          authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Late ownerless quarantine lacks a distinct canonical winner.");
+        }
+      } else {
+        if (Date.now() - Number(before.ctimeMs || 0) <= staleMs) {
+          authorityFail("INTEGRATION_AUTHORITY_BUSY", "Ownerless lock quarantine is not yet stale.", { status: 503 });
+        }
       }
     }
     const stable = await requirePrivateLockQuarantineDirectory(quarantinePath);
@@ -603,7 +874,7 @@ async function reconcileAbandonedDirectoryLockQuarantines(
       authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine changed during recovery.");
     }
     if (typeof testHooks.beforeAbandonedQuarantineRemove === "function") {
-      await testHooks.beforeAbandonedQuarantineRemove({ lockDir, quarantinePath, kind: match[1] });
+      await testHooks.beforeAbandonedQuarantineRemove({ lockDir, quarantinePath, kind });
     }
     await fs.rm(quarantinePath, { recursive: true, force: false, maxRetries: 5, retryDelay: 10 });
     await fsyncDirectory(parent);
@@ -623,9 +894,10 @@ async function breakStaleDirectoryLock(
   const token = lockRecoveryOwnerToken(owner, requireValidatedOwnerForRecovery);
   const acquiredMs = owner?.acquiredAt ? Date.parse(owner.acquiredAt) : Number(before.ctimeMs || 0);
   if (!token) {
-    if (requireValidatedOwnerForRecovery) return false;
-    if (Number.isFinite(acquiredMs) && nowMs - acquiredMs <= staleMs) return false;
-    return breakOwnerlessStaleDirectoryLock(lockDir, before, staleMs, nowMs, testHooks);
+    // Ownerless canonical directories are not reaped.  Every contender may
+    // atomically claim owner.json through the hard-link publication protocol,
+    // so a paused creator simply loses that claim without any rename race.
+    return false;
   }
   if (!(
     await lockIsBreakable(
@@ -651,7 +923,8 @@ async function breakStaleDirectoryLock(
   }
 
   const quarantined = await lockDirectoryIdentity(quarantine);
-  const quarantinedOwner = await readLockOwner(quarantine);
+  const quarantinedPublication = await inspectLockQuarantinePublication(quarantine);
+  const quarantinedOwner = quarantinedPublication.owner;
   if (
     !sameLockIdentity(before, quarantined) ||
     lockRecoveryOwnerToken(quarantinedOwner, requireValidatedOwnerForRecovery) !== token
@@ -673,43 +946,6 @@ async function breakStaleDirectoryLock(
   return true;
 }
 
-async function breakOwnerlessStaleDirectoryLock(lockDir, before, staleMs, nowMs, testHooks = {}) {
-  const quarantine = `${lockDir}.ownerless-${process.pid}-${randomHex(8)}`;
-  try {
-    await fs.rename(lockDir, quarantine);
-  } catch (error) {
-    if (error?.code === "ENOENT") return true;
-    if (error?.code === "EEXIST") return false;
-    throw error;
-  }
-  await fsyncDirectory(path.dirname(lockDir));
-  if (typeof testHooks.afterOwnerlessQuarantineRename === "function") {
-    await testHooks.afterOwnerlessQuarantineRename({ lockDir, quarantine });
-  }
-
-  const quarantined = await lockDirectoryIdentity(quarantine);
-  if (!sameLockIdentity(before, quarantined)) {
-    await fs.rename(quarantine, lockDir).catch(() => {});
-    await fsyncDirectory(path.dirname(lockDir)).catch(() => {});
-    authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Integration authority ownerless lock changed during recovery.");
-  }
-  const quarantinedOwner = await readLockOwner(quarantine);
-  if (lockOwnerToken(quarantinedOwner)) {
-    await fs.rename(quarantine, lockDir).catch(() => {});
-    await fsyncDirectory(path.dirname(lockDir)).catch(() => {});
-    return false;
-  }
-  const acquiredMs = Number(before?.ctimeMs || quarantined?.ctimeMs || 0);
-  if (!Number.isFinite(acquiredMs) || nowMs - acquiredMs <= staleMs) {
-    await fs.rename(quarantine, lockDir).catch(() => {});
-    await fsyncDirectory(path.dirname(lockDir)).catch(() => {});
-    return false;
-  }
-  await fs.rm(quarantine, { recursive: true, force: true, maxRetries: 5, retryDelay: 10 });
-  await fsyncDirectory(path.dirname(lockDir)).catch(() => {});
-  return true;
-}
-
 export async function withDirectoryLock(lockDir, operation, options = {}) {
   const waitMs = Number(options.waitMs ?? 5000);
   const staleMs = Number(options.staleMs ?? 60_000);
@@ -718,27 +954,27 @@ export async function withDirectoryLock(lockDir, operation, options = {}) {
   const started = Date.now();
   for (;;) {
     const token = randomHex(16);
-    let acquired = false;
-    let createdIdentity = null;
+    let created = false;
     try {
       await fs.mkdir(lockDir, { mode: 0o700 });
-      acquired = true;
-      createdIdentity = await lockDirectoryIdentity(lockDir);
+      created = true;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
     }
-    if (acquired) {
+    const candidateIdentity = await lockDirectoryIdentity(lockDir);
+    if (candidateIdentity) {
       let dirHandle;
+      let claimed = false;
       try {
         dirHandle = await fs.open(lockDir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
         const openedIdentity = lockIdentityFromStat(await dirHandle.stat());
-        if (!sameLockIdentity(createdIdentity, openedIdentity)) {
+        if (!sameLockIdentity(candidateIdentity, openedIdentity)) {
           await dirHandle.close().catch(() => {});
           continue;
         }
-        if (typeof testHooks.afterMkdir === "function") await testHooks.afterMkdir({ lockDir, token });
+        if (created && typeof testHooks.afterMkdir === "function") await testHooks.afterMkdir({ lockDir, token });
         const beforeOwnerIdentity = await lockDirectoryIdentity(lockDir);
-        if (!sameLockIdentity(createdIdentity, beforeOwnerIdentity)) {
+        if (!sameLockIdentity(candidateIdentity, beforeOwnerIdentity)) {
           await dirHandle.close().catch(() => {});
           dirHandle = null;
           continue;
@@ -751,29 +987,36 @@ export async function withDirectoryLock(lockDir, operation, options = {}) {
           processIdentity: processOwner.processIdentity,
           acquiredAt: processOwner.acquiredAt,
         };
-        await atomicWriteLockOwnerInDirectoryHandle(dirHandle, owner);
+        claimed = await atomicClaimLockOwnerInDirectoryHandle(dirHandle, owner, testHooks);
         await dirHandle.close().catch(() => {});
         dirHandle = null;
-        const currentIdentity = await lockDirectoryIdentity(lockDir);
-        if (!sameLockIdentity(createdIdentity, currentIdentity)) continue;
-        const currentOwner = await readLockOwner(lockDir);
-        if (lockOwnerToken(currentOwner) !== token) continue;
+        if (!claimed) {
+          // Another contender won owner.json's no-replace link.  Its exact
+          // owner is resolved below by the ordinary stale/live-owner path.
+        } else {
+          const currentIdentity = await lockDirectoryIdentity(lockDir);
+          if (!sameLockIdentity(candidateIdentity, currentIdentity)) continue;
+          const currentOwner = await readLockOwner(lockDir);
+          if (lockOwnerToken(currentOwner) !== token) continue;
+        }
       } catch (error) {
         await dirHandle?.close().catch(() => {});
         if (error?.code === "ENOENT") continue;
-        await removeDirectoryLockIfSameIdentity(lockDir, createdIdentity);
+        if (claimed) await releaseDirectoryLock(lockDir, token, testHooks);
         throw error;
       }
-      try {
-        await reconcileAbandonedDirectoryLockQuarantines(
-          lockDir,
-          staleMs,
-          testHooks,
-          { requireValidatedOwnerForRecovery }
-        );
-        return await operation();
-      } finally {
-        await releaseDirectoryLock(lockDir, token);
+      if (claimed) {
+        try {
+          await reconcileAbandonedDirectoryLockQuarantines(
+            lockDir,
+            staleMs,
+            testHooks,
+            { requireValidatedOwnerForRecovery }
+          );
+          return await operation();
+        } finally {
+          await releaseDirectoryLock(lockDir, token, testHooks);
+        }
       }
     }
     if (await breakStaleDirectoryLock(
