@@ -10,7 +10,7 @@ const RUNTIME_USER_MESSAGE_PATTERNS = Object.freeze([
   /^Step \d+\/\d+\b.*Latest runtime snapshot:/i,
   /^Retained runtime tool evidence\./i,
   /^The runtime proactively compacted a long agent history/i,
-  /^A previous agent-step model request timed out/i,
+  /^A previous agent-step (?:model request timed out|request was interrupted by a (?:model timeout|transient provider transport interruption))/i,
   /^Continue from this compacted, valid transcript/i,
   /^Previous assistant response retained as compacted history/i,
   /^Highest-priority retained state:/i,

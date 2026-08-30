@@ -130,6 +130,13 @@ only after a categorized provider failure and must not replay verified side
 effects. Codex and Claude remain explicit opt-in backends rather than hidden
 fallbacks.
 
+Timeout compaction also preserves goal-scoped deep-research completion. A
+same-task repair of the immediately preceding report keeps ordinary file,
+shell, and validation tools after a model switch instead of forcing another
+research pass. A genuinely new research request does not inherit that marker
+and still begins with the bounded `deep_research` workflow. Native function
+calling and the text-tool fallback apply the same rule.
+
 ## Machine Host Protocol
 
 The supported subprocess boundary is:

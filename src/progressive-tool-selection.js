@@ -2741,7 +2741,10 @@ export function selectProgressiveTools(
       )
     : enabled;
 
-  if (shouldStartWithDeepResearch(goal || config.goal, messages)) {
+  if (
+    config.deepResearchCompletedForCurrentWork !== true &&
+    shouldStartWithDeepResearch(goal || config.goal, messages)
+  ) {
     const deepResearch = phaseEnabled.find(({ name }) => name === "deep_research")?.tool;
     if (deepResearch) return [deepResearch, finish];
   }

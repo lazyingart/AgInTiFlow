@@ -13687,6 +13687,45 @@ export function convergenceSuppressedToolNames(state = {}) {
   return [toolName];
 }
 
+function currentWorkHasCompletedDeepResearch(state = {}, config = {}) {
+  const records = Array.isArray(state.meta?.completedDeepResearch)
+    ? state.meta.completedDeepResearch
+    : [];
+  if (!records.length) return false;
+
+  const goalContract = state.meta?.goalContract || {};
+  const currentKey = String(
+    goalContract.currentHash || goalContract.activeHash || currentGoalKey(state)
+  ).trim();
+  const latestHistory = Array.isArray(goalContract.history)
+    ? goalContract.history.at(-1) || {}
+    : {};
+  const previousKey = String(latestHistory.previousHash || "").trim();
+  const currentRequest = String(
+    goalContract.currentRequest || config.goal || state.goal || ""
+  ).replace(/\s+/g, " ").trim();
+  const continuesExistingResearchArtifact = Boolean(
+    previousKey &&
+    /\b(?:preserve|reuse|continue|recover|repair|fix|correct|revise|validate|verify|rebuild|missing|existing|completed|retained|saved)\b/i.test(currentRequest) &&
+    /\b(?:research|report|evidence|sources?|citations?|manifest|pdf|artifact|validation|validator)\b/i.test(currentRequest)
+  );
+
+  return records.some((record) => {
+    const result = record?.result || {};
+    if (
+      result.ok !== true ||
+      Number(result.version || 0) !== RESEARCH_VERSION ||
+      !String(result.reportPath || "").trim() ||
+      !fsSync.existsSync(String(result.reportPath))
+    ) {
+      return false;
+    }
+    const recordKey = String(record.goalKey || "").trim();
+    if (recordKey && recordKey === currentKey) return true;
+    return continuesExistingResearchArtifact && recordKey === previousKey;
+  });
+}
+
 export function nextStepRuntimeConfig(config = {}, state = {}) {
   const staticOrder = Array.isArray(state.meta?.toolLoop?.staticOrder)
     ? state.meta.toolLoop.staticOrder
@@ -13699,6 +13738,9 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const runtimeConfig = {
     ...applyLocalFailureRecovery(config, state),
     ...(retainedDataDiscoveryReady ? { dataProjectDiscoveryReady: true } : {}),
+    ...(currentWorkHasCompletedDeepResearch(state, config)
+      ? { deepResearchCompletedForCurrentWork: true }
+      : {}),
   };
   const suppressedToolNames = convergenceSuppressedToolNames(state);
   if (suppressedToolNames.length) {

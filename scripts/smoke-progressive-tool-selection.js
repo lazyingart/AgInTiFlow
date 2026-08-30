@@ -5151,6 +5151,113 @@ assert(
   "post-research compaction forgot the completed bounded research call"
 );
 
+const timeoutCompactedResearchRepairGoal =
+  "External verification failed for the existing research report. Preserve the report and evidence, add the missing sources.json and PDF, run the validator, and commit the repair.";
+const timeoutCompactedResearchRepairState = {
+  goal: timeoutCompactedResearchRepairGoal,
+  meta: {
+    goalContract: {
+      revision: 2,
+      currentHash: "research-repair-goal",
+      currentRequest: timeoutCompactedResearchRepairGoal,
+      history: [
+        { revision: 1, hash: "original-research-goal" },
+        {
+          revision: 2,
+          hash: "research-repair-goal",
+          previousHash: "original-research-goal",
+        },
+      ],
+    },
+    completedDeepResearch: [
+      {
+        goalKey: "original-research-goal",
+        result: {
+          ok: true,
+          version: 14,
+          reportPath: path.join(repoRoot, "package.json"),
+        },
+      },
+    ],
+  },
+};
+const timeoutCompactedResearchRepairRuntime = nextStepRuntimeConfig(
+  {
+    provider: "deepseek",
+    goal: timeoutCompactedResearchRepairGoal,
+    commandCwd: repoRoot,
+  },
+  timeoutCompactedResearchRepairState
+);
+assertStrict.equal(
+  timeoutCompactedResearchRepairRuntime.deepResearchCompletedForCurrentWork,
+  true,
+  "a successor artifact repair lost the completed research record from its immediately preceding goal"
+);
+const timeoutCompactedResearchRepair = selectProgressiveTools(allTools, {
+  config: timeoutCompactedResearchRepairRuntime,
+  goal: timeoutCompactedResearchRepairGoal,
+  profile: "research",
+  messages: [
+    {
+      role: "user",
+      content:
+        "A previous agent-step request was interrupted by a model timeout. Continue from this compacted, valid transcript.",
+    },
+    {
+      role: "user",
+      content:
+        "Retained runtime tool evidence. This operation already completed; use its result and do not repeat it solely because context was compacted.\nTool: read_file\nVerified result: existing evidence report",
+    },
+  ],
+});
+assert(names(timeoutCompactedResearchRepair).includes("run_command"), "timeout-compacted research repair omitted shell validation");
+assert(names(timeoutCompactedResearchRepair).includes("write_file"), "timeout-compacted research repair omitted artifact writing");
+assert(
+  !(names(timeoutCompactedResearchRepair).length === 2 && names(timeoutCompactedResearchRepair)[0] === "deep_research"),
+  "timeout recovery forced a completed research task back into deep_research"
+);
+
+const unrelatedNewResearchGoal =
+  "Write a new deep research report comparing current optical sensor calibration methods.";
+const unrelatedNewResearchRuntime = nextStepRuntimeConfig(
+  { provider: "deepseek", goal: unrelatedNewResearchGoal, commandCwd: repoRoot },
+  {
+    ...timeoutCompactedResearchRepairState,
+    goal: unrelatedNewResearchGoal,
+    meta: {
+      ...timeoutCompactedResearchRepairState.meta,
+      goalContract: {
+        revision: 3,
+        currentHash: "new-research-goal",
+        currentRequest: unrelatedNewResearchGoal,
+        history: [
+          ...timeoutCompactedResearchRepairState.meta.goalContract.history,
+          {
+            revision: 3,
+            hash: "new-research-goal",
+            previousHash: "research-repair-goal",
+          },
+        ],
+      },
+    },
+  }
+);
+assertStrict.equal(
+  unrelatedNewResearchRuntime.deepResearchCompletedForCurrentWork,
+  undefined,
+  "an old completed report suppressed a genuinely new research request"
+);
+sameNames(
+  selectProgressiveTools(allTools, {
+    config: unrelatedNewResearchRuntime,
+    goal: unrelatedNewResearchGoal,
+    profile: "research",
+  }),
+  ["deep_research", "finish"],
+  "a genuinely new research request did not retain the bounded deep-research starter"
+);
+
 const documentRuntimeSnapshot =
   'Step 1/30. Latest runtime snapshot:\n{"pageText":"Workspace file tools are ready. Web search and resumable deep research are available when current evidence is required."}';
 const localDocumentStarter = selectProgressiveTools(allTools, {

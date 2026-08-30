@@ -517,7 +517,9 @@ function messagesWithTextToolProtocol(config, messages, tools) {
     }
     return message;
   });
-  const requireDeepResearch = tools.some((tool) => tool?.function?.name === "deep_research") &&
+  const requireDeepResearch =
+    config.deepResearchCompletedForCurrentWork !== true &&
+    tools.some((tool) => tool?.function?.name === "deep_research") &&
     shouldStartWithDeepResearch(config.goal, messages);
   const protocol = {
     role: "system",
