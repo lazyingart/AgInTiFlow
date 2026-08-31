@@ -2801,6 +2801,7 @@ function focusedCapabilityContext(config = {}) {
       ? `Advisory wrapper: ${normalizeWrapperName(config.preferredWrapper)} (${wrapperStatusText()}).`
       : "Advisory wrappers: disabled.",
     config.allowAuxiliaryTools ? "Auxiliary generation tools: enabled when the requested artifact needs them." : "Auxiliary tools: disabled.",
+    "When the current request, project instructions, or routine contract names an exact established command, run that command unchanged before probing --help, alternate wrappers, process lists, or implementation source. If its result answers the request, stop discovery and finish.",
     "Discovery must be bounded: after a blocked path or search, change method once; never use recursive grep. Prefer exact manifests, workspace search, or targeted rg with an explicit path, globs, and result limit.",
     isRetainedWorkspaceProfile(config)
       ? isRetainedVisionWorkspaceProfile(config)

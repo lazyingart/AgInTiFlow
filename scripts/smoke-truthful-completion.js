@@ -309,6 +309,11 @@ try {
     String(explanation.state.messages.find((message) => message.role === "system")?.content || "").length < 10_000,
     "focused runtime prompt did not use progressive disclosure"
   );
+  assert.match(
+    String(explanation.state.messages.find((message) => message.role === "system")?.content || ""),
+    /run that command unchanged before probing --help, alternate wrappers/i,
+    "focused runtime did not prioritize exact established routine commands"
+  );
   assert(
     Math.max(
       ...explanation.state.messages
