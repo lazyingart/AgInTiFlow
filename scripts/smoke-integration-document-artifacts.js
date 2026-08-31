@@ -32,6 +32,7 @@ for (const prompt of [
   "I need the .tex and .pdf files.",
   "Give me a LaTeX source and compiled PDF.",
   "Output a TeX source plus compiled PDF.",
+  "Create exactly two downloadable file artifacts named live_document.tex and live_document.pdf. Compile that exact source into the PDF using the document worker. Do not create another artifact and do not merely paste the files into chat.",
   "请提供 LaTeX 源文件和编译后的 PDF。",
   "我需要 LaTeX 源文件和编译后的 PDF。",
   "制作 LaTeX 和 PDF 文件。",

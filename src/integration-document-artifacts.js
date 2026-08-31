@@ -28,6 +28,8 @@ const DOCUMENT_PAIR_EXCLUSION =
   /\b(?:do\s+not|don't|dont|never|avoid|without|no\s+need\s+to|not\s+asked\s+to)\b[^.!?;\r\n]{0,160}\b(?:latex|tex|pdf)\b|\b(?:latex|tex|pdf)(?:\s+(?:source|file|document))?\s+only\b|\bonly\s+(?:the\s+)?(?:latex|tex|pdf)\b|(?:不要|不用|无需|無需|不需要|禁止|避免)[^。！？；\r\n]{0,100}(?:latex|tex|pdf)/iu;
 const DOCUMENT_CREATION_EXCLUSION =
   /\b(?:do\s+not|don't|dont|never|avoid)\b[^.!?;\r\n]{0,160}\b(?:make|create|generate|write|compile|typeset|render|export|build|deliver|provide|send|give|return|output|share|save|download|files?|artifacts?|outputs?|deliverables?)\b|\bwithout\b[^.!?;\r\n]{0,100}\b(?:making|creating|generating|writing|compiling|rendering|exporting|saving|downloading|files?|artifacts?)\b|\bneither\b[^.!?;\r\n]{0,160}\b(?:latex|tex)\b[^.!?;\r\n]{0,160}\b(?:nor|or|and)\b[^.!?;\r\n]{0,100}\bpdf\b|\b(?:just|only)\s+(?:explain|describe|discuss|compare|review)\b|(?:不要|不用|无需|無需|不需要|禁止|避免)[^。！？；\r\n]{0,120}(?:创建|建立|生成|撰写|撰寫|编译|編譯|导出|導出|制作|製作|文件|文档|文檔|输出|輸出)/iu;
+const DOCUMENT_ADDITIONAL_ARTIFACT_GUARD =
+  /\b(?:do\s+not|don't|dont|never|avoid)\s+(?:make|create|generate|produce|return|output|add|include)\s+(?:(?:any|an)\s+)?(?:other|another|additional|extra)\s+(?:files?|artifacts?|outputs?|deliverables?)\b|\b(?:do\s+not|don't|dont|never|avoid)\s+(?:(?:merely|just)\s+)?(?:paste|show|display|include)\s+(?:the\s+)?(?:files?|file\s+contents?|source(?:\s+contents?)?)\s+(?:in|into|as)\s+(?:the\s+)?(?:chat|answer|response)\b/giu;
 const DOCUMENT_DISCUSSION_TARGET =
   /^(?:make|create|generate|write|produce|prepare|provide|give|return|output|share|deliver)\s+(?:me\s+)?(?:an?\s+|the\s+)?(?:tutorial|explanation|advice|comparison|overview|discussion|review|article|essay|prose|example|guide)\b|^(?:make|create|generate|write|produce|prepare)\s+(?:something\s+)?(?:about|on)\b|^(?:make|create|generate|write|produce|prepare|provide)\b[^.!?;\r\n]{0,120}\b(?:latex|tex)\s+source[- ]code\s+example\b/iu;
 const DOCUMENT_FIGURE =
@@ -189,7 +191,8 @@ function requestsDocumentFollowup(value = "", { allowImplicitReference = true } 
 function explicitDocumentArtifactIntent(prompt = "") {
   const unquoted = quotedContextRemoved(prompt);
   const current = imperativeClause(unquoted);
-  if (DOCUMENT_PAIR_EXCLUSION.test(unquoted) || DOCUMENT_CREATION_EXCLUSION.test(unquoted)
+  const exclusionText = unquoted.replace(DOCUMENT_ADDITIONAL_ARTIFACT_GUARD, " ");
+  if (DOCUMENT_PAIR_EXCLUSION.test(exclusionText) || DOCUMENT_CREATION_EXCLUSION.test(exclusionText)
       || DOCUMENT_DISCUSSION_TARGET.test(current)) return false;
   const affirmative = affirmativeDocumentText(unquoted);
   return requestsDocumentCreation(affirmative) && requestsTeXAndPdf(affirmative);
