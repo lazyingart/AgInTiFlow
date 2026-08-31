@@ -6016,6 +6016,10 @@ function createService(options, { testOnly }) {
         mutationRecoveryAuthority: fixedMutationRecoveryAuthority,
         cancel: true,
         resume: true,
+        // Protocol v1 represents an exact terminal-run retry as runs/resume
+        // with no replacement input. The idempotency receipt and run lineage
+        // make a lost response safe to replay without creating a duplicate.
+        retry: true,
         ...(fixedAttachmentAuthority === null
           ? {}
           : { attachments: true, attachmentAuthority: fixedAttachmentAuthority }),

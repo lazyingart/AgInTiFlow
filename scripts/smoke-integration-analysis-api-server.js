@@ -247,6 +247,7 @@ function createSessionService(activationProof, calls, { recover = true } = {}) {
     mutationRecoveryAuthority: recoveryProof,
     cancel: true,
     resume: true,
+    retry: true,
   });
   const unavailable = async () => {
     throw new Error("not exercised");

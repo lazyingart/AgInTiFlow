@@ -3766,6 +3766,7 @@ async function main() {
     const capabilities = await service.getIntegrationCapabilities();
     assert.equal(capabilities.cancel, true);
     assert.equal(capabilities.resume, true);
+    assert.equal(capabilities.retry, true);
     assert.equal(capabilities.analysisSessionAuthority.schemaVersion, INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION);
     assert.equal(capabilities.analysisSessionAuthority.ready, false);
     assert.equal(capabilities.analysisSessionAuthority.testOnly, true);

@@ -866,6 +866,7 @@ export function integrationCapabilitiesResponse({
   enabled = false,
   cancel = false,
   resume = false,
+  retry = false,
   search = false,
   files = false,
   attachments = false,
@@ -887,7 +888,7 @@ export function integrationCapabilitiesResponse({
     actions: Object.freeze({
       cancel: Boolean(enabled && cancel),
       resume: Boolean(enabled && resume),
-      retry: false,
+      retry: Boolean(enabled && retry),
     }),
     attachments: attachmentsEnabled
       ? Object.freeze({

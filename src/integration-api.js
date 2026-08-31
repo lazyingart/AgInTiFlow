@@ -1357,14 +1357,18 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   exactDataObject(
     serviceCapabilities,
     [
-      "analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "search", "files",
+      "analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "retry", "search", "files",
       "attachments", "attachmentAuthority", "roles",
     ],
-    ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume"],
+    ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "retry"],
     "analysis service capabilities",
     { frozen: true }
   );
-  if (serviceCapabilities.cancel !== true || serviceCapabilities.resume !== true) {
+  if (
+    serviceCapabilities.cancel !== true ||
+    serviceCapabilities.resume !== true ||
+    serviceCapabilities.retry !== true
+  ) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis actions are unavailable.", { status: 503 });
   }
   if (serviceCapabilities.search !== undefined && serviceCapabilities.search !== true) {
@@ -1597,6 +1601,7 @@ function activatedCapabilitiesForService(options, activationMetadata) {
     enabled: true,
     cancel: metadata.serviceCapabilities.cancel,
     resume: metadata.serviceCapabilities.resume,
+    retry: metadata.serviceCapabilities.retry,
     search: metadata.serviceCapabilities.search === true,
     files: metadata.serviceCapabilities.files === true,
     attachments: metadata.serviceCapabilities.attachments === true,
@@ -2250,7 +2255,6 @@ function assertPublicCapabilityResponse(value = {}) {
   if (![actions.cancel, actions.resume, actions.retry, attachments.enabled, search.enabled].every((flag) => typeof flag === "boolean")) {
     integrationInvalid("agent capability flags must be booleans");
   }
-  if (actions.retry !== false) integrationInvalid("retry is not enabled in protocol v1");
   let attachmentCapability = Object.freeze({ enabled: false });
   if (attachments.enabled) {
     integrationExactKeys(
@@ -2312,13 +2316,15 @@ function assertPublicCapabilityResponse(value = {}) {
   ) {
     integrationInvalid("agent artifact capabilities are invalid");
   }
-  if (!response.enabled && (actions.cancel || actions.resume)) integrationInvalid("disabled capabilities may not advertise actions");
+  if (!response.enabled && (actions.cancel || actions.resume || actions.retry)) {
+    integrationInvalid("disabled capabilities may not advertise actions");
+  }
   return Object.freeze({
     schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
     enabled: response.enabled,
     agent: Object.freeze({ kind: "aginti", label: "AgInTi Agent" }),
     model: Object.freeze({ label: "LocalLLM" }),
-    actions: Object.freeze({ cancel: actions.cancel, resume: actions.resume, retry: false }),
+    actions: Object.freeze({ cancel: actions.cancel, resume: actions.resume, retry: actions.retry }),
     attachments: attachmentCapability,
     ...(search.enabled
       ? {

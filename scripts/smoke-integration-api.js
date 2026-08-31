@@ -1345,9 +1345,10 @@ assert.deepEqual(imageCapabilities.attachments, {
 });
 const ordinaryCapabilities = validateAgentRpcResponse(
   AGENT_RPC_PATHS.capabilities,
-  integrationCapabilitiesResponse({ enabled: true, cancel: true, resume: true })
+  integrationCapabilitiesResponse({ enabled: true, cancel: true, resume: true, retry: true })
 );
 assert.deepEqual(ordinaryCapabilities.attachments, { enabled: false });
+assert.equal(ordinaryCapabilities.actions.retry, true);
 assert.equal(
   Object.prototype.hasOwnProperty.call(ordinaryCapabilities.attachments, "requestTimeoutMs"),
   false,
@@ -1480,6 +1481,18 @@ assert.throws(
       attachments: { enabled: false },
       artifacts: { kinds: ["plot", "table", "markdown", "file"], schemaVersion: "1" },
     }),
+  /disabled capabilities/u
+);
+assert.throws(
+  () => validateAgentRpcResponse(AGENT_RPC_PATHS.capabilities, {
+    schemaVersion: "1",
+    enabled: false,
+    agent: { kind: "aginti", label: "AgInTi Agent" },
+    model: { label: "LocalLLM" },
+    actions: { cancel: false, resume: false, retry: true },
+    attachments: { enabled: false },
+    artifacts: { kinds: ["plot", "table", "markdown"], schemaVersion: "1" },
+  }),
   /disabled capabilities/u
 );
 assert.throws(
