@@ -244,7 +244,9 @@ function remainingPrelistenRecoveryMs(deadlineMs, monotonicNow, previousValue) {
       "Durable analysis startup recovery exceeded its shared pre-listen deadline."
     );
   }
-  return Math.min(300_000, remaining);
+  // performance.now() is fractional in production, while both recovery
+  // authorities deliberately accept only bounded integer millisecond budgets.
+  return Math.min(300_000, Math.floor(remaining));
 }
 
 async function activateRecoveredAnalysisDependencies({

@@ -286,6 +286,52 @@ async function compositionOrderingSmoke() {
   assert.equal(managed.startupRecoveryProof.digest, immutableDigest);
   await managed.close({ timeoutMs: 1_000 });
 
+  const fractionalTimeouts = [];
+  const fractionalTicks = [10.25, 10.75, 11.5];
+  const fractionalManaged = await createTestOnlyIntegrationAnalysisPrelistenComposition({
+    config: serviceConfig(),
+    trustedPrincipalProxyClient: Object.freeze({}),
+    sessionService: Object.freeze({
+      async recoverBeforeListen({ timeoutMs }) {
+        assert.equal(Number.isSafeInteger(timeoutMs), true);
+        fractionalTimeouts.push(timeoutMs);
+        return stateProof;
+      },
+      async getIntegrationCapabilities() {
+        return Object.freeze({ mutationRecoveryAuthority: Object.freeze({ atomicWithMutation: true }) });
+      },
+      async close() {},
+    }),
+    idempotencyStore: Object.freeze({
+      async recoverBeforeListen({ timeoutMs }) {
+        assert.equal(Number.isSafeInteger(timeoutMs), true);
+        fractionalTimeouts.push(timeoutMs);
+        return idempotencyProof;
+      },
+    }),
+    coordinator: Object.freeze({ async close() {} }),
+    startupProof: Object.freeze({ digest: contractDigest("fractional-startup") }),
+    recoveryTimeoutMs: 1_000,
+    monotonicNow: () => fractionalTicks.shift() ?? 11.5,
+    activationFactory: async () => Object.freeze({ digest: contractDigest("fractional-activation") }),
+    serverFactory: () => Object.freeze({
+      app: Object.freeze({}),
+      server: Object.freeze({}),
+      config: Object.freeze({ listen: Object.freeze({ host: "127.0.0.1", port: 18009 }) }),
+      async close() {
+        return Object.freeze({ closed: true, forced: false });
+      },
+      get listening() {
+        return false;
+      },
+      get lifecycle() {
+        return "created";
+      },
+    }),
+  });
+  assert.deepEqual(fractionalTimeouts, [999, 998]);
+  await fractionalManaged.close({ timeoutMs: 1_000 });
+
   for (const failure of [
     Object.assign(new Error("synthetic corrupt state"), { code: "ANALYSIS_STATE_CORRUPT" }),
     Object.assign(new Error("synthetic recovery timeout"), { code: "ANALYSIS_STARTUP_RECOVERY_TIMEOUT" }),
