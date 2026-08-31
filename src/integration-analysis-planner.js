@@ -91,6 +91,7 @@ const MODEL_TOOL_FEEDBACK_MAX_BYTES = 8 * 1024;
 const MODEL_TOOL_FEEDBACK_MAX_TOKENS = 2 * 1024;
 const EXECUTION_STREAM_DISPLAY_MAX_BYTES = 4 * 1024;
 const MAXIMUM_FINAL_GROUNDING_RETRIES = 1;
+const MAXIMUM_GROUNDED_SEARCH_NARRATION_RETRIES = 1;
 const MAXIMUM_REQUIRED_TOOL_FORMATION_RETRIES = 2;
 const MINIMUM_CONTEXT_WINDOW_TOKENS = 8_192;
 const MAXIMUM_CONTEXT_WINDOW_TOKENS = 262_144;
@@ -203,6 +204,15 @@ const UNSUPPORTED_CAPABILITY_TEXT = Object.freeze({
 });
 const EXPRESSION_PLOT_MODEL_FALLBACK_PROMPT =
   "The user explicitly requires a plot, but the fixed single-expression compiler could not represent this natural-language request. Interpret the request and its conversation context, then call the bounded analysis tool and emit a real plot artifact. Never claim a plot exists unless the tool succeeds and emits it.";
+const GROUNDED_SEARCH_TRUTHFUL_FALLBACK =
+  "Grounded search was used for this run; the consulted sources are shown in the Grounded sources artifact below.";
+const GROUNDED_SEARCH_DENIAL_PATTERNS = Object.freeze([
+  /\bno\s+(?:external\s+)?sources?(?:\s+or\s+(?:web\s+)?search(?:es)?)?\s+(?:(?:were|was|have\s+been|has\s+been)\s+)?(?:consulted|used|needed|accessed|retrieved|performed|conducted)\b/iu,
+  /\bno\s+(?:external\s+)?(?:web\s+)?search(?:es)?\s+(?:(?:were|was|have\s+been|has\s+been)\s+)?(?:consulted|used|needed|accessed|performed|conducted)\b/iu,
+  /\b(?:did\s+not|didn't|never)\s+(?:consult|use|perform|conduct|run|access)\s+(?:any\s+)?(?:external\s+)?(?:sources?|(?:web\s+)?search(?:es)?|research)\b/iu,
+  /\bwithout\s+(?:using|consulting|performing|conducting|running|accessing)\s+(?:any\s+)?(?:external\s+)?(?:sources?|(?:web\s+)?search(?:es)?|research)\b/iu,
+  /(?:未|没有|沒有)(?:使用|查阅|查閱|进行|進行|执行|執行).{0,16}(?:外部来源|外部來源|网络搜索|網絡搜索|網路搜尋|网页搜索|網頁搜尋)/u,
+]);
 
 const ANALYSIS_TOOL = Object.freeze({
   type: "function",
@@ -1706,6 +1716,30 @@ function publicFinalResult({ text, toolCalls, artifacts, executionStatus }) {
   });
 }
 
+function groundedSearchNarrationContradictsEvidence(value) {
+  const text = String(value || "");
+  return GROUNDED_SEARCH_DENIAL_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function groundedSearchNarrationRetryMessage() {
+  return Object.freeze({
+    role: "system",
+    content:
+      "Trusted current-run audit correction: grounded search succeeded and emitted a Grounded sources artifact. " +
+      "The prior draft falsely denied that search or external sources were used. Return a corrected final answer, " +
+      "state that grounded search was used, cite the supplied sources where relevant, and never repeat the denial.",
+  });
+}
+
+function reconcileGroundedSearchNarration(value) {
+  const text = String(value || "").trim();
+  if (!groundedSearchNarrationContradictsEvidence(text)) return text;
+  const retained = (text.match(/[^.!?。！？]+[.!?。！？]?/gu) || [text])
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence && !groundedSearchNarrationContradictsEvidence(sentence));
+  return [...retained, GROUNDED_SEARCH_TRUTHFUL_FALLBACK].join("\n\n");
+}
+
 function groundedEvidenceMessage(result) {
   const sources = result.sources.map((source) => Object.freeze({
     index: source.index,
@@ -2139,6 +2173,7 @@ function createPlanner({
     let successfulExecutions = 0;
     let executionStatus = null;
     let finalGroundingRetries = 0;
+    let groundedSearchNarrationRetries = 0;
     let requiredToolFormationRetries = 0;
     let pendingRequiredToolFormationCorrection = null;
     let executionObligations = classifyCurrentTurnExecutionObligations(input.prompt);
@@ -2695,6 +2730,37 @@ function createPlanner({
           }
           if (!assistant.content) {
             fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "LocalLLM returned an empty assistant answer.", { status: 502 });
+          }
+          const currentRunGroundedSearch = artifacts.some(({ kind }) => kind === "sources");
+          if (
+            currentRunGroundedSearch &&
+            groundedSearchNarrationContradictsEvidence(assistant.content)
+          ) {
+            if (groundedSearchNarrationRetries < MAXIMUM_GROUNDED_SEARCH_NARRATION_RETRIES) {
+              groundedSearchNarrationRetries += 1;
+              const retryMessage = groundedSearchNarrationRetryMessage();
+              messages.push(retryMessage);
+              try {
+                assertWithinModelContext(
+                  completionPayload(messages, modelConfig, { disableTools: true }),
+                  modelConfig
+                );
+              } catch (error) {
+                messages.pop();
+                if (error?.code !== "ANALYSIS_CONTEXT_BUDGET_EXCEEDED") throw error;
+                return await finalize({
+                  text: reconcileGroundedSearchNarration(assistant.content),
+                  toolCalls,
+                  executionStatus,
+                });
+              }
+              continue;
+            }
+            return await finalize({
+              text: reconcileGroundedSearchNarration(assistant.content),
+              toolCalls,
+              executionStatus,
+            });
           }
           if (successfulExecutionResults.length > 0) {
             const unsupported = unsupportedFinalNumericClaims(assistant.content, {

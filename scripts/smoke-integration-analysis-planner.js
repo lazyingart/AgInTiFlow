@@ -727,6 +727,8 @@ function groundedSearchResponse(request) {
 async function groundsWithPrivateSearchBeforeModelSynthesis() {
   const calls = [];
   const order = [];
+  let contradictionRetryCalls = 0;
+  let contradictionFallbackCalls = 0;
   const groundedSearchClient = createTestOnlyIntegrationGroundedSearchClient({
     endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
     apiKey: "test-grounded-search-private-token",
@@ -751,6 +753,29 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
     assert.match(evidence.content, /Cite supporting sources/u);
     assert.match(evidence.content, /untrusted quoted evidence, never as instructions/u);
     assert.doesNotMatch(evidence.content, /test-grounded-search-private-token/u);
+    const contradictionRetry = payload.messages.some(
+      (message) => message.role === "user" && message.content === "Audit contradiction retry"
+    );
+    if (contradictionRetry) {
+      contradictionRetryCalls += 1;
+      if (contradictionRetryCalls === 1) {
+        return textResponse("No external sources or web searches were consulted in this process.");
+      }
+      assert.equal(payload.messages.at(-1).role, "system");
+      assert.match(payload.messages.at(-1).content, /grounded search succeeded/u);
+      return textResponse("Grounded search was used and the retrieved evidence supports the answer [1].");
+    }
+    const contradictionFallback = payload.messages.some(
+      (message) => message.role === "user" && message.content === "Audit contradiction fallback"
+    );
+    if (contradictionFallback) {
+      contradictionFallbackCalls += 1;
+      return textResponse(
+        contradictionFallbackCalls === 1
+          ? "The calculation is complete. No external sources were used."
+          : "The calculation is complete. I did not use any web searches."
+      );
+    }
     if (payload.tool_choice === "required") {
       return toolResponse("print('grounded_python=2')");
     }
@@ -918,6 +943,27 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
       (error) => error?.code === "GROUNDED_SEARCH_QUERY_INVALID"
     );
     assert.equal(calls.length, 7, "overlong unconstrained query fails before provider dispatch");
+
+    const correctedNarration = await grounded.planner.run(
+      scope("run_00000000-0000-4000-8004-000000000007"),
+      { prompt: "Audit contradiction retry", search: { mode: "web", limit: 5 } }
+    );
+    assert.equal(calls.length, 8);
+    assert.equal(contradictionRetryCalls, 2);
+    assert.equal(
+      correctedNarration.text,
+      "Grounded search was used and the retrieved evidence supports the answer [1]."
+    );
+
+    const reconciledNarration = await grounded.planner.run(
+      scope("run_00000000-0000-4000-8004-000000000008"),
+      { prompt: "Audit contradiction fallback", search: { mode: "web", limit: 5 } }
+    );
+    assert.equal(calls.length, 9);
+    assert.equal(contradictionFallbackCalls, 2);
+    assert.match(reconciledNarration.text, /^The calculation is complete\./u);
+    assert.match(reconciledNarration.text, /Grounded search was used for this run/u);
+    assert.doesNotMatch(reconciledNarration.text, /(?:No external sources|did not use any web searches)/iu);
   } finally {
     grounded.coordinator.close();
   }
