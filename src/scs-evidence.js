@@ -1439,7 +1439,17 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   ) {
     categories.add("visual");
   }
-  if (textHas(text, /\b(publish|deploy|submit|upload to|generate video|external service|npm publish|release)\b/) || /发布|部署|提交|生成视频|外部服务/.test(text)) {
+  const explicitPublishAction =
+    textHas(
+      text,
+      /\b(?:publish|deploy|submit|upload to|generate video|external service|npm publish)\b/
+    ) ||
+    textHas(
+      text,
+      /\b(?:release|ship)\s+(?:(?:the|this|that|a|an)\s+)?(?:package|version|build|app|application|software|library|plugin|extension|product)\b|\b(?:release|ship)\s+(?:to|on|via|through)\b|\bcut\s+(?:a\s+)?release\b/
+    ) ||
+    /发布|部署|提交|生成视频|外部服务/.test(text);
+  if (explicitPublishAction) {
     categories.add("publish");
   }
 

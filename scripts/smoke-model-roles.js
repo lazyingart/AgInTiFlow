@@ -807,6 +807,17 @@ const readinessOnlyContract = deriveScsTaskContract({
   ].join("\n"),
   taskProfile: "auto",
 });
+const releaseProofFilenameContract = deriveScsTaskContract({
+  goal: [
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create a task-owned plain-text artifact named scoped-path-release-proof.txt, read it back, and finish without external actions."}',
+    "The host writes a final task record after the agent finishes.",
+  ].join("\n"),
+  taskProfile: "auto",
+});
+const explicitPackageReleaseContract = deriveScsTaskContract({
+  goal: "Release the package to npm and verify the published version.",
+  taskProfile: "auto",
+});
 assert(
   readinessOnlyContract.requiredEvidence.some((item) => item.category === "file") &&
     readinessOnlyContract.requiredEvidence.some((item) => item.category === "command"),
@@ -815,6 +826,15 @@ assert(
 assert(
   !readinessOnlyContract.requiredEvidence.some((item) => ["publish", "browser", "visual", "artifact"].includes(item.category)),
   "read-only readiness contract required a forbidden external action or target artifact"
+);
+assert(
+  releaseProofFilenameContract.requiredEvidence.some((item) => item.category === "file") &&
+    !releaseProofFilenameContract.requiredEvidence.some((item) => item.category === "publish"),
+  "a release-like artifact filename fabricated an external publication obligation"
+);
+assert(
+  explicitPackageReleaseContract.requiredEvidence.some((item) => item.category === "publish"),
+  "an explicit package release lost its publication evidence obligation"
 );
 assert(
   uploadContract.exactInputPaths.includes("/tmp/reference-a.png") &&
