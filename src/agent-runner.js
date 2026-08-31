@@ -235,6 +235,7 @@ const FOCUSED_TASK_PROFILE_PROMPT_LIMIT = 2400;
 const STATIC_DISCOVERY_CONVERGENCE_LIMIT = 14;
 const CONSTRAINED_RECOVERY_CONTEXT_TARGET_TOKENS = 2048;
 const CONSTRAINED_RECOVERY_OUTPUT_TOKEN_CAP = 768;
+const CONSTRAINED_VERIFIED_COMPLETION_OUTPUT_TOKEN_CAP = 2048;
 const CONSTRAINED_REPOSITORY_RECOVERY_OUTPUT_TOKEN_CAP = 1536;
 const CONSTRAINED_SOURCE_MUTATION_OUTPUT_TOKEN_CAP = 8192;
 const MALFORMED_TOOL_RESPONSE_RETRY_OUTPUT_TOKEN_CAP = 6144;
@@ -2479,6 +2480,8 @@ export function buildConstrainedRecoveryRequest(
     ? CONSTRAINED_SOURCE_MUTATION_OUTPUT_TOKEN_CAP
     : repositoryStateRepair || artifactCommitPending || taskOwnedCommitPending
     ? CONSTRAINED_REPOSITORY_RECOVERY_OUTPUT_TOKEN_CAP
+    : mode === "verified-completion"
+    ? CONSTRAINED_VERIFIED_COMPLETION_OUTPUT_TOKEN_CAP
     : CONSTRAINED_RECOVERY_OUTPUT_TOKEN_CAP;
   const configuredCap = Number(
     repositoryStateRepair
@@ -2494,9 +2497,19 @@ export function buildConstrainedRecoveryRequest(
   const defaultOutputCap = Number.isFinite(configuredCap) && configuredCap > 0
     ? configuredCap
     : phaseDefaultOutputCap;
-  const outputCap = Number.isFinite(requestedOutputCap) && requestedOutputCap > 0
-    ? Math.min(requestedOutputCap, defaultOutputCap)
-    : defaultOutputCap;
+  const outputCap = mode === "verified-completion"
+    ? Math.min(
+        Math.max(
+          defaultOutputCap,
+          Number.isFinite(requestedOutputCap) && requestedOutputCap > 0
+            ? requestedOutputCap
+            : 0
+        ),
+        Math.max(defaultOutputCap, 4096)
+      )
+    : Number.isFinite(requestedOutputCap) && requestedOutputCap > 0
+      ? Math.min(requestedOutputCap, defaultOutputCap)
+      : defaultOutputCap;
   const contextFloor = freshSourceMutation
     ? 6144
     : CONSTRAINED_RECOVERY_CONTEXT_TARGET_TOKENS;
@@ -2546,6 +2559,20 @@ export function buildConstrainedRecoveryRequest(
           "--- CURRENT SOURCE END ---",
           "Patch only from this exact source. Preserve unrelated declarations and keep the result structurally coherent.",
         ].filter(Boolean).join("\n"),
+      },
+    ];
+  }
+  if (mode === "verified-completion") {
+    messages = [
+      ...messages,
+      {
+        role: "user",
+        content: [
+          "Final verified-completion turn.",
+          "Only the finish tool is needed now. Do not run or request another command.",
+          "Use the successful authoritative tool output already retained above and call finish with one concise user-facing status answer.",
+          "If the retained output is JSON, summarize its visible status fields directly instead of saying only that evidence exists.",
+        ].join(" "),
       },
     ];
   }
@@ -19524,6 +19551,7 @@ async function evaluateCompletionEvidence({ config, state, store }) {
     ledger,
     evaluation,
     semantic,
+    commandOutputs: completionCommandOutputRecords(scoped),
     progressCount: completionRepairProgressCount(scoped.events),
   };
 }
@@ -19963,6 +19991,192 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   return { action: "stop", assessment, detail, result };
 }
 
+function publicCompletionText(value = "", limit = 800) {
+  return compactSingleLine(
+    redactSensitiveText(String(value || ""))
+      .replace(/(^|[\s"'`(=])file:\/\/\/[^\s"'`)<>{}]+/gi, "$1[path]")
+      .replace(/(^|[\s"'`(=])\/[^\s"'`)<>{}]+/g, "$1[path]")
+      .replace(/\b[A-Za-z]:\\[^\s"'`)<>{}]+/g, "[path]")
+      .replace(/\\\\[A-Za-z0-9._-]+\\[^\s"'`)<>{}]+/g, "[path]"),
+    limit
+  );
+}
+
+function plainObjectEntries(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.entries(value);
+}
+
+function safePublicLabel(value = "") {
+  return publicCompletionText(String(value || "").trim(), 80);
+}
+
+function safePublicStatus(value = "") {
+  return publicCompletionText(String(value || "").trim(), 120);
+}
+
+function parseCommandJsonOutput(output = "") {
+  const text = String(output || "").trim();
+  if (!text || !/^[\[{]/.test(text) || text.length > 20000) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatNamedStatus(name = "", status = "") {
+  const label = safePublicLabel(name);
+  const detail = safePublicStatus(status);
+  return detail ? `${label} (${detail})` : label;
+}
+
+function summarizeScheduleStatus(data = {}) {
+  const schedules = data?.schedules && typeof data.schedules === "object" && !Array.isArray(data.schedules)
+    ? data.schedules
+    : null;
+  if (!schedules) return [];
+  const delivered = [];
+  const retrying = [];
+  const other = [];
+  for (const [name, raw] of plainObjectEntries(schedules)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const status = String(raw.status || "").trim();
+    const retry = raw.retry_pending === true || /\bretry\b/i.test(status) || Boolean(raw.next_attempt_at);
+    const done = raw.delivered === true || /^delivered$/i.test(status);
+    if (done) {
+      delivered.push(formatNamedStatus(name, status && !/^delivered$/i.test(status) ? status : ""));
+    } else if (retry) {
+      retrying.push(
+        formatNamedStatus(
+          name,
+          [
+            status || "retry pending",
+            raw.next_attempt_at ? `next attempt ${raw.next_attempt_at}` : "",
+          ].filter(Boolean).join("; ")
+        )
+      );
+    } else if (status || raw.running === true || raw.pending === true) {
+      other.push(formatNamedStatus(name, status || (raw.running === true ? "running" : "pending")));
+    }
+  }
+  return [
+    delivered.length ? `Delivered: ${delivered.join(", ")}.` : "",
+    retrying.length ? `Still retrying: ${retrying.join(", ")}.` : "",
+    other.length ? `Other schedules: ${other.slice(0, 6).join(", ")}.` : "",
+  ].filter(Boolean);
+}
+
+function summarizeIngressStatus(data = {}) {
+  const parts = [];
+  for (const [groupName, group] of plainObjectEntries(data)) {
+    if (!/ingress/i.test(groupName) || !group || typeof group !== "object" || Array.isArray(group)) continue;
+    const reaches = [];
+    const blocked = [];
+    for (const [name, raw] of plainObjectEntries(group)) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      if (raw.reaches_agent === true || raw.listener_live === true || raw.ok === true) reaches.push(safePublicLabel(name));
+      else if (raw.reaches_agent === false || raw.ok === false) blocked.push(safePublicLabel(name));
+    }
+    if (reaches.length) parts.push(`${safePublicLabel(groupName)} reaches the agent for: ${reaches.join(", ")}.`);
+    if (blocked.length) parts.push(`${safePublicLabel(groupName)} not confirmed for: ${blocked.join(", ")}.`);
+  }
+  return parts;
+}
+
+function summarizeQueueStatus(data = {}) {
+  const queues = data?.queues && typeof data.queues === "object" && !Array.isArray(data.queues)
+    ? data.queues
+    : null;
+  if (!queues) return [];
+  const parts = [];
+  for (const [name, raw] of plainObjectEntries(queues)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    parts.push(
+      [
+        safePublicLabel(name),
+        `pending ${Number(raw.pending || 0)}`,
+        `active ${Number(raw.active || 0)}`,
+        `stale ${Number(raw.stale_count || 0)}`,
+        `failures ${Number(raw.recent_failure_count || 0)}`,
+      ].join(" ")
+    );
+  }
+  return parts.length ? [`Queues: ${parts.slice(0, 6).join("; ")}.`] : [];
+}
+
+function summarizeTopLevelStatus(data = {}) {
+  const parts = [];
+  if (Object.prototype.hasOwnProperty.call(data, "ok")) parts.push(`ok=${Boolean(data.ok)}`);
+  if (Object.prototype.hasOwnProperty.call(data, "operational")) parts.push(`operational=${Boolean(data.operational)}`);
+  if (Object.prototype.hasOwnProperty.call(data, "degraded")) parts.push(`degraded=${Boolean(data.degraded)}`);
+  if (Array.isArray(data.issues) && data.issues.length) {
+    parts.push(`issues=${data.issues.slice(0, 4).map(safePublicLabel).filter(Boolean).join(",")}`);
+  }
+  return parts.length ? [`Snapshot: ${parts.join(", ")}.`] : [];
+}
+
+function summarizeJsonCommandOutput(output = "") {
+  const data = parseCommandJsonOutput(output);
+  if (!data || Array.isArray(data)) return "";
+  const specific = [
+    ...summarizeScheduleStatus(data),
+    ...summarizeIngressStatus(data),
+    ...summarizeQueueStatus(data),
+    ...summarizeTopLevelStatus(data),
+  ].filter(Boolean);
+  if (specific.length) return specific.join(" ");
+  const pairs = plainObjectEntries(data)
+    .filter(([, value]) => value === null || ["string", "number", "boolean"].includes(typeof value))
+    .slice(0, 8)
+    .map(([key, value]) => `${safePublicLabel(key)}=${safePublicStatus(value)}`);
+  return pairs.length ? `Observed JSON status: ${pairs.join(", ")}.` : "";
+}
+
+function completionCommandOutputRecords(scoped = {}) {
+  const events = Array.isArray(scoped.events) ? scoped.events : [];
+  const state = scoped.state && typeof scoped.state === "object" ? scoped.state : {};
+  const records = [];
+  const seen = new Set();
+  const consume = (payload = {}) => {
+    if (!payload || typeof payload !== "object" || payload.blocked === true) return;
+    const toolName = String(payload.toolName || payload.name || "");
+    if (toolName !== "run_command") return;
+    const authoritative = payload.authoritativeReadOnlyRoutine === true &&
+      payload.authoritativeRoutineObserved === true;
+    if (payload.ok === false && !authoritative) return;
+    const stdout = String(payload.stdout || payload.result || "").trim();
+    const stderr = String(payload.stderr || "").trim();
+    if (!stdout && !stderr && !Number.isInteger(payload.exitCode)) return;
+    const command = String(payload.args?.command || payload.command || "").trim();
+    const output = stdout || stderr || `exit=${Number(payload.exitCode || 0)}`;
+    const key = hashForLog(`${command}\0${output}`);
+    if (seen.has(key)) return;
+    seen.add(key);
+    records.push({
+      command: publicCompletionText(command, 180),
+      output: publicCompletionText(output, 6000),
+      authoritative,
+      exitCode: Number.isInteger(payload.exitCode) ? payload.exitCode : null,
+    });
+  };
+  const completedEvents = events.filter((event) => String(event?.type || "") === "tool.completed");
+  if (completedEvents.length) {
+    for (const event of completedEvents) consume(event.data);
+  } else {
+    for (const message of Array.isArray(state.messages) ? state.messages : []) {
+      if (message?.role !== "tool") continue;
+      try {
+        consume(JSON.parse(message.content || "{}"));
+      } catch {
+        // Ignore malformed historical tool messages.
+      }
+    }
+  }
+  return records.slice(-4);
+}
+
 function verifiedCompletionFallback(assessment = {}, state = {}) {
   const contract = assessment.contract || {};
   const ledger = assessment.ledger || {};
@@ -19971,8 +20185,20 @@ function verifiedCompletionFallback(assessment = {}, state = {}) {
     : [];
   const categories = Array.isArray(ledger.categories) ? ledger.categories.filter(Boolean) : [];
   const tools = Array.isArray(ledger.toolNames) ? ledger.toolNames.filter(Boolean) : [];
+  const commandOutputs = Array.isArray(assessment.commandOutputs)
+    ? assessment.commandOutputs
+    : [];
+  const preferredOutput =
+    commandOutputs.find((item) => item?.authoritative && summarizeJsonCommandOutput(item.output)) ||
+    commandOutputs.find((item) => summarizeJsonCommandOutput(item.output)) ||
+    commandOutputs.at(-1);
+  const outputSummary = preferredOutput
+    ? summarizeJsonCommandOutput(preferredOutput.output) ||
+        `Command output: ${publicCompletionText(preferredOutput.output, 600)}.`
+    : "";
   return [
-    "Completed the requested work and verified it from runtime evidence.",
+    outputSummary,
+    "Verified from runtime evidence.",
     paths.length ? `Verified output: ${paths.join(", ")}.` : "",
     categories.length ? `Evidence: ${categories.join(", ")}.` : "",
     tools.length ? `Validated actions: ${tools.join(", ")}.` : "",
@@ -19986,11 +20212,14 @@ async function repairEmptyCompletion({ config, state, store, observers, step, as
   const key = completionContractKey(config);
   const prior = state.meta.emptyCompletionRepair || {};
   const attempts = prior.key === key ? Number(prior.attempts || 0) : 0;
+  const finishOnlyVerifiedReasoning =
+    state.meta.reasoningOnlyContinuation?.finishOnlyVerifiedCompletion === true &&
+    Number(state.meta.reasoningOnlyContinuation?.attempts || 0) >= 2;
   const last = state.messages?.at(-1);
   if (last?.role === "assistant" && !String(last.content || "").trim() && !(last.tool_calls || []).length) {
     state.messages.pop();
   }
-  if (attempts < 1) {
+  if (!finishOnlyVerifiedReasoning && attempts < 1) {
     state.meta.emptyCompletionRepair = { key, attempts: attempts + 1, step };
     const instruction = [
       "Your previous turn contained neither user-facing text nor a tool call.",
@@ -20016,7 +20245,16 @@ async function repairEmptyCompletion({ config, state, store, observers, step, as
   };
 }
 
-async function continueAfterReasoningOnlyTurn({ response, assistantMessage, state, store, observers, step }) {
+async function continueAfterReasoningOnlyTurn({
+  response,
+  assistantMessage,
+  state,
+  store,
+  observers,
+  step,
+  offeredToolNames = [],
+  stepRuntimeConfig = {},
+}) {
   const reasoning = String(assistantMessage?.reasoning_content || assistantMessage?.reasoningContent || "").trim();
   const content = String(assistantMessage?.content || "").trim();
   const toolCalls = Array.isArray(assistantMessage?.tool_calls) ? assistantMessage.tool_calls : [];
@@ -20032,6 +20270,14 @@ async function continueAfterReasoningOnlyTurn({ response, assistantMessage, stat
   }
 
   state.meta = state.meta || {};
+  const offered = Array.isArray(offeredToolNames)
+    ? offeredToolNames.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const finishOnlyVerifiedCompletion = Boolean(
+    offered.length === 1 &&
+      offered[0] === "finish" &&
+      stepRuntimeConfig?.constrainedRecoveryMode === "verified-completion"
+  );
   const goalRevision = Number(state.meta.goalContract?.revision || 1);
   const prior = state.meta.reasoningOnlyContinuation || {};
   const attempts = Number(prior.goalRevision || 0) === goalRevision
@@ -20044,19 +20290,28 @@ async function continueAfterReasoningOnlyTurn({ response, assistantMessage, stat
     attempts,
     finishReason,
     reasoningChars: reasoning.length,
+    finishOnlyVerifiedCompletion,
   };
   state.meta.reasoningOnlyContinuation = detail;
   await store.appendEvent("model.reasoning_continuation_requested", detail);
   observers.event("model.reasoning_continuation_requested", detail);
 
+  if (finishOnlyVerifiedCompletion && attempts > 1) return false;
   if (attempts > 3) return false;
+  const instruction = finishOnlyVerifiedCompletion
+    ? [
+        "The only offered tool is finish and the verified evidence is already sufficient.",
+        "Do not request another action or continue private reasoning.",
+        "Call finish now with one concise user-facing status answer grounded in the retained command output.",
+      ].join(" ")
+    : [
+        "Your preceding reasoning is retained, but the turn ended before any executable action or answer.",
+        "Continue from that exact conclusion now; do not restart analysis, restate the plan, or claim completion.",
+        "Emit exactly one enabled tool call that performs the next concrete action.",
+      ].join(" ");
   state.messages.push({
     role: "user",
-    content: [
-      "Your preceding reasoning is retained, but the turn ended before any executable action or answer.",
-      "Continue from that exact conclusion now; do not restart analysis, restate the plan, or claim completion.",
-      "Emit exactly one enabled tool call that performs the next concrete action.",
-    ].join(" "),
+    content: instruction,
   });
   return true;
 }
@@ -24343,6 +24598,8 @@ async function runAgentOnceUnlocked(config) {
         store,
         observers,
         step,
+        offeredToolNames,
+        stepRuntimeConfig,
       });
       if (continuedAfterReasoning) {
         state.stepsCompleted = step;

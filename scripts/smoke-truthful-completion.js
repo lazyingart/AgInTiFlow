@@ -201,7 +201,9 @@ async function runCase({
   responses,
   allowShellTool = false,
   allowFileTools = false,
+  allowDestructive = false,
   executionTier = "",
+  maxOutputTokens = undefined,
   resume = false,
   setup = null,
   scsActive = false,
@@ -243,6 +245,8 @@ async function runCase({
       commandCwd: workspace,
       sandboxMode: "host",
       packageInstallPolicy: "block",
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
+      allowDestructive,
       allowShellTool,
       allowFileTools,
       allowWrapperTools: false,
@@ -263,6 +267,8 @@ async function runCase({
     useDockerSandbox: false,
     sandboxMode: "host",
     packageInstallPolicy: "block",
+    ...(maxOutputTokens ? { maxOutputTokens } : {}),
+    allowDestructive,
     allowShellTool,
     allowFileTools,
     allowWrapperTools: false,
@@ -646,6 +652,108 @@ try {
       (event) => event.type === "completion.evidence_rejected"
     ),
     "read-only external retry status still triggered a completion repair"
+  );
+
+  const compactHealthCommand = "PYTHONPATH=src python -m agenticapp wechat health --compact --json";
+  const compactHealthGoal = [
+    "User request:",
+    "i was checking phone and schedulr tell me which daily things actually got delivered today and which still retrying, also can msg from me and msg from other people both reach agent. dont send chat or change anything, just inspect and answer short with evidence",
+    "",
+    "Matched established routines",
+    `- \`wechat-chatops\` ready=true; commands=[${JSON.stringify(compactHealthCommand)}, "python agentic_tools/wechat_gui_agent/scripts/wechat_android_ingress.py --status"]; outputs=["messages", "files", "task records"]; guidance=For a read-only phone, message-intake, queue, or schedule question, run the canonical compact health command first; it already includes both Android lanes. Use the raw Android status commands only when compact health marks a lane unknown or stale. Treat that current snapshot as authoritative and stop once it answers the request. Do not inspect raw chat text or private message ledgers or artifact directories, and do not send or mutate anything, unless the current request explicitly needs it.`,
+  ].join("\n");
+  const compactHealthFallback = await runCase({
+    id: "read-only-compact-health-empty-finish-fallback",
+    goal: compactHealthGoal,
+    taskProfile: "chatops",
+    allowShellTool: true,
+    allowDestructive: true,
+    maxOutputTokens: 768,
+    setup: async (workspace) => {
+      await fs.mkdir(path.join(workspace, "src", "agenticapp"), { recursive: true });
+      await fs.writeFile(path.join(workspace, "src", "agenticapp", "__init__.py"), "", "utf8");
+      await fs.writeFile(
+        path.join(workspace, "src", "agenticapp", "__main__.py"),
+        [
+          "import json",
+          "payload = {",
+          "  'ok': True,",
+          "  'operational': True,",
+          "  'degraded': True,",
+          "  'issues': ['wechat_login_required'],",
+          "  'phone_ingress': {",
+          "    'other_people': {'ok': True, 'fresh': True, 'reaches_agent': True, 'routes': 6},",
+          "    'self_authored': {'ok': True, 'fresh': True, 'reaches_agent': True, 'routes': 6, 'seeded_routes': 6},",
+          "  },",
+          "  'queues': {",
+          "    'wechat': {'ok': True, 'pending': 0, 'active': 0, 'recent_failure_count': 0, 'stale_count': 0},",
+          "    'wecom': {'ok': True, 'pending': 0, 'active': 0, 'recent_failure_count': 0, 'stale_count': 0},",
+          "  },",
+          "  'schedules': {",
+          "    'career_daily': {'delivered': True, 'retry_pending': False, 'running': True, 'status': 'delivered'},",
+          "    'echomind_daily_pdf': {'retry_pending': True, 'status': 'quality_retry_pending', 'next_attempt_at': '2026-08-31T02:47:35+00:00'},",
+          "    'memo_daily': {'delivered': True, 'required': True, 'retry_pending': False, 'status': 'delivered'},",
+          "  }",
+          "}",
+          "print(json.dumps(payload, indent=2, sort_keys=True))",
+          "",
+        ].join("\n"),
+        "utf8"
+      );
+    },
+    responses: [
+      assistant("", [toolCall("run-compact-health", "run_command", { command: compactHealthCommand })]),
+      reasoningOnly("The compact health JSON already answers the read-only status question, so I should produce a short final answer.", "length"),
+      reasoningOnly("I need to summarize delivered schedules, retrying schedules, phone ingress, and queues from the retained JSON.", "length"),
+    ],
+  });
+  assert.equal(
+    compactHealthFallback.calls.length,
+    3,
+    "empty finish-only verified completion burned extra model turns before fallback"
+  );
+  assert.equal(
+    compactHealthFallback.calls[1]?.max_tokens,
+    2048,
+    "verified-completion turn did not raise the installed 768-token cap"
+  );
+  assert.equal(
+    compactHealthFallback.calls[2]?.max_tokens,
+    2048,
+    "verified-completion retry did not retain the raised output cap"
+  );
+  assert.match(compactHealthFallback.result.result, /Delivered: .*career_daily.*memo_daily/i);
+  assert.match(compactHealthFallback.result.result, /Still retrying: .*echomind_daily_pdf.*next attempt 2026-08-31T02:47:35\+00:00/i);
+  assert.match(compactHealthFallback.result.result, /phone_ingress reaches the agent for: .*other_people.*self_authored/i);
+  assert.match(compactHealthFallback.result.result, /Queues: .*wechat pending 0 active 0.*wecom pending 0 active 0/i);
+  assert.match(compactHealthFallback.result.result, /Verified from runtime evidence/i);
+  assert.doesNotMatch(compactHealthFallback.result.result, /^Completed the requested work and verified it from runtime evidence\. Evidence: command/i);
+  assert.equal(
+    compactHealthFallback.events.filter(
+      (event) => event.type === "tool.started" && event.data?.toolName !== "finish"
+    ).length,
+    1,
+    "compact health fallback dispatched more than the authoritative command"
+  );
+  assert(
+    !compactHealthFallback.events.some(
+      (event) =>
+        event.type === "tool.started" &&
+        /(?:^|[ /])(?:\\.private|private|raw|sqlite|jsonl|artifact)(?:$|[ /.-])/i.test(
+          String(event.data?.args?.command || "")
+        )
+    ),
+    "compact health fallback explored forbidden private/raw evidence"
+  );
+  assert.equal(
+    compactHealthFallback.events.filter((event) => event.type === "completion.verified_fallback").length,
+    1,
+    "compact health empty response did not persist exactly one verified fallback"
+  );
+  assert.equal(
+    compactHealthFallback.events.filter((event) => event.type === "completion.empty_response_repair_requested").length,
+    0,
+    "finish-only reasoning repair still spent a separate empty-response repair turn"
   );
 
   const wordCompletionWithoutArtifact = await runCase({

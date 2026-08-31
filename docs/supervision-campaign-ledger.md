@@ -531,3 +531,21 @@ unfinished work. The completion predicate now rejects pending work only when it
 is tied to the current task/report/validation/change or an agent-promised
 future action. Read-only status answers may truthfully report external
 pending/retrying/next-attempt state after sufficient evidence exists.
+
+Installed retest `web-agent-labcanvas-5e6eb6b6-fb8d-419d-a549-aa4098252064`
+then proved the next core gap. AgInTiFlow ran the same canonical compact
+health command exactly once and avoided raw/private exploration, but the
+finish-only verified-completion turns kept returning empty content and no tool
+calls with `finishReason=length` at the inherited 768-token output cap. After
+the bounded empty-response repair was exhausted, the runtime emitted the
+generic verified fallback `Evidence: command` instead of summarizing the
+authoritative JSON status snapshot.
+
+That defect is still AgInTiFlow core completion-loop behavior, not AgenticApp
+or a WeChat-specific routine. Verified-completion turns now have their own
+final-answer output floor and explicit finish-only instruction. If a provider
+still returns empty final responses after verified evidence exists, the
+fallback derives a concise public answer from the successful bounded command
+output. JSON status snapshots summarize visible delivered/retrying schedule
+states, ingress reachability, queue counts, and top-level health while keeping
+the original SCS checks for genuinely unfinished agent work.
