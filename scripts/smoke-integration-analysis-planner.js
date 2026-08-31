@@ -728,6 +728,7 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
   const calls = [];
   const order = [];
   let contradictionRetryCalls = 0;
+  let citationRetryCalls = 0;
   let contradictionFallbackCalls = 0;
   const groundedSearchClient = createTestOnlyIntegrationGroundedSearchClient({
     endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
@@ -764,6 +765,18 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
       assert.equal(payload.messages.at(-1).role, "system");
       assert.match(payload.messages.at(-1).content, /grounded search succeeded/u);
       return textResponse("Grounded search was used and the retrieved evidence supports the answer [1].");
+    }
+    const citationRetry = payload.messages.some(
+      (message) => message.role === "user" && message.content === "Audit citation retry"
+    );
+    if (citationRetry) {
+      citationRetryCalls += 1;
+      if (citationRetryCalls === 1) {
+        return textResponse("Grounded search retrieved a relevant source, shown below.");
+      }
+      assert.equal(payload.messages.at(-1).role, "system");
+      assert.match(payload.messages.at(-1).content, /citations \[1\] through \[1\]/u);
+      return textResponse("Grounded search retrieved the relevant evidence [1].");
     }
     const contradictionFallback = payload.messages.some(
       (message) => message.role === "user" && message.content === "Audit contradiction fallback"
@@ -955,14 +968,24 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
       "Grounded search was used and the retrieved evidence supports the answer [1]."
     );
 
+    const correctedCitation = await grounded.planner.run(
+      scope("run_00000000-0000-4000-8004-000000000009"),
+      { prompt: "Audit citation retry", search: { mode: "web", limit: 5 } }
+    );
+    assert.equal(calls.length, 9);
+    assert.equal(citationRetryCalls, 2);
+    assert.equal(correctedCitation.text, "Grounded search retrieved the relevant evidence [1].");
+
     const reconciledNarration = await grounded.planner.run(
       scope("run_00000000-0000-4000-8004-000000000008"),
       { prompt: "Audit contradiction fallback", search: { mode: "web", limit: 5 } }
     );
-    assert.equal(calls.length, 9);
+    assert.equal(calls.length, 10);
     assert.equal(contradictionFallbackCalls, 2);
-    assert.match(reconciledNarration.text, /^The calculation is complete\./u);
-    assert.match(reconciledNarration.text, /Grounded search was used for this run/u);
+    assert.equal(
+      reconciledNarration.text,
+      "Grounded search was used for this run; the consulted sources are shown in the Grounded sources artifact below [1]."
+    );
     assert.doesNotMatch(reconciledNarration.text, /(?:No external sources|did not use any web searches)/iu);
   } finally {
     grounded.coordinator.close();

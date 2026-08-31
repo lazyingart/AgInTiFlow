@@ -205,7 +205,7 @@ const UNSUPPORTED_CAPABILITY_TEXT = Object.freeze({
 const EXPRESSION_PLOT_MODEL_FALLBACK_PROMPT =
   "The user explicitly requires a plot, but the fixed single-expression compiler could not represent this natural-language request. Interpret the request and its conversation context, then call the bounded analysis tool and emit a real plot artifact. Never claim a plot exists unless the tool succeeds and emits it.";
 const GROUNDED_SEARCH_TRUTHFUL_FALLBACK =
-  "Grounded search was used for this run; the consulted sources are shown in the Grounded sources artifact below.";
+  "Grounded search was used for this run; the consulted sources are shown in the Grounded sources artifact below [1].";
 const GROUNDED_SEARCH_DENIAL_PATTERNS = Object.freeze([
   /\bno\s+(?:external\s+)?sources?(?:\s+or\s+(?:web\s+)?search(?:es)?)?\s+(?:(?:were|was|have\s+been|has\s+been)\s+)?(?:consulted|used|needed|accessed|retrieved|performed|conducted)\b/iu,
   /\bno\s+(?:external\s+)?(?:web\s+)?search(?:es)?\s+(?:(?:were|was|have\s+been|has\s+been)\s+)?(?:consulted|used|needed|accessed|performed|conducted)\b/iu,
@@ -1721,23 +1721,35 @@ function groundedSearchNarrationContradictsEvidence(value) {
   return GROUNDED_SEARCH_DENIAL_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function groundedSearchNarrationRetryMessage() {
+function groundedSearchCitationIndices(value) {
+  return [...String(value || "").matchAll(/\[([1-9][0-9]{0,2})\]/gu)]
+    .map((match) => Number(match[1]));
+}
+
+function groundedSearchNarrationNeedsCorrection(value, sourceCount) {
+  if (groundedSearchNarrationContradictsEvidence(value)) return true;
+  const citations = groundedSearchCitationIndices(value);
+  return !Number.isSafeInteger(sourceCount) || sourceCount < 1 || citations.length < 1 ||
+    citations.some((index) => index < 1 || index > sourceCount);
+}
+
+function groundedSearchNarrationRetryMessage(sourceCount) {
   return Object.freeze({
     role: "system",
     content:
-      "Trusted current-run audit correction: grounded search succeeded and emitted a Grounded sources artifact. " +
-      "The prior draft falsely denied that search or external sources were used. Return a corrected final answer, " +
-      "state that grounded search was used, cite the supplied sources where relevant, and never repeat the denial.",
+      `Trusted current-run audit correction: grounded search succeeded and emitted ${sourceCount} bound ` +
+      `source${sourceCount === 1 ? "" : "s"}. The prior draft either denied this evidence or lacked valid ` +
+      `one-based citations. Return a corrected final answer using only citations [1] through [${sourceCount}]. ` +
+      "State that grounded search was used, bind each retrieved factual claim to the supplied sources, and never " +
+      "name or imply a consulted source that is absent from that evidence.",
   });
 }
 
-function reconcileGroundedSearchNarration(value) {
+function reconcileGroundedSearchNarration(value, sourceCount) {
   const text = String(value || "").trim();
-  if (!groundedSearchNarrationContradictsEvidence(text)) return text;
-  const retained = (text.match(/[^.!?。！？]+[.!?。！？]?/gu) || [text])
-    .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence && !groundedSearchNarrationContradictsEvidence(sentence));
-  return [...retained, GROUNDED_SEARCH_TRUTHFUL_FALLBACK].join("\n\n");
+  return groundedSearchNarrationNeedsCorrection(text, sourceCount)
+    ? GROUNDED_SEARCH_TRUTHFUL_FALLBACK
+    : text;
 }
 
 function groundedEvidenceMessage(result) {
@@ -2731,14 +2743,15 @@ function createPlanner({
           if (!assistant.content) {
             fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "LocalLLM returned an empty assistant answer.", { status: 502 });
           }
-          const currentRunGroundedSearch = artifacts.some(({ kind }) => kind === "sources");
+          const currentRunGroundedSearch = artifacts.find(({ kind }) => kind === "sources");
+          const currentRunGroundedSourceCount = currentRunGroundedSearch?.spec?.sources?.length ?? 0;
           if (
             currentRunGroundedSearch &&
-            groundedSearchNarrationContradictsEvidence(assistant.content)
+            groundedSearchNarrationNeedsCorrection(assistant.content, currentRunGroundedSourceCount)
           ) {
             if (groundedSearchNarrationRetries < MAXIMUM_GROUNDED_SEARCH_NARRATION_RETRIES) {
               groundedSearchNarrationRetries += 1;
-              const retryMessage = groundedSearchNarrationRetryMessage();
+              const retryMessage = groundedSearchNarrationRetryMessage(currentRunGroundedSourceCount);
               messages.push(retryMessage);
               try {
                 assertWithinModelContext(
@@ -2749,7 +2762,10 @@ function createPlanner({
                 messages.pop();
                 if (error?.code !== "ANALYSIS_CONTEXT_BUDGET_EXCEEDED") throw error;
                 return await finalize({
-                  text: reconcileGroundedSearchNarration(assistant.content),
+                  text: reconcileGroundedSearchNarration(
+                    assistant.content,
+                    currentRunGroundedSourceCount
+                  ),
                   toolCalls,
                   executionStatus,
                 });
@@ -2757,7 +2773,10 @@ function createPlanner({
               continue;
             }
             return await finalize({
-              text: reconcileGroundedSearchNarration(assistant.content),
+              text: reconcileGroundedSearchNarration(
+                assistant.content,
+                currentRunGroundedSourceCount
+              ),
               toolCalls,
               executionStatus,
             });
