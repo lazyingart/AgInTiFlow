@@ -588,3 +588,24 @@ fallback derives a concise public answer from the successful bounded command
 output. JSON status snapshots summarize visible delivered/retrying schedule
 states, ingress reachability, queue counts, and top-level health while keeping
 the original SCS checks for genuinely unfinished agent work.
+
+### Retained tmux Git completion evidence
+
+`labcanvas-mix2s-recovery-review-061` exposed a restart boundary in supervised
+project work. The retained AgInTi session had sent a marked commit command to a
+project-owned tmux pane, captured the canonical successful commit output, and
+left the target worktree clean at `90d61bb`. SCS still rejected completion
+after resume because the durable event ledger did not reconstruct that tmux
+sequence as a consequential Git action.
+
+AgInTiFlow now binds an explicit uppercase start marker and requested Git
+action to the exact tmux target, accepts a commit only when the same pane later
+contains canonical commit output plus a zero exit marker, and preserves the
+tail of truncated captures. Restart reconciliation replays the ordered
+`tool.started`, successful `tmux_send_keys`, and successful same-pane capture
+events to recover goal- and mutation-revision-scoped evidence. Failed sends,
+wrong panes, stale markers, and nonzero exits remain rejected.
+
+The real retained session then finished without repeating the commit or any
+external side effect. The complete npm suite, focused evidence regressions, and
+registry installation passed. The fix is released as AgInTiFlow `0.20.301`.
