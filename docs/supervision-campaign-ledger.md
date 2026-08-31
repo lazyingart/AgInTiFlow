@@ -56,6 +56,22 @@ in `evidence_json` and `events`.
 
 ## Current Campaign Findings
 
+### Established media-chain reuse and permission boundaries
+
+`media-chain-readiness-020` passed after reconciling a stale machine-ledger
+`running` row with the retained session's terminal `session.finished` event.
+AgInTi inspected the existing Musia, LabCanvas, LALACHAN, Xiaoyunque, and
+LazyEdit entry points and produced `media-routine-readiness.md` without
+generating media, starting or focusing a browser, uploading, copying to
+Nutstore, creating a remote job, or publishing.
+
+The independent acceptance contract verified every required source-grounded
+entry, 16 read-only command results, zero forbidden external-action tools, and
+zero long jobs. The resulting contract keeps four permissions independent:
+reviewed-song generation, music-video generation, LazyEdit processing, and
+public platform publication. An earlier stage or old context cannot authorize a
+later irreversible stage.
+
 ### Retained dependencies, linked-worktree commits, and clean visual evidence
 
 `data-analysis-retained-dependencies-060` resumed the original DeepSeek session
