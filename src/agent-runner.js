@@ -147,9 +147,11 @@ import {
   finishResultClaimsBlocker,
   finishResultClaimsIncompleteWork,
   hasScsBlockerEvidence,
+  buildTmuxGitIntent,
   inferAuthoritativeReadOnlyRoutine,
   inferGitActionsFromCommand,
   inferSuccessfulGitActionsFromCommandResult,
+  inferSuccessfulGitActionsFromTmuxCapture,
   isResponseOnlyEvidenceScope,
   successfulGitCommitProvesFileMutation,
   isObservationalGitAction,
@@ -9788,6 +9790,9 @@ export function sanitizeToolResult(result) {
       safeResult.contentTruncated = false;
     } else {
       safeResult.contentPreview = safeResult.content.slice(0, TOOL_RESULT_CONTENT_PREVIEW_CHARS);
+      if (safeResult.toolName === "tmux_capture_pane") {
+        safeResult.contentTail = safeResult.content.slice(-TOOL_RESULT_CONTENT_PREVIEW_CHARS);
+      }
       safeResult.contentTruncated = true;
       delete safeResult.content;
     }
@@ -13778,7 +13783,55 @@ export function mergeDurableGitEvidence(
   return [...merged.values()].slice(-Math.max(1, Number(limit || 40)));
 }
 
-function recordDurableEvidenceCategories(state = {}, toolResult = {}) {
+export function rememberTmuxGitIntent(state = {}, args = {}, toolResult = {}) {
+  const gitIntent = toolResult?.ok ? buildTmuxGitIntent(args.text || "") : null;
+  if (!gitIntent || !toolResult?.target) return null;
+  state.meta = state.meta || {};
+  const pendingByTarget = state.meta.pendingTmuxGitEvidence || {};
+  const pending = {
+    ...gitIntent,
+    target: toolResult.target,
+    sentTextSha256: toolResult.sentTextSha256,
+    goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    mutationRevision: Math.max(
+      0,
+      Number(state.meta?.projectVerification?.mutationRevision || 0)
+    ),
+  };
+  pendingByTarget[toolResult.target] = pending;
+  state.meta.pendingTmuxGitEvidence = Object.fromEntries(
+    Object.entries(pendingByTarget).slice(-8)
+  );
+  toolResult.tmuxGitIntentActions = gitIntent.actions;
+  toolResult.tmuxGitIntentMarkers = gitIntent.markers;
+  return pending;
+}
+
+export function attachVerifiedTmuxGitEvidence(state = {}, toolResult = {}) {
+  const pendingByTarget = state.meta?.pendingTmuxGitEvidence || {};
+  const pending = pendingByTarget[toolResult?.target];
+  const verifiedGitActions = inferSuccessfulGitActionsFromTmuxCapture(
+    pending,
+    toolResult
+  );
+  if (!verifiedGitActions.length) return [];
+  toolResult.verifiedGitActions = verifiedGitActions;
+  toolResult.verifiedGitSource = "tmux_capture_pane";
+  toolResult.verifiedGitGoalRevision = Math.max(
+    0,
+    Number(pending.goalRevision || 0)
+  );
+  toolResult.verifiedGitMutationRevision = Math.max(
+    0,
+    Number(pending.mutationRevision || 0)
+  );
+  toolResult.verifiedGitCommandSha256 = String(pending.sentTextSha256 || "");
+  delete pendingByTarget[toolResult.target];
+  state.meta.pendingTmuxGitEvidence = pendingByTarget;
+  return verifiedGitActions;
+}
+
+export function recordDurableEvidenceCategories(state = {}, toolResult = {}) {
   if (!toolResult || toolResult.ok === false || toolResult.blocked || toolResult.skipped) return;
   state.meta = state.meta || {};
   const categories = new Set(
@@ -13798,32 +13851,49 @@ function recordDurableEvidenceCategories(state = {}, toolResult = {}) {
     categories.add("artifact");
   }
   if (toolName === "read_image") categories.add("visual");
+  const gitActions = toolName === "run_command" && Number(toolResult.exitCode ?? 0) === 0
+    ? inferSuccessfulGitActionsFromCommandResult(toolResult)
+    : Array.isArray(toolResult.verifiedGitActions)
+      ? toolResult.verifiedGitActions
+      : [];
   if (toolName === "run_command" && Number(toolResult.exitCode ?? 0) === 0) {
     categories.add("command");
     const command = String(toolResult.args?.command || "").trim();
-    const gitActions = inferSuccessfulGitActionsFromCommandResult(toolResult);
-    if (gitActions.length) {
-      categories.add("git");
-      if (successfulGitCommitProvesFileMutation(toolResult)) categories.add("file");
-      state.meta.durableGitActions = [
-        ...new Set([
-          ...(Array.isArray(state.meta.durableGitActions) ? state.meta.durableGitActions : []),
-          ...gitActions,
-        ]),
-      ];
-      const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
-      const existingGitEvidence = Array.isArray(state.meta.durableGitEvidence)
-        ? state.meta.durableGitEvidence
-        : [];
-      state.meta.durableGitEvidence = mergeDurableGitEvidence(existingGitEvidence, gitActions, {
-        goalRevision,
-        mutationRevision: Math.max(
-          0,
-          Number(state.meta?.projectVerification?.mutationRevision || 0)
-        ),
-      });
-    }
     if (/\b(?:pytest|unittest|npm\s+test|pnpm\s+test|yarn\s+test)\b/i.test(command)) categories.add("test");
+  }
+  if (gitActions.length) {
+    categories.add("git");
+    if (
+      successfulGitCommitProvesFileMutation(toolResult) ||
+      (gitActions.includes("commit") && toolResult.verifiedGitSource === "tmux_capture_pane")
+    ) {
+      categories.add("file");
+    }
+    state.meta.durableGitActions = [
+      ...new Set([
+        ...(Array.isArray(state.meta.durableGitActions) ? state.meta.durableGitActions : []),
+        ...gitActions,
+      ]),
+    ];
+    const goalRevision = Math.max(
+      0,
+      Number(toolResult.verifiedGitGoalRevision ?? state.meta?.goalContract?.revision ?? 0)
+    );
+    const mutationRevision = Math.max(
+      0,
+      Number(
+        toolResult.verifiedGitMutationRevision ??
+          state.meta?.projectVerification?.mutationRevision ??
+          0
+      )
+    );
+    const existingGitEvidence = Array.isArray(state.meta.durableGitEvidence)
+      ? state.meta.durableGitEvidence
+      : [];
+    state.meta.durableGitEvidence = mergeDurableGitEvidence(existingGitEvidence, gitActions, {
+      goalRevision,
+      mutationRevision,
+    });
   }
   state.meta.durableEvidenceCategories = [...categories];
 }
@@ -18759,6 +18829,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       }
       case "tmux_capture_pane": {
         const result = await captureTmuxPane(args, config);
+        attachVerifiedTmuxGitEvidence(state, result);
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
@@ -18766,6 +18837,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       }
       case "tmux_send_keys": {
         const result = await sendTmuxKeys(args, config);
+        rememberTmuxGitIntent(state, args, result);
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);

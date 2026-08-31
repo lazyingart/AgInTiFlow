@@ -2120,6 +2120,147 @@ export function inferSuccessfulGitActionsFromCommandResult(payload = {}) {
   return [];
 }
 
+export function buildTmuxGitIntent(command = "") {
+  const text = String(command || "");
+  // `$?` is expected in the explicit tmux exit marker. Remove only that
+  // non-command expansion before parsing; all other shell expansion remains
+  // subject to the normal ambiguity guard.
+  const parseable = text.replace(/\$\?/g, "0");
+  const actions = inferGitActionsFromCommand(parseable, {
+    requireFailurePropagation: false,
+  }).filter((action) => !isObservationalGitAction(action));
+  const markers = [
+    ...text.matchAll(/={3,}([A-Z0-9][A-Z0-9_-]{3,96}(?:START|BEGIN))={3,}/g),
+  ].map((match) => String(match[0] || ""));
+  if (!actions.length || !markers.length) return null;
+  return {
+    actions: unique(actions),
+    markers: unique(markers).slice(0, 4),
+  };
+}
+
+export function inferSuccessfulGitActionsFromTmuxCapture(intent = {}, payload = {}) {
+  if (
+    !intent ||
+    !payload ||
+    payload.ok === false ||
+    payload.blocked ||
+    String(payload.toolName || "") !== "tmux_capture_pane"
+  ) {
+    return [];
+  }
+  const content = [payload.content, payload.contentPreview, payload.contentTail]
+    .map((item) => String(item || ""))
+    .filter(Boolean)
+    .join("\n");
+  const markers = Array.isArray(intent.markers)
+    ? intent.markers.map(String).filter(Boolean)
+    : [];
+  if (!content || !markers.length || !markers.some((marker) => content.includes(marker))) {
+    return [];
+  }
+  const requested = Array.isArray(intent.actions)
+    ? intent.actions.map((item) => String(item || "").toLowerCase()).filter(Boolean)
+    : [];
+  const verified = [];
+  if (
+    requested.includes("commit") &&
+    /={3,}(?:GIT_)?COMMIT_EXIT\s*[:=]\s*0={3,}/i.test(content) &&
+    /^\[[^\]\n]+\s+[0-9a-f]{7,}\]\s+\S+/mi.test(content)
+  ) {
+    verified.push("commit");
+  }
+  return verified;
+}
+
+export function reconcileTmuxGitEvidenceEvents(events = []) {
+  const source = Array.isArray(events) ? events : [];
+  const pendingStarts = new Map();
+  const activeIntents = new Map();
+  let goalRevision = 0;
+  let mutationRevision = 0;
+
+  return source.map((event) => {
+    const type = String(event?.type || "");
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    goalRevision = Math.max(
+      goalRevision,
+      Number(
+        data.goalRevision ??
+          (type === "goal.updated" ? data.revision : 0) ??
+          0
+      ) || 0
+    );
+    mutationRevision = Math.max(
+      mutationRevision,
+      Number(data.projectMutationRevision ?? data.mutationRevision ?? 0) || 0
+    );
+
+    const toolName = String(data.toolName || "");
+    const target = String(data.target || data.args?.target || "");
+    if (type === "tool.started" && toolName === "tmux_send_keys" && target) {
+      const intent = buildTmuxGitIntent(data.args?.text || "");
+      if (intent) {
+        pendingStarts.set(target, {
+          ...intent,
+          target,
+          goalRevision,
+          mutationRevision,
+        });
+      } else {
+        pendingStarts.delete(target);
+        activeIntents.delete(target);
+      }
+      return event;
+    }
+
+    if (["tool.completed", "tool.failed"].includes(type) && toolName === "tmux_send_keys" && target) {
+      const pending = pendingStarts.get(target);
+      pendingStarts.delete(target);
+      if (type === "tool.completed" && data.ok !== false && pending) {
+        activeIntents.set(target, {
+          ...pending,
+          sentTextSha256: String(data.sentTextSha256 || ""),
+        });
+      } else {
+        activeIntents.delete(target);
+      }
+      return event;
+    }
+
+    if (type === "tool.completed" && toolName === "tmux_capture_pane" && target) {
+      const pending = activeIntents.get(target);
+      const verifiedGitActions = inferSuccessfulGitActionsFromTmuxCapture(
+        pending,
+        data
+      );
+      if (verifiedGitActions.length) {
+        activeIntents.delete(target);
+        return {
+          ...event,
+          data: {
+            ...data,
+            verifiedGitActions,
+            verifiedGitSource: "tmux_capture_pane",
+            verifiedGitGoalRevision: Math.max(
+              0,
+              Number(pending.goalRevision || 0)
+            ),
+            verifiedGitMutationRevision: Math.max(
+              0,
+              Number(pending.mutationRevision || 0)
+            ),
+            verifiedGitCommandSha256: String(
+              pending.sentTextSha256 || ""
+            ),
+          },
+        };
+      }
+    }
+    return event;
+  });
+}
+
 export function successfulGitCommitProvesFileMutation(payload = {}) {
   if (!inferSuccessfulGitActionsFromCommandResult(payload).includes("commit")) return false;
   const output = String(payload.stdout || payload.result || "");
@@ -3955,7 +4096,9 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
   if (["read_image", "generate_image"].includes(toolName) || /\b(screenshot|visible|thumbnail|preview|image)\b/.test(text)) {
     push("visual", `${toolName || "tool"} supplied visual evidence`, payload.path || payload.outputPath || args.path || "");
   }
-  const gitActions = inferSuccessfulGitActionsFromCommandResult(payload);
+  const gitActions = Array.isArray(payload.verifiedGitActions)
+    ? payload.verifiedGitActions
+    : inferSuccessfulGitActionsFromCommandResult(payload);
   if (gitActions.length) {
     push(
       "git",
@@ -3964,8 +4107,18 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
       {
         gitAction: gitActions.at(-1),
         gitActions,
-        goalRevision: Math.max(0, Number(payload.goalRevision || 0)),
-        mutationRevision: Math.max(0, Number(payload.projectMutationRevision || 0)),
+        goalRevision: Math.max(
+          0,
+          Number(payload.verifiedGitGoalRevision ?? payload.goalRevision ?? 0)
+        ),
+        mutationRevision: Math.max(
+          0,
+          Number(
+            payload.verifiedGitMutationRevision ??
+              payload.projectMutationRevision ??
+              0
+          )
+        ),
       }
     );
   }
@@ -4038,7 +4191,9 @@ function messageToEvidence(message = {}) {
 }
 
 export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
-  const events = Array.isArray(context.events) ? context.events : [];
+  const events = reconcileTmuxGitEvidenceEvents(
+    Array.isArray(context.events) ? context.events : []
+  );
   const messages = Array.isArray(state.messages) ? state.messages : [];
   const eventEvidence = events.flatMap(eventToEvidence);
   // Completed tools are mirrored into both the append-only event stream and

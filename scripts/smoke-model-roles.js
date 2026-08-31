@@ -31,14 +31,23 @@ import {
 } from "../src/scs-controller.js";
 import {
   buildScsEvidenceLedger,
+  buildTmuxGitIntent,
   deriveScsTaskContract,
   evaluateScsEvidence,
   gitActionsSatisfyContract,
   inferSuccessfulGitActionsFromCommandResult,
+  inferSuccessfulGitActionsFromTmuxCapture,
+  reconcileTmuxGitEvidenceEvents,
 } from "../src/scs-evidence.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { classifyGoalIntent, isDirectAnswerIntent } from "../src/goal-intent.js";
 import { languageWriterDefaults } from "../src/writing-specialist.js";
+import {
+  attachVerifiedTmuxGitEvidence,
+  recordDurableEvidenceCategories,
+  rememberTmuxGitIntent,
+  sanitizeToolResult,
+} from "../src/agent-runner.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 for (const key of [
@@ -1116,6 +1125,195 @@ assert(
   committedEvaluation.missingGitActions.length === 0 &&
     !committedEvaluation.missing.some((item) => item.category === "git"),
   "a successful git commit did not satisfy the explicit git requirement"
+);
+const tmuxCommitCommand = [
+  'echo "===AGINTI_REVIEW_COMMIT_START==="',
+  'git add README.md && git commit -m "finish review"',
+  'echo "===COMMIT_EXIT:$?==="',
+].join(" ; ");
+const tmuxCommitIntent = buildTmuxGitIntent(tmuxCommitCommand);
+assert(
+  tmuxCommitIntent?.actions.includes("commit") &&
+    tmuxCommitIntent.markers.includes("===AGINTI_REVIEW_COMMIT_START==="),
+  "a marked workspace tmux commit command did not retain bounded Git intent"
+);
+const tmuxCommitCapture = {
+  ok: true,
+  toolName: "tmux_capture_pane",
+  target: "review:0.0",
+  content: [
+    "===AGINTI_REVIEW_COMMIT_START===",
+    "[review abc1234] finish review",
+    " 1 file changed, 2 insertions(+)",
+    "===COMMIT_EXIT:0===",
+  ].join("\n"),
+};
+const verifiedTmuxCommit = inferSuccessfulGitActionsFromTmuxCapture(
+  tmuxCommitIntent,
+  tmuxCommitCapture
+);
+assert(
+  verifiedTmuxCommit.length === 1 && verifiedTmuxCommit[0] === "commit",
+  "a fresh marked tmux capture did not prove its successful Git commit"
+);
+assert(
+  inferSuccessfulGitActionsFromTmuxCapture(tmuxCommitIntent, {
+    ...tmuxCommitCapture,
+    content: tmuxCommitCapture.content.replace("COMMIT_EXIT:0", "COMMIT_EXIT:1"),
+  }).length === 0,
+  "a nonzero tmux commit exit marker was accepted as Git evidence"
+);
+assert(
+  inferSuccessfulGitActionsFromTmuxCapture(tmuxCommitIntent, {
+    ...tmuxCommitCapture,
+    content: tmuxCommitCapture.content.replace("AGINTI_REVIEW_COMMIT_START", "STALE_COMMIT_START"),
+  }).length === 0,
+  "a tmux capture without the current command marker was accepted as fresh Git evidence"
+);
+const tmuxEvidenceState = {
+  meta: {
+    goalContract: { revision: 2 },
+    projectVerification: { mutationRevision: 3 },
+  },
+};
+const tmuxSendResult = {
+  ok: true,
+  toolName: "tmux_send_keys",
+  target: "review:0.0",
+  sentTextSha256: "a".repeat(64),
+};
+rememberTmuxGitIntent(
+  tmuxEvidenceState,
+  { text: tmuxCommitCommand },
+  tmuxSendResult
+);
+const trackedTmuxCapture = { ...tmuxCommitCapture };
+assert(
+  attachVerifiedTmuxGitEvidence(tmuxEvidenceState, trackedTmuxCapture).includes("commit"),
+  "the same-pane tmux capture did not close the pending Git intent"
+);
+recordDurableEvidenceCategories(tmuxEvidenceState, trackedTmuxCapture);
+assert(
+  tmuxEvidenceState.meta.durableGitEvidence.some(
+    (item) =>
+      item.action === "commit" &&
+      item.goalRevision === 2 &&
+      item.mutationRevision === 3
+  ),
+  "verified tmux commit evidence was not retained at the active goal and mutation revision"
+);
+assert(
+  !tmuxEvidenceState.meta.pendingTmuxGitEvidence["review:0.0"],
+  "verified tmux Git intent remained pending after same-pane capture"
+);
+const tmuxCommitLedger = buildScsEvidenceLedger({
+  context: {
+    events: [
+      {
+        type: "tool.completed",
+        data: {
+          ...tmuxCommitCapture,
+          verifiedGitActions: verifiedTmuxCommit,
+          verifiedGitGoalRevision: 1,
+          verifiedGitMutationRevision: 1,
+        },
+      },
+    ],
+  },
+});
+assert(
+  evaluateScsEvidence(commitContract, tmuxCommitLedger).missingGitActions.length === 0,
+  "verified tmux commit evidence did not satisfy the completion contract"
+);
+const historicalTmuxEvents = [
+  { type: "goal.updated", data: { revision: 2 } },
+  {
+    type: "tool.completed",
+    data: {
+      ok: true,
+      toolName: "run_command",
+      goalRevision: 2,
+      projectMutationRevision: 3,
+      args: { command: "git status --short" },
+      exitCode: 0,
+      stdout: " M README.md",
+    },
+  },
+  {
+    type: "tool.started",
+    data: {
+      toolName: "tmux_send_keys",
+      args: { target: "review:0.0", text: tmuxCommitCommand },
+    },
+  },
+  {
+    type: "tool.completed",
+    data: {
+      ...tmuxSendResult,
+      target: "review:0.0",
+    },
+  },
+  {
+    type: "tool.completed",
+    data: {
+      ...tmuxCommitCapture,
+      content: undefined,
+      contentPreview: tmuxCommitCapture.content,
+    },
+  },
+];
+const reconciledHistoricalEvents = reconcileTmuxGitEvidenceEvents(
+  historicalTmuxEvents
+);
+assert(
+  reconciledHistoricalEvents.at(-1)?.data?.verifiedGitActions?.includes("commit") &&
+    reconciledHistoricalEvents.at(-1)?.data?.verifiedGitGoalRevision === 2 &&
+    reconciledHistoricalEvents.at(-1)?.data?.verifiedGitMutationRevision === 3,
+  "restart reconciliation did not recover revision-scoped tmux commit evidence"
+);
+assert(
+  evaluateScsEvidence(
+    commitContract,
+    buildScsEvidenceLedger({ context: { events: historicalTmuxEvents } })
+  ).missingGitActions.length === 0,
+  "historical marked tmux commit events did not satisfy the completion contract"
+);
+for (const invalidEvents of [
+  historicalTmuxEvents.map((event, index) =>
+    index === 3 ? { ...event, type: "tool.failed", data: { ...event.data, ok: false } } : event
+  ),
+  historicalTmuxEvents.map((event, index) =>
+    index === 4 ? { ...event, data: { ...event.data, target: "other:0.0" } } : event
+  ),
+  historicalTmuxEvents.map((event, index) =>
+    index === 4
+      ? {
+          ...event,
+          data: {
+            ...event.data,
+            contentPreview: event.data.contentPreview.replace("COMMIT_EXIT:0", "COMMIT_EXIT:1"),
+          },
+        }
+      : event
+  ),
+]) {
+  assert(
+    !reconcileTmuxGitEvidenceEvents(invalidEvents).at(-1)?.data?.verifiedGitActions,
+    "failed, cross-pane, or nonzero historical tmux evidence was accepted"
+  );
+}
+const sanitizedLongTmuxCapture = sanitizeToolResult({
+  ...tmuxCommitCapture,
+  content: `${"old scrollback\n".repeat(200)}${tmuxCommitCapture.content}`,
+});
+assert(
+  sanitizedLongTmuxCapture.contentTruncated === true &&
+    sanitizedLongTmuxCapture.contentTail.includes("===COMMIT_EXIT:0===") &&
+    inferSuccessfulGitActionsFromTmuxCapture(
+      tmuxCommitIntent,
+      sanitizedLongTmuxCapture
+    ).includes("commit"),
+  "truncated tmux evidence did not preserve and verify its bounded content tail"
 );
 const recoveredCommitActions = inferSuccessfulGitActionsFromCommandResult({
   ok: true,
