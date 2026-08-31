@@ -2090,6 +2090,33 @@ async function texPdfIntentCompilesAndSealsBothFiles() {
   compiled.coordinator.close();
 }
 
+async function exactFencedTeXSourceIsBoundByteForByte() {
+  const exactSource = [
+    "\\documentclass{article}",
+    "\\begin{document}",
+    "Exact source binding sentinel 8f54c2.",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  const modelChangedSource = exactSource.trimEnd();
+  const prompt = `Create exactly two file artifacts named exact-bound.tex and exact-bound.pdf. The TeX artifact must contain exactly the UTF-8 source below, byte-for-byte, including its final newline. Compile that exact source.\n\n\`\`\`tex\n${exactSource}\`\`\``;
+  const documentWorker = createDocumentWorkerFixture();
+  const bound = fixture(async () => texToolResponse("exact-bound.tex", modelChangedSource), {
+    documentWorkerClient: documentWorker.client(),
+  });
+  const result = await bound.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000099"),
+    { prompt },
+    documentRunOptions()
+  );
+  assert.equal(result.executionStatus, "succeeded");
+  const compileCall = documentWorker.calls.find(({ pathname }) => pathname === "/artifact/v1/compile");
+  assert(compileCall, "exact fenced source did not reach the document compiler");
+  assert.equal(compileCall.request.source, exactSource);
+  assert.notEqual(compileCall.request.source, modelChangedSource);
+  bound.coordinator.close();
+}
+
 async function texPdfMixedExternalActionDisclosesAfterCommit() {
   const source = "\\documentclass{article}\n\\begin{document}\nMixed request.\n\\end{document}\n";
   const documentWorker = createDocumentWorkerFixture();
@@ -4332,6 +4359,7 @@ await unsupportedMixedActionsDiscloseAndContinue();
 await coordinatedExecutionClausesHonorLocalNegation();
 await texPdfIntentCannotFinishWithProseOnly();
 await texPdfIntentCompilesAndSealsBothFiles();
+await exactFencedTeXSourceIsBoundByteForByte();
 await texPdfMixedExternalActionDisclosesAfterCommit();
 await texPdfContextualFollowupRecompilesBothFiles();
 await texPdfPrivateLineageSurvivesClippedConversation();

@@ -4,6 +4,7 @@ import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import {
   classifyIntegrationDocumentArtifactIntent,
   evaluateIntegrationDocumentArtifactCompletion,
+  extractIntegrationExactFencedTeXSource,
   isIntegrationDocumentArtifactRevision,
 } from "../src/integration-document-artifacts.js";
 import { createDocumentWorkerFixture, compileRequirements } from "./test-document-worker-fixture.js";
@@ -21,6 +22,20 @@ assert.equal(productionIntent.required, true);
 assert.equal(productionIntent.kind, "tex-pdf");
 assert.deepEqual(productionIntent.requiredFormats, ["tex", "pdf"]);
 assert.equal(productionIntent.requirements.minimumFigureCount, 1);
+
+const exactFencedSource = "\\documentclass{article}\n\\begin{document}\nExact bytes.\n\\end{document}\n";
+const exactFencedPrompt = `Create exact.tex and exact.pdf. Compile this exact source byte-for-byte, including its final newline.\n\n\`\`\`tex\n${exactFencedSource}\`\`\``;
+assert.equal(extractIntegrationExactFencedTeXSource(exactFencedPrompt), exactFencedSource);
+assert.equal(
+  extractIntegrationExactFencedTeXSource(`Create example.tex and example.pdf.\n\n\`\`\`tex\n${exactFencedSource}\`\`\``),
+  null,
+  "a fenced example without exact-source authority must remain model-authored",
+);
+assert.equal(
+  extractIntegrationExactFencedTeXSource(`${exactFencedPrompt}\n\n\`\`\`latex\n${exactFencedSource}\`\`\``),
+  null,
+  "ambiguous multiple exact TeX fences must fail closed",
+);
 
 for (const prompt of [
   "Create the report in LaTeX and give me the PDF.",

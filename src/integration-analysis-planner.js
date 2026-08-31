@@ -22,6 +22,7 @@ import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
 import {
   classifyIntegrationDocumentArtifactIntent,
   evaluateIntegrationDocumentArtifactCompletion,
+  extractIntegrationExactFencedTeXSource,
   isIntegrationDocumentArtifactRevision,
 } from "./integration-document-artifacts.js";
 import {
@@ -1100,6 +1101,31 @@ function normalizeTexToolMessage(response) {
   });
 }
 
+function bindExactTexToolSource(toolCall, source) {
+  if (source === null) return toolCall;
+  if (
+    typeof source !== "string" ||
+    Buffer.byteLength(source, "utf8") > INTEGRATION_DOCUMENT_WORKER_LIMITS.maximumSourceBytes
+  ) {
+    fail("ANALYSIS_TEX_SOURCE_INVALID", "The exact fenced TeX source exceeded the document limit.", {
+      status: 413,
+    });
+  }
+  const args = Object.freeze({ filename: toolCall.args.filename, source });
+  return Object.freeze({
+    id: toolCall.id,
+    args,
+    messageCall: Object.freeze({
+      id: toolCall.id,
+      type: "function",
+      function: Object.freeze({
+        name: INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
+        arguments: JSON.stringify(args),
+      }),
+    }),
+  });
+}
+
 function publicArtifact(input) {
   const artifact = sanitizeIntegrationArtifact(input);
   const serialized = JSON.stringify(artifact);
@@ -2088,6 +2114,9 @@ function createPlanner({
       input.conversation,
       activeDocumentContext
     );
+    const exactDocumentSource = documentArtifactIntent.required
+      ? extractIntegrationExactFencedTeXSource(input.prompt)
+      : null;
     const unsupportedCapabilities = unsupportedCapabilityRequests(input.prompt, {
       searchEnabled: input.search !== undefined,
       texPdfEnabled: documentArtifactIntent.required,
@@ -2324,7 +2353,10 @@ function createPlanner({
           );
           assertNotAborted(signal);
           try {
-            toolCall = normalizeTexToolMessage(toolResponse);
+            toolCall = bindExactTexToolSource(
+              normalizeTexToolMessage(toolResponse),
+              exactDocumentSource
+            );
           } catch (error) {
             const retryableMalformed = new Set([
               "ANALYSIS_TEX_TOOL_CALL_INVALID",

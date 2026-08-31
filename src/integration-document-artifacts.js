@@ -30,6 +30,8 @@ const DOCUMENT_CREATION_EXCLUSION =
   /\b(?:do\s+not|don't|dont|never|avoid)\b[^.!?;\r\n]{0,160}\b(?:make|create|generate|write|compile|typeset|render|export|build|deliver|provide|send|give|return|output|share|save|download|files?|artifacts?|outputs?|deliverables?)\b|\bwithout\b[^.!?;\r\n]{0,100}\b(?:making|creating|generating|writing|compiling|rendering|exporting|saving|downloading|files?|artifacts?)\b|\bneither\b[^.!?;\r\n]{0,160}\b(?:latex|tex)\b[^.!?;\r\n]{0,160}\b(?:nor|or|and)\b[^.!?;\r\n]{0,100}\bpdf\b|\b(?:just|only)\s+(?:explain|describe|discuss|compare|review)\b|(?:不要|不用|无需|無需|不需要|禁止|避免)[^。！？；\r\n]{0,120}(?:创建|建立|生成|撰写|撰寫|编译|編譯|导出|導出|制作|製作|文件|文档|文檔|输出|輸出)/iu;
 const DOCUMENT_ADDITIONAL_ARTIFACT_GUARD =
   /\b(?:do\s+not|don't|dont|never|avoid)\s+(?:make|create|generate|produce|return|output|add|include)\s+(?:(?:any|an)\s+)?(?:other|another|additional|extra)\s+(?:files?|artifacts?|outputs?|deliverables?)\b|\b(?:do\s+not|don't|dont|never|avoid)\s+(?:(?:merely|just)\s+)?(?:paste|show|display|include)\s+(?:the\s+)?(?:files?|file\s+contents?|source(?:\s+contents?)?)\s+(?:in|into|as)\s+(?:the\s+)?(?:chat|answer|response)\b/giu;
+const DOCUMENT_EXACT_SOURCE_DIRECTIVE =
+  /\b(?:source|contents?|text|block|bytes?)\b[^.!?;\r\n]{0,120}\b(?:exact(?:ly)?|verbatim|unchanged|unmodified|byte[- ]for[- ]byte|as[- ]is)\b|\b(?:exact(?:ly)?|verbatim|unchanged|unmodified|byte[- ]for[- ]byte|as[- ]is)\b[^.!?;\r\n]{0,120}\b(?:source|contents?|text|block|bytes?)\b|\bincluding\s+(?:its|the)\s+final\s+newline\b/iu;
 const DOCUMENT_DISCUSSION_TARGET =
   /^(?:make|create|generate|write|produce|prepare|provide|give|return|output|share|deliver)\s+(?:me\s+)?(?:an?\s+|the\s+)?(?:tutorial|explanation|advice|comparison|overview|discussion|review|article|essay|prose|example|guide)\b|^(?:make|create|generate|write|produce|prepare)\s+(?:something\s+)?(?:about|on)\b|^(?:make|create|generate|write|produce|prepare|provide)\b[^.!?;\r\n]{0,120}\b(?:latex|tex)\s+source[- ]code\s+example\b/iu;
 const DOCUMENT_FIGURE =
@@ -92,6 +94,27 @@ function hasSelfContainedFencedTeXSource(value = "") {
     }
   }
   return false;
+}
+
+export function extractIntegrationExactFencedTeXSource(prompt = "") {
+  const text = String(prompt || "");
+  if (
+    !explicitDocumentArtifactIntent(text) ||
+    !DOCUMENT_EXACT_SOURCE_DIRECTIVE.test(quotedContextRemoved(text))
+  ) {
+    return null;
+  }
+  const fences = [...text.matchAll(/^[ \t]{0,3}```[ \t]*(?:latex|tex)[^\r\n]*\r?\n([\s\S]*?)^[ \t]{0,3}```[ \t]*$/gimu)];
+  if (fences.length !== 1) return null;
+  const source = fences[0][1];
+  if (
+    !/\\documentclass(?:\s*\[[^\]]*\])?\s*\{[^}]+\}/iu.test(source) ||
+    !/\\begin\s*\{document\}/iu.test(source) ||
+    !/\\end\s*\{document\}/iu.test(source)
+  ) {
+    return null;
+  }
+  return source;
 }
 
 function explicitlyExcludesFigures(value = "") {
