@@ -4389,7 +4389,13 @@ export function finishResultClaimsIncompleteWork(result = "") {
     .replace(/\bno\s+(?:further|additional)\s+(?:work|steps?|tasks?|actions?|changes?)\s+(?:is|are\s+)?(?:needed|required)\b/gi, "")
     .replace(/\bno\s+need\s+for\s+(?:further|additional)\s+(?:work|steps?|tasks?|actions?|changes?)\b/gi, "");
   const explicitIncompleteState =
-    /\b(?:paused|pending|unfinished|incomplete|not\s+(?:yet\s+)?(?:complete|completed|done)|still\s+(?:needs?|requires?)\s+(?:work|implementation|repair|validation|testing|verification))\b/i.test(
+    /\b(?:paused|unfinished|incomplete|not\s+(?:yet\s+)?(?:complete|completed|done)|still\s+(?:needs?|requires?)\s+(?:work|implementation|repair|validation|testing|verification))\b/i.test(
+      text
+    ) ||
+    /\b(?:the\s+)?(?:task|request|agent\s+work|work|implementation|repair|validation|verification|testing|test\s+run|commit|patch|edit|artifact|report|deliverable|submission|upload|download)\s+(?:is|are|remains?|stays?|was|were)?\s*(?:currently\s+)?pending\b/i.test(
+      text
+    ) ||
+    /\bpending\s+(?:agent\s+)?(?:work|steps?|tasks?|actions?|changes?|implementation|repair|validation|verification|testing|tests?|commits?|patches?|edits?|artifacts?|reports?|deliverables?|submissions?|uploads?|downloads?)\b/i.test(
       text
     );
   const promisedFutureAction =

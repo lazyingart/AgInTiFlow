@@ -520,3 +520,14 @@ the read-only evidence contract, the second turn is finish-only, and no
 private/raw exploratory command is dispatched. `npm run smoke:progressive-tools`,
 `npm run smoke:scs-evidence`, `npm run smoke:truthful-completion`, and
 `npm run check` pass on the working tree.
+
+Fresh compact retest `web-agent-labcanvas-2ebe5aef-83c8-4134-abcd-bec630a4ecb9`
+reduced the flow to 6 model requests and 5 tool starts and used the canonical
+compact status command, but both valid `finish` calls were rejected because the
+human-facing status said `Still retrying: echomind_daily_pdf` and named a
+`next attempt`. That was still an AgInTiFlow core completion-semantic defect:
+the validator treated an observed external retry state as the agent promising
+unfinished work. The completion predicate now rejects pending work only when it
+is tied to the current task/report/validation/change or an agent-promised
+future action. Read-only status answers may truthfully report external
+pending/retrying/next-attempt state after sufficient evidence exists.

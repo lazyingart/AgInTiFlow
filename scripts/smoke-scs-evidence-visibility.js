@@ -638,9 +638,21 @@ assert.equal(
 );
 assert.equal(finishResultClaimsIncompleteWork("Completed and verified the requested report."), false);
 assert.equal(
+  finishResultClaimsIncompleteWork(
+    "Read-only status: Still retrying: external_pdf (quality_retry_pending; next attempt at 10:14). Nothing was sent or changed."
+  ),
+  false,
+  "an external retry status was misclassified as unfinished agent work"
+);
+assert.equal(
   finishResultClaimsIncompleteWork("The task is paused. A corrected implementation will be written next."),
   true,
   "future work was accepted as a completed result"
+);
+assert.equal(
+  finishResultClaimsIncompleteWork("The requested report is pending and I will complete it next."),
+  true,
+  "agent-owned pending report work was accepted as complete"
 );
 
 const outputFilenameContract = deriveScsTaskContract({

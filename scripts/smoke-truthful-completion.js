@@ -66,6 +66,34 @@ assert.equal(
   false,
   "a no-further-action completion statement was mistaken for future work"
 );
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "Read-only check done, nothing sent or changed. Still retrying: nightly_pdf (quality_retry_pending; next attempt at 10:14). Queues are otherwise healthy."
+  ),
+  false,
+  "external retry status in a read-only answer was mistaken for unfinished agent work"
+);
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "Schedule status: memo delivered, export retry pending, next attempt tomorrow. This is only a status report."
+  ),
+  false,
+  "external pending status in a read-only answer was mistaken for unfinished agent work"
+);
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "The current report is pending and I will finish it next."
+  ),
+  true,
+  "agent-owned pending report work was accepted as a completed result"
+);
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "Pending validation remains before this task is complete."
+  ),
+  true,
+  "agent-owned pending validation was accepted as a completed result"
+);
 
 const staleCompletionRepair =
   "The proposed completion was rejected because the requested action is not supported by concrete runtime evidence. Reason: Missing required git action(s): commit.";
@@ -586,6 +614,39 @@ try {
   assert.equal(futureWorkFinish.result.stopped, undefined);
   assert.match(futureWorkFinish.result.result, /verified the working directory/i);
   assert(futureWorkFinish.events.some((event) => event.type === "completion.evidence_rejected"));
+
+  const readOnlyExternalRetryStatus = await runCase({
+    id: "read-only-external-retry-status",
+    goal: "Execute the shell command pwd and report the status without changing anything.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    responses: [
+      assistant("", [toolCall("external-status-proof", "run_command", { command: "pwd" })]),
+      assistant("", [
+        toolCall("finish-external-status", "finish", {
+          result:
+            "Read-only check done; nothing was sent or changed. Still retrying: nightly_pdf (quality_retry_pending; next attempt at 10:14). The requested command evidence is present.",
+        }),
+      ]),
+    ],
+  });
+  assert.equal(readOnlyExternalRetryStatus.calls.length, 2);
+  assert.equal(readOnlyExternalRetryStatus.result.stopped, undefined);
+  assert.match(readOnlyExternalRetryStatus.result.result, /Still retrying: nightly_pdf/);
+  assert(
+    readOnlyExternalRetryStatus.events.some(
+      (event) =>
+        event.type === "completion.candidate_assessed" &&
+        event.data?.claimsIncompleteWork === false
+    ),
+    "read-only external retry status was still marked claimsIncompleteWork=true"
+  );
+  assert(
+    !readOnlyExternalRetryStatus.events.some(
+      (event) => event.type === "completion.evidence_rejected"
+    ),
+    "read-only external retry status still triggered a completion repair"
+  );
 
   const wordCompletionWithoutArtifact = await runCase({
     id: "word-completion-without-artifact",
