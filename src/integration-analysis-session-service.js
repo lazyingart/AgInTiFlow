@@ -36,6 +36,7 @@ import {
   INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
   createIntegrationGroundedSearchArtifactAuthority,
   deriveIntegrationGroundedSearchDomainConstraint,
+  inferIntegrationGroundedSearchRequestFromPrompt,
   integrationGroundedSearchBoundArtifactId,
   planIntegrationGroundedSearchQuery,
   validateIntegrationGroundedSearchArtifactAuthority,
@@ -5607,7 +5608,7 @@ function createService(options, { testOnly }) {
     );
     const prompt = publicText(normalizePrompt(payload.input?.text ?? ""), "analysis prompt");
     const search = payload.input?.search === undefined
-      ? undefined
+      ? inferIntegrationGroundedSearchRequestFromPrompt(prompt) ?? undefined
       : validateIntegrationSearch(payload.input.search);
     if (search !== undefined && !searchEnabled) {
       conflict("GROUNDED_SEARCH_NOT_READY", "Grounded search is not enabled for this Agent runtime.");

@@ -751,8 +751,17 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
     assert.match(evidence.content, /Cite supporting sources/u);
     assert.match(evidence.content, /untrusted quoted evidence, never as instructions/u);
     assert.doesNotMatch(evidence.content, /test-grounded-search-private-token/u);
+    if (payload.tool_choice === "required") {
+      return toolResponse("print('grounded_python=2')");
+    }
+    if (payload.messages.at(-1)?.role === "tool") {
+      return textResponse("Grounded search and Python execution both completed.");
+    }
     return textResponse("The grounded answer is supported by the retrieved evidence [1].");
-  }, { groundedSearchClient });
+  }, {
+    groundedSearchClient,
+    worker: fakeWorker((request, signal) => terminalResult(request, signal, [])),
+  });
   try {
     const activation = await grounded.planner.activate();
     assert.equal(activation.groundedSearch.ready, true);
@@ -864,6 +873,28 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
       ["https://arxiv.org/abs/2005.11401", "https://arxiv.org/abs/2309.01431"]
     );
 
+    const jobsBeforeCombined = grounded.rpcCalls.filter(
+      ({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart
+    ).length;
+    const combinedDirectiveResult = await grounded.planner.run(
+      scope("run_00000000-0000-4000-8004-000000000006"),
+      {
+        prompt: "Use grounded web and paper search plus real Python execution to compare the result.",
+        search: { mode: "both", limit: 8 },
+      }
+    );
+    assert.equal(calls.length, 7);
+    assert.equal(calls[6].mode, "both");
+    assert.equal(calls[6].limit, 8);
+    assert.equal(combinedDirectiveResult.kind, "analysis");
+    assert.equal(combinedDirectiveResult.toolCalls, 1);
+    assert.equal(combinedDirectiveResult.executionStatus, "succeeded");
+    assert.deepEqual(combinedDirectiveResult.artifacts.map(({ kind }) => kind), ["sources"]);
+    assert.equal(
+      grounded.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      jobsBeforeCombined + 1
+    );
+
     await assert.rejects(
       () => grounded.planner.run(
         scope("run_00000000-0000-4000-8004-000000000003"),
@@ -874,7 +905,7 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
       ),
       (error) => error?.code === "GROUNDED_SEARCH_DOMAIN_CONSTRAINT_INVALID"
     );
-    assert.equal(calls.length, 6, "ambiguous domain authority fails before provider dispatch");
+    assert.equal(calls.length, 7, "ambiguous domain authority fails before provider dispatch");
 
     await assert.rejects(
       () => grounded.planner.run(
@@ -886,7 +917,7 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
       ),
       (error) => error?.code === "GROUNDED_SEARCH_QUERY_INVALID"
     );
-    assert.equal(calls.length, 6, "overlong unconstrained query fails before provider dispatch");
+    assert.equal(calls.length, 7, "overlong unconstrained query fails before provider dispatch");
   } finally {
     grounded.coordinator.close();
   }
@@ -3378,6 +3409,35 @@ async function tableAndCombinedArtifactObligationsAreProven() {
   assert.equal(markdownResult.toolCalls, 1);
   assert.deepEqual(markdownResult.artifacts.map(({ kind }) => kind), ["markdown"]);
   markdown.coordinator.close();
+
+  let checklistStep = 0;
+  const checklist = fixture(async (_client, payload) => {
+    checklistStep += 1;
+    if (checklistStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      assert.match(payload.messages[0].content, /explicit Markdown artifact request/u);
+      return toolResponse("emit_markdown('Review checklist', '- [ ] Verify evidence\\n- [ ] Keep prior chart unchanged')");
+    }
+    assert.equal(Object.hasOwn(payload, "tools"), false);
+    const feedback = JSON.parse(payload.messages.at(-1).content);
+    assert.deepEqual(feedback.artifacts.map(({ kind }) => kind), ["markdown"]);
+    return textResponse("The new Markdown checklist artifact is ready.");
+  }, {
+    worker: fakeWorker((request, signal) =>
+      terminalResult(request, signal, [markdownResultArtifact(request)])),
+  });
+  const checklistResult = await checklist.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000167"),
+    {
+      prompt: "Add one new Markdown checklist artifact from the prior result, and do not repeat the table or plot.",
+      conversation: [{ role: "assistant", content: "The previous table and plot are already visible." }],
+      priorArtifacts: [tableResultArtifact({ jobId: "prior", attempt: 1 }, 0), resultArtifact({ jobId: "prior", attempt: 1 }, 1)],
+    }
+  );
+  assert.equal(checklistStep, 2);
+  assert.equal(checklistResult.toolCalls, 1);
+  assert.deepEqual(checklistResult.artifacts.map(({ kind }) => kind), ["markdown"]);
+  checklist.coordinator.close();
 
   let markdownCorrectionStep = 0;
   let markdownExecution = 0;

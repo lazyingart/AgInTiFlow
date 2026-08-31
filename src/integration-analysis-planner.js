@@ -145,21 +145,21 @@ const COMMON_UNAVAILABLE_PYTHON_PACKAGES = new Set([
 const ABSOLUTE_PATH_PATTERN =
   /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
 const PLOT_ARTIFACT_ACTION =
-  /(?:^plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)\S|^visuali[sz]e\b|\b(?:make|create|generate|draw|show|render|produce|return|include|output|emit)\s+(?:me\s+)?(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:plot|chart|graph)\b|\b(?:make|create|generate|draw|show|display|render|produce|return|include|output|emit)\b[^.!?;\r\n]{0,120}\b(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,2}(?:(?:line|bar|scatter|area)[-\s]+)?(?:plot|chart|graph)\s+artifact\b|(?:画图|绘图|生成图表|显示图表))/iu;
+  /(?:^plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)\S|^visuali[sz]e\b|\b(?:make|create|generate|draw|show|render|produce|return|include|output|emit|add|prepare)\s+(?:me\s+)?(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:plot|chart|graph)\b|\b(?:make|create|generate|draw|show|display|render|produce|return|include|output|emit|add|prepare)\b[^.!?;\r\n]{0,120}\b(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,2}(?:(?:line|bar|scatter|area)[-\s]+)?(?:plot|chart|graph)\s+artifact\b|(?:画图|绘图|生成图表|显示图表))/iu;
 const NEGATED_PLOT_ARTIFACT_ACTION =
   /(?:\b(?:do\s+not|don't|never|avoid|no\s+need\s+to)\b.{0,40}\b(?:plot|chart|graph|visuali[sz]e)\b|\b(?:not|no|without)\s+(?:(?:a|any)\s+)?(?:plot|chart|graph|plotting|visuali[sz](?:ation|ing)?)\b|\bwithout\s+(?:making|creating|generating|drawing|showing|displaying|rendering|producing|returning|including|outputting|emitting)\s+(?:(?:a|any)\s+)?(?:plot|chart|graph)\b)/iu;
 const TABLE_ARTIFACT_ACTION =
-  /\b(?:make|create|generate|show|display|render|produce|return|include|output|emit)\s+(?:me\s+)?(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,3}table\b|\b(?:make|create|generate|show|display|render|produce|return|include|output|emit)\b[^.!?;\r\n]{0,120}\b(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,2}table\s+artifact\b|(?:生成表格|显示表格)/iu;
+  /\b(?:make|create|generate|show|display|render|produce|return|include|output|emit|add|prepare)\s+(?:me\s+)?(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,3}table\b|\b(?:make|create|generate|show|display|render|produce|return|include|output|emit|add|prepare)\b[^.!?;\r\n]{0,120}\b(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,2}table\s+artifact\b|(?:生成表格|显示表格)/iu;
 const NEGATED_TABLE_ARTIFACT_ACTION =
   /(?:\b(?:do\s+not|don't|never|avoid|no\s+need\s+to)\b.{0,40}\btable\b|\b(?:not|no|without)\s+(?:(?:a|any)\s+)?table\b|\bwithout\s+(?:making|creating|generating|showing|displaying|rendering|producing|returning|including|outputting|emitting)\s+(?:(?:a|any)\s+)?table\b)/iu;
 const MARKDOWN_ARTIFACT_ACTION =
-  /\b(?:make|create|generate|show|display|render|produce|return|include|output|emit)\b.{0,72}\bmarkdown(?:\s+(?:artifact|output|card))?\b|(?:生成|显示)(?:markdown|Markdown)(?:制品|产物|卡片)?/iu;
+  /\b(?:make|create|generate|show|display|render|produce|return|include|output|emit|add|write|prepare)\b.{0,96}\bmarkdown(?:\s+(?:artifact|output|card|checklist))?\b|\bmarkdown\s+(?:checklist\s+)?artifact\b|(?:生成|显示)(?:markdown|Markdown)(?:制品|产物|卡片)?/iu;
 const NEGATED_MARKDOWN_ARTIFACT_ACTION =
   /(?:\b(?:do\s+not|don't|never|avoid|no\s+need\s+to)\b.{0,48}\bmarkdown\b|\b(?:not|no|without)\s+(?:(?:a|any)\s+)?markdown\b|\bwithout\s+(?:making|creating|generating|showing|displaying|rendering|producing|returning|including|emitting)\s+(?:(?:a|any)\s+)?markdown\b)/iu;
 const NEGATED_PYTHON_EXECUTION_LEAD =
   /^(?:(?:do\s+not|don't|dont|never|avoid|no\s+need\s+to|without)\s+(?:re-?running|rerun(?:ning)?|running|run|executing|execute)\b|(?:不要|不用|无需|無需|不需要|避免)(?:重新)?(?:运行|運行|执行|執行))/iu;
 const PYTHON_EXECUTION_OCCURRENCE =
-  /(?:^|\b(?:and|then|also)\s+)(?:(?:please|kindly)\s+)?(?:(?:run|execute)\s+(?:(?:this|the|some|my)\s+)?(?:python|code|script)\b|(?:use|using)\s+(?:(?:the|a)\s+)?(?:[a-z][a-z-]*\s+){0,3}python(?:\s+(?:execution|analysis))?(?:\s+and\s+artifact)?\s+tools?\s+to\s+(?:compute|calculate)\b|(?:compute|calculate)\b[^.!?;\r\n]{0,80}\b(?:with|using)\s+python\b|(?:运行|执行).{0,8}(?:代码|脚本|python))/giu;
+  /(?:^|\b(?:and|then|also|plus)\s+)(?:(?:please|kindly)\s+)?(?:(?:run|execute)\s+(?:(?:this|the|some|my)\s+)?(?:python|code|script)\b|(?:(?:real|actual|bounded)\s+){1,3}python\s+execution\b|(?:use|using|with|via)\s+(?:(?:the|a|real|actual|bounded)\s+){0,4}python\s+execution\b|(?:use|using)\s+(?:(?:the|a)\s+)?(?:[a-z][a-z-]*\s+){0,3}python(?:\s+(?:execution|analysis))?(?:\s+and\s+artifact)?\s+tools?\s+to\s+(?:compute|calculate)\b|(?:compute|calculate)\b[^.!?;\r\n]{0,80}\b(?:with|using)\s+python\b|(?:运行|执行).{0,8}(?:代码|脚本|python))/giu;
 const EXPLICIT_EXECUTION_COUNT = Object.freeze({
   one: 1,
   two: 2,

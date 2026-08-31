@@ -29,6 +29,7 @@ import {
   integrationAnalysisPriorArtifactMessageBytes,
 } from "../src/integration-analysis-planner.js";
 import {
+  INTEGRATION_ANALYSIS_TOOL_NAME,
   INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION,
   createTestOnlyIntegrationAnalysisCoordinator,
 } from "../src/integration-analysis-coordinator.js";
@@ -379,6 +380,41 @@ function explicitWorkerResult(request, signal) {
   return validateExecutionResult({ ...unsigned, resultDigest: contractDigest(unsigned) }, request);
 }
 
+function explicitMarkdownWorkerResult(request, signal) {
+  const status = signal?.aborted ? "cancelled" : "succeeded";
+  const spec = Object.freeze({
+    schemaVersion: "1",
+    markdown: "- [ ] Review the prior evidence\n- [ ] Keep earlier chart artifacts unchanged",
+  });
+  const artifact = sanitizeIntegrationArtifact({
+    id: `art_${contractDigest({
+      jobId: request.jobId,
+      attempt: request.attempt,
+      index: 0,
+      kind: "markdown",
+      title: "Durable Markdown checklist",
+      spec,
+    }).slice(0, 64)}`,
+    title: "Durable Markdown checklist",
+    kind: "markdown",
+    spec,
+  });
+  const unsigned = Object.freeze({
+    schemaVersion: EXECUTION_RESULT_SCHEMA_VERSION,
+    jobId: request.jobId,
+    attempt: request.attempt,
+    sourceSha256: request.sourceSha256,
+    status,
+    exitCode: status === "succeeded" ? 0 : null,
+    stdout: status === "succeeded" ? "markdown-checklist=ready\n" : "",
+    stderr: "",
+    outputTruncated: false,
+    durationMs: 8,
+    artifacts: status === "succeeded" ? Object.freeze([artifact]) : Object.freeze([]),
+  });
+  return validateExecutionResult({ ...unsigned, resultDigest: contractDigest(unsigned) }, request);
+}
+
 function explicitRpcForManager(manager, calls) {
   return async (pathname, body) => {
     let response;
@@ -395,7 +431,11 @@ function explicitRpcForManager(manager, calls) {
   };
 }
 
-function createExplicitPythonRunnerFixture({ complete } = {}) {
+function createExplicitPythonRunnerFixture({
+  complete,
+  groundedSearchClient,
+  workerResult = explicitWorkerResult,
+} = {}) {
   const workerSources = [];
   const rpcCalls = [];
   const modelPayloads = [];
@@ -411,7 +451,7 @@ function createExplicitPythonRunnerFixture({ complete } = {}) {
           resolve();
         }, { once: true });
       });
-      return explicitWorkerResult(request, signal);
+      return workerResult(request, signal);
     },
   });
   const manager = createExecutionJobManager({ worker });
@@ -427,6 +467,7 @@ function createExplicitPythonRunnerFixture({ complete } = {}) {
       if (complete) return complete(...args);
       throw new Error("LocalLLM must not run for an explicit fenced-Python request");
     },
+    ...(groundedSearchClient === undefined ? {} : { groundedSearchClient }),
   });
   return Object.freeze({
     planner,
@@ -570,6 +611,119 @@ async function plotThenProseContinuationRoundTrip(temporaryRoot) {
   } finally {
     await service?.close({ mode: "abort" }).catch(() => {});
     await restarted?.close({ mode: "abort" }).catch(() => {});
+    fixture.coordinator.close();
+  }
+}
+
+async function markdownArtifactFollowupUsesToolRoundTrip(temporaryRoot) {
+  const root = path.join(temporaryRoot, "markdown-followup-state");
+  const followupPrompt =
+    "Add one new Markdown checklist artifact from the prior result, and do not repeat the table or plot.";
+  let firstPublicArtifact = null;
+  let followupModelSteps = 0;
+  const fixture = createExplicitPythonRunnerFixture({
+    workerResult(request, signal) {
+      return request.source.includes("emit_markdown")
+        ? explicitMarkdownWorkerResult(request, signal)
+        : explicitWorkerResult(request, signal);
+    },
+    async complete(_client, payload) {
+      followupModelSteps += 1;
+      if (followupModelSteps === 1) {
+        assert.equal(payload.messages.at(-1).role, "user");
+        assert.equal(payload.messages.at(-1).content, followupPrompt);
+        assert.equal(payload.tool_choice, "required");
+        assert.deepEqual(priorArtifactEnvelope(payload.messages), {
+          schemaVersion: INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_CONTEXT_SCHEMA_VERSION,
+          artifacts: [firstPublicArtifact],
+        });
+        return {
+          choices: [{
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_markdown_checklist",
+                type: "function",
+                function: {
+                  name: INTEGRATION_ANALYSIS_TOOL_NAME,
+                  arguments: JSON.stringify({
+                    source: [
+                      "emit_markdown(",
+                      "  'Review checklist',",
+                      "  '- [ ] Review the prior evidence\\n- [ ] Keep earlier chart artifacts unchanged'",
+                      ")",
+                    ].join("\n"),
+                    stdin: "",
+                    timeoutMs: 1_000,
+                  }),
+                },
+              }],
+            },
+          }],
+        };
+      }
+      assert.equal(followupModelSteps, 2);
+      assert.equal(Object.hasOwn(payload, "tools"), false);
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.deepEqual(feedback.artifacts.map(({ kind }) => kind), ["markdown"]);
+      return {
+        choices: [{
+          message: {
+            role: "assistant",
+            content: "The new Markdown checklist artifact is ready.",
+            tool_calls: [],
+          },
+        }],
+      };
+    },
+  });
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: fixture.planner,
+    stateRoot: root,
+  });
+  try {
+    const created = await service.createThread({ title: "Markdown artifact follow-up" }, context());
+    const seeded = await service.startRun({
+      threadId: created.thread.id,
+      input: { text: EXPLICIT_PYTHON_PROMPT },
+    }, context());
+    await service.waitForIdle();
+    const firstArtifacts = await service.listArtifacts({ runId: seeded.run.id }, context());
+    assert.deepEqual(firstArtifacts.artifacts.map(({ kind }) => kind), ["plot"]);
+    firstPublicArtifact = publicArtifactProjection(firstArtifacts.artifacts[0]);
+
+    const followed = await service.resumeRun({
+      runId: seeded.run.id,
+      input: { text: followupPrompt },
+    }, context());
+    await service.waitForIdle();
+    const completed = (await service.getRunStatus({ runId: followed.run.id }, context())).run;
+    assert.equal(completed.status, "completed", JSON.stringify(completed.error));
+    assert.match(completed.output, /Markdown checklist artifact is ready/u);
+    assert.equal(followupModelSteps, 2);
+    assert.equal(fixture.modelCalls, 2);
+    assert.equal(fixture.workerSources.length, 2);
+    assert.match(fixture.workerSources[0], /emit_plot/u);
+    assert.match(fixture.workerSources[1], /emit_markdown/u);
+    const followupArtifacts = await service.listArtifacts({ runId: followed.run.id }, context());
+    assert.deepEqual(followupArtifacts.artifacts.map(({ kind }) => kind), ["markdown"]);
+    assert.deepEqual(
+      (await service.listArtifacts({ runId: seeded.run.id }, context())).artifacts,
+      firstArtifacts.artifacts,
+      "the follow-up must not overwrite or repeat the prior plot artifact"
+    );
+    const eventResult = await service.loadRunEvents(eventsRequest(followed.run.id), context());
+    const events = await eventResult.publicEventLedger.loadEventsAfter(0);
+    const markdownArtifactEvent = events.find(
+      (event) => event.type === "artifact.created" && event.payload.artifact?.kind === "markdown"
+    );
+    const terminalEvent = events.find((event) => event.type === "run.completed");
+    assert(markdownArtifactEvent);
+    assert(terminalEvent);
+    assert(markdownArtifactEvent.seq < terminalEvent.seq);
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
     fixture.coordinator.close();
   }
 }
@@ -2129,6 +2283,36 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
       false,
       "the next non-search turn must not retain stale grounded-search activity"
     );
+
+    const inferred = await restarted.resumeRun({
+      runId: cleanNext.run.id,
+      input: { text: "Use grounded web and paper search before answering from current evidence." },
+    }, context());
+    await restarted.waitForIdle();
+    const inferredCall = calls.at(-1);
+    assert.equal(inferredCall.scope.runId, inferred.run.id);
+    assert.deepEqual(
+      inferredCall.input.search,
+      { mode: "both", limit: 8 },
+      "explicit natural-language web+paper search directive was not promoted to a durable search intent"
+    );
+    const inferredState = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+    assert.deepEqual(
+      inferredState.state.runs.find((run) => run.id === inferred.run.id).search,
+      { mode: "both", limit: 8 },
+      "inferred search intent must be persisted before runner launch"
+    );
+    const inferredEventsResult = await restarted.loadRunEvents(eventsRequest(inferred.run.id), context());
+    const inferredEvents = await inferredEventsResult.publicEventLedger.loadEventsAfter(0);
+    assert(inferredEvents.some(
+      (event) => event.type === "tool.started" && event.payload.publicLabel === "Grounded search"
+    ));
+    assert.equal(
+      inferredEvents.filter(
+        (event) => event.type === "artifact.created" && event.payload.artifact?.kind === "sources"
+      ).length,
+      1
+    );
   } finally {
     await service?.close({ mode: "abort" }).catch(() => {});
     await restarted?.close({ mode: "abort" }).catch(() => {});
@@ -2141,6 +2325,10 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
     await expectCode(disabled.startRun({
       threadId: thread.thread.id,
       input: { text: "Attempt disabled search", search: { mode: "web", limit: 3 } },
+    }, context()), "GROUNDED_SEARCH_NOT_READY");
+    await expectCode(disabled.startRun({
+      threadId: thread.thread.id,
+      input: { text: "Use grounded web search before answering." },
     }, context()), "GROUNDED_SEARCH_NOT_READY");
   } finally {
     await disabled.close({ mode: "abort" }).catch(() => {});
@@ -3542,6 +3730,7 @@ async function main() {
   try {
     await explicitPythonDurabilityRoundTrip(temporaryRoot);
     await plotThenProseContinuationRoundTrip(temporaryRoot);
+    await markdownArtifactFollowupUsesToolRoundTrip(temporaryRoot);
     await boundedPriorArtifactContextRoundTrip(temporaryRoot);
     await groundedSearchDurabilityRoundTrip(temporaryRoot);
     await retainedMultiImageRoundTrip(temporaryRoot);

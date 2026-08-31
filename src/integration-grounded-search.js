@@ -33,6 +33,7 @@ export const INTEGRATION_GROUNDED_SEARCH_LOCAL_TARGET_ENDPOINT = "http://127.0.0
 export const INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS = 60_000;
 export const INTEGRATION_GROUNDED_SEARCH_MAX_REQUEST_BYTES = 16 * 1024;
 export const INTEGRATION_GROUNDED_SEARCH_MAX_RESPONSE_BYTES = 256 * 1024;
+export const INTEGRATION_GROUNDED_SEARCH_DEFAULT_DIRECTIVE_LIMIT = 8;
 
 const WEB_READINESS_QUERY = "grounded web search operational readiness";
 const PAPERS_READINESS_QUERY = "grounded papers search operational readiness";
@@ -49,6 +50,13 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const CLIENT_BRAND = new WeakSet();
 const CLIENT_METADATA = new WeakMap();
 const ACTIVATION_METADATA = new WeakMap();
+const EXPLICIT_SEARCH_NEGATION =
+  /\b(?:do\s+not|don't|dont|never|avoid|skip|without|no\s+need\s+to)\b[^.!?;\r\n]{0,120}\b(?:search|retrieval|sources?|citations?|grounded|web|internet|online|papers?|scholarly|academic|arxiv|literature)\b|\b(?:without|no)\s+(?:grounded\s+)?(?:search|retrieval|sources?|citations?|web|papers?|arxiv)\b/iu;
+const EXPLICIT_GROUNDED_SEARCH_DIRECTIVE =
+  /\b(?:use|using|run|perform|do|include|with|via|consult|retrieve|search|find|look\s+up)\b[^.!?;\r\n]{0,160}\b(?:(?:grounded|bounded|real|live|current)\s+)?(?:web|internet|online|papers?|paper|scholarly|academic|arxiv|literature|sources?|citations?|evidence)\s+(?:search|retrieval|sources?|citations?|evidence)\b|\b(?:grounded|bounded|real|live|current)\s+(?:web\s+)?(?:and\s+)?(?:paper\s+)?search\b/iu;
+const WEB_SEARCH_MODE_DIRECTIVE = /\b(?:web|internet|online)\b/iu;
+const PAPER_SEARCH_MODE_DIRECTIVE =
+  /\b(?:papers?|paper\s+search|scholarly|academic|peer[-\s]?reviewed|arxiv|literature|publications?)\b/iu;
 const SOURCE_KEYS = Object.freeze([
   "rank",
   "title",
@@ -243,6 +251,27 @@ function looksLikeUnsupportedDomainRestriction(prompt) {
     /\b(?:sources?|results?|sites?|domains?)\b[^.?!]{0,120}\bonly\b[^.?!]{0,120}\bfrom\b/iu.test(text) ||
     /\brestrict\b[^.?!]{0,120}\bto\b/iu.test(text)
   );
+}
+
+export function inferIntegrationGroundedSearchRequestFromPrompt(prompt) {
+  if (typeof prompt !== "string") return null;
+  const text = prompt.replace(/\s+/gu, " ").trim();
+  if (!text || EXPLICIT_SEARCH_NEGATION.test(text) || !EXPLICIT_GROUNDED_SEARCH_DIRECTIVE.test(text)) {
+    return null;
+  }
+  const web = WEB_SEARCH_MODE_DIRECTIVE.test(text);
+  const papers = PAPER_SEARCH_MODE_DIRECTIVE.test(text);
+  const mode = web && papers
+    ? "both"
+    : papers
+      ? "papers"
+      : web
+        ? "web"
+        : "both";
+  return validateIntegrationSearch(Object.freeze({
+    mode,
+    limit: Math.min(INTEGRATION_GROUNDED_SEARCH_DEFAULT_DIRECTIVE_LIMIT, INTEGRATION_MAXIMUM_SEARCH_SOURCES),
+  }));
 }
 
 export function integrationGroundedSearchConstrainedQuery(prompt, constraint) {

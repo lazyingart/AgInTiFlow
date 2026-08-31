@@ -19,6 +19,7 @@ import {
   createIntegrationGroundedSearchArtifactAuthority,
   createTestOnlyIntegrationGroundedSearchClient,
   deriveIntegrationGroundedSearchDomainConstraint,
+  inferIntegrationGroundedSearchRequestFromPrompt,
   integrationGroundedSearchBoundArtifactId,
   integrationGroundedSearchConstrainedQuery,
   planIntegrationGroundedSearchQuery,
@@ -1129,6 +1130,29 @@ await assert.rejects(
     doiIdentifiers: [],
   }),
   (error) => error.code === "GROUNDED_SEARCH_IDENTIFIER_CONSTRAINT_FAILED"
+);
+
+assert.deepEqual(
+  inferIntegrationGroundedSearchRequestFromPrompt(
+    "Use grounded web and paper search plus real Python execution to compare the evidence."
+  ),
+  { mode: "both", limit: 8 }
+);
+assert.deepEqual(
+  inferIntegrationGroundedSearchRequestFromPrompt("Please use grounded web search before answering."),
+  { mode: "web", limit: 8 }
+);
+assert.deepEqual(
+  inferIntegrationGroundedSearchRequestFromPrompt("Find the relevant arXiv and paper evidence first."),
+  { mode: "papers", limit: 8 }
+);
+assert.equal(
+  inferIntegrationGroundedSearchRequestFromPrompt("Use only primary sources and answer from the supplied text."),
+  null
+);
+assert.equal(
+  inferIntegrationGroundedSearchRequestFromPrompt("Answer locally without search or retrieval."),
+  null
 );
 
 console.log("smoke-integration-grounded-search ok");
