@@ -1003,7 +1003,11 @@ function escapeRegex(value = "") {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function constrainScopedArtifactPath(tool, artifactRoot = "", { rootOnly = false } = {}) {
+function constrainScopedArtifactPath(
+  tool,
+  artifactRoot = "",
+  { rootOnly = false, commandCwd = "" } = {}
+) {
   if (!tool || !artifactRoot) return tool;
   const properties = tool.function?.parameters?.properties || {};
   if (!Object.hasOwn(properties, "path")) return tool;
@@ -1011,6 +1015,14 @@ function constrainScopedArtifactPath(tool, artifactRoot = "", { rootOnly = false
     .replace(/\\/g, "/")
     .replace(/^\.\//, "")
     .replace(/\/$/, "");
+  const rootAliases = exactWorkspacePathAliases(
+    [normalizedRoot],
+    commandCwd
+  );
+  const acceptedRoots = rootAliases.length ? rootAliases : [normalizedRoot];
+  const acceptedRootPattern = acceptedRoots
+    .map((item) => escapeRegex(item))
+    .join("|");
   const pathSchema = properties.path || { type: "string" };
   return {
     ...tool,
@@ -1027,11 +1039,11 @@ function constrainScopedArtifactPath(tool, artifactRoot = "", { rootOnly = false
           path: {
             ...pathSchema,
             ...(rootOnly
-              ? { enum: [normalizedRoot] }
-              : { pattern: `^${escapeRegex(normalizedRoot)}(?:/.*)?$` }),
+              ? { enum: acceptedRoots }
+              : { pattern: `^(?:${acceptedRootPattern})(?:/.*)?$` }),
             description: rootOnly
-              ? "Exact task artifact directory."
-              : "A path inside the exact task artifact directory.",
+              ? "Exact task artifact directory, using either its workspace-relative or exact in-workspace absolute path."
+              : "A path inside the exact task artifact directory, using either its workspace-relative or exact in-workspace absolute form.",
           },
         },
       },
@@ -2617,23 +2629,28 @@ export function selectProgressiveTools(
     const scopedWorkspaceTools = [
       constrainScopedArtifactPath(
         available.get("list_files"),
-        config.scopedArtifactRoot
+        config.scopedArtifactRoot,
+        { commandCwd: config.commandCwd }
       ),
       constrainScopedArtifactPath(
         available.get("read_file"),
-        config.scopedArtifactRoot
+        config.scopedArtifactRoot,
+        { commandCwd: config.commandCwd }
       ),
       constrainScopedArtifactPath(
         available.get("search_files"),
-        config.scopedArtifactRoot
+        config.scopedArtifactRoot,
+        { commandCwd: config.commandCwd }
       ),
       constrainScopedArtifactPath(
         available.get("write_file"),
-        config.scopedArtifactRoot
+        config.scopedArtifactRoot,
+        { commandCwd: config.commandCwd }
       ),
       constrainScopedArtifactPath(
         available.get("apply_patch"),
-        config.scopedArtifactRoot
+        config.scopedArtifactRoot,
+        { commandCwd: config.commandCwd }
       ),
       available.get("run_command"),
     ].filter(Boolean);

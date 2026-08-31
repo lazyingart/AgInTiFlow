@@ -5501,6 +5501,55 @@ assertStrict.equal(
   undefined,
   "an explicit task artifact root still activated generic repository grounding"
 );
+const scopedPathWriteDescriptor = {
+  type: "function",
+  function: {
+    name: "write_file",
+    description: "Write one workspace file.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+      },
+      required: ["path", "content"],
+      additionalProperties: false,
+    },
+  },
+};
+const scopedPathSurface = [
+  ...allTools.filter((item) => item.function.name !== "write_file"),
+  scopedPathWriteDescriptor,
+];
+const scopedPathTools = selectProgressiveTools(scopedPathSurface, {
+  config: {
+    provider: "deepseek",
+    progressiveTools: true,
+    scopedArtifactTask: true,
+    scopedArtifactRoot: scopedRuntime.scopedArtifactRoot,
+    commandCwd: "/workspace",
+  },
+  goal: scopedRuntimePrompt,
+  profile: "auto",
+  messages: [{ role: "user", content: scopedRuntimePrompt }],
+});
+const scopedWritePathPattern = scopedPathTools.find(
+  (item) => item.function.name === "write_file"
+)?.function?.parameters?.properties?.path?.pattern;
+assert(scopedWritePathPattern, "scoped artifact write tool omitted its path contract");
+const scopedWritePathRegex = new RegExp(scopedWritePathPattern);
+assert(
+  scopedWritePathRegex.test("output/wechat_worker/task/report.md"),
+  "scoped artifact write contract rejected its workspace-relative path"
+);
+assert(
+  scopedWritePathRegex.test("/workspace/output/wechat_worker/task/report.md"),
+  "scoped artifact write contract rejected the host-supplied exact absolute path"
+);
+assert(
+  !scopedWritePathRegex.test("/workspace/output/wechat_worker/other/report.md"),
+  "scoped artifact write contract accepted a sibling task path"
+);
 
 const longScopedTaskRoot = path.join(repoRoot, "output/wechat_worker/long-scoped-task");
 const longScopedScopeLine = `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({

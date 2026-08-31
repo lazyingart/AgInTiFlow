@@ -9251,7 +9251,7 @@ try {
   const verifiedCompletionText = JSON.stringify(verifiedCompletionRequest?.messages || []);
   assert(
     verifiedCompletionRequest?.mode === "verified-completion" &&
-      verifiedCompletionRequest?.maxOutputTokens === 768,
+      verifiedCompletionRequest?.maxOutputTokens === 2048,
     "fresh passing evidence did not narrow the final response turn"
   );
   assert(
