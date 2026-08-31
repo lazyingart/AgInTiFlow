@@ -277,6 +277,15 @@ export function shouldActivateScs(mode = "off", context = {}) {
   const profile = String(context.taskProfile || "").toLowerCase();
   const goal = String(context.goal || "");
   if (SCS_AUTO_PROFILES.has(profile)) return true;
+  const staticDataPaths = goal.match(/(?:^|[\s`'"(])[^\s`'"()]+\.(?:csv|json|toml|ya?ml)\b/gi) || [];
+  const simpleStaticDataWrite =
+    staticDataPaths.length === 1 &&
+    /\b(?:create|emit|generate|save|write)\b/i.test(goal) &&
+    !/\b(?:app|application|build|cli|code|codebase|compile|database|dataset|deploy|implement|library|migrate|package|publish|refactor|release|repository|script|server|source|test|upload)\b/i.test(
+      goal
+    ) &&
+    Number(context.complexityScore || 0) < 3;
+  if (simpleStaticDataWrite) return false;
   if (SCS_AUTO_HINTS.some((hint) => hint.test(goal))) return true;
   return Number(context.complexityScore || 0) >= 5;
 }

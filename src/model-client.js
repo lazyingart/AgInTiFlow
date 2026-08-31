@@ -31,6 +31,7 @@ import {
   estimateToolSchemaTokens,
 } from "./context-budget-controller.js";
 import { attachToolContract } from "./tool-contract.js";
+import { scopedChatopsEvidenceGoal } from "./scs-evidence.js";
 
 function isRetainedWorkspaceProfile(config = {}) {
   return config.integrationSessionProfile === INTEGRATION_TEXT_WORKSPACE_PROFILE_ID ||
@@ -1241,11 +1242,14 @@ export async function createPlan(client, config, state) {
   const engineeringGuidance = isRetainedWorkspaceProfile(config)
     ? ""
     : engineeringGuidanceForTask(state.goal, config.taskProfile);
-  const selectedSkills = isRetainedWorkspaceProfile(config) ? [] : selectSkillsForGoal(state.goal, {
-    taskProfile: config.taskProfile,
-    limit: 5,
-    projectRoot: config.commandCwd || config.baseDir || process.cwd(),
-  });
+  const selectedSkills = isRetainedWorkspaceProfile(config) ? [] : selectSkillsForGoal(
+    scopedChatopsEvidenceGoal(state.goal, config.taskProfile),
+    {
+      taskProfile: config.taskProfile,
+      limit: 5,
+      projectRoot: config.commandCwd || config.baseDir || process.cwd(),
+    }
+  );
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = state.meta?.projectInstructions;
   const platform = platformInfo();

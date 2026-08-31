@@ -364,11 +364,14 @@ function textToolRetryInstruction(response) {
 
 function buildScsRuntimeContext(config = {}, state = {}, extra = {}) {
   const projectRoot = config.commandCwd || config.baseDir || process.cwd();
-  const selectedSkills = isRetainedWorkspaceProfile(config) ? [] : selectSkillsForGoal(state.goal || config.goal || "", {
-    taskProfile: config.taskProfile,
-    limit: 6,
-    projectRoot,
-  });
+  const selectedSkills = isRetainedWorkspaceProfile(config) ? [] : selectSkillsForGoal(
+    scopedChatopsEvidenceGoal(state.goal || config.goal || "", config.taskProfile),
+    {
+      taskProfile: config.taskProfile,
+      limit: 6,
+      projectRoot,
+    }
+  );
   const verification = state.meta?.projectVerification || {};
   const mutationRevision = Number(verification.mutationRevision || 0);
   const privateMutationRevision = Number(verification.privateMutationRevision || 0);
@@ -435,11 +438,14 @@ function buildScsRuntimeContext(config = {}, state = {}, extra = {}) {
 
 function withSelectedSkillReadOnlyRoots(config = {}, state = {}) {
   const projectRoot = config.commandCwd || config.baseDir || process.cwd();
-  const selectedSkills = isRetainedWorkspaceProfile(config) ? [] : selectSkillsForGoal(state.goal || config.goal || "", {
-    taskProfile: config.taskProfile,
-    limit: 6,
-    projectRoot,
-  });
+  const selectedSkills = isRetainedWorkspaceProfile(config) ? [] : selectSkillsForGoal(
+    scopedChatopsEvidenceGoal(state.goal || config.goal || "", config.taskProfile),
+    {
+      taskProfile: config.taskProfile,
+      limit: 6,
+      projectRoot,
+    }
+  );
   const skillReadOnlyRoots = [
     ...(Array.isArray(config.skillReadOnlyRoots) ? config.skillReadOnlyRoots : []),
     ...selectedSkills.map((skill) => skill.path).filter(Boolean),
@@ -2891,7 +2897,11 @@ async function createInitialState(config, sessionId) {
   const projectRoot = config.commandCwd || config.baseDir || process.cwd();
   const selectedSkills = isRetainedWorkspaceProfile(config)
     ? []
-    : selectSkillsForGoal(config.goal, { taskProfile: config.taskProfile, limit: 6, projectRoot });
+    : selectSkillsForGoal(scopedChatopsEvidenceGoal(config.goal, config.taskProfile), {
+        taskProfile: config.taskProfile,
+        limit: 6,
+        projectRoot,
+      });
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
   const projectInstructionContext = formatProjectInstructions(projectInstructions);
@@ -4050,9 +4060,12 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
   refreshPersistedProjectAcceptance(state);
   const activeRevision = Math.max(0, Number(revision || state.meta?.goalContract?.revision || 0));
   const currentRequest = String(state.meta?.goalContract?.currentRequest || state.goal || "").trim();
+  const taskProfile = state.meta?.taskProfile || "auto";
+  const scopedCurrentRequest =
+    scopedChatopsEvidenceGoal(currentRequest, taskProfile) || currentRequest;
   const currentTurnContract = deriveScsTaskContract({
-    goal: currentRequest,
-    taskProfile: state.meta?.taskProfile || "auto",
+    goal: scopedCurrentRequest,
+    taskProfile,
   });
   const currentTurnCommands = normalizedRequiredProjectCommands(
     currentTurnContract.requiredProjectCommands
@@ -4094,7 +4107,7 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
       currentTurnContract.requiresSourceGrounding === true ||
         (
           currentTurnContract.requiresFileMutation === true &&
-          goalClearlyAllowsOverwrite(currentRequest)
+          goalClearlyAllowsOverwrite(scopedCurrentRequest)
         )
     ),
     requiredProjectCommands: currentTurnCommands,
@@ -4208,7 +4221,11 @@ async function applyContinuationPrompt(state, config, observers) {
   const projectRoot = config.commandCwd || config.baseDir || process.cwd();
   const selectedSkills = isRetainedWorkspaceProfile(config)
     ? []
-    : selectSkillsForGoal(config.goal, { taskProfile: config.taskProfile, limit: 6, projectRoot });
+    : selectSkillsForGoal(scopedChatopsEvidenceGoal(config.goal, config.taskProfile), {
+        taskProfile: config.taskProfile,
+        limit: 6,
+        projectRoot,
+      });
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = await readProjectInstructions(config.baseDir || config.commandCwd || process.cwd());
   state.meta = state.meta || {};
@@ -6384,9 +6401,9 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     }
   }
 
-  const projectMutationPaths = successfulProjectMutationPaths(toolResult);
+  const projectMutationPaths = successfulProjectMutationPaths(toolResult, state, config);
   const privateMutationPaths = successfulPrivateVerificationMutationPaths(toolResult);
-  const materialMutationPaths = materialProjectMutationPaths(toolResult);
+  const materialMutationPaths = materialProjectMutationPaths(toolResult, state, config);
   if (["write_file", "apply_patch"].includes(toolName) && privateMutationPaths.length) {
     delete state.meta.verifiedCompletionCandidate;
     verification.privateMutationRevision += 1;
@@ -6549,12 +6566,23 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         config,
         { verificationCommand }
       );
+    const scopedTaskArtifactWrite = commandWritesOnlyScopedTaskArtifacts(
+      mutationCommand,
+      state,
+      config
+    );
+    const readOnlyArtifactValidation = Boolean(
+      commandMutationPaths.length === 0 &&
+        commandIsBoundedReadOnlyArtifactValidation(mutationCommand)
+    );
     const projectContentMutation = Boolean(
       command &&
         toolResult.blocked !== true &&
         !retainedExactVerification &&
         !disposableGeneratedCleanup &&
         !disposableGeneratedVerificationSideEffects &&
+        !scopedTaskArtifactWrite &&
+        !readOnlyArtifactValidation &&
         (commandSucceeded || commandMutationPaths.length > 0) &&
         (
           commandCanMutateProjectContent(mutationCommand, commandPolicy) ||
@@ -6568,6 +6596,12 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     if (disposableGeneratedVerificationSideEffects) {
       toolResult.disposableGeneratedVerificationSideEffects = true;
       toolResult.disposableGeneratedVerificationPaths = commandMutationPaths;
+    }
+    if (scopedTaskArtifactWrite) {
+      toolResult.scopedTaskArtifactWrite = true;
+    }
+    if (readOnlyArtifactValidation) {
+      toolResult.readOnlyArtifactValidation = true;
     }
     let requiredBatch = currentRequiredCommandBatch(verification, requiredCommands);
     const activeExecutionContract = state.meta?.activeExecutionContract;
@@ -12084,7 +12118,27 @@ function isPrivateVerificationEvidencePath(value = "") {
   );
 }
 
-function commandWritesOnlyPrivateVerificationEvidence(command = "") {
+function isScopedTaskArtifactEvidencePath(value = "", state = {}, config = {}) {
+  const artifactRoot = scopedArtifactRoot(completionContractGoal(config, state));
+  if (!artifactRoot) return false;
+  const raw = String(value || "")
+    .trim()
+    .replace(/^(["'])|(["'])$/g, "")
+    .replace(/\\/g, "/");
+  if (!raw || raw.includes("\0") || /^https?:\/\//i.test(raw)) return false;
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const absoluteRoot = path.resolve(commandCwd, artifactRoot);
+  const absoluteCandidate = path.resolve(commandCwd, raw);
+  const relative = path.relative(absoluteRoot, absoluteCandidate);
+  return Boolean(
+    relative === "" ||
+      (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+}
+
+function commandWritesOnlyEvidenceMatching(command = "", pathMatches = () => false) {
   const normalized = String(command || "").trim();
   if (!normalized) return false;
   const tokens = tokenizeShellWords(normalized);
@@ -12093,25 +12147,95 @@ function commandWritesOnlyPrivateVerificationEvidence(command = "") {
     if (["-a", "--append"].includes(tokens[index])) index += 1;
     if (tokens[index] === "--") index += 1;
     const targets = tokens.slice(index);
-    return targets.length > 0 && targets.every(isPrivateVerificationEvidencePath);
+    return targets.length > 0 && targets.every(pathMatches);
   }
   if (tokens[0] === "mkdir") {
     const targets = tokens.slice(1).filter((token) => token !== "-p" && token !== "--");
-    return targets.length > 0 && targets.every(isPrivateVerificationEvidencePath);
+    return targets.length > 0 && targets.every(pathMatches);
   }
 
-  let strippedPrivateRedirect = false;
-  const withoutPrivateRedirects = normalized.replace(
+  let strippedEvidenceRedirect = false;
+  const withoutEvidenceRedirects = normalized.replace(
     /(^|\s)(?:\d*>>?|&>>?)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/g,
     (match, prefix, target) => {
-      if (!isPrivateVerificationEvidencePath(target)) return match;
-      strippedPrivateRedirect = true;
+      if (!pathMatches(target)) return match;
+      strippedEvidenceRedirect = true;
       return prefix;
     }
   ).trim();
-  if (!strippedPrivateRedirect || !withoutPrivateRedirects) return false;
-  const underlyingPolicy = classifyCommand(withoutPrivateRedirects);
+  if (!strippedEvidenceRedirect || !withoutEvidenceRedirects) return false;
+  const underlyingPolicy = classifyCommand(withoutEvidenceRedirects);
   return underlyingPolicy.writesWorkspace !== true && underlyingPolicy.mayMutateProject !== true;
+}
+
+function commandWritesOnlyPrivateVerificationEvidence(command = "") {
+  return commandWritesOnlyEvidenceMatching(
+    command,
+    isPrivateVerificationEvidencePath
+  );
+}
+
+function commandWritesOnlyScopedTaskArtifacts(command = "", state = {}, config = {}) {
+  if (commandWritesOnlyEvidenceMatching(
+    command,
+    (candidate) => isScopedTaskArtifactEvidencePath(candidate, state, config)
+  )) {
+    return true;
+  }
+  const normalized = String(command || "").trim();
+  const artifactRoot = scopedArtifactRoot(completionContractGoal(config, state));
+  if (!normalized || !artifactRoot) return false;
+  const assignments = new Map();
+  for (const match of normalized.matchAll(
+    /\b([A-Za-z_]\w*)\s*=\s*("[^"\n]+"|'[^'\n]+')/g
+  )) {
+    assignments.set(match[1], match[2]);
+  }
+  const writeTargets = [];
+  for (const match of normalized.matchAll(
+    /\bopen\s*\(\s*([^,\n]+)\s*,\s*(["'][^"']*[wax+][^"']*["'])/gi
+  )) {
+    const operand = String(match[1] || "").trim();
+    const target = assignments.get(operand) || operand;
+    if (!/^(?:"[^"\n]+"|'[^'\n]+')$/.test(target)) return false;
+    writeTargets.push(target);
+  }
+  return Boolean(
+    writeTargets.length > 0 &&
+      writeTargets.every((candidate) =>
+        isScopedTaskArtifactEvidencePath(candidate, state, config)
+      )
+  );
+}
+
+function commandIsBoundedReadOnlyArtifactValidation(command = "") {
+  const normalized = String(command || "").trim();
+  if (!normalized) return false;
+  if (
+    !/\bassert\b|\bjson\.(?:load|loads)\s*\(|\bJSON\.parse\s*\(|\bjq\b|\bsha256sum\b|\bmd5sum\b|\b(?:valid|pass|verified?)\b/i.test(
+      normalized
+    )
+  ) {
+    return false;
+  }
+  // Heredoc input (`<<`) is compatible with read-only validation. Any output
+  // redirection or known mutator keeps conservative project revision tracking.
+  if (/(^|[^<])>{1,2}(?!=)/m.test(normalized)) return false;
+  if (
+    /\b(?:cp|install|mkdir|mv|rm|rmdir|tee|touch|truncate)\b|\bsed\s+-i\b|\bperl\s+-pi\b/i.test(
+      normalized
+    )
+  ) {
+    return false;
+  }
+  if (
+    /\bopen\s*\([^\n)]*,\s*["'][^"']*[wax+][^"']*["']|\.(?:append|mkdir|rename|replace|rmdir|touch|unlink|write|write_bytes|write_text)\s*\(|\b(?:os\.(?:makedirs|mkdir|remove|rename|replace|rmdir|system|unlink)|shutil\.|subprocess\.)/i.test(
+      normalized
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 const DISPOSABLE_GENERATED_PATH_SEGMENTS = new Set([
@@ -12974,6 +13098,17 @@ export function canonicalizeVerifiedArtifactCompletion(state = {}, result = "") 
 function successfulMutationPaths(toolResult = {}) {
   if (!toolResult || toolResult.ok === false || toolResult.blocked || toolResult.skipped) return [];
   if (toolResult.toolName === "deep_research" && toolResult.reportPath) return [toolResult.reportPath];
+  if (toolResult.toolName === "run_command") {
+    return [
+      ...new Set(
+        (Array.isArray(toolResult.verifiedGeneratedOutputPaths)
+          ? toolResult.verifiedGeneratedOutputPaths
+          : [])
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+      ),
+    ];
+  }
   if (!["write_file", "apply_patch"].includes(String(toolResult.toolName || ""))) return [];
   const changes = [
     ...(Array.isArray(toolResult.changes) ? toolResult.changes : []),
@@ -13026,9 +13161,11 @@ function successfulWorkspaceMutationPaths(toolResult = {}) {
   ];
 }
 
-function successfulProjectMutationPaths(toolResult = {}) {
+function successfulProjectMutationPaths(toolResult = {}, state = {}, config = {}) {
   return successfulWorkspaceMutationPaths(toolResult).filter(
-    (candidate) => !isPrivateVerificationEvidencePath(candidate)
+    (candidate) =>
+      !isPrivateVerificationEvidencePath(candidate) &&
+      !isScopedTaskArtifactEvidencePath(candidate, state, config)
   );
 }
 
@@ -13052,7 +13189,7 @@ function diffHasMaterialContentChange(diff = "") {
   return JSON.stringify(compactRemoved) !== JSON.stringify(compactAdded);
 }
 
-function materialProjectMutationPaths(toolResult = {}) {
+function materialProjectMutationPaths(toolResult = {}, state = {}, config = {}) {
   if (!toolResult || toolResult.blocked || toolResult.skipped) {
     return [];
   }
@@ -13065,7 +13202,13 @@ function materialProjectMutationPaths(toolResult = {}) {
   ];
   const paths = [];
   for (const change of changes) {
-    if (!change || isPrivateVerificationEvidencePath(change.path)) continue;
+    if (
+      !change ||
+      isPrivateVerificationEvidencePath(change.path) ||
+      isScopedTaskArtifactEvidencePath(change.path, state, config)
+    ) {
+      continue;
+    }
     if (
       change.created === true ||
       change.deleted === true ||
@@ -18472,7 +18615,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         const isRequiredCommand = requiredCommands.some((candidate) =>
           projectCommandsEquivalent(candidate, observedInnerCommand, config)
         );
-        const exactOutputSnapshotsBefore = isRequiredCommand && policy.writesWorkspace
+        const exactOutputSnapshotsBefore = policy.writesWorkspace && exactOutputPathsForState(state).length
           ? await captureExactOutputSnapshots(state, config)
           : [];
         const gitWorktreeBefore = captureMutationScope
@@ -18562,6 +18705,16 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent("tool.completed", eventResult);
         observers.event("tool.completed", eventResult);
+        for (const generatedPath of generatedOutputPaths) {
+          const change = {
+            path: generatedPath,
+            toolName: "run_command",
+            commandCwd: config.commandCwd,
+            generatedByCommand: true,
+          };
+          await store.appendEvent("file.changed", change);
+          observers.event("file.changed", change);
+        }
         return result;
       }
       case "tmux_list_sessions": {
@@ -19848,6 +20001,11 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   const blocker = deterministicFinishBlocker(assessment.contract, assessment.ledger, assessment.evaluation);
   const verificationDeficits = projectVerificationDeficits(state, config);
   const requiredEvidence = (assessment.contract.requiredEvidence || []).map((item) => item.category);
+  const requiresProjectTestEvidence = Boolean(
+    requiredEvidence.includes("test") ||
+      projectTestBlock ||
+      verificationDeficits.failedTestRun
+  );
   const presentEvidence = assessment.ledger.categories || [];
   const progressCount = Number(assessment.progressCount || 0);
   const semanticFailureReason = assessment.semantic.checked && !assessment.semantic.ok
@@ -19881,8 +20039,13 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       freshMutationRequirement.artifactQualityRepairRequired,
     missingToolCalls: assessment.evaluation.missingToolCalls || [],
     pendingProjectCommands: verificationDeficits.pendingCommands,
-    pendingProjectTests: verificationDeficits.testsCurrent ? [] : verificationDeficits.discoveredTests,
-    suggestedTestCommands: verificationDeficits.suggestedTestCommands,
+    pendingProjectTests:
+      requiresProjectTestEvidence && !verificationDeficits.testsCurrent
+        ? verificationDeficits.discoveredTests
+        : [],
+    suggestedTestCommands: requiresProjectTestEvidence
+      ? verificationDeficits.suggestedTestCommands
+      : [],
     projectMutationRevision: verificationDeficits.revision,
     failedProjectTestCommand: verificationDeficits.failedTestRun?.command || "",
     failedProjectTestSignature: verificationDeficits.failedTestRun?.failureSignature || "",
@@ -23182,7 +23345,7 @@ async function runAgentOnceUnlocked(config) {
 
   try {
     throwIfAborted(config);
-    const goalIntent = classifyGoalIntent(config.goal);
+    const goalIntent = classifyGoalIntent(scopedChatopsEvidenceGoal(config.goal, config.taskProfile));
     const canFinishDirectly =
       !config.resume && !state.plan && Number(state.stepsCompleted || 0) === 0 && isDirectAnswerIntent(goalIntent);
     if (canFinishDirectly) {

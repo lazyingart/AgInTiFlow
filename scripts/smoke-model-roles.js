@@ -1151,6 +1151,13 @@ const canvasArtifactContract = deriveScsTaskContract({
 const jsonObjectContract = deriveScsTaskContract({
   goal: "Extract a valid JSON object with schema from this text.",
 });
+const scopedStaticJsonContract = deriveScsTaskContract({
+  goal: [
+    "Host wrapper: validate code, run commands, inspect browsers, and perform deep research when the request needs them.",
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create and verify output/parity/aginti_verified_artifact.json with one valid JSON object, then read it back."}',
+  ].join("\n"),
+  taskProfile: "code",
+});
 const virtualFileContract = deriveScsTaskContract({
   goal: "Create file: /workspace/virtual-output.txt with virtual Docker path support.",
 });
@@ -1229,6 +1236,20 @@ assert(
 assert(
   !jsonObjectContract.requiredEvidence.some((item) => item.category === "file"),
   "JSON object extraction should not be treated as a workspace file requirement without an explicit file/path"
+);
+assert(
+  scopedStaticJsonContract.requiredEvidence.some((item) => item.category === "file") &&
+    !scopedStaticJsonContract.requiredEvidence.some((item) => item.category === "command"),
+  "a scoped standalone JSON artifact should require file evidence without an unrelated shell command"
+);
+assert(
+  scopedStaticJsonContract.exactOutputPaths.includes("output/parity/aginti_verified_artifact.json") &&
+    !scopedStaticJsonContract.exactInputPaths.includes("output/parity/aginti_verified_artifact.json"),
+  "create-and-verify should retain the structured-data path as an output rather than an input"
+);
+assert(
+  scopedStaticJsonContract.requiredExecutableTerms.length === 0,
+  "a required JSON boolean value was misclassified as executable production-source syntax"
 );
 assert(
   virtualFileContract.requiredEvidence.some((item) => item.category === "file") &&

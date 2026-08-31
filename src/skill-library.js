@@ -482,6 +482,7 @@ const GENERIC_ROUTING_TERMS = new Set([
   "analysis",
   "app",
   "application",
+  "artifact",
   "code",
   "commit",
   "data",
@@ -497,6 +498,18 @@ const GENERIC_ROUTING_TERMS = new Set([
   "testing",
   "work",
 ]);
+
+function normalizedSkillRoutingText(goal = "") {
+  return String(goal || "")
+    .toLowerCase()
+    .replace(
+      /(?:^|[\s`'"(])(?:~|\.{1,2}|\/|[a-z0-9_-])[a-z0-9_./~-]*\.([a-z0-9]{1,12})\b/gi,
+      (_match, extension) => ` file.${String(extension || "").toLowerCase()} `
+    )
+    .replace(/\b[a-z_][a-z0-9_.-]*\s*=\s*[a-z0-9_.-]+\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function descriptionTerms(value = "") {
   return [
@@ -564,7 +577,7 @@ function textHasTrigger(text, needle) {
 }
 
 export function selectSkillsForGoal(goal = "", { taskProfile = "auto", limit = 6, includeBody = true, projectRoot = process.cwd() } = {}) {
-  const goalText = String(goal || "").toLowerCase();
+  const goalText = normalizedSkillRoutingText(goal);
   const text = goalText;
   const skills = listSkills({ includeBody, projectRoot });
   const ranked = skills

@@ -5800,6 +5800,167 @@ try {
       evaluateScsEvidence(privateEvidenceContract, privateEvidenceLedger).ok,
     "ignored private verification evidence invalidated a successful canonical build"
   );
+  const scopedTaskRoot = path.join(workspace, "output", "agent-task-1");
+  const scopedTaskGoal = [
+    "Create and verify output/result.json.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request: "Create and verify output/result.json.",
+      artifact_root: scopedTaskRoot,
+    })}`,
+  ].join("\n");
+  const scopedTaskState = {
+    goal: scopedTaskGoal,
+    commandCwd: workspace,
+    meta: {
+      goalContract: {
+        revision: 1,
+        taskGoal: scopedTaskGoal,
+        currentRequest: "Create and verify output/result.json.",
+      },
+    },
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    {
+      toolName: "write_file",
+      ok: true,
+      path: "output/result.json",
+      changes: [
+        {
+          path: "output/result.json",
+          created: true,
+          beforeHash: "",
+          afterHash: "requested-output",
+        },
+      ],
+    },
+    { commandCwd: workspace, taskProfile: "auto" }
+  );
+  const requestedOutputRevision =
+    scopedTaskState.meta.projectVerification?.mutationRevision;
+  const readOnlyArtifactValidation = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        "python3 -c \"import json; d=json.load(open('output/result.json')); assert d; print('PASS valid JSON')\"",
+    },
+    projectMutationPaths: [],
+    stdout: "PASS valid JSON\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    readOnlyArtifactValidation,
+    {
+      commandCwd: workspace,
+      taskProfile: "auto",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    {
+      toolName: "write_file",
+      ok: true,
+      path: path.join(scopedTaskRoot, "agent-result.json"),
+      changes: [
+        {
+          path: path.join(scopedTaskRoot, "agent-result.json"),
+          created: true,
+          beforeHash: "",
+          afterHash: "delivery-manifest",
+        },
+      ],
+    },
+    { commandCwd: workspace, taskProfile: "auto" }
+  );
+  const scopedManifestCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command: `printf '%s\\n' '{}' > ${JSON.stringify(
+        path.join(scopedTaskRoot, "agent-result.json")
+      )}`,
+    },
+    stdout: "",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    scopedManifestCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "auto",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const pythonScopedManifestCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command: [
+        "python3 - <<'PY'",
+        `out = ${JSON.stringify(path.join(scopedTaskRoot, "agent-result.json"))}`,
+        "with open(out, 'w', encoding='utf-8') as handle:",
+        "    handle.write('{}')",
+        "PY",
+      ].join("\n"),
+    },
+    projectMutationPaths: [],
+    stdout: "",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    pythonScopedManifestCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "auto",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    requestedOutputRevision === 1 &&
+      scopedTaskState.meta.projectVerification?.mutationRevision === 1 &&
+      readOnlyArtifactValidation.readOnlyArtifactValidation === true &&
+      scopedManifestCommand.scopedTaskArtifactWrite === true &&
+      pythonScopedManifestCommand.scopedTaskArtifactWrite === true,
+    "task-scoped delivery bookkeeping invalidated requested artifact evidence"
+  );
+  const mutatingInlinePython = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command: "python3 -c \"open('output/side.txt','w').write('changed')\"",
+    },
+    projectMutationPaths: [],
+    stdout: "",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    mutatingInlinePython,
+    {
+      commandCwd: workspace,
+      taskProfile: "auto",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    scopedTaskState.meta.projectVerification?.mutationRevision === 2 &&
+      mutatingInlinePython.readOnlyArtifactValidation !== true,
+    "write-capable inline Python was incorrectly classified as read-only validation"
+  );
   const privateVerifierCommand =
     "python3 .aginti/verification/lifecycle/smoke_test.py";
   const privateVerifierState = {
@@ -8079,6 +8240,34 @@ try {
     sourceGroundingRefreshState.meta.activeExecutionContract.requiresFileMutation === true &&
       sourceGroundingRefreshState.meta.activeExecutionContract.requiresSourceGrounding === true,
     "a concrete file correction did not require current source grounding"
+  );
+  const scopedStaticArtifactRequest =
+    "Create and verify output/parity/result.json with one JSON object. Read it back and finish.";
+  const scopedStaticArtifactGoal = [
+    "You are the persistent LabCanvas agent.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request: scopedStaticArtifactRequest,
+      artifact_root: "/tmp/labcanvas-task-1",
+    })}`,
+    "Read AGENTS.md and inspect implementation before editing.",
+  ].join("\n\n");
+  const scopedStaticArtifactState = {
+    goal: scopedStaticArtifactGoal,
+    meta: {
+      taskProfile: "auto",
+      goalContract: {
+        revision: 10,
+        currentRequest: scopedStaticArtifactGoal,
+      },
+      projectVerification: { mutationRevision: 0 },
+    },
+  };
+  resetSameTaskExecutionContract(scopedStaticArtifactState, 10);
+  assert(
+    scopedStaticArtifactState.meta.activeExecutionContract.requiresFileMutation === true &&
+      scopedStaticArtifactState.meta.activeExecutionContract.requiresSourceGrounding === false,
+    "LabCanvas wrapper instructions leaked into the scoped static-artifact execution contract"
   );
   const concreteBudgetConfig = { maxSteps: 81, resetStepBudget: false };
   assert(
@@ -11426,6 +11615,29 @@ try {
   );
   assert(artifactProgress.justActivated, "exact output mutation did not activate artifact validation");
   assert(artifactState.meta.artifactProgress.complete, "exact output progress was not persisted");
+  const commandArtifactState = {
+    meta: {
+      scs: {
+        taskContract: {
+          exactOutputPaths: ["output/generated.json"],
+        },
+      },
+    },
+  };
+  const commandArtifactProgress = recordExactOutputProgress(
+    commandArtifactState,
+    {
+      ok: true,
+      toolName: "run_command",
+      verifiedGeneratedOutputPaths: ["output/generated.json"],
+    },
+    { commandCwd: workspace }
+  );
+  assert(
+    commandArtifactProgress.justActivated &&
+      commandArtifactState.meta.artifactProgress.complete,
+    "snapshot-verified shell output did not activate exact artifact progress"
+  );
   assert(
     nextStepRuntimeConfig({ provider: "localllm" }, artifactState).artifactValidationPhase === true,
     "next step did not enter artifact validation mode"

@@ -538,7 +538,10 @@ function inferExactOutputPaths(goal = "") {
     if (!isOutputListItem && !hasDirectOutputAction) continue;
     const sourceLine = !isOutputListItem && hasDirectOutputAction ? line.slice(directOutputIndex) : line;
     if (!isOutputListItem && negatedOutputLine.test(sourceLine)) continue;
-    if (!isOutputListItem && nonOutputToolLine.test(sourceLine)) continue;
+    const verifierIndex = line.search(/\b(?:validate|verify|check|compile|run|execute)\b/i);
+    if (!isOutputListItem && nonOutputToolLine.test(line) && verifierIndex >= 0 && verifierIndex < directOutputIndex) {
+      continue;
+    }
     if (!isOutputListItem && /\boutput\s+(?:subfolders?|directories|folders?|paths?)\b/i.test(sourceLine)) continue;
     const outputDirMatch = sourceLine.match(/(?:to|at|in|under|到|至|在)\s*([^\s，,、；;。]+\/)/i);
     activeOutputDir = outputDirMatch?.[1] || "";
@@ -962,6 +965,12 @@ export function inferRequiredExecutableTerms(goal = "") {
     if (executableRequirementIsNegated(source, index)) continue;
     if (indexFallsInsideInlineCommand(source, index)) continue;
     const window = source.slice(Math.max(0, index - 180), Math.min(source.length, index + match[0].length + 220));
+    const structuredDataLiteral =
+      /\b(?:csv|json|toml|ya?ml)\b/i.test(window) &&
+      !/\b(?:actual|canonical|executable|implementation|source\s+code|function|call|argument|parameter|repair|fix|replace)\b/i.test(
+        window
+      );
+    if (structuredDataLiteral) continue;
     const implementationRequirement =
       /\b(?:actual|canonical|executable|implementation|source|code|call|argument|keyword|parameter|repair|fix|correct|replace|add|set|pass|use|must|required)\b/iu.test(window) ||
       /实际|實際|实现|實現|源码|源碼|代码|代碼|调用|調用|参数|參數|修复|修復|改正|替换|替換|添加|设置|設定|使用|必须|必須|実装|ソース|コード|呼び出し|引数|修正|置換|追加|設定|使用/.test(window);
@@ -1229,12 +1238,22 @@ function codeProfileRequiresCommand(goal = "") {
     /\b(?:note|notes?|markdown|readme|documentation|text file)\b/.test(text) ||
     /\bnotes?\/[^\s]+\.(?:md|txt)\b/.test(text) ||
     /\.(?:md|txt)\b/.test(text);
+  const structuredDataProse = text.replace(
+    /(?:^|[\s`'"(])[^\s`'"()]+\.(?:csv|json|toml|ya?ml)\b/g,
+    " "
+  );
+  const simpleStructuredDataWrite =
+    /\.(?:csv|json|toml|ya?ml)\b/.test(text) &&
+    /\b(?:create|emit|generate|save|write)\b/.test(text) &&
+    !/\b(?:app|application|build|cli|code|codebase|compile|execute|function|implement|library|lint|package|refactor|run|script|server|source|test|typecheck)\b/.test(
+      structuredDataProse
+    );
   const substantiveCodeWork =
     /\b(?:fix|repair|bug|implement|feature|refactor|test|run|build|compile|lint|typecheck|verify|validate|package|library|cli|api server|app|application|script|codebase|src\/|source code)\b/.test(
       text
     ) ||
     /\.(?:js|jsx|ts|tsx|mjs|cjs|py|rs|go|java|kt|swift|rb|php|cs|cpp|c|h|hpp|sh)\b/.test(text);
-  return substantiveCodeWork && !simpleDocumentWrite;
+  return substantiveCodeWork && !simpleDocumentWrite && !simpleStructuredDataWrite;
 }
 
 function goalRequestsExplicitTestMutation(text = "") {
