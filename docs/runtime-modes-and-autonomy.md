@@ -132,6 +132,10 @@ This starts interactive chat with Docker workspace mode, file tools, shell tools
 
 Docker workspace mode also mounts common host data roots, such as the user's home parent, read-only at their original absolute paths. This lets a task in `/home/lachlan/ProjectsLFS/aginti-test` inspect a sibling dataset such as `/home/lachlan/ProjectsLFS/ProteinStructure` without switching to host-write mode. Outputs and edits still belong under `/workspace` unless the user explicitly approves stronger host permissions. Set `AGINTI_DOCKER_READONLY_HOST_MOUNTS=/path/a:/path/b` to override the read-only mounts, or set it to `off` to disable them.
 
+For a linked Git worktree, bounded Git mutation commands such as the runtime's path-enumerated `git add` plus `git commit` also receive a writable mount for the validated shared Git common directory. The mount is not added to ordinary shell commands or read-only Git inspection. This lets Docker workspace mode commit the current worktree without granting broad host-write access.
+
+Outstanding exact project commands always run before Git completion. A pending producer, test, or user-declared validation command cannot be preempted by a commit merely because the current artifacts already exist.
+
 Direct trusted host mode:
 
 ```bash

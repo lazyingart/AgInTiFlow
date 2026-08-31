@@ -302,7 +302,10 @@ async function persistMarkdownArtifact(store, config, subdir, stem, payload) {
   }
 
   if (config?.commandCwd) {
-    const workspaceDir = path.join(config.commandCwd, "artifacts", subdir);
+    // Perception reports are runtime evidence, not task-owned source. Keep the
+    // workspace-relative copy under the standard ignored AgInTi directory so
+    // visual validation cannot dirty an otherwise completed repository.
+    const workspaceDir = path.join(config.commandCwd, ".aginti", "artifacts", subdir);
     await fs.mkdir(workspaceDir, { recursive: true });
     const workspacePath = path.join(workspaceDir, filename);
     await fs.writeFile(workspacePath, content, "utf8");

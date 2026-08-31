@@ -56,6 +56,29 @@ in `evidence_json` and `events`.
 
 ## Current Campaign Findings
 
+### Retained dependencies, linked-worktree commits, and clean visual evidence
+
+`data-analysis-retained-dependencies-060` resumed the original DeepSeek session
+after an imperfect data-analysis repair had narrowed its context too far. The
+agent retained the immutable configuration and CSV inputs referenced by the
+mutable Python source, regenerated every required output, ran the canonical
+producer and all four unit tests, inspected the 900 x 600 plot, and committed
+target revision `55cadcd` from Docker workspace mode. Independent verification
+confirmed 11 raw rows, one duplicate removal, two invalid-signal removals,
+eight clean rows, the expected condition means, valid CSV/JSON/Markdown/PNG
+artifacts, and a clean target worktree.
+
+The run established three reusable runtime contracts:
+
+- Failed-test recovery keeps bounded, previously read immutable dependencies
+  when the mutable source names them, while mutation scope remains limited to
+  the canonical repair paths.
+- An outstanding exact producer or validation command runs before artifact Git
+  completion. In a linked worktree, only bounded Git mutation commands receive
+  a writable mount for the validated shared Git common directory.
+- `read_image` stores its task-relative review copy under ignored `.aginti/`
+  runtime storage, so visual verification cannot dirty a completed repository.
+
 ### Data analysis retained-state recovery
 
 `data-analysis-local-011` passed after reusable runtime fixes. AgInTi completed

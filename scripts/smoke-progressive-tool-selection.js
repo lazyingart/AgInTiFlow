@@ -1584,6 +1584,30 @@ assertStrict.deepEqual(
   "task-owned Git completion delegated path selection back to the model"
 );
 
+const requiredCommandBeforeCommitTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    artifactValidationPhase: true,
+    artifactValidationNeedsCommand: true,
+    requiredProjectCommandPending: true,
+    requiredProjectCommand: "python analysis.py",
+    artifactValidationPendingGitActions: ["commit"],
+    artifactValidationCommitPaths: ["analysis.py", "AGINTI.md"],
+  },
+  goal: "Regenerate the outputs, validate them, and commit the intended repair.",
+  profile: "data",
+});
+sameNames(
+  requiredCommandBeforeCommitTools,
+  ["run_command", "finish"],
+  "artifact Git completion preempted an outstanding exact project command"
+);
+assertStrict.deepEqual(
+  requiredCommandBeforeCommitTools[0].function.parameters.properties.command.enum,
+  ["python analysis.py"],
+  "artifact recovery exposed an open-ended command instead of the retained requirement"
+);
+
 const resumedArtifactRuntime = nextStepRuntimeConfig(
   {
     goal: "Perform a visual screenshot inspection of the generated plot and commit the intentional changes.",

@@ -196,6 +196,63 @@ export function dockerWorkspaceAliasMounts(
   return workspace === DOCKER_WORKSPACE ? [] : [workspace];
 }
 
+function pathIsWithin(parentPath, candidatePath) {
+  const relative = path.relative(parentPath, candidatePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function linkedWorktreeCommonGitDir(workspace) {
+  const dotGitPath = path.join(workspace, ".git");
+  let dotGit;
+  try {
+    if (!fsSync.statSync(dotGitPath).isFile()) return "";
+    dotGit = fsSync.readFileSync(dotGitPath, "utf8");
+  } catch {
+    return "";
+  }
+  const match = String(dotGit).match(/^gitdir:\s*(.+?)\s*$/im);
+  if (!match?.[1]) return "";
+  const gitDir = path.resolve(workspace, match[1]);
+  let commonDir = gitDir;
+  try {
+    const commonPath = path.join(gitDir, "commondir");
+    if (fsSync.existsSync(commonPath)) {
+      commonDir = path.resolve(gitDir, fsSync.readFileSync(commonPath, "utf8").trim());
+    }
+    const resolvedGitDir = fsSync.realpathSync(gitDir);
+    const resolvedCommonDir = fsSync.realpathSync(commonDir);
+    if (
+      !pathIsWithin(resolvedCommonDir, resolvedGitDir) ||
+      !fsSync.existsSync(path.join(resolvedCommonDir, "HEAD")) ||
+      !fsSync.existsSync(path.join(resolvedCommonDir, "objects"))
+    ) {
+      return "";
+    }
+    return resolvedCommonDir;
+  } catch {
+    return "";
+  }
+}
+
+export function dockerWritableGitMounts(
+  command = "",
+  config = {},
+  policy = {},
+  sandboxMode = normalizeSandboxMode(config.sandboxMode)
+) {
+  if (
+    sandboxMode !== "docker-workspace" ||
+    policy.gitOnly !== true ||
+    !/\bgit\s+(?:add|commit|rm|mv)\b/i.test(String(command || ""))
+  ) {
+    return [];
+  }
+  const workspace = path.resolve(String(config.commandCwd || process.cwd()));
+  const commonDir = linkedWorktreeCommonGitDir(workspace);
+  if (!commonDir || pathIsWithin(workspace, commonDir)) return [];
+  return uniqueHostMounts([commonDir]);
+}
+
 async function ensurePersistentDockerDirs(config) {
   const dirs = persistentDockerDirs(config);
   await Promise.all([fs.mkdir(dirs.home, { recursive: true }), fs.mkdir(dirs.cache, { recursive: true }), fs.mkdir(dirs.env, { recursive: true })]);
@@ -381,6 +438,12 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
     "-v",
     `${mount}:${mount}:${mountMode}`,
   ]);
+  const writableGitMountArgs = dockerWritableGitMounts(
+    command,
+    config,
+    policy,
+    sandboxMode
+  ).flatMap((mount) => ["-v", `${mount}:${mount}:rw`]);
   const readOnlyArgs =
     mountMode === "ro"
       ? ["--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m"]
@@ -412,6 +475,7 @@ function dockerRunArgs(command, config, policy = evaluateCommandPolicy(command, 
       ? ["-e", `GIT_CONFIG_GLOBAL=${DOCKER_GIT_CONFIG}`]
       : []),
     ...readOnlyHostMountArgs,
+    ...writableGitMountArgs,
     ...workspaceAliasMountArgs,
     "-v",
     `${config.commandCwd}:${DOCKER_WORKSPACE}:${mountMode}`,

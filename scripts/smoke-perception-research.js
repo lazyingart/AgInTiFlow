@@ -344,6 +344,10 @@ async function main() {
   assert(image.markdownArtifactPath, "read_image did not persist a Markdown perception artifact");
   assert(image.markdownPath, "read_image did not persist a workspace Markdown report");
   assert(
+    image.markdownPath.startsWith(".aginti/artifacts/perception/"),
+    `read_image dirtied the task-owned artifact tree: ${image.markdownPath}`
+  );
+  assert(
     path.basename(image.markdownPath).includes("tiny-image-analysis"),
     `read_image emitted a generic artifact filename: ${image.markdownPath}`
   );

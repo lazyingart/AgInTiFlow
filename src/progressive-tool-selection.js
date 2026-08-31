@@ -2304,7 +2304,8 @@ export function selectProgressiveTools(
   if (
     config.taskOwnedCommitPending === true &&
     config.testFailureRepairActive !== true &&
-    config.testVerificationPending !== true
+    config.testVerificationPending !== true &&
+    config.requiredProjectCommandPending !== true
   ) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
     const pendingGitActions = Array.isArray(config.taskOwnedPendingGitActions)
@@ -2332,6 +2333,18 @@ export function selectProgressiveTools(
     config.testVerificationPending !== true
   ) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
+    if (
+      config.requiredProjectCommandPending === true &&
+      typeof config.requiredProjectCommand === "string" &&
+      config.requiredProjectCommand.trim()
+    ) {
+      const requiredCommand = constrainRunCommand(
+        available.get("run_command"),
+        config.requiredProjectCommand,
+        "Run this exact outstanding project command before Git completion or final artifact acceptance. Preserve the generated outputs and do not substitute another status, commit, or discovery command."
+      );
+      return [requiredCommand, finish].filter(Boolean);
+    }
     const pendingGitActions = Array.isArray(config.artifactValidationPendingGitActions)
       ? config.artifactValidationPendingGitActions.map((item) => String(item || "").toLowerCase())
       : [];

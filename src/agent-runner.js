@@ -8495,7 +8495,7 @@ export function taskForbidsExternalValidatorSourceRead(config = {}, state = {}) 
 function recoveryEvidenceDependencies(
   sourcePath = "",
   content = "",
-  { commandCwd = "" } = {}
+  { commandCwd = "", knownReadPaths = [] } = {}
 ) {
   const explicitDependencies = [];
   const importCandidates = [];
@@ -8531,7 +8531,7 @@ function recoveryEvidenceDependencies(
     append(explicitDependencies, path.posix.normalize(raw));
   }
   for (const match of String(content || "").matchAll(
-    /^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*[A-Za-z_][A-Za-z0-9_]*(?<segments>(?:\s*\/\s*["'][^"'\r\n]+["']){1,8})\s*$/gm
+    /\b[A-Za-z_][A-Za-z0-9_]*(?<segments>(?:\s*\/\s*["'][^"'\r\n]+["']){1,8})/g
   )) {
     const segments = [...String(match.groups?.segments || "").matchAll(/["']([^"'\r\n]+)["']/g)]
       .map((segment) => String(segment[1] || "").trim())
@@ -8539,6 +8539,22 @@ function recoveryEvidenceDependencies(
     if (segments.length) {
       append(explicitDependencies, path.posix.normalize(segments.join("/")));
     }
+  }
+  const sourceText = String(content || "");
+  for (const item of Array.isArray(knownReadPaths) ? knownReadPaths : []) {
+    const candidate = safeRecoveryEvidencePath(item);
+    if (!candidate || safeTaskOwnedCommitPath(candidate) !== candidate) continue;
+    const basename = path.posix.basename(candidate);
+    const parentBasename = path.posix.basename(path.posix.dirname(candidate));
+    if (!basename || !sourceText.includes(basename)) continue;
+    if (
+      parentBasename &&
+      parentBasename !== "." &&
+      !sourceText.includes(parentBasename)
+    ) {
+      continue;
+    }
+    append(explicitDependencies, candidate);
   }
   if (path.posix.extname(sourcePath).toLowerCase() === ".java") {
     const normalizedSource = String(sourcePath || "").replace(/\\/g, "/");
@@ -8960,6 +8976,19 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
     state,
     testRun
   );
+  const knownReadPaths = (Array.isArray(state.meta?.toolLoop?.recent)
+    ? state.meta.toolLoop.recent
+    : [])
+    .filter(
+      (entry) =>
+        entry?.ok === true &&
+        entry?.blocked !== true &&
+        String(entry?.toolName || "") === "read_file"
+    )
+    .map((entry) => safeRecoveryEvidencePath(toolLoopReadEvidencePath(entry) || entry?.path))
+    .filter((item) => item && safeTaskOwnedCommitPath(item) === item)
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .slice(-24);
   const queue = [
     ...failureMentionedPaths.filter(failedTestPathIsTestEvidence),
     ...(Array.isArray(verification.discoveredTests) ? verification.discoveredTests : []),
@@ -9536,7 +9565,10 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
         );
       }
     }
-    for (const dependency of recoveryEvidenceDependencies(relativePath, raw, { commandCwd })) {
+    for (const dependency of recoveryEvidenceDependencies(relativePath, raw, {
+      commandCwd,
+      knownReadPaths,
+    })) {
       if (!seen.has(dependency) && !queue.includes(dependency)) queue.push(dependency);
     }
   }

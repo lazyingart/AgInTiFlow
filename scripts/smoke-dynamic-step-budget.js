@@ -572,6 +572,98 @@ try {
       duplicateFocus?.duplicateDeclarations?.[0]?.name === "status_service",
     "duplicate production declarations were not promoted into a focused failed-test repair"
   );
+  const dependencyRecoveryWorkspace = path.join(tempRoot, "dependency-recovery-workspace");
+  await fs.mkdir(path.join(dependencyRecoveryWorkspace, "config"), { recursive: true });
+  await fs.mkdir(path.join(dependencyRecoveryWorkspace, "raw"), { recursive: true });
+  await fs.mkdir(path.join(dependencyRecoveryWorkspace, "tests"), { recursive: true });
+  await fs.writeFile(
+    path.join(dependencyRecoveryWorkspace, "analysis.py"),
+    [
+      "from pathlib import Path",
+      "import json",
+      "",
+      "ROOT = Path(__file__).resolve().parent",
+      "config = json.loads((ROOT / 'config' / 'experiment.json').read_text())",
+      "for source_file in ('run_a.csv', 'run_b.csv'):",
+      "    print((ROOT / 'raw' / source_file).read_text())",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(dependencyRecoveryWorkspace, "tests", "test_analysis.py"),
+    "from analysis import config\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(dependencyRecoveryWorkspace, "config", "experiment.json"),
+    '{"offset":10}\n',
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(dependencyRecoveryWorkspace, "raw", "run_a.csv"),
+    "sample,signal\nA,100\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(dependencyRecoveryWorkspace, "raw", "run_b.csv"),
+    "sample,signal\nB,90\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(dependencyRecoveryWorkspace, "raw", "unrelated.csv"),
+    "private,unrelated\nno,1\n",
+    "utf8"
+  );
+  const dependencyRecoveryState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 2,
+        lastMutation: {
+          revision: 2,
+          toolName: "apply_patch",
+          paths: ["analysis.py"],
+        },
+        discoveredTests: ["tests/test_analysis.py"],
+        testRuns: [{
+          command: "python analysis.py",
+          mutationRevision: 2,
+          passed: false,
+          failureEvidenceVersion: 2,
+          failureSignature: "source-dependency-schema-mismatch",
+          failureSummary: "File \"analysis.py\", line 7, in <module>: KeyError: signal_mv",
+        }],
+      },
+      toolLoop: {
+        recent: [
+          "config/experiment.json",
+          "raw/run_a.csv",
+          "raw/run_b.csv",
+          "raw/unrelated.csv",
+        ].map((readPath) => ({
+          toolName: "read_file",
+          path: readPath,
+          ok: true,
+          blocked: false,
+        })),
+      },
+    },
+  };
+  const dependencyRecoveryPacket = await buildFailedTestRecoveryPacket(
+    { commandCwd: dependencyRecoveryWorkspace },
+    dependencyRecoveryState
+  );
+  assert(
+    [
+      "analysis.py",
+      "config/experiment.json",
+      "raw/run_a.csv",
+      "raw/run_b.csv",
+    ].every((item) => dependencyRecoveryPacket.paths.includes(item)) &&
+      !dependencyRecoveryPacket.paths.includes("raw/unrelated.csv") &&
+      JSON.stringify(dependencyRecoveryPacket.repairPaths) === JSON.stringify(["analysis.py"]),
+    `failed-test recovery dropped previously read immutable dependencies or widened mutation scope: ${JSON.stringify(dependencyRecoveryPacket)}`
+  );
   const baselineWorkspace = path.join(tempRoot, "baseline-recovery-workspace");
   await fs.mkdir(baselineWorkspace, { recursive: true });
   const trackedBaselineSource = [
