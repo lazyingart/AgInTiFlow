@@ -7288,6 +7288,160 @@ async function runToolContractCase({
   }
 }
 
+function weakAuthoritativeRoutineGoal(command) {
+  return [
+    "AGINTI_EVIDENCE_SCOPE_JSON: {\"mode\":\"task\",\"request\":\"tell me phone and schedule status, read-only, dont send or change anything\"}",
+    "Matched established routines",
+    `- \`sample-status\` ready=true; commands=[${JSON.stringify(command)}, "node scripts/secondary-status.js --json"]; outputs=["status"]; guidance=For a read-only phone, message-intake, queue, or schedule question, run the canonical \`${command}\` command first. Treat the current status snapshot as authoritative. Do not inspect raw private stores, and do not send or mutate anything.`,
+    "Operating contract",
+    "- Forbidden evidence: raw/private ledgers are out of scope for this read-only answer.",
+  ].join("\n");
+}
+
+const authoritativeRoutineCommand = "node scripts/status.js status --json";
+const authoritativeRoutineGoal = weakAuthoritativeRoutineGoal(
+  authoritativeRoutineCommand
+);
+const authoritativeRoutineContract = completionTaskContract(
+  {
+    goal: authoritativeRoutineGoal,
+    taskProfile: "auto",
+  },
+  {
+    goal: authoritativeRoutineGoal,
+    meta: {
+      taskProfile: "auto",
+      goalContract: {
+        revision: 1,
+        currentRequest: authoritativeRoutineGoal,
+      },
+    },
+  }
+);
+assertStrict.deepEqual(
+  authoritativeRoutineContract.requiredProjectCommands,
+  [authoritativeRoutineCommand],
+  "authoritative read-only routine was not promoted to an exact required command"
+);
+assertStrict.deepEqual(
+  authoritativeRoutineContract.authoritativeRoutine?.forbiddenEvidenceScopes,
+  ["private", "raw"],
+  "authoritative read-only routine did not retain forbidden evidence scopes"
+);
+
+const hostedRequiredRoutineTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "deepseek",
+    toolSurfacePolicy: "full",
+    requiredProjectCommandPending: true,
+    requiredProjectCommand: authoritativeRoutineCommand,
+  },
+  goal: authoritativeRoutineGoal,
+  profile: "auto",
+});
+sameNames(
+  hostedRequiredRoutineTools,
+  ["run_command", "finish"],
+  "hosted/full policy did not constrain an authoritative routine first command"
+);
+assertStrict.deepEqual(
+  enumFor(hostedRequiredRoutineTools, "run_command", "command"),
+  [authoritativeRoutineCommand],
+  "authoritative routine command was not exposed as an exact enum"
+);
+
+let authoritativeRoutineStep = 0;
+const authoritativeRoutineRun = await runToolContractCase({
+  id: "authoritative-readonly-routine",
+  provider: "deepseek",
+  profile: "auto",
+  goal: authoritativeRoutineGoal,
+  allowShellTool: true,
+  maxSteps: 4,
+  toolCalls: [
+    contractCall("unused-authoritative", "finish", { result: "unused" }),
+  ],
+  expectSuccess: true,
+  setupWorkspace: async (workspace) => {
+    await fs.mkdir(path.join(workspace, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspace, "scripts", "status.js"),
+      [
+        "console.log(JSON.stringify({ phone: 'login-required', schedule: 'current', authoritative: true }));",
+        "process.exit(1);",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+  },
+  responseFactory: ({ payload }) => {
+    authoritativeRoutineStep += 1;
+    const offered = Array.isArray(payload.tools) ? names(payload.tools) : [];
+    if (authoritativeRoutineStep === 1) {
+      assertStrict.deepEqual(
+        offered,
+        ["run_command", "finish"],
+        "first authoritative routine turn exposed exploratory tools"
+      );
+      assertStrict.deepEqual(
+        enumFor(payload.tools, "run_command", "command"),
+        [authoritativeRoutineCommand],
+        "first authoritative routine turn did not constrain the exact command"
+      );
+      return assistantWithToolCalls([
+        contractCall("run-authoritative-status", "run_command", {
+          command: authoritativeRoutineCommand,
+        }),
+      ]);
+    }
+    assertStrict.deepEqual(
+      offered,
+      ["finish"],
+      "authoritative routine observation did not shrink the next turn to finish-only"
+    );
+    return assistantWithToolCalls([
+      contractCall("finish-authoritative-status", "finish", {
+        result: "The authoritative status snapshot says phone login is required and the schedule snapshot is current.",
+      }),
+    ]);
+  },
+});
+assertStrict.equal(
+  authoritativeRoutineRun.requests.length,
+  2,
+  "authoritative routine flow used more than two model requests"
+);
+assertStrict.equal(
+  authoritativeRoutineRun.events.filter(
+    (event) =>
+      event.type === "tool.started" &&
+      event.data?.toolName !== "finish"
+  ).length,
+  1,
+  "authoritative routine flow dispatched more than the canonical command"
+);
+assert(
+  authoritativeRoutineRun.events.some(
+    (event) =>
+      event.type === "tool.completed" &&
+      event.data?.toolName === "run_command" &&
+      event.data?.ok === false &&
+      event.data?.authoritativeReadOnlyRoutine === true &&
+      event.data?.authoritativeRoutineObserved === true
+  ),
+  "nonzero authoritative routine snapshot was not retained as observed evidence"
+);
+assert(
+  !authoritativeRoutineRun.events.some(
+    (event) =>
+      event.type === "tool.started" &&
+      /(?:^|[ /])(?:\\.private|private|raw|sqlite|jsonl)(?:$|[ /.-])/i.test(
+        String(event.data?.args?.command || "")
+      )
+  ),
+  "authoritative routine flow still dispatched private/raw exploratory commands"
+);
+
 const hiddenDryRun = await runToolContractCase({
   id: "native-hidden-dry-run",
   goal: "Create hidden-dry-run.txt containing unsafe if this tool dispatches.",
@@ -7647,6 +7801,7 @@ console.log(
         "finish-contract",
         "per-turn-contract-preserved",
         "schema-required-type-enum-extra",
+        "authoritative-readonly-routine-first",
         "native-hidden-dry-run-zero-dispatch",
         "text-fallback-unoffered-zero-dispatch",
         "strict-single-call-batch",

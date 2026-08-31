@@ -1838,9 +1838,132 @@ function inferExplicitRequestedCommands(goal = "") {
   return unique([...nonShadowedBareCommands, ...explicitCommands]).slice(0, 8);
 }
 
+function routineCommandLooksReadOnly(command = "") {
+  const normalized = normalizeProjectCommand(command);
+  if (
+    !normalized ||
+    normalized.length > 1000 ||
+    hasActiveShellExpansion(normalized)
+  ) {
+    return false;
+  }
+  const sequence = parseTopLevelShellSequence(normalized);
+  if (
+    !sequence.commands.length ||
+    sequence.commands.length > 1 ||
+    sequence.trailingSeparator ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.separators.length
+  ) {
+    return false;
+  }
+  const unquoted = normalized.replace(/"[^"\n]*"|'[^'\n]*'/g, "");
+  if (/[;&|<>`]/.test(unquoted)) return false;
+  return /\b(?:status|health|doctor|inspect|check|show|list)\b|--json\b/i.test(
+    normalized
+  );
+}
+
+function parseRoutineCommandArray(line = "") {
+  const start = String(line || "").indexOf("commands=");
+  if (start < 0) return [];
+  const source = String(line).slice(start + "commands=".length).trimStart();
+  if (!source.startsWith("[")) return [];
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (char === "]" && !inString) {
+      try {
+        const parsed = JSON.parse(source.slice(0, index + 1));
+        return Array.isArray(parsed) ? parsed.map(normalizeProjectCommand).filter(Boolean) : [];
+      } catch {
+        return [];
+      }
+    }
+  }
+  return [];
+}
+
+function matchedRoutineLines(goal = "") {
+  const lines = String(goal || "").split(/\r?\n/);
+  const selected = [];
+  let active = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (/^Matched established routines\b/i.test(line)) {
+      active = true;
+      continue;
+    }
+    if (!active) continue;
+    if (/^(?:Operating contract|Runtime|Repository evidence)\b/i.test(line)) break;
+    if (!line) continue;
+    if (/^-\s+/.test(line)) selected.push(line);
+  }
+  return selected;
+}
+
+export function inferAuthoritativeReadOnlyRoutine(goal = "") {
+  const scope = parseAgintiEvidenceScope(goal);
+  const request = String(scope?.request || scopedChatopsEvidenceGoal(goal) || "");
+  const requestReadOnly = /\b(?:read[- ]only|inspect|checking|check|status|tell me|answer|report)\b/i.test(request) &&
+    /\b(?:do not|don't|dont|never|without|no)\b[^.\n;]{0,180}\b(?:send|change|modify|edit|write|mutate|delete|publish|deploy)\b/i.test(request);
+  for (const line of matchedRoutineLines(goal)) {
+    if (!/\bready\s*=\s*true\b/i.test(line)) continue;
+    const commands = parseRoutineCommandArray(line)
+      .filter(routineCommandLooksReadOnly)
+      .slice(0, 4);
+    if (!commands.length) continue;
+    const guidance = line.includes("guidance=")
+      ? line.slice(line.indexOf("guidance=") + "guidance=".length)
+      : line;
+    const lowerGuidance = guidance.toLowerCase();
+    const readOnlyRoutine =
+      requestReadOnly ||
+      /\bread[- ]only\b/.test(lowerGuidance) ||
+      /\bdo not\b[^.\n;]{0,180}\b(?:send|change|modify|edit|write|mutate)\b/i.test(guidance);
+    const authoritative =
+      /\b(?:canonical|authoritative|run\b[^.\n;]{0,160}\bfirst|invoke\b[^.\n;]{0,160}\bfirst)\b/i.test(
+        guidance
+      );
+    if (!readOnlyRoutine || !authoritative) continue;
+    const forbiddenEvidenceScopes = [];
+    if (/\bprivate\b/i.test(guidance)) forbiddenEvidenceScopes.push("private");
+    if (/\braw\b/i.test(guidance)) forbiddenEvidenceScopes.push("raw");
+    const routineId =
+      line.match(/^-\s+`([^`]+)`/)?.[1] ||
+      line.match(/^-\s+([A-Za-z0-9._:-]+)/)?.[1] ||
+      "authoritative-routine";
+    return {
+      schemaVersion: 1,
+      routineId: String(routineId).slice(0, 120),
+      primaryCommand: commands[0],
+      commands,
+      readOnly: true,
+      stopAfterPrimary: true,
+      forbiddenEvidenceScopes: unique(forbiddenEvidenceScopes).slice(0, 4),
+    };
+  }
+  return null;
+}
+
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
   const evidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
   const positiveEvidenceGoal = stripForbiddenLanguage(evidenceGoal);
+  const authoritativeRoutine = inferAuthoritativeReadOnlyRoutine(goal);
   const artifactRoot = scopedArtifactRoot(goal);
   const requirementCategories = inferRequirementCategories(evidenceGoal, taskProfile, acceptanceCriteria);
   const requiredToolCalls = inferRequiredToolCalls(evidenceGoal);
@@ -1889,7 +2012,11 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiresPerSourceChecks: requiresPerSourceChecks(evidenceGoal),
     requiredToolCalls,
     requiredGitActions,
-    requiredProjectCommands: inferExplicitRequestedCommands(positiveEvidenceGoal),
+    requiredProjectCommands: unique([
+      ...inferExplicitRequestedCommands(positiveEvidenceGoal),
+      ...(authoritativeRoutine?.primaryCommand ? [authoritativeRoutine.primaryCommand] : []),
+    ]).slice(0, 8),
+    authoritativeRoutine,
     requiresWorkspaceMutation: goalRequestsWorkspaceMutation(evidenceGoal, taskProfile),
     requiresFileMutation: goalRequestsFileMutation(evidenceGoal, taskProfile),
     requiresSourceGrounding: requiresSourceGrounding(evidenceGoal),
@@ -3631,7 +3758,18 @@ function eventToEvidence(event = {}) {
 }
 
 function toolPayloadToEvidence(payload = {}, source = "tool") {
-  if (!payload || typeof payload !== "object" || payload.ok === false || payload.blocked) return [];
+  const authoritativeRoutineObserved = Boolean(
+    payload?.authoritativeReadOnlyRoutine === true &&
+      payload?.authoritativeRoutineObserved === true
+  );
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    payload.blocked ||
+    (payload.ok === false && !authoritativeRoutineObserved)
+  ) {
+    return [];
+  }
   const toolName = String(payload.toolName || payload.name || "");
   const args = payload.args && typeof payload.args === "object" ? payload.args : {};
   const text = normalizedText(
@@ -3653,7 +3791,7 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
       toolName,
       target: compact(target || payload.path || payload.outputPath || payload.artifactPath || args.path || args.command || payload.url || "", 260),
       proof: compact(proof, 500),
-      verified: payload.ok !== false,
+      verified: payload.ok !== false || authoritativeRoutineObserved,
       goalRevision: Math.max(0, Number(payload.goalRevision || 0)),
       mutationRevision: Math.max(0, Number(payload.projectMutationRevision || 0)),
       ...details,
@@ -3702,6 +3840,13 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
           : {}),
         ...(payload.requiredProjectCommand
           ? { requiredProjectCommand: normalizeProjectCommand(payload.requiredProjectCommand) }
+          : {}),
+        ...(authoritativeRoutineObserved
+          ? {
+              authoritativeReadOnlyRoutine: true,
+              authoritativeRoutineId: String(payload.authoritativeRoutineId || ""),
+              authoritativeRoutineOutcome: String(payload.authoritativeRoutineOutcome || "status"),
+            }
           : {}),
         ...(exitWrapper ? { explicitExitStatus } : {}),
       }

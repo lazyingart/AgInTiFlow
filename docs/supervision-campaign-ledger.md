@@ -493,3 +493,30 @@ fstat, owner, mode, named-binding, concurrent poison, close/admission, cleanup,
 and residual-FD adversaries. Retained durable-common, retained file-lock,
 production-mount, integration authorities, runtime authority,
 session-persistence, syntax, and whitespace checks passed on the working tree.
+
+### Authoritative read-only routine first
+
+`authoritative-readonly-routine-001` reproduced the LabCanvas status failure
+from sessions `web-agent-labcanvas-cb6fe7cd-3464-42f7-99e4-b24c376e0115` and
+`web-agent-labcanvas-6d0b04bc-79e8-4fd8-87b4-4d8e651dcd72`. The first session
+had no selected routine and spent 25 model requests and 23 tools on broad
+workspace/private-store exploration. The second session received a disclosed
+canonical read-only routine, but AgInTiFlow still kept
+`requiredProjectCommands` empty, then continued through 32 model requests and
+32 tools after the status snapshot.
+
+The defect was an AgInTiFlow core execution-contract/SCS handoff gap, with a
+separate upstream routine-disclosure improvement already handled by
+AgenticApp. AgInTiFlow now promotes an authoritative read-only routine's first
+safe command into the exact required command batch, records an observed
+nonzero status snapshot as read-only evidence instead of a failed verifier,
+retains forbidden raw/private evidence scopes, and closes the following turn to
+`finish` once normal SCS evidence is sufficient.
+
+The focused regression uses a weak status prompt and a project-neutral
+`sample-status` routine. It proves the first model turn sees only the exact
+status command plus `finish`, a JSON status command exiting 1 still satisfies
+the read-only evidence contract, the second turn is finish-only, and no
+private/raw exploratory command is dispatched. `npm run smoke:progressive-tools`,
+`npm run smoke:scs-evidence`, `npm run smoke:truthful-completion`, and
+`npm run check` pass on the working tree.

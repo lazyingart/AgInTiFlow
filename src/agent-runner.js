@@ -147,6 +147,7 @@ import {
   finishResultClaimsBlocker,
   finishResultClaimsIncompleteWork,
   hasScsBlockerEvidence,
+  inferAuthoritativeReadOnlyRoutine,
   inferGitActionsFromCommand,
   inferSuccessfulGitActionsFromCommandResult,
   isResponseOnlyEvidenceScope,
@@ -4029,6 +4030,29 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
   const currentTurnCommands = normalizedRequiredProjectCommands(
     currentTurnContract.requiredProjectCommands
   );
+  const currentTurnRoutine = currentTurnContract.authoritativeRoutine
+    ? {
+        schemaVersion: 1,
+        routineId: String(currentTurnContract.authoritativeRoutine.routineId || ""),
+        primaryCommand: normalizeProjectCommand(
+          currentTurnContract.authoritativeRoutine.primaryCommand || ""
+        ),
+        commands: normalizedRequiredProjectCommands(
+          currentTurnContract.authoritativeRoutine.commands || []
+        ),
+        readOnly: currentTurnContract.authoritativeRoutine.readOnly === true,
+        stopAfterPrimary:
+          currentTurnContract.authoritativeRoutine.stopAfterPrimary === true,
+        forbiddenEvidenceScopes: Array.isArray(
+          currentTurnContract.authoritativeRoutine.forbiddenEvidenceScopes
+        )
+          ? currentTurnContract.authoritativeRoutine.forbiddenEvidenceScopes
+              .map((item) => String(item || "").trim())
+              .filter(Boolean)
+              .slice(0, 4)
+          : [],
+      }
+    : null;
   const startedMutationRevision = Math.max(
     0,
     Number(state.meta?.projectVerification?.mutationRevision || 0)
@@ -4047,6 +4071,7 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
         )
     ),
     requiredProjectCommands: currentTurnCommands,
+    authoritativeRoutine: currentTurnRoutine,
   };
   const verification = state.meta.projectVerification;
   if (verification && typeof verification === "object") {
@@ -6041,19 +6066,120 @@ function requiredCommandTracksPrivateVerification(command = "", config = {}) {
   return requiredCommandHasValidationIntent(normalized, classifyCommand(normalized));
 }
 
+function normalizeAuthoritativeRoutineContract(routine = {}) {
+  const primaryCommand = normalizeProjectCommand(routine?.primaryCommand || "");
+  const commands = normalizedRequiredProjectCommands([
+    primaryCommand,
+    ...(Array.isArray(routine?.commands) ? routine.commands : []),
+  ]);
+  if (
+    Number(routine?.schemaVersion || 0) !== 1 ||
+    routine?.readOnly !== true ||
+    !primaryCommand ||
+    !commands.includes(primaryCommand)
+  ) {
+    return null;
+  }
+  return {
+    schemaVersion: 1,
+    routineId: String(routine.routineId || "authoritative-routine").slice(0, 120),
+    primaryCommand,
+    commands,
+    stopAfterPrimary: routine.stopAfterPrimary === true,
+    forbiddenEvidenceScopes: Array.isArray(routine.forbiddenEvidenceScopes)
+      ? routine.forbiddenEvidenceScopes
+          .map((item) => String(item || "").trim())
+          .filter(Boolean)
+          .slice(0, 4)
+      : [],
+  };
+}
+
+function activeAuthoritativeReadOnlyRoutine(state = {}, config = {}) {
+  const currentGoalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  const activeExecutionContract = state.meta?.activeExecutionContract;
+  if (
+    activeExecutionContract &&
+    Number(activeExecutionContract.revision || 0) === currentGoalRevision
+  ) {
+    const active = normalizeAuthoritativeRoutineContract(
+      activeExecutionContract.authoritativeRoutine
+    );
+    if (active) return active;
+  }
+  return normalizeAuthoritativeRoutineContract(
+    inferAuthoritativeReadOnlyRoutine(completionContractGoal(config, state))
+  );
+}
+
+function authoritativeRoutineCommandMatches(command = "", routine = {}, config = {}) {
+  const observed = normalizeProjectCommand(command);
+  if (!observed || !routine?.primaryCommand) return false;
+  const exitProbe = parseNonMutatingExitStatusWrapper(observed);
+  const candidates = [observed, exitProbe?.command || ""]
+    .map(normalizeProjectCommand)
+    .filter(Boolean);
+  return routine.commands.some((required) =>
+    candidates.some((candidate) => projectCommandsEquivalent(candidate, required, config))
+  );
+}
+
+function authoritativeRoutineObservedOutput(toolResult = {}) {
+  const stdout = String(toolResult.stdout || "");
+  const stderr = String(toolResult.stderr || "");
+  const result = typeof toolResult.result === "string"
+    ? toolResult.result
+    : toolResult.result && typeof toolResult.result === "object"
+      ? JSON.stringify(toolResult.result).slice(0, 4096)
+      : "";
+  return Boolean(
+    toolResult.blocked !== true &&
+      (stdout.trim() || stderr.trim() || result.trim() || Number.isInteger(toolResult.exitCode))
+  );
+}
+
+function runHasAuthoritativeRoutineEvidence(
+  run = {},
+  requiredCommand = "",
+  config = {}
+) {
+  if (
+    run?.authoritativeReadOnlyRoutine !== true ||
+    run?.authoritativeRoutineObserved !== true
+  ) {
+    return false;
+  }
+  const required = normalizeProjectCommand(requiredCommand);
+  if (!required) return false;
+  return authoritativeRoutineCommandMatches(
+    run.command || run.requiredProjectCommand || "",
+    { primaryCommand: required, commands: [required] },
+    config
+  );
+}
+
 function requiredCommandRunIsCurrent(
   verification = {},
   requiredCommand = "",
   run = {},
   config = {}
 ) {
-  if (!run?.ok) return false;
+  const authoritativeRoutineEvidence = runHasAuthoritativeRoutineEvidence(
+    run,
+    requiredCommand,
+    config
+  );
+  if (!run?.ok && !authoritativeRoutineEvidence) return false;
   const required = normalizeProjectCommand(requiredCommand);
   const observed = normalizeProjectCommand(run.command || "");
   const boundRequired = normalizeProjectCommand(run.requiredProjectCommand || "");
   if (
     Object.prototype.hasOwnProperty.call(run, "explicitExitStatus") &&
-    run.explicitExitStatus !== 0
+    run.explicitExitStatus !== 0 &&
+    !authoritativeRoutineEvidence
   ) {
     return false;
   }
@@ -6091,6 +6217,35 @@ function requiredCommandRunIsCurrent(
       Math.max(0, Number(verification.mutationRevision || 0)) &&
     privateRevisionIsCurrent
   );
+}
+
+function currentAuthoritativeRoutineObservation(state = {}, config = {}) {
+  const verification = state.meta?.projectVerification || {};
+  const routine = activeAuthoritativeReadOnlyRoutine(state, config);
+  if (!routine?.primaryCommand) return null;
+  const currentGoalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  const runs = Array.isArray(verification.commandRuns)
+    ? [...verification.commandRuns].reverse()
+    : [];
+  return runs.find((run) =>
+    Boolean(
+      run?.authoritativeReadOnlyRoutine === true &&
+        run?.authoritativeRoutineObserved === true &&
+        requiredCommandRunIsCurrent(
+          verification,
+          routine.primaryCommand,
+          run,
+          config
+        ) &&
+        (
+          Number(run.goalRevision || 0) === 0 ||
+          Number(run.goalRevision || 0) === currentGoalRevision
+        )
+    )
+  ) || null;
 }
 
 export function recordProjectVerificationOutcome(state = {}, toolResult = {}, config = {}) {
@@ -6296,6 +6451,22 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     const requiredCommand = requiredCommands.find(
       (candidate) => projectCommandsEquivalent(candidate, exitProbe.command || command, config)
     ) || "";
+    const authoritativeRoutine = activeAuthoritativeReadOnlyRoutine(state, config);
+    const authoritativeRoutineObserved = Boolean(
+      authoritativeRoutine &&
+        requiredCommand &&
+        authoritativeRoutineCommandMatches(
+          exitProbe.command || command,
+          authoritativeRoutine,
+          config
+        ) &&
+        authoritativeRoutineCommandMatches(
+          requiredCommand,
+          authoritativeRoutine,
+          config
+        ) &&
+        authoritativeRoutineObservedOutput(toolResult)
+    );
     const substantiveTestCommand = isSubstantiveTestCommand(command, config);
     const verificationCommand = Boolean(
       substantiveTestCommand ||
@@ -6527,8 +6698,22 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       ...(requiredCommand ? { requiredProjectCommand: requiredCommand } : {}),
       ...(exitProbe.present ? { explicitExitStatus: exitProbe.status } : {}),
       ...(generatedArtifactProducer ? { generatedArtifactProducer } : {}),
+      ...(authoritativeRoutineObserved
+        ? {
+            authoritativeReadOnlyRoutine: true,
+            authoritativeRoutineObserved: true,
+            authoritativeRoutineId: authoritativeRoutine.routineId,
+            authoritativeRoutineOutcome: commandSucceeded ? "ok" : "status",
+            authoritativeRoutineExitCode: Number(toolResult.exitCode ?? 0),
+            authoritativeRoutineOutputBytes: Buffer.byteLength(
+              `${String(toolResult.stdout || "")}\n${String(toolResult.stderr || "")}`,
+              "utf8"
+            ),
+            goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+          }
+        : {}),
     };
-    if (requiredCommand && commandSucceeded) {
+    if (requiredCommand && (commandSucceeded || authoritativeRoutineObserved)) {
       if (!requiredBatch && requiredMutatingCommands.length === 0) {
         requiredBatch = startRequiredCommandBatch(verification, requiredCommands, {
           goalRevision: state.meta?.goalContract?.revision || 0,
@@ -6558,7 +6743,19 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     if (run.requiredProjectCommand) {
       toolResult.requiredProjectCommand = run.requiredProjectCommand;
     }
-    const failedRequiredCommand = Boolean(requiredCommand && !commandSucceeded);
+    if (run.authoritativeReadOnlyRoutine === true) {
+      toolResult.authoritativeReadOnlyRoutine = true;
+      toolResult.authoritativeRoutineObserved = true;
+      toolResult.authoritativeRoutineId = run.authoritativeRoutineId;
+      toolResult.authoritativeRoutineOutcome = run.authoritativeRoutineOutcome;
+      toolResult.authoritativeRoutineExitCode = run.authoritativeRoutineExitCode;
+      toolResult.authoritativeRoutineOutputBytes = run.authoritativeRoutineOutputBytes;
+    }
+    const failedRequiredCommand = Boolean(
+      requiredCommand &&
+        !commandSucceeded &&
+        !authoritativeRoutineObserved
+    );
     if (verificationCommand && commandReportsInvalidTestInvocation(toolResult)) {
       const invalidEvidence = compactFailedTestEvidence(toolResult, config);
       const invalidInvocation = {
@@ -14876,6 +15073,8 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     runtimeConfig.requiredProjectCommand = pendingRequiredProjectCommands[0];
     runtimeConfig.pendingRequiredProjectCommands = pendingRequiredProjectCommands;
   }
+  const authoritativeRoutineObservation =
+    currentAuthoritativeRoutineObservation(state, runtimeConfig);
   if (
     !state.meta?.artifactProgress &&
     !retainedFailedTest &&
@@ -14909,6 +15108,31 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       runtimeConfig.taskOwnedCommitPending = true;
       runtimeConfig.taskOwnedCommitPaths = taskOwnedCommitPaths;
       runtimeConfig.taskOwnedPendingGitActions = pendingGitActions;
+    }
+  }
+  if (
+    authoritativeRoutineObservation &&
+    pendingRequiredProjectCommands.length === 0 &&
+    !state.meta?.artifactProgress &&
+    !retainedFailedTest &&
+    !implementationOpen &&
+    requestedArtifactEvaluation.ok &&
+    projectTestVerificationFinishBlock(state) === null
+  ) {
+    const completionContract = completionTaskContract(runtimeConfig, state);
+    const completionEvaluation = evaluateScsEvidence(
+      completionContract,
+      buildScsEvidenceLedger({ state })
+    );
+    if (completionEvaluation.ok) {
+      runtimeConfig.verifiedCompletionPending = true;
+      runtimeConfig.authoritativeRoutineCompletionPending = true;
+      runtimeConfig.verifiedCompletionCommand = String(
+        authoritativeRoutineObservation.command || ""
+      );
+      runtimeConfig.verifiedCompletionPassedAt = String(
+        authoritativeRoutineObservation.at || ""
+      );
     }
   }
   const completionCandidate = state.meta?.verifiedCompletionCandidate;
