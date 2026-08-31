@@ -1750,7 +1750,13 @@ function groundedSearchTruthfulFallback(sourceArtifact) {
     return "Grounded search completed, but no displayable source excerpt was available.";
   }
   const title = sanitizePublicText(first.title || "Retrieved source", 512).trim();
-  const snippet = sanitizePublicText(first.snippet || "", 1_500).trim();
+  const rawSnippet = sanitizePublicText(first.snippet || "", 2_000)
+    .replace(/\s+/gu, " ")
+    .trim();
+  const completeSentences = rawSnippet.match(/[^.!?。！？]+[.!?。！？]+/gu) || [];
+  const snippet = completeSentences.length > 0
+    ? truncateUtf8(completeSentences.slice(0, 3).join(" ").trim(), 1_200)
+    : truncateUtf8(rawSnippet, 1_200);
   const count = sources.length;
   return [
     `Grounded search retrieved ${count} source${count === 1 ? "" : "s"}.`,
