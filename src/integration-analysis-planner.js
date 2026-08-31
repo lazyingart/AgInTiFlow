@@ -204,8 +204,6 @@ const UNSUPPORTED_CAPABILITY_TEXT = Object.freeze({
 });
 const EXPRESSION_PLOT_MODEL_FALLBACK_PROMPT =
   "The user explicitly requires a plot, but the fixed single-expression compiler could not represent this natural-language request. Interpret the request and its conversation context, then call the bounded analysis tool and emit a real plot artifact. Never claim a plot exists unless the tool succeeds and emits it.";
-const GROUNDED_SEARCH_TRUTHFUL_FALLBACK =
-  "Grounded search was used for this run; the consulted sources are shown in the Grounded sources artifact below [1].";
 const GROUNDED_SEARCH_DENIAL_PATTERNS = Object.freeze([
   /\bno\s+(?:external\s+)?sources?(?:\s+or\s+(?:web\s+)?search(?:es)?)?\s+(?:(?:were|was|have\s+been|has\s+been)\s+)?(?:consulted|used|needed|accessed|retrieved|performed|conducted)\b/iu,
   /\bno\s+(?:external\s+)?(?:web\s+)?search(?:es)?\s+(?:(?:were|was|have\s+been|has\s+been)\s+)?(?:consulted|used|needed|accessed|performed|conducted)\b/iu,
@@ -1745,10 +1743,29 @@ function groundedSearchNarrationRetryMessage(sourceCount) {
   });
 }
 
-function reconcileGroundedSearchNarration(value, sourceCount) {
+function groundedSearchTruthfulFallback(sourceArtifact) {
+  const sources = Array.isArray(sourceArtifact?.spec?.sources) ? sourceArtifact.spec.sources : [];
+  const first = sources[0];
+  if (!first) {
+    return "Grounded search completed, but no displayable source excerpt was available.";
+  }
+  const title = sanitizePublicText(first.title || "Retrieved source", 512).trim();
+  const snippet = sanitizePublicText(first.snippet || "", 1_500).trim();
+  const count = sources.length;
+  return [
+    `Grounded search retrieved ${count} source${count === 1 ? "" : "s"}.`,
+    snippet
+      ? `Top retrieved source: ${title}. Evidence excerpt: ${snippet} [1]`
+      : `Top retrieved source: ${title} [1]`,
+    "The complete consulted source list is shown in the Grounded sources artifact below.",
+  ].join("\n\n");
+}
+
+function reconcileGroundedSearchNarration(value, sourceArtifact) {
   const text = String(value || "").trim();
+  const sourceCount = sourceArtifact?.spec?.sources?.length ?? 0;
   return groundedSearchNarrationNeedsCorrection(text, sourceCount)
-    ? GROUNDED_SEARCH_TRUTHFUL_FALLBACK
+    ? groundedSearchTruthfulFallback(sourceArtifact)
     : text;
 }
 
@@ -2764,7 +2781,7 @@ function createPlanner({
                 return await finalize({
                   text: reconcileGroundedSearchNarration(
                     assistant.content,
-                    currentRunGroundedSourceCount
+                    currentRunGroundedSearch
                   ),
                   toolCalls,
                   executionStatus,
@@ -2775,7 +2792,7 @@ function createPlanner({
             return await finalize({
               text: reconcileGroundedSearchNarration(
                 assistant.content,
-                currentRunGroundedSourceCount
+                currentRunGroundedSearch
               ),
               toolCalls,
               executionStatus,

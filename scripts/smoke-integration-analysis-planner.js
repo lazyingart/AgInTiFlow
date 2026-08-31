@@ -984,7 +984,10 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
     assert.equal(contradictionFallbackCalls, 2);
     assert.equal(
       reconciledNarration.text,
-      "Grounded search was used for this run; the consulted sources are shown in the Grounded sources artifact below [1]."
+      "Grounded search retrieved 1 source.\n\n" +
+      "Top retrieved source: Verified primary evidence. Evidence excerpt: " +
+      "The retrieved evidence supports the bounded grounded response. [1]\n\n" +
+      "The complete consulted source list is shown in the Grounded sources artifact below."
     );
     assert.doesNotMatch(reconciledNarration.text, /(?:No external sources|did not use any web searches)/iu);
   } finally {
