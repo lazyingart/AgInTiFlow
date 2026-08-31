@@ -538,6 +538,7 @@ async function main() {
     assert.equal(authority.attestation.limitations.preEnablePrimitive, true);
     assert.equal(authority.attestation.limitations.procfsRequired, true);
     assert.equal(authority.attestation.limitations.openat2ResolveBeneath, false);
+    assert.equal(authority.attestation.limitations.resolveBeneath, false);
     assert.equal(authority.attestation.limitations.noXdev, false);
 
     const identity = await authority.identity();

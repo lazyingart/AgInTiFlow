@@ -470,3 +470,26 @@ block, passed the exact hidden contract and all 13 visible tests, and left a
 clean target repository at `ef3c099`. Focused regressions and the complete npm
 suite pass. These runtime and skill fixes are released in AgInTiFlow
 `0.20.292`.
+
+### Retained storage live authority poisoning
+
+`retained-storage-live-poison-047` exercised the native integration storage
+authority after independent audit addenda, using a dictated but realistic
+operator prompt. The defect was an AgInTiFlow core integration-storage
+authority gap: live retained handles and named bindings were mostly checked,
+but the public limitation record omitted the generic `resolveBeneath:false`
+fact, and protected file success paths could return after cleanup awaits
+without one final permanent-poison check.
+
+The storage authority now reports `procfsRequired:true`,
+`resolveBeneath:false`, and `noXdev:false` truthfully across retained
+directory/file/lock limitation records. Live retained owner, mode, fstat, and
+named-binding divergence remains `INTEGRATION_STORAGE_POISONED`, not an
+availability failure, and protected read/write/sync paths check permanent
+poison again immediately before returning success.
+
+External verification used the module-mocked retained-storage smoke for live
+fstat, owner, mode, named-binding, concurrent poison, close/admission, cleanup,
+and residual-FD adversaries. Retained durable-common, retained file-lock,
+production-mount, integration authorities, runtime authority,
+session-persistence, syntax, and whitespace checks passed on the working tree.
