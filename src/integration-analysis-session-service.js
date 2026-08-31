@@ -121,6 +121,8 @@ export const DEFAULT_INTEGRATION_ANALYSIS_STATE_ROOT = "/var/lib/agintiflow-inte
 export const INTEGRATION_ANALYSIS_STARTUP_RECOVERY_SCHEMA_VERSION =
   "aginti-integration-analysis-startup-recovery-v1";
 export const INTEGRATION_ANALYSIS_STARTUP_RECOVERY_TIMEOUT_MS = 180_000;
+const INTEGRATION_ANALYSIS_THREAD_COMPACTION_SCHEMA_VERSION =
+  "aginti-integration-analysis-thread-compaction-v1";
 
 export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
   maximumScopes: 1024,
@@ -139,6 +141,13 @@ export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
   maximumConversationMessages: 24,
   maximumConversationMessageBytes: 8 * 1024,
   maximumConversationBytes: 48 * 1024,
+  threadCompactionMessageTrigger: 160,
+  threadCompactionCharacterTrigger: 160_000,
+  threadCompactionRetainedMessages: 64,
+  threadCompactionRetainedCharacters: 96_000,
+  maximumCompactedMemoryMessages: 32,
+  maximumCompactedMemoryMessageBytes: 1024,
+  maximumCompactedMemoryBytes: 32 * 1024,
   maximumAttachmentsPerMessage: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_COUNT_LIMIT,
   maximumAttachmentBytesEach: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
   maximumAttachmentBytesPerMessage: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT,
@@ -911,6 +920,300 @@ function messageDigest(threadId, message, previousDigest) {
   });
 }
 
+function compactedMemoryEntry(message) {
+  return {
+    role: message.role,
+    content: clipUtf8(
+      message.content,
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumCompactedMemoryMessageBytes
+    ),
+    runId: message.runId,
+  };
+}
+
+function selectCompactedMemory(messages) {
+  const maximum = INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumCompactedMemoryMessages;
+  const anchoredCount = Math.min(8, maximum);
+  const indexed = messages.map((message, index) => ({ index, message: compactedMemoryEntry(message) }));
+  const selectedIndexes = new Set([
+    ...indexed.slice(0, anchoredCount).map(({ index }) => index),
+    ...indexed.slice(-Math.max(0, maximum - anchoredCount)).map(({ index }) => index),
+  ]);
+  const selected = indexed.filter(({ index }) => selectedIndexes.has(index));
+  let totalBytes = selected.reduce(({ bytes }, { message }) => ({
+    bytes: bytes + byteLength(message.content),
+  }), { bytes: 0 }).bytes;
+  while (
+    totalBytes > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumCompactedMemoryBytes &&
+    selected.length > anchoredCount
+  ) {
+    const [removed] = selected.splice(anchoredCount, 1);
+    totalBytes -= byteLength(removed.message.content);
+  }
+  return selected.map(({ message }) => message);
+}
+
+function threadCompactionStateDigest(threadId, compaction) {
+  const { digest: _digest, ...unsigned } = compaction;
+  return contractDigest({
+    schemaVersion: INTEGRATION_ANALYSIS_THREAD_COMPACTION_SCHEMA_VERSION,
+    threadId,
+    compaction: unsigned,
+  });
+}
+
+function compactedRunLineageDigest(state, threadId, runIds) {
+  const runsById = new Map(state.runs.map((run) => [run.id, run]));
+  return contractDigest({
+    schemaVersion: INTEGRATION_ANALYSIS_THREAD_COMPACTION_SCHEMA_VERSION,
+    threadId,
+    runs: runIds.map((runId) => {
+      const run = runsById.get(runId);
+      if (!run || run.threadId !== threadId) corrupt();
+      return {
+        id: run.id,
+        previousRunId: run.previousRunId,
+        lineagePreviousRunId: run.lineagePreviousRunId,
+        inputMessageId: run.inputMessageId,
+        status: run.status,
+        createdAt: run.createdAt,
+        completedAt: run.completedAt,
+        outputDigest: contractDigest({ output: run.output }),
+        searchDigest: contractDigest({ search: run.search ?? null }),
+      };
+    }),
+  });
+}
+
+function lastThreadCompactionDigest(threadId, compaction) {
+  const { digest: _digest, ...counters } = compaction.lastCompaction;
+  return contractDigest({
+    schemaVersion: INTEGRATION_ANALYSIS_THREAD_COMPACTION_SCHEMA_VERSION,
+    threadId,
+    transition: compaction.transition,
+    anchorDigest: compaction.anchorDigest,
+    totalCompactedMessages: compaction.totalCompactedMessages,
+    compactedThroughRunId: compaction.compactedThroughRunId,
+    compactedRunIds: compaction.compactedRunIds,
+    lineageDigest: compaction.lineageDigest,
+    messageProofsDigest: contractDigest({ messageProofs: compaction.messageProofs }),
+    groundedSearchProofs: compaction.groundedSearchProofs,
+    memoryDigest: contractDigest({ memory: compaction.memory }),
+    counters,
+  });
+}
+
+function refreshThreadCompactionDigest(thread) {
+  if (thread.compaction === undefined) return;
+  thread.compaction.digest = threadCompactionStateDigest(thread.id, thread.compaction);
+}
+
+function estimatedConversationTokens(messages) {
+  const characters = messages.reduce((total, message) => total + message.content.length, 0);
+  return Math.ceil(characters / 4);
+}
+
+function lineageRunIdsFromState(state, run) {
+  const runsById = new Map(state.runs.map((candidate) => [candidate.id, candidate]));
+  const lineage = new Set();
+  let cursorId = run.lineagePreviousRunId;
+  while (cursorId !== null) {
+    if (lineage.has(cursorId)) corrupt();
+    lineage.add(cursorId);
+    const cursor = runsById.get(cursorId);
+    if (!cursor || cursor.threadId !== run.threadId) corrupt();
+    cursorId = cursor.lineagePreviousRunId;
+  }
+  return lineage;
+}
+
+function lineageHasRetainedImageContext(state, thread, lineagePreviousRunId) {
+  if (lineagePreviousRunId === null) return false;
+  const lineageRunIds = lineageRunIdsFromState(state, {
+    threadId: thread.id,
+    lineagePreviousRunId,
+  });
+  if (
+    thread.messages.some(
+      (message) =>
+        lineageRunIds.has(message.runId) &&
+        message.role === "user" &&
+        (message.attachments?.length || 0) > 0
+    )
+  ) {
+    return true;
+  }
+  return Boolean(
+    thread.compaction?.activeImage &&
+    lineageRunIds.has(thread.compaction.activeImage.runId)
+  );
+}
+
+function compactThreadForNextRun(state, thread, prompt, statePersistenceMode) {
+  if (statePersistenceMode !== INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3) return null;
+  const retainedCharacters = thread.messages.reduce((total, message) => total + message.content.length, 0);
+  const requiresCompaction =
+    thread.messages.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.threadCompactionMessageTrigger ||
+    retainedCharacters >= INTEGRATION_ANALYSIS_SESSION_LIMITS.threadCompactionCharacterTrigger ||
+    thread.messages.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMessagesPerThread - 2 ||
+    retainedCharacters + prompt.length + 32_000 >
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMessageCharactersPerThread;
+  if (!requiresCompaction || thread.messages.length < 3) return null;
+
+  let cutIndex = -1;
+  for (let index = 1; index < thread.messages.length; index += 1) {
+    if (thread.messages[index].role !== "user") continue;
+    const suffix = thread.messages.slice(index);
+    const suffixCharacters = suffix.reduce((total, message) => total + message.content.length, 0);
+    if (
+      suffix.length <= INTEGRATION_ANALYSIS_SESSION_LIMITS.threadCompactionRetainedMessages &&
+      suffixCharacters <= INTEGRATION_ANALYSIS_SESSION_LIMITS.threadCompactionRetainedCharacters
+    ) {
+      cutIndex = index;
+      break;
+    }
+  }
+  if (cutIndex < 1) return null;
+
+  const activeInputIndex = thread.lastRunId === null
+    ? -1
+    : thread.messages.findIndex(
+      (message) => message.role === "user" && message.runId === thread.lastRunId
+  );
+  if (activeInputIndex < 0) corrupt();
+  const activeRun = state.runs.find((run) => run.id === thread.lastRunId);
+  if (!activeRun || activeRun.threadId !== thread.id) corrupt();
+  const activeLineageRunIds = lineageRunIdsFromState(state, activeRun);
+  const activeInputMessage = thread.messages[activeInputIndex];
+  let activeImageSource = (activeInputMessage.attachments?.length || 0) > 0
+    ? activeInputMessage
+    : thread.messages
+      .slice(0, activeInputIndex)
+      .reverse()
+      .find(
+        (message) =>
+          activeLineageRunIds.has(message.runId) &&
+          message.role === "user" &&
+          (message.attachments?.length || 0) > 0
+      ) || null;
+  if (
+    activeImageSource === null &&
+    thread.compaction?.activeImage &&
+    activeLineageRunIds.has(thread.compaction.activeImage.runId)
+  ) {
+    activeImageSource = thread.compaction.activeImage;
+  }
+  const pruned = thread.messages.slice(0, cutIndex);
+  const retained = thread.messages.slice(cutIndex);
+  const previousMemory = thread.compaction?.memory || [];
+  const memory = selectCompactedMemory([...previousMemory, ...pruned]);
+  const sourceWasPruned = activeImageSource !== null &&
+    (activeImageSource === thread.compaction?.activeImage ||
+      pruned.some((message) => message.runId === activeImageSource.runId));
+  const activeImage = sourceWasPruned
+    ? {
+        runId: activeImageSource.runId,
+        attachments: activeImageSource.attachments.map((attachment) => ({ ...attachment })),
+      }
+    : null;
+  const anchorDigest = pruned.at(-1).digest;
+  const compactedThroughRunId = pruned.at(-1).runId;
+  const compactedRunIds = [
+    ...(thread.compaction?.compactedRunIds || []),
+    ...pruned.filter((message) => message.role === "user").map((message) => message.runId),
+  ];
+  let proofPreviousDigest = thread.replay.anchorDigest;
+  const newMessageProofs = pruned.map((message) => {
+    const proof = {
+      id: message.id,
+      role: message.role,
+      runId: message.runId,
+      previousDigest: proofPreviousDigest,
+      digest: message.digest,
+      contentDigest: contractDigest({ content: message.content }),
+      attachmentsDigest: contractDigest({
+        attachments: (message.attachments || []).map(publicAttachmentDescriptor),
+      }),
+    };
+    proofPreviousDigest = message.digest;
+    return proof;
+  });
+  const messageProofs = [
+    ...(thread.compaction?.messageProofs || []),
+    ...newMessageProofs,
+  ];
+  const groundedSearchProofs = [
+    ...(thread.compaction?.groundedSearchProofs || []),
+    ...pruned
+      .filter((message) => message.role === "user")
+      .flatMap((message) => {
+        const run = state.runs.find((candidate) => candidate.id === message.runId);
+        if (!run || run.threadId !== thread.id) corrupt();
+        if (run.search === undefined) return [];
+        const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(message.content);
+        const queryPlan = planIntegrationGroundedSearchQuery(
+          message.content,
+          run.search.mode,
+          domainConstraint
+        );
+        const authority = createIntegrationGroundedSearchArtifactAuthority({
+          query: queryPlan.query,
+          mode: run.search.mode,
+          queryPlanDigest: queryPlan.digest,
+          domainConstraintDigest: domainConstraint?.digest ?? null,
+        });
+        return [{
+          runId: run.id,
+          inputMessageId: message.id,
+          inputMessageDigest: message.digest,
+          promptDigest: contractDigest({ content: message.content }),
+          query: queryPlan.query,
+          mode: run.search.mode,
+          queryPlanDigest: queryPlan.digest,
+          domainConstraintDigest: domainConstraint?.digest ?? null,
+          authorityDigest: contractDigest(authority),
+        }];
+      }),
+  ];
+  const totalCompactedMessages = (thread.compaction?.totalCompactedMessages || 0) + pruned.length;
+  const tokensBefore = estimatedConversationTokens([...previousMemory, ...thread.messages]);
+  const tokensAfter = estimatedConversationTokens([...memory, ...retained]);
+  const transition = {
+    previousCompactionDigest: thread.compaction?.digest || ZERO_DIGEST,
+    previousAnchorDigest: thread.replay.anchorDigest,
+    prunedMessagesDigest: contractDigest({ messages: newMessageProofs }),
+  };
+  const lastCompaction = {
+    compactedMessages: pruned.length,
+    tokensBefore,
+    tokensAfter,
+    digest: "",
+  };
+  const compaction = {
+    schemaVersion: INTEGRATION_ANALYSIS_THREAD_COMPACTION_SCHEMA_VERSION,
+    anchorDigest,
+    totalCompactedMessages,
+    compactedThroughRunId,
+    compactedRunIds,
+    lineageDigest: compactedRunLineageDigest(state, thread.id, compactedRunIds),
+    messageProofs,
+    groundedSearchProofs,
+    memory,
+    activeImage,
+    transition,
+    lastCompaction,
+    digest: "",
+  };
+  lastCompaction.digest = lastThreadCompactionDigest(thread.id, compaction);
+  compaction.digest = threadCompactionStateDigest(thread.id, compaction);
+  thread.messages = retained;
+  thread.replay.prunedMessageCount = totalCompactedMessages;
+  thread.replay.anchorDigest = anchorDigest;
+  thread.authority.lastCompaction = { ...lastCompaction };
+  thread.compaction = compaction;
+  return Object.freeze({ compactedMessages: pruned.length, tokensBefore, tokensAfter });
+}
+
 function appendMessage(thread, { role, content, runId, createdAt, attachments }) {
   if (thread.messages.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMessagesPerThread) {
     conflict("ANALYSIS_THREAD_FULL", "Thread message capacity is exhausted.");
@@ -984,10 +1287,13 @@ function attachmentSourceMessageForInput(thread, inputIndex) {
   return thread.messages
     .slice(0, inputIndex)
     .reverse()
-    .find((message) => message.role === "user" && (message.attachments?.length || 0) > 0) || null;
+    .find((message) => message.role === "user" && (message.attachments?.length || 0) > 0) ||
+    thread.compaction?.activeImage ||
+    null;
 }
 
 function threadActiveImageContext(thread) {
+  if (thread.activeImageContext !== undefined) return thread.activeImageContext === true;
   if (thread.lastRunId === null) return false;
   const inputIndex = thread.messages.findIndex(
     (message) => message.role === "user" && message.runId === thread.lastRunId
@@ -1099,6 +1405,339 @@ function validateMessage(message, thread, runsById, previousDigest, index) {
   return item.digest;
 }
 
+function validateThreadCompaction(thread, runsById) {
+  const compaction = thread.compaction;
+  if (compaction === undefined) {
+    if (
+      thread.replay.prunedMessageCount !== 0 ||
+      thread.replay.anchorDigest !== ZERO_DIGEST ||
+      thread.authority.lastCompaction !== null
+    ) {
+      corrupt();
+    }
+    return;
+  }
+  exactState(
+    compaction,
+    [
+      "schemaVersion",
+      "anchorDigest",
+      "totalCompactedMessages",
+      "compactedThroughRunId",
+      "compactedRunIds",
+      "lineageDigest",
+      "messageProofs",
+      "groundedSearchProofs",
+      "memory",
+      "activeImage",
+      "transition",
+      "lastCompaction",
+      "digest",
+    ],
+    [
+      "schemaVersion",
+      "anchorDigest",
+      "totalCompactedMessages",
+      "compactedThroughRunId",
+      "compactedRunIds",
+      "lineageDigest",
+      "messageProofs",
+      "groundedSearchProofs",
+      "memory",
+      "activeImage",
+      "transition",
+      "lastCompaction",
+      "digest",
+    ],
+    "state thread compaction"
+  );
+  if (compaction.schemaVersion !== INTEGRATION_ANALYSIS_THREAD_COMPACTION_SCHEMA_VERSION) corrupt();
+  try {
+    integrationBoundedInteger(compaction.totalCompactedMessages, "compacted message count", {
+      minimum: 1,
+      maximum: 1_000_000,
+    });
+    validateIntegrationRunId(compaction.compactedThroughRunId);
+    stateDigest(compaction.anchorDigest, "state thread compaction anchor digest");
+    stateDigest(compaction.lineageDigest, "state thread compaction lineage digest");
+    stateDigest(compaction.digest, "state thread compaction digest");
+  } catch (error) {
+    corrupt(error);
+  }
+  if (
+    compaction.totalCompactedMessages !== thread.replay.prunedMessageCount ||
+    compaction.anchorDigest !== thread.replay.anchorDigest ||
+    compaction.anchorDigest === ZERO_DIGEST ||
+    thread.authority.lastCompaction === null
+  ) {
+    corrupt();
+  }
+  const throughRun = runsById.get(compaction.compactedThroughRunId);
+  if (!throughRun || throughRun.threadId !== thread.id || !TERMINAL_RUN_STATUSES.has(throughRun.status)) corrupt();
+  if (
+    !Array.isArray(compaction.compactedRunIds) ||
+    compaction.compactedRunIds.length < 1 ||
+    compaction.compactedRunIds.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRunsPerScope ||
+    compaction.compactedRunIds.at(-1) !== compaction.compactedThroughRunId ||
+    new Set(compaction.compactedRunIds).size !== compaction.compactedRunIds.length
+  ) {
+    corrupt();
+  }
+  for (const runId of compaction.compactedRunIds) {
+    try {
+      validateIntegrationRunId(runId);
+    } catch (error) {
+      corrupt(error);
+    }
+    const run = runsById.get(runId);
+    if (!run || run.threadId !== thread.id || !TERMINAL_RUN_STATUSES.has(run.status)) corrupt();
+  }
+  if (
+    !Array.isArray(compaction.messageProofs) ||
+    compaction.messageProofs.length !== compaction.totalCompactedMessages
+  ) {
+    corrupt();
+  }
+  const messageProofsById = new Map();
+  let expectedPreviousDigest = ZERO_DIGEST;
+  let proofIndex = 0;
+  for (const runId of compaction.compactedRunIds) {
+    const run = runsById.get(runId);
+    const expectedRoles = run.status === "completed" ? ["user", "assistant"] : ["user"];
+    for (const role of expectedRoles) {
+      if (proofIndex >= compaction.messageProofs.length) corrupt();
+      const proof = exactState(
+        compaction.messageProofs[proofIndex],
+        [
+          "id",
+          "role",
+          "runId",
+          "previousDigest",
+          "digest",
+          "contentDigest",
+          "attachmentsDigest",
+        ],
+        [
+          "id",
+          "role",
+          "runId",
+          "previousDigest",
+          "digest",
+          "contentDigest",
+          "attachmentsDigest",
+        ],
+        `state thread compaction message proof[${proofIndex}]`
+      );
+      if (
+        typeof proof.id !== "string" ||
+        !/^msg_[A-Za-z0-9_-]{16,96}$/u.test(proof.id) ||
+        proof.role !== role ||
+        proof.runId !== run.id ||
+        proof.previousDigest !== expectedPreviousDigest ||
+        (role === "user" && proof.id !== run.inputMessageId) ||
+        (role === "user" && proof.digest !== run.authority.contextDigest) ||
+        messageProofsById.has(proof.id)
+      ) {
+        corrupt();
+      }
+      try {
+        stateDigest(proof.previousDigest, "state thread compaction message previous digest");
+        stateDigest(proof.digest, "state thread compaction message digest");
+        stateDigest(proof.contentDigest, "state thread compaction message content digest");
+        stateDigest(proof.attachmentsDigest, "state thread compaction message attachments digest");
+      } catch (error) {
+        corrupt(error);
+      }
+      messageProofsById.set(proof.id, proof);
+      expectedPreviousDigest = proof.digest;
+      proofIndex += 1;
+    }
+  }
+  if (proofIndex !== compaction.messageProofs.length || expectedPreviousDigest !== compaction.anchorDigest) {
+    corrupt();
+  }
+  const transition = exactState(
+    compaction.transition,
+    ["previousCompactionDigest", "previousAnchorDigest", "prunedMessagesDigest"],
+    ["previousCompactionDigest", "previousAnchorDigest", "prunedMessagesDigest"],
+    "state thread compaction transition"
+  );
+  try {
+    stateDigest(transition.previousCompactionDigest, "state thread compaction previous state digest");
+    stateDigest(transition.previousAnchorDigest, "state thread compaction previous anchor digest");
+    stateDigest(transition.prunedMessagesDigest, "state thread compaction pruned messages digest");
+  } catch (error) {
+    corrupt(error);
+  }
+  const lastCompaction = exactState(
+    compaction.lastCompaction,
+    ["compactedMessages", "tokensBefore", "tokensAfter", "digest"],
+    ["compactedMessages", "tokensBefore", "tokensAfter", "digest"],
+    "state thread private last compaction"
+  );
+  try {
+    integrationBoundedInteger(lastCompaction.compactedMessages, "state thread compacted messages", {
+      minimum: 1,
+      maximum: 1_000_000,
+    });
+    integrationBoundedInteger(lastCompaction.tokensBefore, "state thread compaction tokens before", {
+      maximum: 10_000_000,
+    });
+    integrationBoundedInteger(lastCompaction.tokensAfter, "state thread compaction tokens after", {
+      maximum: 10_000_000,
+    });
+    stateDigest(lastCompaction.digest, "state thread private last compaction digest");
+  } catch (error) {
+    corrupt(error);
+  }
+  if (
+    !Array.isArray(compaction.groundedSearchProofs) ||
+    compaction.groundedSearchProofs.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRunsPerScope
+  ) {
+    corrupt();
+  }
+  const groundedSearchProofRunIds = new Set();
+  for (let index = 0; index < compaction.groundedSearchProofs.length; index += 1) {
+    const proof = exactState(
+      compaction.groundedSearchProofs[index],
+      [
+        "runId",
+        "inputMessageId",
+        "inputMessageDigest",
+        "promptDigest",
+        "query",
+        "mode",
+        "queryPlanDigest",
+        "domainConstraintDigest",
+        "authorityDigest",
+      ],
+      [
+        "runId",
+        "inputMessageId",
+        "inputMessageDigest",
+        "promptDigest",
+        "query",
+        "mode",
+        "queryPlanDigest",
+        "domainConstraintDigest",
+        "authorityDigest",
+      ],
+      `state thread compaction grounded search proof[${index}]`
+    );
+    try {
+      validateIntegrationRunId(proof.runId);
+      stateDigest(proof.inputMessageDigest, "state thread compaction grounded search input digest");
+      stateDigest(proof.promptDigest, "state thread compaction grounded search prompt digest");
+      integrationBoundedText(proof.query, "state thread compaction grounded search query", 2_000);
+      stateDigest(proof.queryPlanDigest, "state thread compaction grounded search query-plan digest");
+      if (proof.domainConstraintDigest !== null) {
+        stateDigest(proof.domainConstraintDigest, "state thread compaction grounded search domain digest");
+      }
+      stateDigest(proof.authorityDigest, "state thread compaction grounded search authority digest");
+    } catch (error) {
+      corrupt(error);
+    }
+    const run = runsById.get(proof.runId);
+    const inputProof = messageProofsById.get(proof.inputMessageId);
+    if (
+      !run ||
+      run.threadId !== thread.id ||
+      run.search === undefined ||
+      proof.inputMessageId !== run.inputMessageId ||
+      !inputProof ||
+      inputProof.role !== "user" ||
+      inputProof.runId !== run.id ||
+      inputProof.digest !== proof.inputMessageDigest ||
+      inputProof.contentDigest !== proof.promptDigest ||
+      proof.mode !== run.search.mode ||
+      groundedSearchProofRunIds.has(run.id)
+    ) {
+      corrupt();
+    }
+    try {
+      const expectedAuthority = createIntegrationGroundedSearchArtifactAuthority({
+        query: proof.query,
+        mode: proof.mode,
+        queryPlanDigest: proof.queryPlanDigest,
+        domainConstraintDigest: proof.domainConstraintDigest,
+      });
+      if (proof.authorityDigest !== contractDigest(expectedAuthority)) corrupt();
+    } catch (error) {
+      corrupt(error);
+    }
+    groundedSearchProofRunIds.add(run.id);
+  }
+  if (
+    !Array.isArray(compaction.memory) ||
+    compaction.memory.length < 1 ||
+    compaction.memory.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumCompactedMemoryMessages
+  ) {
+    corrupt();
+  }
+  let memoryBytes = 0;
+  for (let index = 0; index < compaction.memory.length; index += 1) {
+    const message = exactState(
+      compaction.memory[index],
+      ["role", "content", "runId"],
+      ["role", "content", "runId"],
+      `state thread compaction memory[${index}]`
+    );
+    if (message.role !== "user" && message.role !== "assistant") corrupt();
+    try {
+      integrationBoundedText(
+        message.content,
+        `state thread compaction memory[${index}].content`,
+        INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumCompactedMemoryMessageBytes
+      );
+      validateIntegrationRunId(message.runId);
+    } catch (error) {
+      corrupt(error);
+    }
+    const run = runsById.get(message.runId);
+    if (!run || run.threadId !== thread.id) corrupt();
+    memoryBytes += byteLength(message.content);
+  }
+  if (memoryBytes > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumCompactedMemoryBytes) corrupt();
+  if (compaction.activeImage !== null) {
+    const activeImage = exactState(
+      compaction.activeImage,
+      ["runId", "attachments"],
+      ["runId", "attachments"],
+      "state thread compaction active image"
+    );
+    try {
+      validateIntegrationRunId(activeImage.runId);
+    } catch (error) {
+      corrupt(error);
+    }
+    const run = runsById.get(activeImage.runId);
+    if (!run || run.threadId !== thread.id) corrupt();
+    validateStateAttachments(
+      activeImage.attachments,
+      Object.freeze({ principalId: thread.principalId, browserSessionId: thread.browserSessionId }),
+      thread.id,
+      activeImage.runId,
+      "user",
+      "state thread compaction active image attachments"
+    );
+    if (activeImage.attachments.length < 1) corrupt();
+  }
+  if (
+    canonicalJson(compaction.lastCompaction) !== canonicalJson(thread.authority.lastCompaction) ||
+    lastCompaction.compactedMessages > compaction.totalCompactedMessages ||
+    lastCompaction.tokensAfter > lastCompaction.tokensBefore ||
+    compaction.lineageDigest !== compactedRunLineageDigest(
+      { runs: [...runsById.values()] },
+      thread.id,
+      compaction.compactedRunIds
+    ) ||
+    lastCompaction.digest !== lastThreadCompactionDigest(thread.id, compaction) ||
+    compaction.digest !== threadCompactionStateDigest(thread.id, compaction)
+  ) {
+    corrupt();
+  }
+}
+
 function validateThread(thread, scope, runsById) {
   exactState(
     thread,
@@ -1116,6 +1755,8 @@ function validateThread(thread, scope, runsById) {
       "authority",
       "replay",
       "messages",
+      "activeImageContext",
+      "compaction",
     ],
     [
       "id",
@@ -1141,6 +1782,7 @@ function validateThread(thread, scope, runsById) {
   ) {
     corrupt();
   }
+  if (thread.activeImageContext !== undefined && typeof thread.activeImageContext !== "boolean") corrupt();
   try {
     validateIntegrationThreadId(thread.id);
     sanitizePublicIntegrationThread(
@@ -1161,7 +1803,6 @@ function validateThread(thread, scope, runsById) {
   } catch (error) {
     corrupt(error);
   }
-  if (thread.replay.prunedMessageCount !== 0 || thread.replay.anchorDigest !== ZERO_DIGEST) corrupt();
   if (thread.messages.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMessagesPerThread) corrupt();
   let previousDigest = thread.replay.anchorDigest;
   const messageIds = new Set();
@@ -1173,6 +1814,7 @@ function validateThread(thread, scope, runsById) {
   }
   if (thread.authority.contextDigest !== previousDigest) corrupt();
   if (thread.authority.runtimeRevision !== thread.revision || thread.authority.mapped !== true) corrupt();
+  validateThreadCompaction(thread, runsById);
   if (thread.lastRunId !== null) {
     const run = runsById.get(thread.lastRunId);
     if (!run || run.threadId !== thread.id) corrupt();
@@ -1335,6 +1977,17 @@ function validateRun(run, scope, threadIds) {
     );
   } catch (error) {
     corrupt(error);
+  }
+  if (
+    run.authority.snapshotHash !== contractDigest({
+      schemaVersion: INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
+      threadId: run.threadId,
+      runId: run.id,
+      contextDigest: run.authority.contextDigest,
+      ...(run.search === undefined ? {} : { search: run.search }),
+    })
+  ) {
+    corrupt();
   }
   let previousHash = ZERO_DIGEST;
   let terminalIndex = -1;
@@ -1500,16 +2153,23 @@ function validateArtifact(artifact, scope, runsById, state) {
       }
       const thread = state.threads.find((candidate) => candidate.id === run.threadId);
       const inputMessage = thread?.messages.find((candidate) => candidate.id === run.inputMessageId);
-      if (!thread || !inputMessage || run.search === undefined) corrupt();
-      const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(inputMessage.content);
-      const queryPlan = planIntegrationGroundedSearchQuery(inputMessage.content, run.search.mode, domainConstraint);
-      const expectedAuthority = createIntegrationGroundedSearchArtifactAuthority({
-        query: queryPlan.query,
-        mode: run.search.mode,
-        queryPlanDigest: queryPlan.digest,
-        domainConstraintDigest: domainConstraint?.digest ?? null,
-      });
-      if (canonicalJson(expectedAuthority) !== canonicalJson(authority)) corrupt();
+      if (!thread || run.search === undefined) corrupt();
+      if (inputMessage) {
+        const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(inputMessage.content);
+        const queryPlan = planIntegrationGroundedSearchQuery(inputMessage.content, run.search.mode, domainConstraint);
+        const expectedAuthority = createIntegrationGroundedSearchArtifactAuthority({
+          query: queryPlan.query,
+          mode: run.search.mode,
+          queryPlanDigest: queryPlan.digest,
+          domainConstraintDigest: domainConstraint?.digest ?? null,
+        });
+        if (canonicalJson(expectedAuthority) !== canonicalJson(authority)) corrupt();
+      } else {
+        const proof = thread.compaction?.groundedSearchProofs.find(
+          (candidate) => candidate.runId === run.id
+        );
+        if (!proof || proof.authorityDigest !== contractDigest(authority)) corrupt();
+      }
     } catch (error) {
       corrupt(error);
     }
@@ -1986,6 +2646,104 @@ function validateDocumentDeletionIntent(intent, scope, threadIds, runsById, arti
   }
 }
 
+function validateThreadRunMessages(thread, stateRuns) {
+  const ordered = stateRuns.filter((run) => run.threadId === thread.id);
+  if (ordered.length === 0) {
+    if (
+      thread.lastRunId !== null ||
+      thread.messages.length !== 0 ||
+      thread.compaction !== undefined ||
+      thread.activeImageContext === true
+    ) {
+      corrupt();
+    }
+    return;
+  }
+  if (thread.lastRunId !== ordered.at(-1).id) corrupt();
+  const compactedRunIds = thread.compaction?.compactedRunIds || [];
+  if (
+    compactedRunIds.length >= ordered.length ||
+    compactedRunIds.some((runId, index) => ordered[index]?.id !== runId)
+  ) {
+    corrupt();
+  }
+  const compactedRunIdSet = new Set(compactedRunIds);
+  let expectedPrunedMessages = 0;
+  const expectedRetainedMessages = [];
+  for (let index = 0; index < ordered.length; index += 1) {
+    const run = ordered[index];
+    if (compactedRunIdSet.has(run.id)) {
+      if (!TERMINAL_RUN_STATUSES.has(run.status)) corrupt();
+      expectedPrunedMessages += 1 + (run.status === "completed" ? 1 : 0);
+      continue;
+    }
+    expectedRetainedMessages.push(Object.freeze({ role: "user", run, id: run.inputMessageId }));
+    if (run.status === "completed") {
+      expectedRetainedMessages.push(Object.freeze({ role: "assistant", run, id: null }));
+    }
+  }
+  if (
+    expectedPrunedMessages !== thread.replay.prunedMessageCount ||
+    expectedRetainedMessages.length !== thread.messages.length
+  ) {
+    corrupt();
+  }
+  for (let index = 0; index < expectedRetainedMessages.length; index += 1) {
+    const expected = expectedRetainedMessages[index];
+    const actual = thread.messages[index];
+    if (
+      actual.runId !== expected.run.id ||
+      actual.role !== expected.role ||
+      (expected.id !== null && actual.id !== expected.id) ||
+      (expected.role === "user" && actual.digest !== expected.run.authority.contextDigest) ||
+      (expected.role === "assistant" && actual.content !== expected.run.output)
+    ) {
+      corrupt();
+    }
+  }
+  if (thread.compaction !== undefined) {
+    const groundedSearchProofRunIds = new Set(
+      thread.compaction.groundedSearchProofs.map((proof) => proof.runId)
+    );
+    for (const run of ordered) {
+      if (
+        compactedRunIdSet.has(run.id) &&
+        (run.search !== undefined) !== groundedSearchProofRunIds.has(run.id)
+      ) {
+        corrupt();
+      }
+    }
+    if ([...groundedSearchProofRunIds].some((runId) => !compactedRunIdSet.has(runId))) corrupt();
+    if (thread.compaction.memory.some((message) => !compactedRunIdSet.has(message.runId))) corrupt();
+    if (
+      thread.compaction.activeImage !== null &&
+      !compactedRunIdSet.has(thread.compaction.activeImage.runId)
+    ) {
+      corrupt();
+    }
+  }
+  if (thread.activeImageContext !== undefined) {
+    const head = ordered.at(-1);
+    const inputIndex = thread.messages.findIndex((message) => message.id === head.inputMessageId);
+    if (inputIndex < 0 || thread.messages[inputIndex].role !== "user") corrupt();
+    const inputMessage = thread.messages[inputIndex];
+    const lineageRunIds = lineageRunIdsFromState({ runs: stateRuns }, head);
+    const retainedSource = (inputMessage.attachments?.length || 0) > 0 || thread.messages
+      .slice(0, inputIndex)
+      .some(
+        (message) =>
+          lineageRunIds.has(message.runId) &&
+          message.role === "user" &&
+          (message.attachments?.length || 0) > 0
+      );
+    const compactedSource =
+      thread.compaction?.activeImage !== null &&
+      thread.compaction?.activeImage !== undefined &&
+      lineageRunIds.has(thread.compaction.activeImage.runId);
+    if (thread.activeImageContext !== (retainedSource || compactedSource)) corrupt();
+  }
+}
+
 function validateState(state, expectedScope) {
   exactState(
     state,
@@ -2099,25 +2857,14 @@ function validateState(state, expectedScope) {
       }
     }
   }
-  for (const thread of state.threads) validateThread(thread, expectedScope, runsById);
+  for (const thread of state.threads) {
+    validateThread(thread, expectedScope, runsById);
+    validateThreadRunMessages(thread, state.runs);
+  }
   const expectedLineage = inferRunLineage(state);
   if (expectedLineage.size !== state.runs.length) corrupt();
   for (const run of state.runs) {
     if (run.lineagePreviousRunId !== expectedLineage.get(run.id)) corrupt();
-  }
-  for (const run of state.runs) {
-    const thread = state.threads.find((item) => item.id === run.threadId);
-    const runMessages = thread?.messages.filter((message) => message.runId === run.id) || [];
-    const inputMessages = runMessages.filter((message) => message.role === "user");
-    const assistantMessages = runMessages.filter((message) => message.role === "assistant");
-    if (
-      inputMessages.length !== 1 ||
-      inputMessages[0].id !== run.inputMessageId ||
-      (run.status === "completed" ? assistantMessages.length !== 1 : assistantMessages.length !== 0) ||
-      (run.status === "completed" && assistantMessages[0].content !== run.output)
-    ) {
-      corrupt();
-    }
   }
   const artifactIds = new Set();
   const artifactWorkerRefs = new Set();
@@ -2396,6 +3143,9 @@ function assertR67CompatibleState(state) {
     state.documentCommitIntents.length !== 0 ||
     state.documentDeletionIntents.length !== 0 ||
     state.runs.some((run) => run.search !== undefined) ||
+    state.threads.some(
+      (thread) => thread.compaction !== undefined || thread.replay.prunedMessageCount !== 0
+    ) ||
     state.threads.some((thread) => thread.messages.some((message) => message.attachments !== undefined)) ||
     state.artifacts.some((artifact) => !new Set(["plot", "table", "markdown"]).has(artifact.kind))
   ) {
@@ -2460,6 +3210,12 @@ function inferRunLineage(state) {
   for (const thread of state.threads) {
     if (!Array.isArray(thread?.messages)) continue;
     let latestRunId = null;
+    for (const runId of thread.compaction?.compactedRunIds || []) {
+      const run = runsById.get(runId);
+      if (!run || run.threadId !== thread.id) continue;
+      inferred.set(run.id, run.lineagePreviousRunId ?? null);
+      latestRunId = run.id;
+    }
     for (const message of thread.messages) {
       if (message?.role !== "user" || inferred.has(message.runId)) continue;
       const run = runsById.get(message.runId);
@@ -2855,6 +3611,9 @@ function referencedAttachmentIds(state) {
   for (const thread of state.threads) {
     for (const message of thread.messages) {
       for (const attachment of message.attachments || []) references.add(attachment.referenceId);
+    }
+    for (const attachment of thread.compaction?.activeImage?.attachments || []) {
+      references.add(attachment.referenceId);
     }
   }
   return references;
@@ -4252,11 +5011,35 @@ function createService(options, { testOnly }) {
     const thread = findThread(state, run.threadId);
     const inputIndex = thread.messages.findIndex((message) => message.id === run.inputMessageId);
     if (inputIndex < 0 || thread.messages[inputIndex].role !== "user") corrupt();
-    const sourceMessage = attachmentSourceMessageForInput(thread, inputIndex);
+    const inputMessage = thread.messages[inputIndex];
+    let sourceMessage = (inputMessage.attachments?.length || 0) > 0 ? inputMessage : null;
+    if (sourceMessage === null) {
+      const lineageRunIds = lineageRunIdsForInput(state, run);
+      sourceMessage = thread.messages
+        .slice(0, inputIndex)
+        .reverse()
+        .find(
+          (message) =>
+            lineageRunIds.has(message.runId) &&
+            message.role === "user" &&
+            (message.attachments?.length || 0) > 0
+        ) || null;
+      if (
+        sourceMessage === null &&
+        thread.compaction?.activeImage &&
+        lineageRunIds.has(thread.compaction.activeImage.runId)
+      ) {
+        sourceMessage = thread.compaction.activeImage;
+      }
+    }
     if (!sourceMessage) return Object.freeze([]);
     return Object.freeze(
       sourceMessage.attachments.map((attachment) => Object.freeze({ ...attachment }))
     );
+  }
+
+  function lineageRunIdsForInput(state, run) {
+    return lineageRunIdsFromState(state, run);
   }
 
   function inputForRun(state, run) {
@@ -4269,15 +5052,31 @@ function createService(options, { testOnly }) {
     if (run.previousRunId !== null) {
       const previous = findRun(state, run.previousRunId);
       const previousInput = thread.messages.find((message) => message.id === previous.inputMessageId);
-      if (!previousInput || previousInput.role !== "user") corrupt();
-      if (new Set(["failed", "cancelled"]).has(previous.status) && previousInput.content === prompt) {
+      if (previousInput && previousInput.role !== "user") corrupt();
+      if (
+        previousInput &&
+        new Set(["failed", "cancelled"]).has(previous.status) &&
+        previousInput.content === prompt
+      ) {
         excludedRetryRunId = previous.id;
       }
     }
+    const lineageRunIds = lineageRunIdsForInput(state, run);
+    const compactedMemory = (thread.compaction?.memory || []).filter(
+      (message) => lineageRunIds.has(message.runId)
+    );
+    const modelMemory = compactedMemory.length <= 8
+      ? compactedMemory
+      : [...compactedMemory.slice(0, 4), ...compactedMemory.slice(-4)];
+    const maximumRecentMessages = Math.max(
+      0,
+      INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationMessages - modelMemory.length
+    );
     const preceding = thread.messages
       .slice(0, inputIndex)
+      .filter((message) => lineageRunIds.has(message.runId))
       .filter((message) => message.runId !== excludedRetryRunId)
-      .slice(-INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationMessages);
+      .slice(-maximumRecentMessages);
     const priorArtifactContext = priorArtifactsForRun(state, run);
     const maximumConversationBytes = Math.min(
       INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationBytes,
@@ -4288,8 +5087,9 @@ function createService(options, { testOnly }) {
     );
     const selected = [];
     let totalBytes = 0;
-    for (let index = preceding.length - 1; index >= 0; index -= 1) {
-      const message = preceding[index];
+    const candidates = [...modelMemory, ...preceding];
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const message = candidates[index];
       const content = clipUtf8(message.content, INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationMessageBytes);
       const bytes = byteLength(content);
       if (totalBytes + bytes > maximumConversationBytes) continue;
@@ -5651,6 +6451,7 @@ function createService(options, { testOnly }) {
             if (state.runs.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumRunsPerScope) {
               conflict("ANALYSIS_RUN_CAPACITY_EXHAUSTED", "Run capacity is exhausted.");
             }
+            const compactionEvent = compactThreadForNextRun(state, thread, prompt, statePersistenceMode);
             if (thread.messages.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumMessagesPerThread - 2) {
               conflict("ANALYSIS_THREAD_FULL", "Thread message capacity is exhausted.");
             }
@@ -5670,9 +6471,7 @@ function createService(options, { testOnly }) {
             }
             if (
               stagedAttachments.length === 0 && visionClient === undefined &&
-              thread.messages.some(
-                (message) => message.role === "user" && (message.attachments?.length || 0) > 0
-              )
+              lineageHasRetainedImageContext(state, thread, lineagePreviousRunId)
             ) {
               conflict(
                 "ANALYSIS_VISION_NOT_READY",
@@ -5717,6 +6516,14 @@ function createService(options, { testOnly }) {
               createdAt,
               ...(retainedAttachments.length === 0 ? {} : { attachments: retainedAttachments }),
             });
+            if (
+              retainedAttachments.length > 0 &&
+              thread.compaction !== undefined &&
+              thread.compaction.activeImage !== null
+            ) {
+              thread.compaction.activeImage = null;
+              refreshThreadCompactionDigest(thread);
+            }
             const record = {
               id: runId,
               threadId,
@@ -5750,7 +6557,13 @@ function createService(options, { testOnly }) {
               events: [],
             };
             appendEvent(record, "run.status", { status: "starting" }, createdAt);
+            if (compactionEvent !== null) {
+              appendEvent(record, "context.compacted", compactionEvent, createdAt);
+            }
             state.runs.push(record);
+            if (statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3) {
+              thread.activeImageContext = retainedAttachmentDescriptorsForRun(state, record).length > 0;
+            }
             touchThread(thread, createdAt, { status: "running", lastRunId: runId });
             const result = ownedRun(record);
             return { changed: true, result, receiptResult: Object.freeze({ run: result }) };
@@ -6136,6 +6949,9 @@ function createService(options, { testOnly }) {
             },
             replay: { prunedMessageCount: 0, anchorDigest: ZERO_DIGEST },
             messages: [],
+            ...(statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3
+              ? { activeImageContext: false }
+              : {}),
           };
           state.threads.push(thread);
           return { changed: true, result: Object.freeze({ thread: serviceOwnedThread(thread) }) };
@@ -6532,15 +7348,20 @@ function createService(options, { testOnly }) {
           conflict("ANALYSIS_RUN_NOT_RESUMABLE", "Run cannot be resumed.");
         }
         const thread = findThread(state, previous.threadId);
-        const message = thread.messages.find((item) => item.id === previous.inputMessageId);
-        if (!message || message.role !== "user") corrupt();
+        const isHead = thread.lastRunId === previous.id;
+        const message = payload.input === undefined && isHead
+          ? thread.messages.find((item) => item.id === previous.inputMessageId)
+          : null;
+        if (payload.input === undefined && isHead && (!message || message.role !== "user")) corrupt();
         return Object.freeze({
-          text: message.content,
+          text: message?.content || "",
           ...(previous.search === undefined
             ? {}
             : { search: validateIntegrationSearch(previous.search) }),
-          usedAttachments: retainedAttachmentDescriptorsForRun(state, previous).length > 0,
-          isHead: thread.lastRunId === previous.id,
+          usedAttachments: payload.input === undefined && isHead
+            ? retainedAttachmentDescriptorsForRun(state, previous).length > 0
+            : false,
+          isHead,
         });
       });
       let nextInput;

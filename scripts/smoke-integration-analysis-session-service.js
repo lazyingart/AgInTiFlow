@@ -1931,6 +1931,51 @@ async function r67StatePersistenceCompatibilityRoundTrip(temporaryRoot) {
     );
     await assertR67CompatibleStateFile(root);
 
+    const thresholdThread = await service.createThread(
+      { title: "R67 compaction threshold refusal" },
+      context()
+    );
+    let thresholdHead = null;
+    let thresholdRefused = false;
+    for (let index = 0; index < 20 && !thresholdRefused; index += 1) {
+      try {
+        const started = thresholdHead === null
+          ? await service.startRun({
+              threadId: thresholdThread.thread.id,
+              input: { text: `R67 bounded history ${index + 1}: ${"z".repeat(20_000)}` },
+            }, context())
+          : await service.resumeRun({
+              runId: thresholdHead,
+              input: { text: `R67 bounded history ${index + 1}: ${"z".repeat(20_000)}` },
+            }, context());
+        thresholdHead = started.run.id;
+        await service.waitForIdle();
+      } catch (error) {
+        assert.equal(error?.code, "ANALYSIS_THREAD_FULL");
+        thresholdRefused = true;
+      }
+    }
+    assert.equal(thresholdRefused, true, "r67 crossed its history cap instead of failing closed");
+    const thresholdPublicThread = (
+      await service.getThread({ threadId: thresholdThread.thread.id }, context())
+    ).thread;
+    assert.deepEqual(thresholdPublicThread.replay, {
+      prunedMessageCount: 0,
+      anchorDigest: ZERO_DIGEST,
+    });
+    assert.equal(thresholdPublicThread.authority.lastCompaction, null);
+    const thresholdState = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(
+        thresholdState.state.threads.find((thread) => thread.id === thresholdThread.thread.id),
+        "compaction"
+      ),
+      false,
+      "r67 silently persisted native compaction state"
+    );
+    await service.deleteThread({ threadId: thresholdThread.thread.id }, context());
+    await assertR67CompatibleStateFile(root);
+
     const expectedMessages = (await service.getThread({ threadId }, context())).thread.messages;
     await service.close({ mode: "wait" });
     service = createTestOnlyIntegrationAnalysisSessionService({
@@ -2312,6 +2357,74 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
         (event) => event.type === "artifact.created" && event.payload.artifact?.kind === "sources"
       ).length,
       1
+    );
+
+    let compactionHead = inferred.run.id;
+    for (let index = 0; index < 18; index += 1) {
+      const continued = await restarted.resumeRun({
+        runId: compactionHead,
+        input: { text: `Bounded local continuation ${index + 1}: ${"x".repeat(12_000)}` },
+      }, context());
+      compactionHead = continued.run.id;
+      await restarted.waitForIdle();
+    }
+    const compactedSearchThread = (
+      await restarted.getThread({ threadId: created.thread.id }, context())
+    ).thread;
+    assert.ok(compactedSearchThread.replay.prunedMessageCount > 0);
+    assert.notEqual(compactedSearchThread.replay.anchorDigest, ZERO_DIGEST);
+    assert.equal(
+      (await restarted.listArtifacts({ runId: first.run.id }, context())).artifacts.length,
+      1,
+      "a grounded-search artifact lost its authority after its prompt was compacted"
+    );
+    const compactedSearchState = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+    const compactedSearchPrivateThread = compactedSearchState.state.threads.find(
+      (thread) => thread.id === created.thread.id
+    );
+    assert.ok(
+      compactedSearchPrivateThread.compaction.groundedSearchProofs.some(
+        (proof) => proof.runId === first.run.id
+      ),
+      "the grounded-search authority bridge was not durably retained"
+    );
+    await restarted.close({ mode: "wait" });
+    restarted = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot: root,
+      searchEnabled: true,
+    });
+    assert.equal(
+      (await restarted.listArtifacts({ runId: first.run.id }, context())).artifacts.length,
+      1,
+      "compacted grounded-search authority did not survive restart"
+    );
+    await restarted.close({ mode: "wait" });
+    restarted = null;
+    const swappedAuthorityEnvelope = JSON.parse(
+      await fs.readFile(await stateFile(root), "utf8")
+    );
+    const swappedAuthorityArtifact = swappedAuthorityEnvelope.state.artifacts.find(
+      (artifact) => artifact.runId === first.run.id && artifact.kind === "sources"
+    );
+    swappedAuthorityArtifact.groundedSearchAuthority.query = "forged compacted query authority";
+    swappedAuthorityEnvelope.digest = contractDigest({
+      schemaVersion: swappedAuthorityEnvelope.schemaVersion,
+      state: swappedAuthorityEnvelope.state,
+    });
+    await fs.writeFile(
+      await stateFile(root),
+      `${canonicalJson(swappedAuthorityEnvelope)}\n`,
+      { mode: 0o600 }
+    );
+    restarted = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot: root,
+      searchEnabled: true,
+    });
+    await expectCode(
+      restarted.getThread({ threadId: created.thread.id }, context()),
+      "ANALYSIS_STATE_CORRUPT"
     );
   } finally {
     await service?.close({ mode: "abort" }).catch(() => {});
