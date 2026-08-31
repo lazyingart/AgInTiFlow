@@ -14,6 +14,7 @@ import {
   DOCUMENT_WORKER_LISTEN_HOST,
   DOCUMENT_WORKER_LISTEN_PORT,
 } from "../src/integration-document-worker-config.js";
+import { createIntegrationDocumentWorkerCliFailStop } from "../src/integration-document-worker-cli.js";
 import { createIntegrationDocumentWorkerServer } from "../src/integration-document-worker-server.js";
 import { createTestOnlyIntegrationDocumentWorkerService } from "../src/integration-document-worker-service.js";
 import { openIntegrationDocumentWorkerStore } from "../src/integration-document-worker-store.js";
@@ -21,6 +22,8 @@ import {
   TEST_BEARER_TOKEN,
   TEST_SCOPE,
   fakeCompiledPayload,
+  testCompileIssueRequest,
+  issueTestCompileRequest,
   testCommitRequest,
   testCompileRequest,
   testContentRequest,
@@ -105,12 +108,29 @@ function parsedJson(result) {
   return JSON.parse(result.body.toString("utf8"));
 }
 
+function withTimeout(promise, label, timeoutMs = 2_000) {
+  let timer;
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((accept) => {
+    resolve = accept;
+  });
+  return Object.freeze({ promise, resolve });
+}
+
 const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-document-worker-server-"));
 let server;
 try {
   const store = await openIntegrationDocumentWorkerStore({ stateRoot });
-  const compileRequest = testCompileRequest("server-floor");
+  const compileRequest = await issueTestCompileRequest(store, "server-floor");
   const compiled = fakeCompiledPayload(compileRequest, "server-floor");
+  await store.reserveCompile(compileRequest);
   const staged = await store.stageCompile({
     request: compileRequest,
     evidence: testEvidence(compileRequest),
@@ -141,13 +161,13 @@ try {
   const checked = await server.check();
   assert.equal(checked.creationEnabled, false);
   assert.equal(checked.compiler, null);
-  assert.equal(canaryCalls, 1, "server.check must execute the disabled-floor compiler canary");
+  assert.equal(canaryCalls, 0, "server.check must not require a compiler on the disabled floor");
   assert.deepEqual(await server.start(), {
     address: DOCUMENT_WORKER_LISTEN_HOST,
     port: DOCUMENT_WORKER_LISTEN_PORT,
     family: "IPv4",
   });
-  assert.equal(canaryCalls, 1, "server startup must reuse the successful exact check");
+  assert.equal(canaryCalls, 0, "server startup must preserve compiler-independent degraded readiness");
 
   const readiness = await requestJson(DOCUMENT_WORKER_ROUTES.readiness, {
     schemaVersion: DOCUMENT_WORKER_SCHEMA_VERSIONS.readinessRequest,
@@ -253,6 +273,105 @@ try {
   const gone = await requestJson(DOCUMENT_WORKER_ROUTES.content, contentRequest);
   assert.equal(gone.status, 410);
   assert.equal(gone.body.toString("utf8"), '{"error":{"code":"ARTIFACT_CONTENT_GONE"}}\n');
+
+  await server.close();
+  server = null;
+
+  let failNextLedgerWrite = false;
+  const failStopStore = await openIntegrationDocumentWorkerStore({
+    stateRoot: path.join(stateRoot, "fail-stop-store"),
+    checkpoint: async (name) => {
+      if (failNextLedgerWrite && name === "before-ledger-rename") {
+        throw new Error("simulated durable ledger write failure");
+      }
+    },
+  });
+  const failStopConfig = testDocumentWorkerConfig(true);
+  const failStopService = createTestOnlyIntegrationDocumentWorkerService({
+    config: failStopConfig,
+    store: failStopStore,
+    inspectRuntimeImpl: async () => Object.freeze({
+      ready: true,
+      networkNone: true,
+      shellEscape: false,
+      runtimeDigest: "6".repeat(64),
+      activationProbeDigest: "7".repeat(64),
+    }),
+  });
+  let failStopResolve;
+  const failStopPromise = new Promise((resolve) => {
+    failStopResolve = resolve;
+  });
+  server = createIntegrationDocumentWorkerServer({
+    config: failStopConfig,
+    service: failStopService,
+    bearerToken: TEST_BEARER_TOKEN,
+    onFailStop: async (record) => failStopResolve(record),
+  });
+  await server.start();
+  failNextLedgerWrite = true;
+  const poisoned = await requestJson(
+    DOCUMENT_WORKER_ROUTES.compileIssue,
+    testCompileIssueRequest("server-fail-stop")
+  );
+  assert.equal(poisoned.status, 503);
+  assert.equal(poisoned.body.toString("utf8"), '{"error":{"code":"WORKER_STATE_UNAVAILABLE"}}\n');
+  const failStopRecord = await withTimeout(failStopPromise, "server fail-stop callback");
+  assert.deepEqual(failStopRecord, {
+    schemaVersion: "aginti-document-worker-fail-stop-v1",
+    code: "WORKER_STATE_UNAVAILABLE",
+  });
+  assert.equal(server.listening, false);
+
+  let cliExitCode = null;
+  const fakeProcess = {
+    exitCode: 0,
+    exit(code) {
+      cliExitCode = code;
+    },
+  };
+  await createIntegrationDocumentWorkerCliFailStop(fakeProcess)(failStopRecord);
+  assert.equal(fakeProcess.exitCode, 1);
+  assert.equal(cliExitCode, 1);
+  await server.close().catch(() => {});
+  server = null;
+
+  const activationRaceStore = await openIntegrationDocumentWorkerStore({
+    stateRoot: path.join(stateRoot, "activation-race-store"),
+  });
+  const activationEntered = deferred();
+  const releaseActivation = deferred();
+  const activationRaceService = createTestOnlyIntegrationDocumentWorkerService({
+    config: testDocumentWorkerConfig(true),
+    store: activationRaceStore,
+    inspectRuntimeImpl: async () => {
+      activationEntered.resolve();
+      await releaseActivation.promise;
+      return Object.freeze({
+        ready: true,
+        networkNone: true,
+        shellEscape: false,
+        runtimeDigest: "8".repeat(64),
+        activationProbeDigest: "9".repeat(64),
+      });
+    },
+  });
+  server = createIntegrationDocumentWorkerServer({
+    config: testDocumentWorkerConfig(true),
+    service: activationRaceService,
+    bearerToken: TEST_BEARER_TOKEN,
+  });
+  const startRace = server.start();
+  await withTimeout(activationEntered.promise, "deferred activation entry");
+  assert.equal(server.listening, false);
+  const closedRace = await withTimeout(server.close(), "close during deferred activation");
+  assert.equal(closedRace.closed, true);
+  releaseActivation.resolve();
+  await assert.rejects(
+    () => startRace,
+    /Document worker server is closed/u
+  );
+  assert.equal(server.listening, false);
 } finally {
   await server?.close().catch(() => {});
   await fs.rm(stateRoot, { recursive: true, force: true });

@@ -316,7 +316,7 @@ function validateSourceDate(value, label) {
 function validateSourceDoi(value, label) {
   if (value === null) return null;
   const text = integrationBoundedText(value, label, 300, { minimum: 7, presentational: true }).trim();
-  if (!/^10\.\d{4,9}\/[A-Za-z0-9][A-Za-z0-9._;()/:+-]*$/u.test(text)) {
+  if (!/^10\.\d{4,9}\/(?:[A-Za-z0-9]|\([A-Za-z0-9])[A-Za-z0-9._;()/:+-]*$/u.test(text)) {
     integrationInvalid(`${label} must be a DOI or null`);
   }
   return text;
@@ -373,7 +373,10 @@ export function validateIntegrationSourcesSpec(value) {
       doi: validateSourceDoi(item.doi, `sources[${offset}].doi`),
     });
   });
-  return Object.freeze({ schemaVersion: AGENT_WORKER_SCHEMA_VERSION, sources: Object.freeze(sources) });
+  return Object.freeze({
+    schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+    sources: Object.freeze(sources),
+  });
 }
 
 function normalizeArtifactKind(input = {}) {

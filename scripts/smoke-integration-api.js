@@ -1353,6 +1353,58 @@ assert.equal(
   false,
   "the extended deadline must remain image-capability-only"
 );
+const roleStates = Object.freeze({
+  executionWorker: Object.freeze({
+    schemaVersion: "aginti-analysis-role-state-v1",
+    role: "executionWorker",
+    configured: true,
+    status: "ready",
+    ready: true,
+    observedAt: AT,
+    reason: null,
+    actionable: null,
+  }),
+  documentWorker: Object.freeze({
+    schemaVersion: "aginti-analysis-role-state-v1",
+    role: "documentWorker",
+    configured: true,
+    status: "degraded",
+    ready: false,
+    observedAt: AT,
+    reason: "route_unavailable",
+    actionable: "Restore the private document worker route, then reactivate.",
+  }),
+  groundedSearch: Object.freeze({
+    schemaVersion: "aginti-analysis-role-state-v1",
+    role: "groundedSearch",
+    configured: true,
+    status: "degraded",
+    ready: false,
+    observedAt: AT,
+    reason: "credential_unavailable",
+    actionable: "Install the optional grounded search credential, then reactivate.",
+  }),
+});
+const roleCapabilities = validateAgentRpcResponse(
+  AGENT_RPC_PATHS.capabilities,
+  integrationCapabilitiesResponse({ enabled: true, cancel: true, resume: true, roles: roleStates })
+);
+assert.deepEqual(roleCapabilities.roles, roleStates);
+assert.throws(
+  () => validateAgentRpcResponse(
+    AGENT_RPC_PATHS.capabilities,
+    integrationCapabilitiesResponse({
+      enabled: true,
+      cancel: true,
+      resume: true,
+      roles: {
+        ...roleStates,
+        documentWorker: { ...roleStates.documentWorker, actionable: "x".repeat(241) },
+      },
+    })
+  ),
+  /role capability/u
+);
 assert.throws(
   () => validateAgentRpcResponse(AGENT_RPC_PATHS.capabilities, {
     ...integrationCapabilitiesResponse({ enabled: true, cancel: true, resume: true, attachments: true }),
@@ -1440,6 +1492,15 @@ const publicRunContract = sanitizePublicIntegrationRun(publicRun(), {
 });
 assert.equal(publicRunContract.eventCursor.firstSeq, 1);
 assert.equal(publicRunContract.eventCursor.prunedThroughSeq, 0);
+const publicRunPathContract = sanitizePublicIntegrationRun(publicRun({
+  output:
+    "Paths /scratch/aginti/private.txt file:///data/secret.tex C:\\Users\\alice\\secret.txt \\\\server\\share\\secret.txt stay private.",
+}), {
+  principalId: PRINCIPAL,
+  browserSessionId: BROWSER_SESSION,
+});
+assert.doesNotMatch(publicRunPathContract.output, /\/scratch|file:\/\/\/data|C:\\\\Users|\\\\server/iu);
+assert.match(publicRunPathContract.output, /\[REDACTED_PATH\]/u);
 assert.throws(
   () =>
     sanitizePublicIntegrationThread(publicThread({ title: "    " }), {

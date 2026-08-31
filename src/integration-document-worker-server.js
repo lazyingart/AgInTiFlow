@@ -19,6 +19,7 @@ import {
 import { assertIntegrationDocumentWorkerService } from "./integration-document-worker-service.js";
 
 export const DOCUMENT_WORKER_SERVER_SCHEMA_VERSION = "aginti-document-worker-server-v1";
+export const DOCUMENT_WORKER_FAIL_STOP_SCHEMA_VERSION = "aginti-document-worker-fail-stop-v1";
 
 const SERVER_BRAND = new WeakSet();
 const CONTENT_TYPE = /^application\/json(?:\s*;\s*charset=utf-8)?$/iu;
@@ -77,6 +78,19 @@ function writeError(res, error, { closeConnection = false } = {}) {
   }
   res.writeHead(status, headers);
   res.end(bytes);
+}
+
+function isDocumentWorkerFailStopError(error) {
+  if (!error || typeof error !== "object") return false;
+  const descriptor = Object.getOwnPropertyDescriptor(error, "documentWorkerFailStop");
+  return Boolean(descriptor && Object.hasOwn(descriptor, "value") && descriptor.value === true);
+}
+
+function failStopRecord(error) {
+  return Object.freeze({
+    schemaVersion: DOCUMENT_WORKER_FAIL_STOP_SCHEMA_VERSION,
+    code: publicDocumentWorkerErrorCode(error),
+  });
 }
 
 function badRequest(code = "INVALID_REQUEST", status = 400) {
@@ -320,12 +334,13 @@ function verifyAddress(server) {
 
 export function createIntegrationDocumentWorkerServer(options = {}) {
   const keys = Reflect.ownKeys(options);
+  const allowedKeys = new Set(["config", "service", "bearerToken", "onFailStop"]);
   if (
     !options ||
     typeof options !== "object" ||
     Array.isArray(options) ||
     Object.getPrototypeOf(options) !== Object.prototype ||
-    keys.some((key) => typeof key !== "string" || !new Set(["config", "service", "bearerToken"]).has(key)) ||
+    keys.some((key) => typeof key !== "string" || !allowedKeys.has(key)) ||
     !Object.hasOwn(options, "config") ||
     !Object.hasOwn(options, "service") ||
     !Object.hasOwn(options, "bearerToken")
@@ -336,10 +351,39 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
   if (!/^[A-Za-z0-9._~+/=-]{32,4096}$/u.test(bearerToken)) {
     throw new TypeError("document worker server bearer token is invalid");
   }
+  const onFailStop = options.onFailStop;
+  if (onFailStop !== undefined && typeof onFailStop !== "function") {
+    throw new TypeError("document worker fail-stop callback is invalid");
+  }
   let lifecycle = "created";
   let startPromise = null;
   let closePromise = null;
+  let failStopPromise = null;
+  let startGeneration = 0;
   const controllers = new Set();
+
+  function triggerFailStop(error, res) {
+    if (failStopPromise) return;
+    const record = failStopRecord(error);
+    lifecycle = "fail-stop";
+    let scheduled = false;
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      failStopPromise = (async () => {
+        await close({ timeoutMs: 5_000 }).catch(() => {});
+        if (onFailStop) await onFailStop(record);
+        return record;
+      })();
+      failStopPromise.catch(() => {});
+    };
+    if (res.writableEnded || res.destroyed) {
+      setImmediate(schedule);
+    } else {
+      res.once("finish", schedule);
+      res.once("close", schedule);
+    }
+  }
 
   const server = http.createServer(async (req, res) => {
     const controller = new AbortController();
@@ -362,7 +406,9 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
       if (!authenticate(req, bearerToken)) throw badRequest("UNAUTHORIZED", 401);
       const body = await readJson(req);
       if (target === DOCUMENT_WORKER_ROUTES.readiness) {
-        writeJson(res, 200, service.readiness(body));
+        writeJson(res, 200, await service.readiness(body));
+      } else if (target === DOCUMENT_WORKER_ROUTES.compileIssue) {
+        writeJson(res, 200, await service.issueCompile(body));
       } else if (target === DOCUMENT_WORKER_ROUTES.compile) {
         writeJson(res, 200, await service.compile(body, { signal: controller.signal }));
       } else if (target === DOCUMENT_WORKER_ROUTES.commit) {
@@ -378,6 +424,7 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
     } catch (error) {
       const closeConnection = prepareUnreadBodyRejection(req, res);
       writeError(res, error, { closeConnection });
+      if (isDocumentWorkerFailStopError(error)) triggerFailStop(error, res);
     } finally {
       req.off("aborted", abort);
       req.off("error", abort);
@@ -390,9 +437,14 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
     if (lifecycle === "closed" || lifecycle === "closing") throw new Error("Document worker server is closed.");
     if (server.listening) return verifyAddress(server);
     if (startPromise) return startPromise;
+    const generation = startGeneration + 1;
+    startGeneration = generation;
     lifecycle = "starting";
     startPromise = (async () => {
       await service.activate();
+      if (lifecycle !== "starting" || generation !== startGeneration) {
+        throw new Error("Document worker server is closed.");
+      }
       return new Promise((resolve, reject) => {
         let settled = false;
         const finish = (error) => {
@@ -409,6 +461,11 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
         };
         const onListening = () => {
           try {
+            if (lifecycle !== "starting" || generation !== startGeneration) {
+              server.close(() => {});
+              finish(new Error("Document worker server is closed."));
+              return;
+            }
             const address = verifyAddress(server);
             lifecycle = "listening";
             finish();
@@ -440,6 +497,7 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
       throw new TypeError("document worker close timeout is invalid");
     }
     if (closePromise) return closePromise;
+    startGeneration += 1;
     lifecycle = "closing";
     for (const controller of controllers) controller.abort(new Error("document worker shutting down"));
     closePromise = new Promise((resolve) => {

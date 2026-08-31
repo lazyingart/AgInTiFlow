@@ -77,28 +77,41 @@ try {
   const canaryStore = await openIntegrationDocumentWorkerStore({ stateRoot: canaryStoreRoot });
   const storeBefore = await snapshotTree(canaryStoreRoot);
   const temporaryBefore = await compilerTemporaryEntries();
-  let runtime;
   canaryService = createTestOnlyIntegrationDocumentWorkerService({
     config: testDocumentWorkerConfig(false),
     store: canaryStore,
     inspectRuntimeImpl: async () => {
-      runtime = await inspectIntegrationTexCompilerRuntime();
-      return runtime;
+      throw new Error("disabled-floor check must not execute the compiler");
     },
   });
   const checkReadiness = await canaryService.check();
   assert.equal(checkReadiness.creationEnabled, false);
   assert.equal(checkReadiness.compiler, null);
-  assert.equal(runtime.ready, true);
-  assert.equal(runtime.networkNone, true);
-  assert.equal(runtime.shellEscape, false);
-  assert.match(runtime.runtimeDigest, /^[a-f0-9]{64}$/u);
-  assert.match(runtime.activationProbeDigest, /^[a-f0-9]{64}$/u);
   assert.deepEqual(await snapshotTree(canaryStoreRoot), storeBefore);
   assert.deepEqual(await compilerTemporaryEntries(), temporaryBefore);
 } finally {
   await canaryService?.close().catch(() => {});
   await fs.rm(canaryStoreRoot, { recursive: true, force: true });
+}
+
+const enabledCheckRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-document-worker-enabled-check-"));
+let enabledCheckService;
+try {
+  const enabledCheckStore = await openIntegrationDocumentWorkerStore({ stateRoot: enabledCheckRoot });
+  enabledCheckService = createTestOnlyIntegrationDocumentWorkerService({
+    config: testDocumentWorkerConfig(true),
+    store: enabledCheckStore,
+    inspectRuntimeImpl: inspectIntegrationTexCompilerRuntime,
+  });
+  const readiness = await enabledCheckService.check();
+  assert.equal(readiness.creationEnabled, true);
+  assert.equal(readiness.compiler.networkNone, true);
+  assert.equal(readiness.compiler.shellEscape, false);
+  assert.match(readiness.compiler.compilerDigest, /^[a-f0-9]{64}$/u);
+  assert.match(readiness.compiler.activationProbeDigest, /^[a-f0-9]{64}$/u);
+} finally {
+  await enabledCheckService?.close().catch(() => {});
+  await fs.rm(enabledCheckRoot, { recursive: true, force: true });
 }
 
 const compiled = await compileIntegrationTexWorkerPayload({

@@ -11,6 +11,7 @@ import {
 export const DOCUMENT_WORKER_API_PREFIX = "/artifact/v1";
 export const DOCUMENT_WORKER_ROUTES = Object.freeze({
   readiness: `${DOCUMENT_WORKER_API_PREFIX}/readiness`,
+  compileIssue: `${DOCUMENT_WORKER_API_PREFIX}/compile/issue`,
   compile: `${DOCUMENT_WORKER_API_PREFIX}/compile`,
   commit: `${DOCUMENT_WORKER_API_PREFIX}/commit`,
   content: `${DOCUMENT_WORKER_API_PREFIX}/content`,
@@ -20,9 +21,11 @@ export const DOCUMENT_WORKER_ROUTE_LIST = Object.freeze(Object.values(DOCUMENT_W
 
 export const DOCUMENT_WORKER_SCHEMA_VERSIONS = Object.freeze({
   readinessRequest: "aginti-document-worker-readiness-request-v1",
-  readinessResponse: "aginti-document-worker-readiness-response-v1",
+  readinessResponse: "aginti-document-worker-readiness-response-v2",
   compileRequirements: "aginti-document-compile-requirements-v1",
-  compileRequest: "aginti-document-worker-compile-request-v1",
+  compileIssueRequest: "aginti-document-worker-compile-issue-request-v2",
+  compileIssueResponse: "aginti-document-worker-compile-issue-response-v2",
+  compileRequest: "aginti-document-worker-compile-request-v4",
   compileResponse: "aginti-document-worker-compile-response-v1",
   receipt: "aginti-document-worker-receipt-v1",
   commitRequest: "aginti-document-worker-commit-request-v1",
@@ -44,7 +47,7 @@ export const DOCUMENT_WORKER_LIMITS = Object.freeze({
   maximumPdfBytes: 16 * 1024 * 1024,
   maximumLogBytes: 512 * 1024,
   maximumWallTimeMs: 30_000,
-  maximumConcurrentCompiles: 2,
+  maximumConcurrentCompiles: 1,
   maximumDeleteObjects: 1024,
   maximumFigureCount: 32,
   maximumStoredBytes: 8 * 1024 * 1024 * 1024,
@@ -54,7 +57,9 @@ export const DOCUMENT_WORKER_PATTERNS = Object.freeze({
   digest: /^[a-f0-9]{64}$/u,
   principalId: /^[A-Za-z0-9._~-]{16,128}$/u,
   browserSessionId: /^[a-f0-9]{64}$/u,
+  compileIssuanceId: /^iss_[a-f0-9]{16}_[a-f0-9]{64}$/u,
   compileRequestId: /^cmp_[a-f0-9]{64}$/u,
+  compileAuthorityToken: /^wca_[A-Za-z0-9_-]{43}$/u,
   commitRequestId: /^cmt_[a-f0-9]{64}$/u,
   deletionId: /^del_[a-f0-9]{64}$/u,
   receiptId: /^wrcp_[A-Za-z0-9_-]{32}$/u,
@@ -354,15 +359,123 @@ export function validateDocumentWorkerReadinessRequest(value) {
   return Object.freeze({ schemaVersion: DOCUMENT_WORKER_SCHEMA_VERSIONS.readinessRequest });
 }
 
+export function validateDocumentWorkerCompileIssueRequest(value) {
+  const keys = [
+    "schemaVersion",
+    "issuanceId",
+    "compileAuthorityEpoch",
+    "scope",
+    "filename",
+    "sourceSha256",
+    "requirements",
+  ];
+  const request = exactDocumentWorkerObject(value, keys, keys, "compile issue request");
+  exactSchema(
+    request.schemaVersion,
+    DOCUMENT_WORKER_SCHEMA_VERSIONS.compileIssueRequest,
+    "compile issue request"
+  );
+  const compileAuthorityEpoch = boundedInteger(
+    request.compileAuthorityEpoch,
+    "compile issue request.compileAuthorityEpoch",
+    1,
+    Number.MAX_SAFE_INTEGER
+  );
+  const issuanceId = exactPattern(
+    request.issuanceId,
+    DOCUMENT_WORKER_PATTERNS.compileIssuanceId,
+    "compile issue request.issuanceId"
+  );
+  if (documentWorkerCompileIssuanceEpoch(issuanceId) !== compileAuthorityEpoch) {
+    documentWorkerFail("INVALID_REQUEST", "Compile issuance epoch is inconsistent.", { status: 400 });
+  }
+  return Object.freeze({
+    schemaVersion: DOCUMENT_WORKER_SCHEMA_VERSIONS.compileIssueRequest,
+    issuanceId,
+    compileAuthorityEpoch,
+    scope: validateDocumentWorkerCompileScope(request.scope),
+    filename: normalizedFilename(request.filename),
+    sourceSha256: exactDigest(request.sourceSha256, "compile issue request.sourceSha256"),
+    requirements: validateDocumentCompileRequirements(request.requirements),
+  });
+}
+
+export function digestDocumentWorkerCompileContent(value) {
+  const request = Object.freeze({
+    schemaVersion: "aginti-document-worker-compile-content-v1",
+    scope: validateDocumentWorkerCompileScope(value.scope),
+    filename: normalizedFilename(value.filename),
+    sourceSha256: exactDigest(value.sourceSha256, "compile content.sourceSha256"),
+    requirements: validateDocumentCompileRequirements(value.requirements),
+  });
+  return contractDigest({
+    schemaVersion: "aginti-document-worker-compile-content-v1",
+    request,
+  });
+}
+
+export function documentWorkerCompileIssuanceEpoch(value) {
+  const issuanceId = exactPattern(
+    value,
+    DOCUMENT_WORKER_PATTERNS.compileIssuanceId,
+    "compile issuance id"
+  );
+  const epoch = Number.parseInt(issuanceId.slice(4, 20), 16);
+  if (!Number.isSafeInteger(epoch) || epoch < 1) {
+    documentWorkerFail("INVALID_REQUEST", "Compile issuance epoch is invalid.", { status: 400 });
+  }
+  return epoch;
+}
+
+export function createDocumentWorkerCompileIssuanceId(compileAuthorityEpoch) {
+  const epoch = boundedInteger(
+    compileAuthorityEpoch,
+    "compile issuance epoch",
+    1,
+    Number.MAX_SAFE_INTEGER
+  );
+  return `iss_${epoch.toString(16).padStart(16, "0")}_${crypto.randomBytes(32).toString("hex")}`;
+}
+
 export function validateDocumentWorkerCompileRequest(value) {
-  const keys = ["schemaVersion", "requestId", "scope", "filename", "source", "sourceSha256", "requirements"];
+  const keys = [
+    "schemaVersion",
+    "issuanceId",
+    "requestId",
+    "compileAuthorityEpoch",
+    "compileAuthorityToken",
+    "scope",
+    "filename",
+    "source",
+    "sourceSha256",
+    "requirements",
+  ];
   const request = exactDocumentWorkerObject(value, keys, keys, "compile request");
   exactSchema(request.schemaVersion, DOCUMENT_WORKER_SCHEMA_VERSIONS.compileRequest, "compile request");
+  const issuanceId = exactPattern(
+    request.issuanceId,
+    DOCUMENT_WORKER_PATTERNS.compileIssuanceId,
+    "compile request.issuanceId"
+  );
   const requestId = exactPattern(
     request.requestId,
     DOCUMENT_WORKER_PATTERNS.compileRequestId,
     "compile request.requestId"
   );
+  const compileAuthorityEpoch = boundedInteger(
+    request.compileAuthorityEpoch,
+    "compile request.compileAuthorityEpoch",
+    1,
+    Number.MAX_SAFE_INTEGER
+  );
+  const compileAuthorityToken = exactPattern(
+    request.compileAuthorityToken,
+    DOCUMENT_WORKER_PATTERNS.compileAuthorityToken,
+    "compile request.compileAuthorityToken"
+  );
+  if (documentWorkerCompileIssuanceEpoch(issuanceId) !== compileAuthorityEpoch) {
+    documentWorkerFail("INVALID_REQUEST", "Compile request issuance epoch is inconsistent.", { status: 400 });
+  }
   const scope = validateDocumentWorkerCompileScope(request.scope);
   const filename = normalizedFilename(request.filename);
   if (
@@ -382,7 +495,10 @@ export function validateDocumentWorkerCompileRequest(value) {
   const requirements = validateDocumentCompileRequirements(request.requirements);
   return Object.freeze({
     schemaVersion: DOCUMENT_WORKER_SCHEMA_VERSIONS.compileRequest,
+    issuanceId,
     requestId,
+    compileAuthorityEpoch,
+    compileAuthorityToken,
     scope,
     filename,
     source: request.source,
@@ -639,6 +755,17 @@ export function validateDocumentWorkerDeleteRequest(value) {
 
 export function digestNormalizedDocumentWorkerRequest(value) {
   return contractDigest(value);
+}
+
+export function digestDocumentWorkerCompileOperation(value) {
+  const {
+    compileAuthorityEpoch: _compileAuthorityEpoch,
+    ...operation
+  } = value;
+  return contractDigest(Object.freeze({
+    schemaVersion: "aginti-document-worker-compile-operation-v1",
+    request: Object.freeze(operation),
+  }));
 }
 
 export function digestDocumentWorkerRequirements(value) {

@@ -67,6 +67,25 @@ async function persistedState(stateRoot) {
   return Object.freeze({ bytes, envelope: JSON.parse(bytes) });
 }
 
+function assertCloudStateContainsNoDocumentCompileCapability(persisted) {
+  assert.doesNotMatch(persisted.bytes, new RegExp(SOURCE_MARKER, "u"));
+  assert.doesNotMatch(persisted.bytes, /wca_[A-Za-z0-9_-]{43}/u);
+}
+
+function workerErrorResponse(status, code) {
+  const body = Buffer.from(`${JSON.stringify({ error: { code } })}\n`, "utf8");
+  return new Response(body, {
+    status,
+    headers: {
+      "cache-control": "no-store",
+      "content-length": String(body.byteLength),
+      "content-type": "application/json; charset=utf-8",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
 function legacyV2Envelope(envelope, { unsafeFile = null } = {}) {
   const state = {
     ...envelope.state,
@@ -154,7 +173,7 @@ function createDocumentRunner(fixture, client, controls = {}) {
           source,
           requirements: compileRequirements(intent.requirements.minimumFigureCount),
         },
-        { signal: options.signal }
+        { signal: options.signal, authorizeRequest: options.onDocumentCompileIntent }
       );
       await options.onArtifact?.(compiled.artifacts[0]);
       if (input.prompt === CANCEL_PROMPT) {
@@ -673,7 +692,7 @@ async function cancellationAfterExpiredStageAcceptsAuthenticatedAbsence(temporar
   }
 }
 
-async function threadDeletionAcceptsAuthenticatedAbsence(temporaryRoot) {
+async function threadDeletionRejectsGenericManifestAbsence(temporaryRoot) {
   const stateRoot = path.join(temporaryRoot, "thread-delete-authenticated-absence");
   const fixture = createDocumentWorkerFixture();
   const client = fixture.client();
@@ -693,15 +712,31 @@ async function threadDeletionAcceptsAuthenticatedAbsence(temporaryRoot) {
     await service.waitForIdle();
     assert.equal((await service.getRunStatus({ runId: started.run.id }, context())).run.status, "completed");
     fixture.failNextDelete("NOT_FOUND");
-    const deleted = await service.deleteThread({ threadId: thread.thread.id }, context());
-    assert.equal(deleted.deleted, true);
+    await assert.rejects(
+      service.deleteThread({ threadId: thread.thread.id }, context()),
+      (error) => error?.code === "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE"
+    );
     assert.equal(fixture.tombstoned.size, 0);
+    assert.equal(
+      [...fixture.committed.keys()].filter((key) => /^wobj_/u.test(key)).length,
+      2,
+      "generic deletion absence must retain the exact committed pair"
+    );
     assert.equal(
       fixture.calls.filter(({ pathname, request }) =>
         pathname === "/artifact/v1/delete" && request.phase === "commit"
       ).length,
       0
     );
+    const pending = await persistedState(stateRoot);
+    assert.equal(pending.envelope.state.threads.some(({ id }) => id === thread.thread.id), true);
+    assert.equal(pending.envelope.state.artifacts.filter(({ threadId }) => threadId === thread.thread.id).length, 2);
+    assert.equal(pending.envelope.state.documentDeletionIntents.length, 1);
+    assert.equal(pending.envelope.state.documentDeletionIntents[0].status, "pending");
+
+    const deleted = await service.deleteThread({ threadId: thread.thread.id }, context());
+    assert.equal(deleted.deleted, true);
+    assert.equal(fixture.tombstoned.size, 2);
     await assert.rejects(
       service.getThread({ threadId: thread.thread.id }, context()),
       (error) => error?.code === "NOT_FOUND"
@@ -710,6 +745,58 @@ async function threadDeletionAcceptsAuthenticatedAbsence(temporaryRoot) {
     assert.equal(state.envelope.state.threads.some(({ id }) => id === thread.thread.id), false);
     assert.equal(state.envelope.state.artifacts.some(({ threadId }) => threadId === thread.thread.id), false);
     assert.equal(state.envelope.state.documentDeletionIntents.length, 0);
+  } finally {
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function threadDeletionKeepsIntentWhenAbsenceProbeIsUnavailable(temporaryRoot) {
+  const stateRoot = path.join(temporaryRoot, "thread-delete-transient-absence-probe");
+  let armProbeFailure = false;
+  let contentProbeCount = 0;
+  const fixture = createDocumentWorkerFixture({
+    contentResponseTransform(response) {
+      if (!armProbeFailure) return response;
+      contentProbeCount += 1;
+      if (contentProbeCount === 2) return workerErrorResponse(503, "WORKER_UNAVAILABLE");
+      return response;
+    },
+  });
+  const client = fixture.client();
+  const runner = createDocumentRunner(fixture, client);
+  const service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot,
+    documentWorkerClient: client,
+    documentWorkerEnabled: true,
+  });
+  try {
+    const thread = await service.createThread({ title: "Transient deletion probe" }, context());
+    const started = await service.startRun(
+      { threadId: thread.thread.id, input: { text: PRODUCTION_PROMPT } },
+      context()
+    );
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: started.run.id }, context())).run.status, "completed");
+
+    fixture.failNextDelete("ARTIFACT_CONTENT_GONE");
+    armProbeFailure = true;
+    await assert.rejects(
+      service.deleteThread({ threadId: thread.thread.id }, context()),
+      (error) => error?.code === "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE"
+    );
+    assert.equal(contentProbeCount, 2);
+    const pending = await persistedState(stateRoot);
+    assert.equal(pending.envelope.state.threads.some(({ id }) => id === thread.thread.id), true);
+    assert.equal(pending.envelope.state.artifacts.filter(({ threadId }) => threadId === thread.thread.id).length, 2);
+    assert.equal(pending.envelope.state.documentDeletionIntents.length, 1);
+    assert.equal(pending.envelope.state.documentDeletionIntents[0].status, "pending");
+    assert.equal(fixture.tombstoned.size, 0);
+
+    armProbeFailure = false;
+    const deleted = await service.deleteThread({ threadId: thread.thread.id }, context());
+    assert.equal(deleted.deleted, true);
+    assert.equal(fixture.tombstoned.size, 2);
   } finally {
     await service.close({ mode: "abort" }).catch(() => {});
   }
@@ -851,6 +938,54 @@ async function pendingCommitRestartRoundTrip(temporaryRoot) {
     );
   } finally {
     fixture.setAvailable(true);
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function pendingCommitWithoutOptionalWorkerDoesNotBlockCoreTraffic(temporaryRoot) {
+  const stateRoot = path.join(temporaryRoot, "pending-commit-worker-absent-startup");
+  const fixture = createDocumentWorkerFixture();
+  const client = fixture.client();
+  const runner = createDocumentRunner(fixture, client);
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot,
+    documentWorkerClient: client,
+    documentWorkerEnabled: true,
+  });
+  let runId;
+  try {
+    const thread = await service.createThread({ title: "Pending optional commit" }, context());
+    const started = await service.startRun(
+      { threadId: thread.thread.id, input: { text: INTERRUPT_PROMPT } },
+      context()
+    );
+    runId = started.run.id;
+    await service.waitForIdle();
+    const before = await persistedState(stateRoot);
+    assert.equal(before.envelope.state.runs.find(({ id }) => id === runId).status, "running");
+    assert.equal(before.envelope.state.documentCommitIntents.length, 1);
+    assert.equal(before.envelope.state.documentCommitIntents[0].status, "pending");
+    await service.close({ mode: "wait" });
+
+    service = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot,
+      documentWorkerEnabled: false,
+    });
+    const recovery = await service.recoverBeforeListen({ timeoutMs: 5_000 });
+    assert.equal(recovery.beforeListen, true);
+    const pending = await persistedState(stateRoot);
+    assert.equal(pending.envelope.state.runs.find(({ id }) => id === runId).status, "running");
+    assert.equal(pending.envelope.state.documentCommitIntents[0].status, "pending");
+    const ordinaryThread = await service.createThread({ title: "Ordinary traffic" }, context());
+    const ordinary = await service.startRun(
+      { threadId: ordinaryThread.thread.id, input: { text: "What is 7 + 8?" } },
+      context()
+    );
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: ordinary.run.id }, context())).run.status, "completed");
+  } finally {
     await service.close({ mode: "abort" }).catch(() => {});
   }
 }
@@ -1033,6 +1168,94 @@ async function legacyV2MigrationRejectsCloudDocumentBytes(temporaryRoot) {
   await service.close({ mode: "abort" }).catch(() => {});
 }
 
+async function compileIssuanceRefreshesOnlyBeforeWorkerIdentity(temporaryRoot) {
+  const stateRoot = path.join(temporaryRoot, "compile-issuance-refresh");
+  const fixture = createDocumentWorkerFixture({ failFirstIssueBeforePersistAndAdvance: true });
+  const client = fixture.client();
+  const runner = createDocumentRunner(fixture, client);
+  const service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot,
+    documentWorkerClient: client,
+    documentWorkerEnabled: true,
+  });
+  try {
+    const thread = await service.createThread({ title: "Compile issuance refresh" }, context());
+    const started = await service.startRun(
+      { threadId: thread.thread.id, input: { text: PRODUCTION_PROMPT } },
+      context()
+    );
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: started.run.id }, context())).run.status, "completed");
+    const issueCalls = fixture.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile/issue");
+    assert.equal(issueCalls.length, 3);
+    assert.equal(issueCalls[0].request.compileAuthorityEpoch, 1);
+    assert.equal(issueCalls[1].request.compileAuthorityEpoch, 1);
+    assert.equal(issueCalls[2].request.compileAuthorityEpoch, 2);
+    assert.equal(issueCalls[0].request.issuanceId, issueCalls[1].request.issuanceId);
+    assert.notEqual(issueCalls[1].request.issuanceId, issueCalls[2].request.issuanceId);
+    const persisted = await persistedState(stateRoot);
+    const intent = persisted.envelope.state.runs.find(({ id }) => id === started.run.id).documentCompileIntent;
+    assert.equal(intent.compileAuthorityEpoch, 2);
+    assert.match(intent.requestId, /^cmp_[a-f0-9]{64}$/u);
+    assert.match(intent.compileAuthorityTokenDigest, /^[a-f0-9]{64}$/u);
+    assertCloudStateContainsNoDocumentCompileCapability(persisted);
+  } finally {
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function compileIssuanceResponseLossReplaysAfterRestart(temporaryRoot) {
+  const stateRoot = path.join(temporaryRoot, "compile-issuance-response-loss");
+  const fixture = createDocumentWorkerFixture();
+  fixture.loseNextIssueResponse();
+  const client = fixture.client();
+  const runner = createDocumentRunner(fixture, client);
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot,
+    documentWorkerClient: client,
+    documentWorkerEnabled: true,
+  });
+  let runId;
+  try {
+    const thread = await service.createThread({ title: "Compile issuance response loss" }, context());
+    const started = await service.startRun(
+      { threadId: thread.thread.id, input: { text: PRODUCTION_PROMPT } },
+      context()
+    );
+    runId = started.run.id;
+    await service.waitForIdle();
+    const before = await persistedState(stateRoot);
+    const beforeIntent = before.envelope.state.runs.find(({ id }) => id === runId).documentCompileIntent;
+    assert.match(beforeIntent.requestId, /^cmp_[a-f0-9]{64}$/u);
+    assert.match(beforeIntent.compileAuthorityTokenDigest, /^[a-f0-9]{64}$/u);
+    assert.equal(fixture.issued.size, 1);
+    assertCloudStateContainsNoDocumentCompileCapability(before);
+    await service.close({ mode: "wait" });
+
+    service = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: runner,
+      stateRoot,
+      documentWorkerClient: client,
+      documentWorkerEnabled: true,
+    });
+    const recovered = (await service.getRunStatus({ runId }, context())).run;
+    assert.equal(recovered.status, "completed");
+    const issueCalls = fixture.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile/issue");
+    assert.equal(issueCalls.length, 2);
+    assert.equal(issueCalls[0].request.issuanceId, issueCalls[1].request.issuanceId);
+    assert.equal(fixture.issued.size, 1);
+    const after = await persistedState(stateRoot);
+    const afterIntent = after.envelope.state.runs.find(({ id }) => id === runId).documentCompileIntent;
+    assert.match(afterIntent.requestId, /^cmp_/u);
+    assert.equal(afterIntent.compileAuthorityTokenDigest, beforeIntent.compileAuthorityTokenDigest);
+    assertCloudStateContainsNoDocumentCompileCapability(after);
+  } finally {
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
 async function main() {
   assert.deepEqual(classifyIntegrationDocumentArtifactIntent(PRODUCTION_PROMPT), {
     schemaVersion: "aginti-integration-document-artifacts-v1",
@@ -1048,14 +1271,18 @@ async function main() {
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-document-session-broker-"));
   try {
     await committedContinuationRoundTrip(temporaryRoot);
+    await compileIssuanceRefreshesOnlyBeforeWorkerIdentity(temporaryRoot);
+    await compileIssuanceResponseLossReplaysAfterRestart(temporaryRoot);
     await mismatchedCommittedObjectLinkageIsRejected(temporaryRoot);
     await cancellationBeforePairedCaptureRoundTrip(temporaryRoot);
     await cancellationAfterPairedCaptureDeletesWorkerGroup(temporaryRoot);
     await cancellationAfterPairedCaptureReplaysDeletionAfterRestart(temporaryRoot);
     await cancellationAfterExpiredStageAcceptsAuthenticatedAbsence(temporaryRoot);
-    await threadDeletionAcceptsAuthenticatedAbsence(temporaryRoot);
+    await threadDeletionRejectsGenericManifestAbsence(temporaryRoot);
+    await threadDeletionKeepsIntentWhenAbsenceProbeIsUnavailable(temporaryRoot);
     await cancellationAfterPublishedCommitCompletesTruthfully(temporaryRoot);
     await pendingCommitRestartRoundTrip(temporaryRoot);
+    await pendingCommitWithoutOptionalWorkerDoesNotBlockCoreTraffic(temporaryRoot);
     await expiredStagedPairFailsTruthfullyWithoutThreadLock(temporaryRoot);
     await committedCrashBoundariesCompleteExactlyOnce(temporaryRoot);
     await legacyV2MigrationRejectsCloudDocumentBytes(temporaryRoot);

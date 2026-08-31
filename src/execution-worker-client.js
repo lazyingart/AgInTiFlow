@@ -708,6 +708,9 @@ export async function loadExecutionWorkerSystemdCredential(...args) {
     if (!token || token.includes("\n")) {
       fail("EXECUTION_CREDENTIAL_INVALID", "execution worker credential must contain exactly one line.");
     }
+    if (token !== token.trim()) {
+      fail("EXECUTION_CREDENTIAL_INVALID", "execution worker credential must not contain leading or trailing whitespace.");
+    }
     return validateExecutionWorkerBearerToken(token);
   } catch (error) {
     if (error instanceof ExecutionWorkerClientError) throw error;
@@ -938,10 +941,29 @@ export function assertExecutionWorkerClient(value, { requireSystemdCredential = 
 }
 
 export async function createSystemdExecutionWorkerClient(...args) {
-  if (args.length !== 0) {
+  if (args.length > 1) {
     fail("EXECUTION_CREDENTIAL_SOURCE_FORBIDDEN", "production execution worker client accepts no overrides.");
   }
-  const token = await loadExecutionWorkerSystemdCredential();
+  let token;
+  if (args.length === 0) {
+    token = await loadExecutionWorkerSystemdCredential();
+  } else {
+    if (!isPlainObject(args[0])) {
+      fail("EXECUTION_CREDENTIAL_SOURCE_FORBIDDEN", "production execution worker client credential binding is invalid.");
+    }
+    const keys = Reflect.ownKeys(args[0]);
+    const descriptor = Object.getOwnPropertyDescriptor(args[0], "token");
+    if (
+      keys.length !== 1 ||
+      keys[0] !== "token" ||
+      !descriptor?.enumerable ||
+      !Object.prototype.hasOwnProperty.call(descriptor, "value")
+    ) {
+      fail("EXECUTION_CREDENTIAL_SOURCE_FORBIDDEN", "production execution worker client accepts no transport overrides.");
+    }
+    const options = args[0];
+    token = validateExecutionWorkerBearerToken(options.token);
+  }
   const agent = new http.Agent({ keepAlive: true, maxSockets: 2, maxFreeSockets: 1, timeout: 5_000 });
   return createClient(createHttpRpc(token, agent), "systemd-loadcredential-fixed", () => agent.destroy());
 }

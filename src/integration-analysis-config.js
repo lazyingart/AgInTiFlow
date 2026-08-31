@@ -19,8 +19,8 @@ import {
   INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS,
 } from "./integration-grounded-search.js";
 import {
-  INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
   INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
+  validateIntegrationDocumentWorkerEndpoint,
 } from "./integration-document-worker-client.js";
 import { INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES } from "./integration-analysis-state-persistence.js";
 import { INTEGRATION_RPC_PATH_LIST, INTEGRATION_RPC_PATHS } from "./integration-policy.js";
@@ -241,11 +241,16 @@ export function validateIntegrationAnalysisServiceConfig(value) {
       documentWorker = Object.freeze({ enabled: false });
     } else {
       exactObject(worker, DOCUMENT_WORKER_KEYS, DOCUMENT_WORKER_KEYS, "documentWorker");
-      fixed(worker.endpoint, INTEGRATION_DOCUMENT_WORKER_ENDPOINT, "documentWorker.endpoint");
+      let endpoint;
+      try {
+        endpoint = validateIntegrationDocumentWorkerEndpoint(worker.endpoint);
+      } catch {
+        fail("ANALYSIS_CONFIG_INVALID", "documentWorker.endpoint must be a private loopback route.");
+      }
       fixed(worker.timeoutMs, INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS, "documentWorker.timeoutMs");
       documentWorker = Object.freeze({
         enabled: true,
-        endpoint: INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
+        endpoint,
         timeoutMs: INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
       });
     }
@@ -405,6 +410,9 @@ function parseIntegrationAnalysisCredential(raw, label) {
   if (!token || token.includes("\n")) {
     fail("ANALYSIS_CREDENTIAL_INVALID", `${label} must contain exactly one line.`);
   }
+  if (token !== token.trim()) {
+    fail("ANALYSIS_CREDENTIAL_INVALID", `${label} must not contain leading or trailing whitespace.`);
+  }
   try {
     return validateIntegrationBearerToken(token, { field: label });
   } catch {
@@ -412,12 +420,29 @@ function parseIntegrationAnalysisCredential(raw, label) {
   }
 }
 
+function parseIntegrationAnalysisVisibleAsciiCredential(raw, label) {
+  if (typeof raw !== "string" || raw.includes("\u0000") || raw.includes("\r")) {
+    fail("ANALYSIS_CREDENTIAL_INVALID", `${label} has invalid framing.`);
+  }
+  const token = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  if (!token || token.includes("\n")) {
+    fail("ANALYSIS_CREDENTIAL_INVALID", `${label} must contain exactly one line.`);
+  }
+  if (token !== token.trim()) {
+    fail("ANALYSIS_CREDENTIAL_INVALID", `${label} must not contain leading or trailing whitespace.`);
+  }
+  if (token.length < 16 || Buffer.byteLength(token, "utf8") > 512 || !/^[\x21-\x7e]+$/u.test(token)) {
+    fail("ANALYSIS_CREDENTIAL_INVALID", `${label} must use 16-512 visible ASCII characters without whitespace.`);
+  }
+  return token;
+}
+
 export function parseIntegrationAnalysisLocalModelCredential(raw) {
   return parseIntegrationAnalysisCredential(raw, "LocalLLM model credential");
 }
 
 export function parseIntegrationAnalysisGroundedSearchCredential(raw) {
-  return parseIntegrationAnalysisCredential(raw, "LocalLLM search credential");
+  return parseIntegrationAnalysisVisibleAsciiCredential(raw, "LocalLLM search credential");
 }
 
 export function parseIntegrationAnalysisDocumentWorkerCredential(raw) {
@@ -495,6 +520,10 @@ async function loadIntegrationAnalysisCredential({ credentialPath, label, parse 
 }
 
 export function isMissingIntegrationAnalysisDocumentWorkerCredentialError(error) {
+  return error instanceof IntegrationServiceConfigError && error.code === "ANALYSIS_CREDENTIAL_MISSING";
+}
+
+export function isMissingIntegrationAnalysisOptionalCredentialError(error) {
   return error instanceof IntegrationServiceConfigError && error.code === "ANALYSIS_CREDENTIAL_MISSING";
 }
 

@@ -45,7 +45,7 @@ export function testDocumentWorkerConfig(creationEnabled) {
     schemaVersion: DOCUMENT_WORKER_SERVICE_CONFIG_SCHEMA_VERSION,
     listen: Object.freeze({ host: DOCUMENT_WORKER_LISTEN_HOST, port: DOCUMENT_WORKER_LISTEN_PORT }),
     stateRoot: DOCUMENT_WORKER_STATE_ROOT,
-    creation: Object.freeze({ enabled: creationEnabled, maximumConcurrentCompiles: 2 }),
+    creation: Object.freeze({ enabled: creationEnabled, maximumConcurrentCompiles: 1 }),
   });
 }
 
@@ -59,14 +59,49 @@ export function testRequirements(minimumFigureCount = 0) {
 
 export function testCompileRequest(label = "default", overrides = {}) {
   const source = overrides.source ?? TEST_SOURCE;
+  const compileAuthorityEpoch = overrides.compileAuthorityEpoch ?? 1;
+  const issuanceId = overrides.issuanceId ??
+    `iss_${compileAuthorityEpoch.toString(16).padStart(16, "0")}_${sha256(Buffer.from(`issue:${label}`, "utf8"))}`;
+  const compileAuthorityToken = overrides.compileAuthorityToken ??
+    `wca_${crypto.createHash("sha256").update(`token:${label}`, "utf8").digest("base64url")}`;
   return Object.freeze({
     schemaVersion: DOCUMENT_WORKER_SCHEMA_VERSIONS.compileRequest,
+    issuanceId,
     requestId: overrides.requestId ?? fixedRequestId("cmp_", label),
+    compileAuthorityEpoch,
+    compileAuthorityToken,
     scope: overrides.scope ?? TEST_SCOPE,
     filename: overrides.filename ?? `${label.replace(/[^A-Za-z0-9_-]/gu, "-") || "document"}.tex`,
     source,
     sourceSha256: overrides.sourceSha256 ?? sha256(Buffer.from(source, "utf8")),
     requirements: overrides.requirements ?? testRequirements(0),
+  });
+}
+
+export function testCompileIssueRequest(label = "default", overrides = {}) {
+  const source = overrides.source ?? TEST_SOURCE;
+  const compileAuthorityEpoch = overrides.compileAuthorityEpoch ?? 1;
+  return Object.freeze({
+    schemaVersion: DOCUMENT_WORKER_SCHEMA_VERSIONS.compileIssueRequest,
+    issuanceId: overrides.issuanceId ??
+      `iss_${compileAuthorityEpoch.toString(16).padStart(16, "0")}_${sha256(Buffer.from(`issue:${label}`, "utf8"))}`,
+    compileAuthorityEpoch,
+    scope: overrides.scope ?? TEST_SCOPE,
+    filename: overrides.filename ?? `${label.replace(/[^A-Za-z0-9_-]/gu, "-") || "document"}.tex`,
+    sourceSha256: overrides.sourceSha256 ?? sha256(Buffer.from(source, "utf8")),
+    requirements: overrides.requirements ?? testRequirements(0),
+  });
+}
+
+export async function issueTestCompileRequest(store, label = "default", overrides = {}) {
+  const issue = testCompileIssueRequest(label, overrides);
+  const authority = await store.issueCompile(issue);
+  return testCompileRequest(label, {
+    ...overrides,
+    issuanceId: authority.issuanceId,
+    requestId: authority.requestId,
+    compileAuthorityEpoch: authority.compileAuthorityEpoch,
+    compileAuthorityToken: authority.compileAuthorityToken,
   });
 }
 

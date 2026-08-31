@@ -44,6 +44,7 @@ import {
   createTestOnlyIntegrationAnalysisServerLifecycle,
   integrationAnalysisListenOptions,
   integrationAnalysisVisionEligibleForStatePersistenceMode,
+  assertDistinctIntegrationAnalysisCredentials,
   composeProductionIntegrationAnalysisServer,
 } from "../src/integration-analysis-server.js";
 import {
@@ -81,6 +82,23 @@ const IDEMPOTENCY_KEY = "analysis-create-0001";
 const THREAD_ID = "thr_12345678-1234-4123-8123-123456789abc";
 const AT = "2026-08-24T00:00:00.000Z";
 const ZERO_DIGEST = "0".repeat(64);
+
+const credentialRoles = ["model", "trustedBff", "groundedSearch", "documentEdge", "executionWorker"];
+const distinctCredentials = Object.fromEntries(
+  credentialRoles.map((role, index) => [role, `${String(index + 1).repeat(2)}${role}-credential-${"x".repeat(32)}`])
+);
+assert.equal(assertDistinctIntegrationAnalysisCredentials(distinctCredentials), true);
+for (let left = 0; left < credentialRoles.length; left += 1) {
+  for (let right = left + 1; right < credentialRoles.length; right += 1) {
+    const collided = { ...distinctCredentials };
+    collided[credentialRoles[right]] = collided[credentialRoles[left]];
+    assert.throws(
+      () => assertDistinctIntegrationAnalysisCredentials(collided),
+      (error) => error?.code === "ANALYSIS_CREDENTIAL_INVALID",
+      `credential equality ${credentialRoles[left]}=${credentialRoles[right]} must fail closed`
+    );
+  }
+}
 
 function validConfig(overrides = {}) {
   return {
@@ -575,7 +593,24 @@ assert.deepEqual(parseIntegrationAnalysisCliArguments(["doctor"]), {
 });
 assert.equal(parseIntegrationAnalysisLocalModelCredential(`${TOKEN}\n`), TOKEN);
 assert.equal(parseIntegrationAnalysisGroundedSearchCredential(`${TOKEN}\n`), TOKEN);
+assert.equal(parseIntegrationAnalysisGroundedSearchCredential(`!search-v2-visible-ascii~key=\n`), "!search-v2-visible-ascii~key=");
 assert.equal(parseIntegrationAnalysisDocumentWorkerCredential(`${TOKEN}\n`), TOKEN);
+assert.throws(
+  () => parseIntegrationAnalysisGroundedSearchCredential(` ${TOKEN}\n`),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
+assert.throws(
+  () => parseIntegrationAnalysisGroundedSearchCredential(`search-v2-é-${TOKEN}\n`),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
+assert.throws(
+  () => parseIntegrationAnalysisGroundedSearchCredential(`short-key\n`),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
+assert.throws(
+  () => parseIntegrationAnalysisDocumentWorkerCredential(`${TOKEN} \n`),
+  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
 assert.throws(
   () => parseIntegrationAnalysisDocumentWorkerCredential(`${TOKEN}\nextra`),
   (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
@@ -628,14 +663,6 @@ assert.equal(
   publicIntegrationAnalysisServiceConfig(enabledSearchConfig).groundedSearchCredentialName,
   INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME
 );
-await assert.rejects(
-  () => composeProductionIntegrationAnalysisServer({
-    config: enabledSearchConfig,
-    trustedPrincipalProxyClient: {},
-    localModelApiKey: TOKEN,
-  }),
-  (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
-);
 const disabledDocumentWorkerConfig = validateIntegrationAnalysisServiceConfig(validConfig({
   documentWorker: { enabled: false },
 }));
@@ -667,7 +694,7 @@ assert.throws(
 );
 assert.deepEqual(enabledDocumentWorkerConfig.documentWorker, {
   enabled: true,
-  endpoint: "http://127.0.0.1:18120",
+  endpoint: "http://127.0.0.1:18121",
   timeoutMs: 120_000,
 });
 assert.equal(
@@ -681,19 +708,29 @@ await assert.rejects(
     trustedPrincipalProxyClient: trustedBffClient,
     localModelApiKey: "B".repeat(48),
     documentWorkerCredential: TOKEN,
+    executionWorkerCredential: "C".repeat(48),
   }),
   (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
 );
-assert.throws(
-  () => validateIntegrationAnalysisServiceConfig(validConfig({
-    documentWorker: {
-      enabled: true,
-      endpoint: "http://127.0.0.1:18121",
-      timeoutMs: INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
-    },
-  })),
-  (error) => error.code === "ANALYSIS_CONFIG_LOCKED"
-);
+for (const endpoint of [
+  "http://127.0.0.1:18122",
+  "http://127.0.0.2:18121",
+  "http://127.0.0.1:18121/path",
+  "http://user@127.0.0.1:18121",
+  "https://127.0.0.1:18121",
+  "http://127.0.0.1:80",
+]) {
+  assert.throws(
+    () => validateIntegrationAnalysisServiceConfig(validConfig({
+      documentWorker: {
+        enabled: true,
+        endpoint,
+        timeoutMs: INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS,
+      },
+    })),
+    (error) => error.code === "ANALYSIS_CONFIG_INVALID"
+  );
+}
 assert.throws(
   () => validateIntegrationAnalysisServiceConfig(validConfig({
     documentWorker: {
@@ -710,6 +747,7 @@ await assert.rejects(
     trustedPrincipalProxyClient: {},
     localModelApiKey: TOKEN,
     documentWorkerCredential: `${TOKEN}B`,
+    executionWorkerCredential: "C".repeat(48),
   }),
   (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
 );
@@ -719,6 +757,7 @@ await assert.rejects(
     trustedPrincipalProxyClient: {},
     localModelApiKey: TOKEN,
     documentWorkerCredential: TOKEN,
+    executionWorkerCredential: "C".repeat(48),
   }),
   (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
 );
@@ -728,6 +767,7 @@ await assert.rejects(
     trustedPrincipalProxyClient: {},
     localModelApiKey: TOKEN,
     groundedSearchApiKey: TOKEN,
+    executionWorkerCredential: "C".repeat(48),
   }),
   (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
 );
@@ -737,8 +777,18 @@ await assert.rejects(
     trustedPrincipalProxyClient: {},
     localModelApiKey: TOKEN,
     groundedSearchApiKey: TOKEN,
+    executionWorkerCredential: "C".repeat(48),
   }),
   (error) => error.code === "ANALYSIS_CREDENTIAL_INVALID"
+);
+await assert.rejects(
+  () => composeProductionIntegrationAnalysisServer({
+    config: validateIntegrationAnalysisServiceConfig(validConfig()),
+    trustedPrincipalProxyClient: {},
+    localModelApiKey: TOKEN,
+  }),
+  (error) => error.code === "ANALYSIS_SERVER_INVALID",
+  "production composition must require the already-validated execution-worker credential"
 );
 
 const serverCompositionSource = await fs.readFile(
@@ -754,6 +804,26 @@ assert.match(
   /loadIntegrationAnalysisDocumentWorkerCredential\(\)\.catch\(\(error\)\s*=>\s*\{[\s\S]*?isMissingIntegrationAnalysisDocumentWorkerCredentialError\(error\)[\s\S]*?throw error/u,
   "only an explicitly absent optional worker credential may degrade startup"
 );
+assert.match(
+  cliCompositionSource,
+  /loadIntegrationAnalysisGroundedSearchCredential\(\)\.catch\(\(error\)\s*=>\s*\{[\s\S]*?isMissingIntegrationAnalysisOptionalCredentialError\(error\)[\s\S]*?throw error/u,
+  "only an explicitly absent optional grounded-search credential may degrade startup"
+);
+assert.match(
+  serverCompositionSource,
+  /createSystemdIntegrationAnalysisCoordinator\(\{[\s\S]*?executionWorkerCredential:\s*options\.executionWorkerCredential/u,
+  "production composition must bind the already-validated execution-worker credential into the coordinator"
+);
+assert.match(
+  serverCompositionSource,
+  /executionWorker:\s*options\.executionWorkerCredential/u,
+  "production composition must receive and distinct-check the execution-worker credential"
+);
+assert.match(
+  cliCompositionSource,
+  /executionWorkerCredential,\s*\n\s*\.\.\.\(groundedSearchApiKey/u,
+  "CLI check/serve must provision the execution-worker credential into production composition"
+);
 assert.equal(
   serverCompositionSource.match(/await planner\.activate\(\)/gu)?.length,
   1,
@@ -761,8 +831,8 @@ assert.equal(
 );
 assert.match(
   serverCompositionSource,
-  /createIntegrationAnalysisSessionService\(\{[\s\S]*?plannerActivation,[\s\S]*?documentWorkerClient/u,
-  "production sessions must receive the branded planner activation"
+  /const activatedDocumentWorkerClient = plannerActivation\.documentWorker === undefined[\s\S]*?documentWorkerClient:\s*activatedDocumentWorkerClient/u,
+  "production sessions must receive the document client only when the optional role activated ready"
 );
 assert.doesNotMatch(
   serverCompositionSource,
@@ -771,8 +841,8 @@ assert.doesNotMatch(
 );
 assert.match(
   serverCompositionSource,
-  /groundedSearchConfig:[\s\S]*?apiKey:\s*options\.groundedSearchApiKey/u,
-  "grounded search must use its distinct systemd credential"
+  /searchEnabled && searchCredentialPresent[\s\S]*?groundedSearchConfig:[\s\S]*?apiKey:\s*options\.groundedSearchApiKey/u,
+  "grounded search must use a distinct systemd credential only after it exists"
 );
 assert.match(
   serverCompositionSource,

@@ -18,14 +18,30 @@ import {
   validateIntegrationRunId,
   validateIntegrationThreadId,
 } from "./integration-policy.js";
+import {
+  createDocumentWorkerCompileIssuanceId,
+  digestDocumentWorkerCompileContent,
+  digestDocumentWorkerCompileOperation,
+  validateDocumentWorkerCompileRequest,
+} from "./integration-document-worker-contract.js";
 
 export const INTEGRATION_DOCUMENT_WORKER_SCHEMA_VERSION = "aginti-document-worker-client-v1";
 export const INTEGRATION_DOCUMENT_WORKER_ACTIVATION_SCHEMA_VERSION =
   "aginti-document-worker-client-activation-v1";
 export const INTEGRATION_DOCUMENT_WORKER_CAPABILITIES_SCHEMA_VERSION =
-  "aginti-document-worker-readiness-response-v1";
+  "aginti-document-worker-readiness-response-v2";
 export const INTEGRATION_DOCUMENT_WORKER_COMPILE_REQUEST_SCHEMA_VERSION =
-  "aginti-document-worker-compile-request-v1";
+  "aginti-document-worker-compile-request-v4";
+export const INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_REQUEST_SCHEMA_VERSION =
+  "aginti-document-worker-compile-issue-request-v2";
+export const INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_RESPONSE_SCHEMA_VERSION =
+  "aginti-document-worker-compile-issue-response-v2";
+export const INTEGRATION_DOCUMENT_WORKER_COMPILE_INTENT_CANDIDATE_SCHEMA_VERSION =
+  "aginti-document-worker-compile-intent-candidate-v1";
+export const INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_INTENT_SCHEMA_VERSION =
+  "aginti-document-worker-compile-issue-intent-v1";
+export const INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_REFRESH_SCHEMA_VERSION =
+  "aginti-document-worker-compile-issue-refresh-v1";
 export const INTEGRATION_DOCUMENT_WORKER_COMPILE_RESPONSE_SCHEMA_VERSION =
   "aginti-document-worker-compile-response-v1";
 export const INTEGRATION_DOCUMENT_WORKER_READINESS_REQUEST_SCHEMA_VERSION =
@@ -46,7 +62,7 @@ export const INTEGRATION_DOCUMENT_WORKER_RECEIPT_SCHEMA_VERSION =
   "aginti-document-worker-receipt-v1";
 export const INTEGRATION_DOCUMENT_WORKER_SCOPE_SCHEMA_VERSION =
   "aginti-document-worker-scope-v1";
-export const INTEGRATION_DOCUMENT_WORKER_ENDPOINT = "http://127.0.0.1:18120";
+export const INTEGRATION_DOCUMENT_WORKER_ENDPOINT = "http://127.0.0.1:18121";
 export const INTEGRATION_DOCUMENT_WORKER_TOOL_NAME = "compile_tex_document";
 export const INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS = 120_000;
 export const INTEGRATION_DOCUMENT_WORKER_LIMITS = Object.freeze({
@@ -54,10 +70,11 @@ export const INTEGRATION_DOCUMENT_WORKER_LIMITS = Object.freeze({
   maximumPdfBytes: MAX_INTEGRATION_FILE_ARTIFACT_BYTES,
   maximumLogBytes: 512 * 1024,
   maximumWallTimeMs: 30_000,
-  maximumConcurrentCompiles: 2,
+  maximumConcurrentCompiles: 1,
 });
 export const INTEGRATION_DOCUMENT_WORKER_ROUTES = Object.freeze({
   readiness: "/artifact/v1/readiness",
+  compileIssue: "/artifact/v1/compile/issue",
   compile: "/artifact/v1/compile",
   commit: "/artifact/v1/commit",
   content: "/artifact/v1/content",
@@ -172,12 +189,7 @@ function exactArray(value, length, label) {
   return value;
 }
 
-function normalizeEndpoint(value) {
-  if (value !== INTEGRATION_DOCUMENT_WORKER_ENDPOINT) {
-    fail("DOCUMENT_WORKER_CONFIGURATION_INVALID", "Document artifacts require the fixed private loopback route.", {
-      status: 500,
-    });
-  }
+export function validateIntegrationDocumentWorkerEndpoint(value) {
   let parsed;
   try {
     parsed = new URL(value);
@@ -188,20 +200,44 @@ function normalizeEndpoint(value) {
     });
   }
   if (
+    parsed.origin !== INTEGRATION_DOCUMENT_WORKER_ENDPOINT ||
+    parsed.href !== `${INTEGRATION_DOCUMENT_WORKER_ENDPOINT}/`
+  ) {
+    fail("DOCUMENT_WORKER_CONFIGURATION_INVALID", "Document worker endpoint is not the exact private route.", {
+      status: 500,
+    });
+  }
+  return parsed.origin;
+}
+
+function normalizeEndpoint(value, { testOnly }) {
+  if (!testOnly) return validateIntegrationDocumentWorkerEndpoint(value);
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (error) {
+    fail("DOCUMENT_WORKER_CONFIGURATION_INVALID", "Document worker test endpoint is invalid.", {
+      status: 500,
+      cause: error,
+    });
+  }
+  if (
     parsed.protocol !== "http:" ||
     parsed.hostname !== "127.0.0.1" ||
-    parsed.port !== "18120" ||
+    !/^(?:[1-9][0-9]{3,4})$/u.test(parsed.port) ||
+    Number(parsed.port) < 1024 ||
+    Number(parsed.port) > 65535 ||
     parsed.pathname !== "/" ||
     parsed.username ||
     parsed.password ||
     parsed.search ||
     parsed.hash
   ) {
-    fail("DOCUMENT_WORKER_CONFIGURATION_INVALID", "Document worker endpoint is not the exact private route.", {
+    fail("DOCUMENT_WORKER_CONFIGURATION_INVALID", "Document worker test endpoint is not loopback-only.", {
       status: 500,
     });
   }
-  return value;
+  return parsed.origin;
 }
 
 function normalizeCredential(value) {
@@ -476,14 +512,32 @@ function translateWorkerCode(code, status) {
 function validateCapabilities(value) {
   const capability = exactObject(
     value,
-    ["schemaVersion", "ready", "creationEnabled", "protocols", "compiler", "storage", "digest"],
-    ["schemaVersion", "ready", "creationEnabled", "protocols", "compiler", "storage", "digest"],
+    [
+      "schemaVersion",
+      "ready",
+      "creationEnabled",
+      "compileAuthorityEpoch",
+      "protocols",
+      "compiler",
+      "storage",
+      "digest",
+    ],
+    [
+      "schemaVersion",
+      "ready",
+      "creationEnabled",
+      "compileAuthorityEpoch",
+      "protocols",
+      "compiler",
+      "storage",
+      "digest",
+    ],
     "document worker capabilities"
   );
   const protocols = exactObject(
     capability.protocols,
-    ["compile", "commit", "content", "delete"],
-    ["compile", "commit", "content", "delete"],
+    ["compileIssue", "compile", "commit", "content", "delete"],
+    ["compileIssue", "compile", "commit", "content", "delete"],
     "document worker protocols"
   );
   if (typeof capability.creationEnabled !== "boolean") {
@@ -519,6 +573,9 @@ function validateCapabilities(value) {
   if (
     capability.schemaVersion !== INTEGRATION_DOCUMENT_WORKER_CAPABILITIES_SCHEMA_VERSION ||
     capability.ready !== true ||
+    !Number.isSafeInteger(capability.compileAuthorityEpoch) ||
+    capability.compileAuthorityEpoch < 1 ||
+    protocols.compileIssue !== INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_REQUEST_SCHEMA_VERSION ||
     protocols.compile !== INTEGRATION_DOCUMENT_WORKER_COMPILE_REQUEST_SCHEMA_VERSION ||
     protocols.commit !== INTEGRATION_DOCUMENT_WORKER_COMMIT_REQUEST_SCHEMA_VERSION ||
     protocols.content !== INTEGRATION_DOCUMENT_WORKER_CONTENT_REQUEST_SCHEMA_VERSION ||
@@ -701,7 +758,7 @@ function parseCompileResponse(value, request, scope) {
     "document worker compile response"
   );
   const receipt = validateIntegrationDocumentWorkerReceipt(response.receipt);
-  const requestDigest = contractDigest(request);
+  const requestDigest = digestDocumentWorkerCompileOperation(request);
   const sourceBytes = Buffer.byteLength(request.source, "utf8");
   if (
     response.schemaVersion !== INTEGRATION_DOCUMENT_WORKER_COMPILE_RESPONSE_SCHEMA_VERSION ||
@@ -956,7 +1013,7 @@ function createClient(optionsValue, { testOnly }) {
     "document worker client configuration",
     { code: "DOCUMENT_WORKER_CONFIGURATION_INVALID", status: 500 }
   );
-  const endpoint = normalizeEndpoint(options.endpoint);
+  const endpoint = normalizeEndpoint(options.endpoint, { testOnly });
   const credential = normalizeCredential(options.credential);
   const timeoutMs = normalizeTimeout(options.timeoutMs);
   const fetchImpl = testOnly ? options.fetchImpl : globalThis.fetch;
@@ -1022,6 +1079,42 @@ function createClient(optionsValue, { testOnly }) {
     }
   }
 
+  async function fetchCurrentCapabilities(signalValue) {
+    const signal = normalizeSignal(signalValue);
+    const abort = requestAbort(signal, timeoutMs);
+    try {
+      const readinessRequest = Object.freeze({
+        schemaVersion: INTEGRATION_DOCUMENT_WORKER_READINESS_REQUEST_SCHEMA_VERSION,
+      });
+      const response = await fetchImpl(`${endpoint}${INTEGRATION_DOCUMENT_WORKER_ROUTES.readiness}`, {
+        method: "POST",
+        headers: requestHeaders(),
+        body: requestBody(readinessRequest),
+        cache: "no-store",
+        credentials: "omit",
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+        signal: abort.signal,
+      });
+      if (response.status !== 200) {
+        const code = await workerError(response, abort.signal);
+        throw translateWorkerCode(code, response.status);
+      }
+      return validateCapabilities(await readJsonResponse(response, abort.signal, 16 * 1024));
+    } catch (error) {
+      if (error instanceof IntegrationDocumentWorkerError) throw error;
+      if (signal?.aborted) {
+        fail("ANALYSIS_CANCELLED", "Document worker readiness was cancelled.", { status: 499, cause: error });
+      }
+      fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "The private workstation document worker is unavailable.", {
+        status: 503,
+        cause: error,
+      });
+    } finally {
+      abort.cleanup();
+    }
+  }
+
   async function activate(optionsValue = {}) {
     const options = exactObject(optionsValue, ["signal"], [], "document worker activation options", {
       code: "DOCUMENT_WORKER_CONFIGURATION_INVALID",
@@ -1031,32 +1124,15 @@ function createClient(optionsValue, { testOnly }) {
     if (activation) return activation;
     if (activationPromise) return activationPromise;
     activationPromise = (async () => {
-      const abort = requestAbort(signal, timeoutMs);
       try {
-        const readinessRequest = Object.freeze({
-          schemaVersion: INTEGRATION_DOCUMENT_WORKER_READINESS_REQUEST_SCHEMA_VERSION,
-        });
-        const response = await fetchImpl(`${endpoint}${INTEGRATION_DOCUMENT_WORKER_ROUTES.readiness}`, {
-          method: "POST",
-          headers: requestHeaders(),
-          body: requestBody(readinessRequest),
-          cache: "no-store",
-          credentials: "omit",
-          redirect: "error",
-          referrerPolicy: "no-referrer",
-          signal: abort.signal,
-        });
-        if (response.status !== 200) {
-          const code = await workerError(response, abort.signal);
-          throw translateWorkerCode(code, response.status);
-        }
-        const capabilities = validateCapabilities(await readJsonResponse(response, abort.signal, 16 * 1024));
+        const capabilities = await fetchCurrentCapabilities(signal);
         const unsigned = Object.freeze({
           schemaVersion: INTEGRATION_DOCUMENT_WORKER_ACTIVATION_SCHEMA_VERSION,
           owner: "aginti",
           authority: "workstation-document-worker",
           ready: true,
           creationEnabled: capabilities.creationEnabled,
+          compileAuthorityEpoch: capabilities.compileAuthorityEpoch,
           additive: true,
           privateLoopback: true,
           credentialRequired: true,
@@ -1082,8 +1158,6 @@ function createClient(optionsValue, { testOnly }) {
           status: 503,
           cause: error,
         });
-      } finally {
-        abort.cleanup();
       }
     })().finally(() => {
       activationPromise = null;
@@ -1092,7 +1166,17 @@ function createClient(optionsValue, { testOnly }) {
   }
 
   async function compile(scopeValue, inputValue, optionsValue = {}) {
-    const currentActivation = await activate(optionsValue.signal === undefined ? {} : { signal: optionsValue.signal });
+    const compileOptions = exactObject(
+      optionsValue,
+      ["signal", "authorizeRequest"],
+      [],
+      "document compile options",
+      { code: "DOCUMENT_WORKER_INVALID", status: 400 }
+    );
+    if (compileOptions.authorizeRequest !== undefined && typeof compileOptions.authorizeRequest !== "function") {
+      fail("DOCUMENT_WORKER_INVALID", "Document compile request authorizer is invalid.", { status: 400 });
+    }
+    const currentActivation = await activate(compileOptions.signal === undefined ? {} : { signal: compileOptions.signal });
     if (currentActivation.creationEnabled !== true) {
       fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "Workstation document creation is not enabled.", {
         status: 503,
@@ -1106,24 +1190,188 @@ function createClient(optionsValue, { testOnly }) {
     const filename = safeFilename(input.filename);
     const source = safeSource(input.source);
     const requirements = normalizeIntegrationDocumentCompileRequirements(input.requirements);
+    const currentCapabilities = await fetchCurrentCapabilities(compileOptions.signal);
+    if (currentCapabilities.creationEnabled !== true) {
+      fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "Workstation document creation is not enabled.", {
+        status: 503,
+      });
+    }
     const sourceSha256 = crypto.createHash("sha256").update(source, "utf8").digest("hex");
-    const requestId = `cmp_${contractDigest({
-      schemaVersion: "aginti-document-worker-compile-id-v1",
-      scope,
-      filename,
-      sourceSha256,
-      requirementsDigest: contractDigest(requirements),
-    })}`;
-    const request = Object.freeze({
-      schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_REQUEST_SCHEMA_VERSION,
-      requestId,
+    const intentCandidate = Object.freeze({
+      schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_INTENT_CANDIDATE_SCHEMA_VERSION,
+      compileAuthorityEpoch: currentCapabilities.compileAuthorityEpoch,
       scope,
       filename,
       source,
       sourceSha256,
       requirements,
     });
-    const abort = requestAbort(normalizeSignal(optionsValue.signal), timeoutMs);
+    const contentDigest = digestDocumentWorkerCompileContent(intentCandidate);
+    let request = null;
+    let issueIntent = null;
+    if (compileOptions.authorizeRequest !== undefined) {
+      const resolved = await compileOptions.authorizeRequest(intentCandidate);
+      if (resolved?.schemaVersion === INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_INTENT_SCHEMA_VERSION) {
+        const candidate = exactObject(
+          resolved,
+          ["schemaVersion", "issuanceId", "compileAuthorityEpoch", "contentDigest"],
+          ["schemaVersion", "issuanceId", "compileAuthorityEpoch", "contentDigest"],
+          "document compile issue intent"
+        );
+        if (
+          !/^iss_[a-f0-9]{16}_[a-f0-9]{64}$/u.test(candidate.issuanceId) ||
+          !Number.isSafeInteger(candidate.compileAuthorityEpoch) ||
+          candidate.compileAuthorityEpoch < 1 ||
+          candidate.compileAuthorityEpoch > currentCapabilities.compileAuthorityEpoch ||
+          candidate.contentDigest !== contentDigest
+        ) {
+          fail("DOCUMENT_WORKER_INVALID", "Document compile issue intent is invalid.", { status: 409 });
+        }
+        issueIntent = Object.freeze({ ...candidate });
+      } else if (resolved !== null) {
+        request = validateDocumentWorkerCompileRequest(resolved);
+      }
+    }
+    if (request === null) {
+      if (issueIntent === null) {
+        issueIntent = Object.freeze({
+          schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_INTENT_SCHEMA_VERSION,
+          issuanceId: createDocumentWorkerCompileIssuanceId(currentCapabilities.compileAuthorityEpoch),
+          compileAuthorityEpoch: currentCapabilities.compileAuthorityEpoch,
+          contentDigest,
+        });
+      }
+      let issued;
+      let issueRefreshUsed = false;
+      for (let issueAttempt = 0; issueAttempt < 3 && issued === undefined; issueAttempt += 1) {
+        const issueRequest = Object.freeze({
+          schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_REQUEST_SCHEMA_VERSION,
+          issuanceId: issueIntent.issuanceId,
+          compileAuthorityEpoch: issueIntent.compileAuthorityEpoch,
+          scope,
+          filename,
+          sourceSha256,
+          requirements,
+        });
+        const issueAbort = requestAbort(normalizeSignal(compileOptions.signal), timeoutMs);
+        try {
+          const response = await fetchImpl(`${endpoint}${INTEGRATION_DOCUMENT_WORKER_ROUTES.compileIssue}`, {
+            method: "POST",
+            headers: requestHeaders(),
+            body: requestBody(issueRequest),
+            cache: "no-store",
+            credentials: "omit",
+            redirect: "error",
+            referrerPolicy: "no-referrer",
+            signal: issueAbort.signal,
+          });
+          if (response.status !== 200) {
+            const code = await workerError(response, issueAbort.signal);
+            if (
+              response.status === 410 &&
+              code === "ARTIFACT_CONTENT_GONE" &&
+              !issueRefreshUsed &&
+              compileOptions.authorizeRequest !== undefined
+            ) {
+              const refreshedCapabilities = await fetchCurrentCapabilities(compileOptions.signal);
+              const refreshed = await compileOptions.authorizeRequest(Object.freeze({
+                schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_REFRESH_SCHEMA_VERSION,
+                previousIssuanceId: issueIntent.issuanceId,
+                compileAuthorityEpoch: refreshedCapabilities.compileAuthorityEpoch,
+                contentDigest,
+              }));
+              const candidate = exactObject(
+                refreshed,
+                ["schemaVersion", "issuanceId", "compileAuthorityEpoch", "contentDigest"],
+                ["schemaVersion", "issuanceId", "compileAuthorityEpoch", "contentDigest"],
+                "refreshed document compile issue intent"
+              );
+              if (
+                candidate.schemaVersion !== INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_INTENT_SCHEMA_VERSION ||
+                !/^iss_[a-f0-9]{16}_[a-f0-9]{64}$/u.test(candidate.issuanceId) ||
+                candidate.issuanceId === issueIntent.issuanceId ||
+                candidate.compileAuthorityEpoch !== refreshedCapabilities.compileAuthorityEpoch ||
+                candidate.contentDigest !== contentDigest
+              ) {
+                fail("DOCUMENT_WORKER_INVALID", "Refreshed document compile issue intent is invalid.", {
+                  status: 409,
+                });
+              }
+              issueIntent = Object.freeze({ ...candidate });
+              issueRefreshUsed = true;
+              continue;
+            }
+            throw translateWorkerCode(code, response.status);
+          }
+          const candidate = exactObject(
+            await readJsonResponse(response, issueAbort.signal),
+            [
+              "schemaVersion",
+              "issuanceId",
+              "requestId",
+              "compileAuthorityEpoch",
+              "compileAuthorityToken",
+              "contentDigest",
+              "digest",
+            ],
+            [
+              "schemaVersion",
+              "issuanceId",
+              "requestId",
+              "compileAuthorityEpoch",
+              "compileAuthorityToken",
+              "contentDigest",
+              "digest",
+            ],
+            "document compile issue response"
+          );
+          const { digest, ...unsigned } = candidate;
+          if (
+            candidate.schemaVersion !== INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_RESPONSE_SCHEMA_VERSION ||
+            candidate.issuanceId !== issueIntent.issuanceId ||
+            !/^cmp_[a-f0-9]{64}$/u.test(candidate.requestId) ||
+            candidate.compileAuthorityEpoch !== issueIntent.compileAuthorityEpoch ||
+            !/^wca_[A-Za-z0-9_-]{43}$/u.test(candidate.compileAuthorityToken) ||
+            candidate.contentDigest !== contentDigest ||
+            !DIGEST.test(digest) ||
+            digest !== contractDigest(unsigned)
+          ) {
+            fail("DOCUMENT_WORKER_PROTOCOL_INVALID", "Document compile issue authority is invalid.", { status: 502 });
+          }
+          issued = Object.freeze({ ...unsigned, digest });
+        } catch (error) {
+          if (
+            issueAttempt < 2 &&
+            !(error instanceof IntegrationDocumentWorkerError) &&
+            !compileOptions.signal?.aborted
+          ) {
+            continue;
+          }
+          throw error;
+        } finally {
+          issueAbort.cleanup();
+        }
+      }
+      const proposedRequest = Object.freeze({
+        schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_REQUEST_SCHEMA_VERSION,
+        issuanceId: issued.issuanceId,
+        requestId: issued.requestId,
+        compileAuthorityEpoch: issued.compileAuthorityEpoch,
+        compileAuthorityToken: issued.compileAuthorityToken,
+        scope,
+        filename,
+        source,
+        sourceSha256,
+        requirements,
+      });
+      request = compileOptions.authorizeRequest === undefined
+        ? proposedRequest
+        : validateDocumentWorkerCompileRequest(await compileOptions.authorizeRequest(proposedRequest));
+    }
+    if (digestDocumentWorkerCompileContent(request) !== contentDigest) {
+      fail("DOCUMENT_WORKER_INVALID", "Document compile intent conflicts with this operation.", { status: 409 });
+    }
+    const abort = requestAbort(normalizeSignal(compileOptions.signal), timeoutMs);
     try {
       const response = await fetchImpl(`${endpoint}${INTEGRATION_DOCUMENT_WORKER_ROUTES.compile}`, {
         method: "POST",
@@ -1142,10 +1390,10 @@ function createClient(optionsValue, { testOnly }) {
       return parseCompileResponse(await readJsonResponse(response, abort.signal), request, scope);
     } catch (error) {
       if (error instanceof IntegrationDocumentWorkerError) throw error;
-      if (optionsValue.signal?.aborted) {
+      if (compileOptions.signal?.aborted) {
         fail("ANALYSIS_CANCELLED", "Document compilation was cancelled.", {
           status: 499,
-          cause: optionsValue.signal.reason || error,
+          cause: compileOptions.signal.reason || error,
         });
       }
       fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "The private workstation document worker is unavailable.", {
@@ -1449,6 +1697,8 @@ export function assertIntegrationDocumentWorkerActivation(value, { client, allow
     value.authority !== "workstation-document-worker" ||
     value.ready !== true ||
     typeof value.creationEnabled !== "boolean" ||
+    !Number.isSafeInteger(value.compileAuthorityEpoch) ||
+    value.compileAuthorityEpoch < 1 ||
     value.additive !== true ||
     (value.creationEnabled
       ? (!DIGEST.test(value.compilerDigest) || !DIGEST.test(value.activationProbeDigest))

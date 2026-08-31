@@ -29,7 +29,7 @@ import {
   recommendedMaxStepsForTask,
   shouldUseSurgicalContextForTask,
 } from "../src/engineering-guidance.js";
-import { createPlan } from "../src/model-client.js";
+import { createPlan, normalizeTextToolCallResponse, parseTextToolCalls } from "../src/model-client.js";
 import { selectModelRoute } from "../src/model-routing.js";
 import { listParallelScouts, runParallelScouts, shouldRunParallelScouts } from "../src/parallel-scouts.js";
 import { buildFailedCommandAdvice, buildPermissionAdvice } from "../src/permission-advice.js";
@@ -1893,6 +1893,247 @@ try {
   );
   assert(redactedContentResult.ok, "write_file should allow already-redacted secret placeholders");
 
+  const deepSeekDsml = [
+    "<｜｜DSML｜｜tool_calls>",
+    '<｜｜DSML｜｜invoke name="read_file">',
+    '<｜｜DSML｜｜parameter name="file" string="true">references/agent-contract.md</｜｜DSML｜｜parameter>',
+    "</｜｜DSML｜｜invoke>",
+    "</｜｜DSML｜｜tool_calls>",
+  ].join("\n");
+  const dsmlCalls = parseTextToolCalls(deepSeekDsml);
+  assert(dsmlCalls.length === 1, "DeepSeek DSML envelope did not become a native tool call");
+  assert(dsmlCalls[0].function.name === "read_file", "DeepSeek DSML tool name was not preserved");
+  assert(
+    dsmlCalls[0].function.arguments ===
+      '{"path":"references/agent-contract.md"}',
+    "DeepSeek DSML read_file parameter alias was not normalized to path"
+  );
+  const normalizedDsml = normalizeTextToolCallResponse({
+    choices: [{ message: { role: "assistant", content: deepSeekDsml } }],
+  });
+  assert(
+    normalizedDsml.choices[0].message.tool_calls?.[0]?.function?.name === "read_file",
+    "DeepSeek DSML response was left as final assistant text"
+  );
+  assert(normalizedDsml.choices[0].message.content === "", "DSML tool envelope leaked into assistant content");
+
+  const dsmlEnvelope = (body) => [
+    "<｜｜DSML｜｜tool_calls>",
+    body,
+    "</｜｜DSML｜｜tool_calls>",
+  ].join("\n");
+  const assertDsmlRejected = (body, label) => {
+    const calls = parseTextToolCalls(body);
+    assert(calls.length === 0, `${label} DSML envelope unexpectedly produced tool calls`);
+    const normalized = normalizeTextToolCallResponse({
+      choices: [{ message: { role: "assistant", content: body } }],
+    });
+    assert(
+      normalized.choices[0].message.aginti_text_tool_retry?.reason === "malformed-or-truncated-text-tool-call",
+      `${label} DSML envelope did not request a safe retry`
+    );
+    assert(normalized.choices[0].message.tool_calls.length === 0, `${label} DSML retry should be tool-free`);
+  };
+  assertDsmlRejected(
+    [
+      "I will read it now.",
+      "<｜｜DSML｜｜tool_calls>",
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+      "</｜｜DSML｜｜tool_calls>",
+    ].join("\n"),
+    "non-whitespace prefix"
+  );
+  assertDsmlRejected(
+    "<｜｜DSML｜｜tool_calls",
+    "incomplete DSML tool_calls opening"
+  );
+  assertDsmlRejected(
+    [
+      '<｜｜DSML｜｜tool_calls version="1">',
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+      "</｜｜DSML｜｜tool_calls>",
+    ].join("\n"),
+    "DSML outer attributes"
+  );
+  assertDsmlRejected(
+    [
+      "<｜｜DSML｜｜tool_calls >",
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+      "</｜｜DSML｜｜tool_calls>",
+    ].join("\n"),
+    "DSML whitespace before greater-than"
+  );
+  assertDsmlRejected(
+    [
+      "<｜｜DSML｜｜ tool_calls>",
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+      "</｜｜DSML｜｜tool_calls>",
+    ].join("\n"),
+    "whitespace inside DSML tool_calls opening"
+  );
+  assertDsmlRejected(
+    [
+      "<｜｜DSML｜｜tool_calls>",
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+      "[TOOL_CALLS]read_file[ARGS]{\"path\":\"fallback.md\"}",
+    ].join("\n"),
+    "malformed DSML mixed with another text-tool protocol"
+  );
+  assertDsmlRejected(
+    [
+      "<｜｜DSML｜｜tool_calls>",
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n"),
+    "truncated outer"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+    ].join("\n")),
+    "unclosed invoke"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "unconsumed text",
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "unconsumed invoke body"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/b.md</｜｜DSML｜｜parameter',
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "valid subset with malformed second invoke"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file" name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "duplicate invoke name"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file" type="function" type="function">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "duplicate invoke type"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file" type="">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "empty invoke type"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true" number="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "conflicting parameter type flags"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" type="">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "empty parameter type"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      '<｜｜DSML｜｜parameter name="path" string="true">references/b.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "read_file with file and path aliases"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="force" boolean="true">maybe</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "invalid boolean parameter"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="line" number="true">1.2.3</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "invalid number parameter"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope(Array.from({ length: 17 }, (_, index) => [
+      `<｜｜DSML｜｜invoke name="read_file">`,
+      `<｜｜DSML｜｜parameter name="file" string="true">references/${index}.md</｜｜DSML｜｜parameter>`,
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")).join("\n")),
+    "over-limit invoke count"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file">',
+      Array.from({ length: 65 }, (_, index) =>
+        `<｜｜DSML｜｜parameter name="arg${index}" string="true">value${index}</｜｜DSML｜｜parameter>`
+      ).join("\n"),
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "over-limit parameter count"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="write_file">',
+      `<｜｜DSML｜｜parameter name="content" string="true">${"x".repeat(16 * 1024 + 1)}</｜｜DSML｜｜parameter>`,
+      "</｜｜DSML｜｜invoke>",
+    ].join("\n")),
+    "over-limit parameter value"
+  );
+  assertDsmlRejected(
+    dsmlEnvelope([
+      '<｜｜DSML｜｜invoke name="read_file">',
+      '<｜｜DSML｜｜parameter name="file" string="true">references/a.md</｜｜DSML｜｜parameter>',
+      "</｜｜DSML｜｜invoke>",
+      " ".repeat(64 * 1024),
+    ].join("\n")),
+    "over-limit DSML envelope"
+  );
+  const dsmlProse = "This paragraph mentions DSML tool_calls syntax without emitting a protocol marker.";
+  assert(parseTextToolCalls(dsmlProse).length === 0, "ordinary prose mentioning DSML became a tool marker");
+  assert(
+    normalizeTextToolCallResponse({
+      choices: [{ message: { role: "assistant", content: dsmlProse } }],
+    }).choices[0].message.aginti_text_tool_retry === undefined,
+    "ordinary prose mentioning DSML requested a retry"
+  );
+
   const credentialStatusReportResult = await executeWorkspaceTool(
     "write_file",
     {
@@ -1943,6 +2184,7 @@ try {
         workspace,
         checks: [
           "deepseek_history_repair",
+          "deepseek_dsml_tool_envelope_normalization",
           "interleaved_tool_history_repair",
           "blocked_tool_batch_short_circuit",
           "deepseek_pro_patch_route",

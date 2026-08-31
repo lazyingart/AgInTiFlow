@@ -869,6 +869,7 @@ export function integrationCapabilitiesResponse({
   search = false,
   files = false,
   attachments = false,
+  roles,
 } = {}) {
   const searchEnabled = Boolean(enabled && search);
   const fileEnabled = Boolean(enabled && files);
@@ -910,6 +911,7 @@ export function integrationCapabilitiesResponse({
           }),
         }
       : {}),
+    ...(roles === undefined ? {} : { roles }),
     artifacts: Object.freeze({
       kinds: Object.freeze(artifactKinds),
       schemaVersion: AGENT_WORKER_SCHEMA_VERSION,

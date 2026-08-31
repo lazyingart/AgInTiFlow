@@ -11,6 +11,8 @@ import {
   canonicalDocumentWorkerJson,
   deriveDocumentWorkerScopeDigests,
   deriveDocumentWorkerThreadDigests,
+  digestDocumentWorkerCompileContent,
+  digestDocumentWorkerCompileOperation,
   digestNormalizedDocumentWorkerRequest,
   documentWorkerArtifactsDigest,
   documentWorkerCommitManifest,
@@ -18,14 +20,21 @@ import {
   documentWorkerManifestDigest,
   randomDocumentWorkerId,
   validateDocumentWorkerCompileArtifacts,
+  validateDocumentWorkerCompileIssueRequest,
+  validateDocumentWorkerCompileRequest,
   validateDocumentWorkerReceipt,
 } from "./integration-document-worker-contract.js";
+import { inspectIntegrationDocumentCompileRequirements } from "./integration-document-worker-requirements.js";
 import { canonicalJson, contractDigest } from "./integration-policy.js";
 
-export const DOCUMENT_WORKER_LEDGER_SCHEMA_VERSION = "aginti-document-worker-ledger-v1";
+export const DOCUMENT_WORKER_LEDGER_SCHEMA_VERSION = "aginti-document-worker-ledger-v4";
 export const DOCUMENT_WORKER_LEDGER_ENVELOPE_SCHEMA_VERSION =
   "aginti-document-worker-ledger-envelope-v1";
 export const DOCUMENT_WORKER_STAGED_GROUP_TTL_MS = 24 * 60 * 60 * 1000;
+// Full delete authority is retained for the most recent bounded window. Each
+// compaction advances the durable compile epoch, so an old request ID remains
+// unexecutable without retaining an unbounded set of tombstones.
+export const DOCUMENT_WORKER_TOMBSTONE_REPLAY_WINDOW = 512;
 
 const DELETE_MANIFEST_SCHEMA_VERSION = "aginti-document-worker-delete-manifest-v1";
 const DELETE_TOMBSTONE_SCHEMA_VERSION = "aginti-document-worker-delete-tombstone-v1";
@@ -37,6 +46,8 @@ const MAXIMUM_DIRECTORY_ENTRIES = 8192;
 const MAXIMUM_GROUPS = 4096;
 const MAXIMUM_COMMIT_REQUESTS = 8192;
 const MAXIMUM_DELETIONS = 4096;
+const MAXIMUM_COMPILE_RESERVATIONS = 4096;
+const MAXIMUM_COMPILE_RESERVATIONS_PER_OWNER = 64;
 const O_NOFOLLOW = Number(fsConstants.O_NOFOLLOW || 0);
 const O_CLOEXEC = Number(fsConstants.O_CLOEXEC || 0);
 const STORE_BRAND = new WeakSet();
@@ -144,6 +155,19 @@ function compileResponse(group) {
   });
 }
 
+function compileReplayResponse(group) {
+  if (
+    group.state === "tombstoned" ||
+    group.artifacts.some((artifact) => artifact.state === "gone" || artifact.state === "tombstoned")
+  ) {
+    documentWorkerFail("ARTIFACT_CONTENT_GONE", "Compiled artifact group was deleted.", { status: 410 });
+  }
+  if (new Set(["delete-prepared", "deleting"]).has(group.state)) {
+    documentWorkerFail("ARTIFACT_DELETE_PENDING", "Compiled artifact group is being deleted.", { status: 503 });
+  }
+  return compileResponse(group);
+}
+
 function validateStoredArtifact(record, expectedRole) {
   stateExact(
     record,
@@ -214,6 +238,7 @@ function validateStoredGroup(group) {
     "runDigest",
     "scopeDigest",
     "requestId",
+    "compileAuthorityEpoch",
     "requestDigest",
     "requirementsDigest",
     "verifiedFigureCount",
@@ -227,7 +252,9 @@ function validateStoredGroup(group) {
   if (
     !DOCUMENT_WORKER_PATTERNS.groupId.test(group.groupId) ||
     !new Set(["staged", "committing", "committed", "delete-prepared", "deleting", "tombstoned"]).has(group.state) ||
-    !DOCUMENT_WORKER_PATTERNS.compileRequestId.test(group.requestId)
+    !DOCUMENT_WORKER_PATTERNS.compileRequestId.test(group.requestId) ||
+    !Number.isSafeInteger(group.compileAuthorityEpoch) ||
+    group.compileAuthorityEpoch < 1
   ) corrupt(new Error("stored group identity is invalid"));
   for (const key of [
     "ownerDigest",
@@ -272,13 +299,90 @@ function validateStoredGroup(group) {
     receipt.pdfSha256 !== artifacts[1].sha256 ||
     receipt.pdfBytes !== artifacts[1].bytes
   ) corrupt(new Error("stored artifact receipt metadata is inconsistent"));
+  const artifactStates = group.artifacts.map((artifact) => artifact.state);
+  if (new Set(["staged", "committing"]).has(group.state)) {
+    if (artifactStates.some((state) => state !== "staged")) {
+      corrupt(new Error("stored staged group artifact lifecycle is invalid"));
+    }
+  } else if (group.state === "committed") {
+    if (artifactStates.some((state) => !new Set(["committed", "gone"]).has(state))) {
+      corrupt(new Error("stored committed group artifact lifecycle is invalid"));
+    }
+  } else if (new Set(["delete-prepared", "deleting"]).has(group.state)) {
+    if (artifactStates.some((state) => state !== "committed")) {
+      corrupt(new Error("stored deleting group artifact lifecycle is invalid"));
+    }
+  } else if (group.state === "tombstoned") {
+    if (artifactStates.some((state) => state !== "tombstoned")) {
+      corrupt(new Error("stored tombstoned group artifact lifecycle is invalid"));
+    }
+  }
   stateTimestamp(group.createdAt, { label: "group createdAt" });
   stateTimestamp(group.committedAt, { nullable: true, label: "group committedAt" });
   if (group.deletionId !== null && !DOCUMENT_WORKER_PATTERNS.deletionId.test(group.deletionId)) {
     corrupt(new Error("stored group deletionId is invalid"));
   }
   validateStoredPendingCommit(group.pendingCommit);
+  if ((group.state === "committing") !== (group.pendingCommit !== null)) {
+    corrupt(new Error("stored group pending commit lifecycle is invalid"));
+  }
+  if (new Set(["staged", "committing"]).has(group.state) && group.committedAt !== null) {
+    corrupt(new Error("stored uncommitted group has committedAt"));
+  }
+  if (new Set(["committed", "delete-prepared", "deleting", "tombstoned"]).has(group.state) && group.committedAt === null) {
+    corrupt(new Error("stored committed group lacks committedAt"));
+  }
+  if (
+    new Set(["staged", "committing", "committed"]).has(group.state) !==
+    (group.deletionId === null)
+  ) {
+    corrupt(new Error("stored group deletion lifecycle is invalid"));
+  }
   return group;
+}
+
+function validateStoredCompileReservation(reservation) {
+  stateExact(reservation, [
+    "issuanceId",
+    "issueRequestDigest",
+    "requestId",
+    "compileAuthorityEpoch",
+    "compileAuthorityToken",
+    "compileAuthorityTokenDigest",
+    "contentDigest",
+    "ownerDigest",
+    "threadDigest",
+    "runDigest",
+    "scopeDigest",
+    "createdAt",
+  ], "stored compile reservation");
+  if (
+    !DOCUMENT_WORKER_PATTERNS.compileIssuanceId.test(reservation.issuanceId) ||
+    !DOCUMENT_WORKER_PATTERNS.compileRequestId.test(reservation.requestId) ||
+    !DOCUMENT_WORKER_PATTERNS.compileAuthorityToken.test(reservation.compileAuthorityToken) ||
+    !Number.isSafeInteger(reservation.compileAuthorityEpoch) ||
+    reservation.compileAuthorityEpoch < 1
+  ) corrupt(new Error("stored compile reservation identity is invalid"));
+  for (const key of [
+    "issueRequestDigest",
+    "compileAuthorityTokenDigest",
+    "contentDigest",
+    "ownerDigest",
+    "threadDigest",
+    "runDigest",
+    "scopeDigest",
+  ]) {
+    stateDigest(reservation[key], `stored compile reservation ${key}`);
+  }
+  stateTimestamp(reservation.createdAt, { label: "stored compile reservation createdAt" });
+  if (
+    Number.parseInt(reservation.issuanceId.slice(4, 20), 16) !== reservation.compileAuthorityEpoch ||
+    crypto.createHash("sha256").update(reservation.compileAuthorityToken, "utf8").digest("hex") !==
+      reservation.compileAuthorityTokenDigest
+  ) {
+    corrupt(new Error("stored compile reservation authority is inconsistent"));
+  }
+  return reservation;
 }
 
 function validateStoredCommitRequest(record) {
@@ -335,25 +439,73 @@ function validateStoredDeletion(record) {
 }
 
 function validateLedger(ledger) {
-  stateExact(ledger, ["schemaVersion", "revision", "groups", "commitRequests", "deletions"], "worker ledger");
+  stateExact(
+    ledger,
+    [
+      "schemaVersion",
+      "revision",
+      "compileAuthorityEpoch",
+      "compileReservations",
+      "groups",
+      "commitRequests",
+      "deletions",
+    ],
+    "worker ledger"
+  );
   if (
     ledger.schemaVersion !== DOCUMENT_WORKER_LEDGER_SCHEMA_VERSION ||
     !Number.isSafeInteger(ledger.revision) ||
-    ledger.revision < 0
+    ledger.revision < 0 ||
+    !Number.isSafeInteger(ledger.compileAuthorityEpoch) ||
+    ledger.compileAuthorityEpoch < 1
   ) corrupt(new Error("worker ledger identity is invalid"));
+  stateArray(
+    ledger.compileReservations,
+    MAXIMUM_COMPILE_RESERVATIONS,
+    "worker compile reservations"
+  ).forEach(validateStoredCompileReservation);
   stateArray(ledger.groups, MAXIMUM_GROUPS, "worker groups").forEach(validateStoredGroup);
   stateArray(ledger.commitRequests, MAXIMUM_COMMIT_REQUESTS, "worker commit requests").forEach(validateStoredCommitRequest);
   stateArray(ledger.deletions, MAXIMUM_DELETIONS, "worker deletions").forEach(validateStoredDeletion);
   const groupIds = new Set();
   const requestIds = new Set();
+  const issuanceIds = new Set();
+  const reservationRequestIds = new Set();
   const refs = new Set();
   for (const group of ledger.groups) {
     if (groupIds.has(group.groupId) || requestIds.has(group.requestId)) corrupt(new Error("duplicate group identity"));
+    if (group.compileAuthorityEpoch > ledger.compileAuthorityEpoch) {
+      corrupt(new Error("group compile epoch is newer than the ledger"));
+    }
     groupIds.add(group.groupId);
     requestIds.add(group.requestId);
     for (const artifact of group.artifacts) {
       if (refs.has(artifact.ref)) corrupt(new Error("duplicate object ref"));
       refs.add(artifact.ref);
+    }
+  }
+  for (const reservation of ledger.compileReservations) {
+    const linkedGroup = ledger.groups.find((group) => group.requestId === reservation.requestId) || null;
+    if (
+      issuanceIds.has(reservation.issuanceId) ||
+      reservationRequestIds.has(reservation.requestId) ||
+      reservation.compileAuthorityEpoch > ledger.compileAuthorityEpoch
+    ) {
+      corrupt(new Error("compile reservation identity conflicts with a stored group"));
+    }
+    if (linkedGroup && linkedGroup.compileAuthorityEpoch !== reservation.compileAuthorityEpoch) {
+      corrupt(new Error("compile reservation epoch conflicts with its stored group"));
+    }
+    if (!linkedGroup && requestIds.has(reservation.requestId)) {
+      corrupt(new Error("compile reservation request identity is duplicated"));
+    }
+    issuanceIds.add(reservation.issuanceId);
+    reservationRequestIds.add(reservation.requestId);
+    requestIds.add(reservation.requestId);
+  }
+  for (const group of ledger.groups) {
+    if (!ledger.compileReservations.some((reservation) => reservation.requestId === group.requestId)) {
+      corrupt(new Error("stored group lacks its compile issuance authority"));
     }
   }
   const commitIds = new Set();
@@ -362,9 +514,30 @@ function validateLedger(ledger) {
     commitIds.add(record.requestId);
   }
   const deletionIds = new Set();
+  const deletionsById = new Map();
   for (const record of ledger.deletions) {
     if (deletionIds.has(record.deletionId)) corrupt(new Error("duplicate deletion id"));
     deletionIds.add(record.deletionId);
+    deletionsById.set(record.deletionId, record);
+  }
+  for (const group of ledger.groups) {
+    if (group.deletionId === null) continue;
+    const deletion = deletionsById.get(group.deletionId);
+    if (!deletion) corrupt(new Error("stored group references an absent deletion"));
+    const expectedGroupState = deletion.status === "prepared"
+      ? "delete-prepared"
+      : deletion.status === "committing"
+        ? "deleting"
+        : "tombstoned";
+    if (group.state !== expectedGroupState) {
+      corrupt(new Error("stored group deletion state conflicts with its deletion"));
+    }
+    for (const artifact of group.artifacts) {
+      const object = deletion.objects.find((candidate) => candidate.ref === artifact.ref);
+      if (!object || object.receiptDigest !== group.receipt.digest || object.runDigest !== group.runDigest) {
+        corrupt(new Error("stored deletion object does not bind its group"));
+      }
+    }
   }
   return ledger;
 }
@@ -373,6 +546,8 @@ function initialLedger() {
   return {
     schemaVersion: DOCUMENT_WORKER_LEDGER_SCHEMA_VERSION,
     revision: 0,
+    compileAuthorityEpoch: 1,
+    compileReservations: [],
     groups: [],
     commitRequests: [],
     deletions: [],
@@ -582,6 +757,12 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
   if (typeof now !== "function") throw new TypeError("document worker now must be a function");
   const checkpoint = options.checkpoint || (() => {});
   if (typeof checkpoint !== "function") throw new TypeError("document worker checkpoint must be a function");
+  const tombstoneReplayWindow = options.tombstoneReplayWindow ?? DOCUMENT_WORKER_TOMBSTONE_REPLAY_WINDOW;
+  if (
+    !Number.isSafeInteger(tombstoneReplayWindow) ||
+    tombstoneReplayWindow < 1 ||
+    tombstoneReplayWindow > DOCUMENT_WORKER_TOMBSTONE_REPLAY_WINDOW
+  ) throw new TypeError("document worker tombstone replay window is invalid");
   const paths = Object.freeze({
     root: stateRoot,
     ledger: path.join(stateRoot, LEDGER_FILENAME),
@@ -709,6 +890,22 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
 
   function findGroupByRequestId(requestId) {
     return ledger.groups.find((group) => group.requestId === requestId) || null;
+  }
+
+  function findCompileReservationByIssuanceId(issuanceId) {
+    return ledger.compileReservations.find((reservation) => reservation.issuanceId === issuanceId) || null;
+  }
+
+  function compileIssueResponse(reservation) {
+    const unsigned = Object.freeze({
+      schemaVersion: DOCUMENT_WORKER_SCHEMA_VERSIONS.compileIssueResponse,
+      issuanceId: reservation.issuanceId,
+      requestId: reservation.requestId,
+      compileAuthorityEpoch: reservation.compileAuthorityEpoch,
+      compileAuthorityToken: reservation.compileAuthorityToken,
+      contentDigest: reservation.contentDigest,
+    });
+    return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
   }
 
   function findGroupByReceipt(receiptDigest) {
@@ -858,7 +1055,68 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
     deletion.status = "committed";
     deletion.completedAt = completedAt;
     deletion.tombstoneDigest = contractDigest(tombstoneUnsigned);
+    await checkpoint("before-tombstone-compaction", { deletionId: deletion.deletionId });
+    compactCommittedTombstonesInMemory();
     await saveLedger();
+    await checkpoint("after-tombstone-compaction", { deletionId: deletion.deletionId });
+  }
+
+  function compactCommittedTombstonesInMemory() {
+    const committed = ledger.deletions.filter((record) => record.status === "committed");
+    if (committed.length <= tombstoneReplayWindow) return 0;
+    const removeCount = committed.length - tombstoneReplayWindow;
+    const expiredDeletionIds = new Set(committed.slice(0, removeCount).map((record) => record.deletionId));
+    const expiredGroups = ledger.groups.filter((group) => expiredDeletionIds.has(group.deletionId));
+    for (const group of expiredGroups) {
+      if (
+        group.state !== "tombstoned" ||
+        group.artifacts.some((artifact) => artifact.state !== "tombstoned") ||
+        group.pendingCommit !== null ||
+        group.deletionId === null
+      ) corrupt(new Error("completed tombstone compaction found live group authority"));
+      for (const artifact of group.artifacts) {
+        if (activeStreams.has(artifact.ref)) corrupt(new Error("completed tombstone still has an active stream"));
+      }
+    }
+    const expiredReceipts = new Set(expiredGroups.map((group) => group.receipt.digest));
+    if (ledger.compileAuthorityEpoch >= Number.MAX_SAFE_INTEGER) {
+      storeFail("WORKER_STATE_UNAVAILABLE", "Document worker compile epoch is exhausted.");
+    }
+    ledger.compileAuthorityEpoch += 1;
+    const expiredRequestIds = new Set(expiredGroups.map((group) => group.requestId));
+    ledger.groups = ledger.groups.filter((group) => !expiredDeletionIds.has(group.deletionId));
+    ledger.compileReservations = ledger.compileReservations.filter(
+      (reservation) => !expiredRequestIds.has(reservation.requestId)
+    );
+    ledger.deletions = ledger.deletions.filter((record) => !expiredDeletionIds.has(record.deletionId));
+    ledger.commitRequests = ledger.commitRequests.filter(
+      (record) => !expiredReceipts.has(record.response.receiptDigest)
+    );
+    return expiredGroups.length;
+  }
+
+  async function compactCommittedTombstones() {
+    const removed = compactCommittedTombstonesInMemory();
+    if (removed > 0) await saveLedger();
+    return removed;
+  }
+
+  async function reapExpiredCompileReservations() {
+    const cutoff = now().getTime() - DOCUMENT_WORKER_STAGED_GROUP_TTL_MS;
+    const retained = ledger.compileReservations.filter(
+      (reservation) =>
+        findGroupByRequestId(reservation.requestId) !== null ||
+        Date.parse(reservation.createdAt) > cutoff
+    );
+    if (retained.length === ledger.compileReservations.length) return 0;
+    const removed = ledger.compileReservations.length - retained.length;
+    if (ledger.compileAuthorityEpoch >= Number.MAX_SAFE_INTEGER) {
+      storeFail("WORKER_STATE_UNAVAILABLE", "Document worker compile epoch is exhausted.");
+    }
+    ledger.compileAuthorityEpoch += 1;
+    ledger.compileReservations = retained;
+    await saveLedger();
+    return removed;
   }
 
   async function reapExpiredStagedGroups() {
@@ -875,7 +1133,15 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
     }
     await syncDirectory(paths.stages);
     const expiredIds = new Set(expired.map((group) => group.groupId));
+    const expiredRequestIds = new Set(expired.map((group) => group.requestId));
+    if (ledger.compileAuthorityEpoch >= Number.MAX_SAFE_INTEGER) {
+      storeFail("WORKER_STATE_UNAVAILABLE", "Document worker compile epoch is exhausted.");
+    }
+    ledger.compileAuthorityEpoch += 1;
     ledger.groups = ledger.groups.filter((group) => !expiredIds.has(group.groupId));
+    ledger.compileReservations = ledger.compileReservations.filter(
+      (reservation) => !expiredRequestIds.has(reservation.requestId)
+    );
     await saveLedger();
     return expired.length;
   }
@@ -953,6 +1219,8 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
     for (const deletion of ledger.deletions.filter((candidate) => candidate.status === "committing")) {
       await finishPendingDeletion(deletion);
     }
+    await compactCommittedTombstones();
+    await reapExpiredCompileReservations();
     await reapExpiredStagedGroups();
     await reconcileDirectoryEntries();
   }
@@ -962,40 +1230,210 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
   const store = {
     schemaVersion: DOCUMENT_WORKER_LEDGER_SCHEMA_VERSION,
 
-    async lookupCompile(request) {
+    async issueCompile(requestInput) {
       return serialized(async () => {
         assertOpen();
+        const request = validateDocumentWorkerCompileIssueRequest(requestInput);
         await reapExpiredStagedGroups();
-        const requestDigest = digestNormalizedDocumentWorkerRequest(request);
-        const existing = findGroupByRequestId(request.requestId);
-        if (!existing) return null;
-        if (existing.requestDigest !== requestDigest || !scopeMatchesGroup(request.scope, existing)) {
-          documentWorkerFail("IDEMPOTENCY_CONFLICT", "Compile request id was already used.", { status: 409 });
+        await reapExpiredCompileReservations();
+        await compactCommittedTombstones();
+        const issueRequestDigest = digestNormalizedDocumentWorkerRequest(request);
+        const replay = findCompileReservationByIssuanceId(request.issuanceId);
+        if (replay) {
+          if (replay.issueRequestDigest !== issueRequestDigest) {
+            documentWorkerFail("IDEMPOTENCY_CONFLICT", "Compile issuance id was already used.", {
+              status: 409,
+            });
+          }
+          return compileIssueResponse(replay);
         }
-        if (existing.state === "tombstoned") {
-          documentWorkerFail("ARTIFACT_CONTENT_GONE", "Compiled artifact group was deleted.", { status: 410 });
+        if (request.compileAuthorityEpoch < ledger.compileAuthorityEpoch) {
+          documentWorkerFail("ARTIFACT_CONTENT_GONE", "Compile issuance authority expired.", {
+            status: 410,
+          });
         }
-        if (new Set(["delete-prepared", "deleting"]).has(existing.state)) {
-          documentWorkerFail("ARTIFACT_DELETE_PENDING", "Compiled artifact group is being deleted.", { status: 503 });
+        if (request.compileAuthorityEpoch !== ledger.compileAuthorityEpoch) {
+          documentWorkerFail("INVALID_REQUEST", "Compile issuance epoch is invalid.", { status: 400 });
         }
-        return compileResponse(existing);
+        const digests = deriveDocumentWorkerScopeDigests(request.scope);
+        const ownerReservationCount = ledger.compileReservations.filter(
+          (reservation) =>
+            reservation.ownerDigest === digests.ownerDigest &&
+            findGroupByRequestId(reservation.requestId) === null
+        ).length;
+        if (
+          ledger.compileReservations.length >= MAXIMUM_COMPILE_RESERVATIONS ||
+          ownerReservationCount >= MAXIMUM_COMPILE_RESERVATIONS_PER_OWNER
+        ) {
+          storeFail("WORKER_STATE_UNAVAILABLE", "Document worker compile reservation capacity is exhausted.");
+        }
+        const requestId = `cmp_${crypto.randomBytes(32).toString("hex")}`;
+        const compileAuthorityToken = randomDocumentWorkerId("wca_", 32);
+        const contentDigest = digestDocumentWorkerCompileContent(request);
+        const reservation = {
+          issuanceId: request.issuanceId,
+          issueRequestDigest,
+          requestId,
+          compileAuthorityEpoch: request.compileAuthorityEpoch,
+          compileAuthorityToken,
+          compileAuthorityTokenDigest: crypto
+            .createHash("sha256")
+            .update(compileAuthorityToken, "utf8")
+            .digest("hex"),
+          contentDigest,
+          ...digests,
+          createdAt: currentTimestamp(now),
+        };
+        ledger.compileReservations.push(reservation);
+        await saveLedger();
+        return compileIssueResponse(reservation);
       });
     },
 
-    async stageCompile({ request, evidence, compiled }) {
+    async reserveCompile(requestInput) {
       return serialized(async () => {
         assertOpen();
+        const request = validateDocumentWorkerCompileRequest(requestInput);
         await reapExpiredStagedGroups();
-        const requestDigest = digestNormalizedDocumentWorkerRequest(request);
+        await reapExpiredCompileReservations();
+        await compactCommittedTombstones();
+        const operationDigest = digestDocumentWorkerCompileOperation(request);
+        const contentDigest = digestDocumentWorkerCompileContent(request);
+        const tokenDigest = crypto
+          .createHash("sha256")
+          .update(request.compileAuthorityToken, "utf8")
+          .digest("hex");
+        const existingGroup = findGroupByRequestId(request.requestId);
+        if (existingGroup) {
+          if (
+            existingGroup.requestDigest !== operationDigest ||
+            !scopeMatchesGroup(request.scope, existingGroup)
+          ) {
+            documentWorkerFail("IDEMPOTENCY_CONFLICT", "Compile request id was already used.", { status: 409 });
+          }
+          return Object.freeze({ reserved: false, replay: compileReplayResponse(existingGroup) });
+        }
+        const existing = ledger.compileReservations.find(
+          (reservation) => reservation.requestId === request.requestId
+        );
+        if (existing) {
+          const digests = deriveDocumentWorkerScopeDigests(request.scope);
+          if (
+            existing.issuanceId !== request.issuanceId ||
+            existing.contentDigest !== contentDigest ||
+            existing.compileAuthorityTokenDigest !== tokenDigest ||
+            existing.compileAuthorityEpoch !== request.compileAuthorityEpoch ||
+            existing.ownerDigest !== digests.ownerDigest ||
+            existing.threadDigest !== digests.threadDigest ||
+            existing.runDigest !== digests.runDigest ||
+            existing.scopeDigest !== digests.scopeDigest
+          ) {
+            documentWorkerFail("IDEMPOTENCY_CONFLICT", "Compile reservation conflicts with this request.", {
+              status: 409,
+            });
+          }
+          return Object.freeze({ reserved: true, replay: null });
+        }
+        documentWorkerFail("ARTIFACT_CONTENT_GONE", "Compile operation authority is absent or expired.", {
+          status: 410,
+        });
+      });
+    },
+
+    async lookupCompile(requestInput) {
+      return serialized(async () => {
+        assertOpen();
+        const request = validateDocumentWorkerCompileRequest(requestInput);
+        await reapExpiredStagedGroups();
+        await compactCommittedTombstones();
+        const requestDigest = digestDocumentWorkerCompileOperation(request);
+        const existing = findGroupByRequestId(request.requestId);
+        if (!existing) {
+          const reservation = ledger.compileReservations.find(
+            (candidate) => candidate.requestId === request.requestId
+          );
+          if (reservation) {
+            const tokenDigest = crypto
+              .createHash("sha256")
+              .update(request.compileAuthorityToken, "utf8")
+              .digest("hex");
+            if (
+              reservation.issuanceId !== request.issuanceId ||
+              reservation.contentDigest !== digestDocumentWorkerCompileContent(request) ||
+              reservation.compileAuthorityTokenDigest !== tokenDigest ||
+              reservation.compileAuthorityEpoch !== request.compileAuthorityEpoch
+            ) {
+              documentWorkerFail("IDEMPOTENCY_CONFLICT", "Compile reservation conflicts with this request.", {
+                status: 409,
+              });
+            }
+            return null;
+          }
+          if (request.compileAuthorityEpoch < ledger.compileAuthorityEpoch) {
+            documentWorkerFail("ARTIFACT_CONTENT_GONE", "Compiled artifact group was deleted.", { status: 410 });
+          }
+          if (request.compileAuthorityEpoch !== ledger.compileAuthorityEpoch) {
+            documentWorkerFail("INVALID_REQUEST", "Compile request authority epoch is invalid.", { status: 400 });
+          }
+          return null;
+        }
+        if (existing.requestDigest !== requestDigest || !scopeMatchesGroup(request.scope, existing)) {
+          documentWorkerFail("IDEMPOTENCY_CONFLICT", "Compile request id was already used.", { status: 409 });
+        }
+        return compileReplayResponse(existing);
+      });
+    },
+
+    async stageCompile({ request: requestInput, evidence, compiled }) {
+      return serialized(async () => {
+        assertOpen();
+        const request = validateDocumentWorkerCompileRequest(requestInput);
+        await reapExpiredStagedGroups();
+        await compactCommittedTombstones();
+        const requestDigest = digestDocumentWorkerCompileOperation(request);
         const existing = findGroupByRequestId(request.requestId);
         if (existing) {
           if (existing.requestDigest !== requestDigest || !scopeMatchesGroup(request.scope, existing)) {
             documentWorkerFail("IDEMPOTENCY_CONFLICT", "Compile request id was already used.", { status: 409 });
           }
-          return compileResponse(existing);
+          return compileReplayResponse(existing);
+        }
+        const reservationIndex = ledger.compileReservations.findIndex(
+          (candidate) => candidate.requestId === request.requestId
+        );
+        if (reservationIndex < 0) {
+          documentWorkerFail("WORKER_STATE_UNAVAILABLE", "Compile request lacks a durable reservation.", {
+            status: 503,
+          });
+        }
+        const reservation = ledger.compileReservations[reservationIndex];
+        const tokenDigest = crypto
+          .createHash("sha256")
+          .update(request.compileAuthorityToken, "utf8")
+          .digest("hex");
+        if (
+          reservation.issuanceId !== request.issuanceId ||
+          reservation.contentDigest !== digestDocumentWorkerCompileContent(request) ||
+          reservation.compileAuthorityTokenDigest !== tokenDigest ||
+          reservation.compileAuthorityEpoch !== request.compileAuthorityEpoch
+        ) {
+          documentWorkerFail("IDEMPOTENCY_CONFLICT", "Compile reservation conflicts with this request.", {
+            status: 409,
+          });
         }
         if (ledger.groups.length >= MAXIMUM_GROUPS) {
           storeFail("WORKER_STATE_UNAVAILABLE", "Document worker group capacity is exhausted.");
+        }
+        const derivedEvidence = inspectIntegrationDocumentCompileRequirements(
+          request.source,
+          request.requirements
+        );
+        if (
+          !evidence ||
+          evidence.requirementsDigest !== derivedEvidence.requirementsDigest ||
+          evidence.verifiedFigureCount !== derivedEvidence.verifiedFigureCount
+        ) {
+          corrupt(new Error("compiler evidence does not match store-derived requirements"));
         }
         const sourceBytes = Buffer.isBuffer(compiled?.source?.bytes) ? compiled.source.bytes : null;
         const pdfBytes = Buffer.isBuffer(compiled?.pdf?.bytes) ? compiled.pdf.bytes : null;
@@ -1051,8 +1489,8 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
           ...digests,
           requestId: request.requestId,
           requestDigest,
-          requirementsDigest: evidence.requirementsDigest,
-          verifiedFigureCount: evidence.verifiedFigureCount,
+          requirementsDigest: derivedEvidence.requirementsDigest,
+          verifiedFigureCount: derivedEvidence.verifiedFigureCount,
           artifactsDigest: documentWorkerArtifactsDigest(artifacts),
           compilerDigest: compilerReceipt.compilerDigest,
           compileLogSha256: compilerReceipt.compileLogSha256,
@@ -1082,9 +1520,10 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
             state: "staged",
             ...digests,
             requestId: request.requestId,
+            compileAuthorityEpoch: request.compileAuthorityEpoch,
             requestDigest,
-            requirementsDigest: evidence.requirementsDigest,
-            verifiedFigureCount: evidence.verifiedFigureCount,
+            requirementsDigest: derivedEvidence.requirementsDigest,
+            verifiedFigureCount: derivedEvidence.verifiedFigureCount,
             receipt: { ...receipt },
             artifacts: artifacts.map((artifact) => ({ ...artifact, state: "staged" })),
             createdAt,
@@ -1110,6 +1549,8 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
       return serialized(async () => {
         assertOpen();
         await reapExpiredStagedGroups();
+        await reapExpiredCompileReservations();
+        await compactCommittedTombstones();
         const requestDigest = digestNormalizedDocumentWorkerRequest(request);
         const replay = ledger.commitRequests.find((record) => record.requestId === request.requestId);
         if (replay) {
@@ -1257,6 +1698,7 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
       return serialized(async () => {
         assertOpen();
         await reapExpiredStagedGroups();
+        await compactCommittedTombstones();
         const { ownerDigest, threadDigest } = deriveDocumentWorkerThreadDigests(request.scope);
         const manifestDigest = contractDigest({
           schemaVersion: DELETE_MANIFEST_SCHEMA_VERSION,
@@ -1353,6 +1795,7 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
       return serialized(async () => {
         assertOpen();
         await reapExpiredStagedGroups();
+        await compactCommittedTombstones();
         return Object.freeze({
           schemaVersion: DOCUMENT_WORKER_LEDGER_SCHEMA_VERSION,
           revision: ledger.revision,
@@ -1361,9 +1804,14 @@ export async function openIntegrationDocumentWorkerStore(options = {}) {
           committedGroups: ledger.groups.filter((group) => group.state === "committed").length,
           tombstonedGroups: ledger.groups.filter((group) => group.state === "tombstoned").length,
           pendingDeletions: ledger.deletions.filter((record) => record.status !== "committed").length,
+          compileReservations: ledger.compileReservations.length,
+          tombstoneReplayWindow,
+          compileAuthorityEpoch: ledger.compileAuthorityEpoch,
           digest: contractDigest({
             schemaVersion: DOCUMENT_WORKER_LEDGER_SCHEMA_VERSION,
             revision: ledger.revision,
+            compileAuthorityEpoch: ledger.compileAuthorityEpoch,
+            compileReservations: ledger.compileReservations.map((reservation) => reservation.contentDigest),
             groups: ledger.groups.map((group) => group.receipt.digest),
             deletions: ledger.deletions.map((record) => record.tombstoneDigest || record.manifestDigest),
           }),

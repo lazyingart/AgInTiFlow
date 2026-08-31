@@ -41,19 +41,21 @@ worker repeats the no-follow identity, hash, stable-ancestry, and inventory
 checks after exec and fails unless it is running from that exact path as the
 non-root service user/group. Thus a later automatic restart does not trust
 deployment-time evidence alone.
-The second `ExecStartPre` is the exact in-unit `check`: it runs one bounded,
-network-isolated LaTeX/qpdf canary even while `creation.enabled=false`. Its
-success is deployment evidence only; live readiness still advertises
-`compiler:null`, and the compile endpoint remains disabled. The probe never
-stages or commits worker-store objects, removes its private temporary tree, and
-zeroes its process-local artifact buffers before returning.
+The second `ExecStartPre` is the exact mode-aware in-unit `check`. It always
+validates the immutable runtime, protected config/credential, and durable store.
+When `creation.enabled=true`, it additionally runs one bounded,
+network-isolated LaTeX/qpdf canary and refuses startup if that compiler proof
+fails. When `creation.enabled=false`, it deliberately does not touch the TeX
+toolchain: readiness advertises `compiler:null`, compile remains disabled, and
+the retained full/range read plus two-phase-delete floor can restart even while
+the compiler is unavailable.
 The exact installed candidate unit must complete `aginti-document-worker check`
 successfully before LazyEdge route activation, AgInTi broker activation, or Web
 exposure is allowed; static unit verification is not a substitute for that
 namespace and compiler activation proof.
 
-LazyEdge permits two concurrent requests and the worker admits at most two
-compiler processes; at most four additional compiles remain in a bounded
+LazyEdge permits two concurrent requests and the worker admits at most one
+compiler process; at most four additional compiles remain in a bounded
 in-process queue and excess admission fails retryably.
 The private ledger also enforces fixed group/directory bounds, per-source and
 per-PDF limits, and an 8 GiB aggregate live-object ceiling; quota exhaustion
@@ -61,6 +63,19 @@ does not disable existing reads or two-phase deletion.
 Each compiler process has a 30-second wall limit. The 120-second private-route
 timeout is intentionally longer so queueing, forced cleanup, and a structured
 failure response retain transport headroom.
+
+Completed deletion receipts are retained for the most recent 512 delete
+transactions. Compaction removes only groups whose two objects are already
+durably tombstoned; it never removes staged, committed, prepared, or deleting
+groups. Within that window, compile/commit/delete response loss replays exactly.
+When full tombstones are compacted, the store atomically advances a durable
+compile-authority epoch in the same ledger replacement. New clients fetch that
+epoch immediately before compiling and bind it into the deterministic request
+ID. Old content/commit/delete replay resolves as not-found, while a delayed old
+compile request carries a stale epoch and remains 410 Gone. Existing live-group
+replay remains exact. This bounded cutoff has no practical lifetime delete
+ceiling and the 4,096-entry live-ledger cap is no longer a lifetime creation
+limit.
 
 The TeX compiler uses bubblewrap namespaces. Therefore the unit intentionally
 does not use `RestrictNamespaces=true`; it denies only time namespaces. Every

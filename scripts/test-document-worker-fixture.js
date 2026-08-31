@@ -4,6 +4,8 @@ import {
   INTEGRATION_DOCUMENT_COMPILE_REQUIREMENTS_SCHEMA_VERSION,
   INTEGRATION_DOCUMENT_WORKER_CAPABILITIES_SCHEMA_VERSION,
   INTEGRATION_DOCUMENT_WORKER_COMMIT_RESPONSE_SCHEMA_VERSION,
+  INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_RESPONSE_SCHEMA_VERSION,
+  INTEGRATION_DOCUMENT_WORKER_COMPILE_REQUEST_SCHEMA_VERSION,
   INTEGRATION_DOCUMENT_WORKER_COMPILE_RESPONSE_SCHEMA_VERSION,
   INTEGRATION_DOCUMENT_WORKER_ENDPOINT,
   INTEGRATION_DOCUMENT_WORKER_LIMITS,
@@ -12,6 +14,10 @@ import {
   integrationDocumentWorkerDeletionManifestDigest,
 } from "../src/integration-document-worker-client.js";
 import { canonicalJson, contractDigest } from "../src/integration-policy.js";
+import {
+  digestDocumentWorkerCompileContent,
+  digestDocumentWorkerCompileOperation,
+} from "../src/integration-document-worker-contract.js";
 
 const PDF_BYTES = Buffer.from("%PDF-1.7\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n", "utf8");
 
@@ -79,21 +85,31 @@ function identityDigests(scope) {
 export function createDocumentWorkerFixture(options = {}) {
   const calls = [];
   const staged = new Map();
+  const issued = new Map();
   const committed = new Map();
   const tombstoned = new Set();
   const deletions = new Map();
   let available = options.available !== false;
   let creationEnabled = options.creationEnabled !== false;
+  let readinessErrorCode = options.readinessErrorCode || null;
+  let compileAuthorityEpoch = 1;
   let failNextCompileCode = null;
+  let dropNextIssueResponse = false;
+  let advanceEpochBeforeNextIssue = options.advanceEpochBeforeFirstIssue === true;
+  let failIssueBeforePersistAndAdvance = options.failFirstIssueBeforePersistAndAdvance === true;
   let failNextCommitCode = null;
+  let malformedNextCommitResponse = false;
+  let hangNextCommitResponse = false;
   let failNextDeleteCode = null;
 
   const readinessCore = () => ({
     schemaVersion: INTEGRATION_DOCUMENT_WORKER_CAPABILITIES_SCHEMA_VERSION,
     ready: true,
     creationEnabled,
+    compileAuthorityEpoch,
     protocols: {
-      compile: "aginti-document-worker-compile-request-v1",
+      compileIssue: "aginti-document-worker-compile-issue-request-v2",
+      compile: INTEGRATION_DOCUMENT_WORKER_COMPILE_REQUEST_SCHEMA_VERSION,
       commit: "aginti-document-worker-commit-request-v1",
       content: "aginti-document-worker-content-request-v1",
       delete: "aginti-document-worker-delete-request-v1",
@@ -119,8 +135,56 @@ export function createDocumentWorkerFixture(options = {}) {
       return errorResponse(404, "NOT_FOUND");
     }
     if (parsed.pathname === "/artifact/v1/readiness") {
+      if (readinessErrorCode) {
+        const code = readinessErrorCode;
+        const status = code === "UNAUTHORIZED" ? 401
+          : code === "INTERNAL_ERROR" ? 500
+            : 503;
+        return errorResponse(status, code);
+      }
       const core = readinessCore();
       return jsonResponse(200, { ...core, digest: contractDigest(core) });
+    }
+    if (parsed.pathname === "/artifact/v1/compile/issue") {
+      if (!creationEnabled) return errorResponse(503, "WORKER_CREATION_DISABLED");
+      if (failIssueBeforePersistAndAdvance) {
+        failIssueBeforePersistAndAdvance = false;
+        compileAuthorityEpoch += 1;
+        throw new TypeError("simulated pre-dispatch issue transport failure");
+      }
+      if (advanceEpochBeforeNextIssue) {
+        advanceEpochBeforeNextIssue = false;
+        compileAuthorityEpoch += 1;
+      }
+      const contentDigest = digestDocumentWorkerCompileContent(request);
+      const requestDigest = contractDigest(request);
+      let authority = issued.get(request.issuanceId);
+      if (authority && authority.requestDigest !== requestDigest) {
+        return errorResponse(409, "IDEMPOTENCY_CONFLICT");
+      }
+      if (!authority) {
+        if (request.compileAuthorityEpoch < compileAuthorityEpoch) {
+          return errorResponse(410, "ARTIFACT_CONTENT_GONE");
+        }
+        if (request.compileAuthorityEpoch !== compileAuthorityEpoch) {
+          return errorResponse(400, "INVALID_REQUEST");
+        }
+        const core = {
+          schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_RESPONSE_SCHEMA_VERSION,
+          issuanceId: request.issuanceId,
+          requestId: `cmp_${digestBytes(Buffer.from(`request:${request.issuanceId}`, "utf8"))}`,
+          compileAuthorityEpoch: request.compileAuthorityEpoch,
+          compileAuthorityToken: token("wca_", 32, `authority:${request.issuanceId}`),
+          contentDigest,
+        };
+        authority = { requestDigest, response: { ...core, digest: contractDigest(core) } };
+        issued.set(request.issuanceId, authority);
+      }
+      if (dropNextIssueResponse) {
+        dropNextIssueResponse = false;
+        throw new TypeError("simulated compile issuance response loss");
+      }
+      return jsonResponse(200, authority.response);
     }
     if (parsed.pathname === "/artifact/v1/compile") {
       if (!creationEnabled) return errorResponse(503, "WORKER_CREATION_DISABLED");
@@ -129,6 +193,14 @@ export function createDocumentWorkerFixture(options = {}) {
         failNextCompileCode = null;
         return errorResponse(422, code);
       }
+      const authority = issued.get(request.issuanceId);
+      if (
+        !authority ||
+        authority.response.requestId !== request.requestId ||
+        authority.response.compileAuthorityEpoch !== request.compileAuthorityEpoch ||
+        authority.response.compileAuthorityToken !== request.compileAuthorityToken ||
+        authority.response.contentDigest !== digestDocumentWorkerCompileContent(request)
+      ) return errorResponse(410, "ARTIFACT_CONTENT_GONE");
       const sourceBytes = Buffer.from(request.source, "utf8");
       const sourceSha256 = digestBytes(sourceBytes);
       if (sourceSha256 !== request.sourceSha256) return errorResponse(400, "INVALID_REQUEST");
@@ -164,7 +236,7 @@ export function createDocumentWorkerFixture(options = {}) {
         groupId: token("wgrp_", 32, `${receiptSeed}:group`),
         ...identities,
         requestId: request.requestId,
-        requestDigest: contractDigest(request),
+        requestDigest: digestDocumentWorkerCompileOperation(request),
         requirementsDigest: contractDigest(request.requirements),
         verifiedFigureCount: request.requirements.minimumFigureCount,
         artifactsDigest,
@@ -188,10 +260,35 @@ export function createDocumentWorkerFixture(options = {}) {
       });
     }
     if (parsed.pathname === "/artifact/v1/commit") {
+      if (hangNextCommitResponse) {
+        hangNextCommitResponse = false;
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            reject(init.signal.reason || new Error("simulated commit abort"));
+          }, { once: true });
+        });
+      }
+      if (malformedNextCommitResponse) {
+        malformedNextCommitResponse = false;
+        return new Response("{", {
+          status: 200,
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Length": "1",
+            "Content-Type": "application/json; charset=utf-8",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      }
       if (failNextCommitCode) {
         const code = failNextCommitCode;
         failNextCommitCode = null;
-        return errorResponse(code === "IDEMPOTENCY_CONFLICT" ? 409 : 503, code);
+        const status = code === "IDEMPOTENCY_CONFLICT" ? 409
+          : code === "UNAUTHORIZED" ? 401
+            : code === "INTERNAL_ERROR" ? 500
+              : 503;
+        return errorResponse(status, code);
       }
       const group = staged.get(request.receiptDigest) || committed.get(request.receiptDigest)?.group;
       if (!group) return errorResponse(404, "NOT_FOUND");
@@ -304,12 +401,18 @@ export function createDocumentWorkerFixture(options = {}) {
     calls,
     client,
     staged,
+    issued,
     committed,
     tombstoned,
     setAvailable(value) { available = value === true; },
     setCreationEnabled(value) { creationEnabled = value === true; },
+    setReadinessError(code) { readinessErrorCode = code; },
+    advanceCompileAuthorityEpoch() { compileAuthorityEpoch += 1; },
     failNextCompile(code = "TEX_COMPILE_FAILED") { failNextCompileCode = code; },
+    loseNextIssueResponse() { dropNextIssueResponse = true; },
     failNextCommit(code = "WORKER_UNAVAILABLE") { failNextCommitCode = code; },
+    malformNextCommitResponse() { malformedNextCommitResponse = true; },
+    hangNextCommit() { hangNextCommitResponse = true; },
     failNextDelete(code = "WORKER_UNAVAILABLE") { failNextDeleteCode = code; },
   });
 }

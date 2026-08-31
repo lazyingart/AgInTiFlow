@@ -12,6 +12,9 @@ import {
 } from "./integration-document-artifacts.js";
 import {
   INTEGRATION_DOCUMENT_COMPILE_REQUIREMENTS_SCHEMA_VERSION,
+  INTEGRATION_DOCUMENT_WORKER_COMPILE_INTENT_CANDIDATE_SCHEMA_VERSION,
+  INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_INTENT_SCHEMA_VERSION,
+  INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_REFRESH_SCHEMA_VERSION,
   INTEGRATION_DOCUMENT_WORKER_LIMITS,
   INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
   IntegrationDocumentWorkerError,
@@ -23,6 +26,20 @@ import {
   validateIntegrationDocumentWorkerRef,
 } from "./integration-document-worker-client.js";
 import { inspectIntegrationDocumentCompileRequirements } from "./integration-document-worker-requirements.js";
+import {
+  createDocumentWorkerCompileIssuanceId,
+  digestDocumentWorkerCompileContent,
+  digestDocumentWorkerCompileOperation,
+  validateDocumentWorkerCompileRequest,
+} from "./integration-document-worker-contract.js";
+import {
+  INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+  createIntegrationGroundedSearchArtifactAuthority,
+  deriveIntegrationGroundedSearchDomainConstraint,
+  integrationGroundedSearchBoundArtifactId,
+  planIntegrationGroundedSearchQuery,
+  validateIntegrationGroundedSearchArtifactAuthority,
+} from "./integration-grounded-search.js";
 import {
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACT_JSON_BYTES,
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACTS,
@@ -175,6 +192,7 @@ const MUTATION_RECEIPT_SCHEMA_VERSION = "aginti-analysis-mutation-receipt-v1";
 export const INTEGRATION_ANALYSIS_ATTACHMENT_AUTHORITY_SCHEMA_VERSION =
   "aginti-analysis-attachment-authority-v1";
 const DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION = "aginti-document-commit-intent-v2";
+const DOCUMENT_COMPILE_INTENT_SCHEMA_VERSION = "aginti-document-compile-intent-v3";
 const LEGACY_DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION = "aginti-document-commit-intent-v1";
 const DOCUMENT_COMMIT_INTENT_MANIFEST_SCHEMA_VERSION = "aginti-document-commit-intent-manifest-v2";
 const DOCUMENT_REVISION_LINEAGE_SCHEMA_VERSION = "aginti-document-revision-lineage-v1";
@@ -247,6 +265,11 @@ function notFound(label) {
 
 function conflict(code, message) {
   fail(code, message, { status: 409 });
+}
+
+function compareText(left, right) {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
 }
 
 function exact(value, allowed, required, label) {
@@ -1177,6 +1200,7 @@ function validateRun(run, scope, threadIds) {
       "authority",
       "inputMessageId",
       "search",
+      "documentCompileIntent",
       "events",
     ],
     [
@@ -1214,6 +1238,72 @@ function validateRun(run, scope, threadIds) {
     try {
       const normalizedSearch = validateIntegrationSearch(run.search);
       if (canonicalJson(normalizedSearch) !== canonicalJson(run.search)) corrupt();
+    } catch (error) {
+      corrupt(error);
+    }
+  }
+  if (run.documentCompileIntent !== undefined) {
+    try {
+      const intent = exactState(
+        run.documentCompileIntent,
+        [
+          "schemaVersion",
+          "issuanceId",
+          "requestId",
+          "compileAuthorityEpoch",
+          "compileAuthorityTokenDigest",
+          "contentDigest",
+          "operationDigest",
+          "sourceSha256",
+          "requirementsDigest",
+          "createdAt",
+        ],
+        [
+          "schemaVersion",
+          "issuanceId",
+          "requestId",
+          "compileAuthorityEpoch",
+          "compileAuthorityTokenDigest",
+          "contentDigest",
+          "operationDigest",
+          "sourceSha256",
+          "requirementsDigest",
+          "createdAt",
+        ],
+        "document compile intent"
+      );
+      if (intent.schemaVersion !== DOCUMENT_COMPILE_INTENT_SCHEMA_VERSION) corrupt();
+      if (
+        !/^iss_[a-f0-9]{16}_[a-f0-9]{64}$/u.test(intent.issuanceId) ||
+        !Number.isSafeInteger(intent.compileAuthorityEpoch) ||
+        intent.compileAuthorityEpoch < 1 ||
+        Number.parseInt(intent.issuanceId.slice(4, 20), 16) !== intent.compileAuthorityEpoch
+      ) {
+        corrupt();
+      }
+      const issued =
+        intent.requestId !== null ||
+        intent.compileAuthorityTokenDigest !== null ||
+        intent.operationDigest !== null;
+      if (issued) {
+        if (
+          !/^cmp_[a-f0-9]{64}$/u.test(intent.requestId) ||
+          !/^[a-f0-9]{64}$/u.test(intent.compileAuthorityTokenDigest)
+        ) {
+          corrupt();
+        }
+        stateDigest(intent.operationDigest, "document compile intent operationDigest");
+      } else if (
+        intent.requestId !== null ||
+        intent.compileAuthorityTokenDigest !== null ||
+        intent.operationDigest !== null
+      ) {
+        corrupt();
+      }
+      stateDigest(intent.contentDigest, "document compile intent contentDigest");
+      stateDigest(intent.sourceSha256, "document compile intent sourceSha256");
+      stateDigest(intent.requirementsDigest, "document compile intent requirementsDigest");
+      stateTimestamp(intent.createdAt, "document compile intent createdAt");
     } catch (error) {
       corrupt(error);
     }
@@ -1310,7 +1400,7 @@ function validateRun(run, scope, threadIds) {
   }
 }
 
-function validateArtifact(artifact, scope, runsById) {
+function validateArtifact(artifact, scope, runsById, state) {
   exactState(
     artifact,
     [
@@ -1328,6 +1418,8 @@ function validateArtifact(artifact, scope, runsById) {
       "compileReceiptDigest",
       "documentRole",
       "companionSha256",
+      "groundedSearchSourceArtifactId",
+      "groundedSearchAuthority",
     ],
     [
       "id",
@@ -1379,6 +1471,50 @@ function validateArtifact(artifact, scope, runsById) {
     artifact.compileReceiptDigest !== undefined ||
     artifact.documentRole !== undefined ||
     artifact.companionSha256 !== undefined
+  ) {
+    corrupt();
+  }
+  if (artifact.kind === "sources") {
+    try {
+      validateIntegrationArtifactId(artifact.groundedSearchSourceArtifactId);
+      const authority = validateIntegrationGroundedSearchArtifactAuthority(artifact.groundedSearchAuthority);
+      if (
+        integrationGroundedSearchBoundArtifactId(artifact.spec, authority) !==
+          artifact.groundedSearchSourceArtifactId ||
+        `art_${contractDigest({
+          schemaVersion: INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
+          principalId: scope.principalId,
+          browserSessionId: scope.browserSessionId,
+          threadId: artifact.threadId,
+          runId: artifact.runId,
+          source: sanitizeIntegrationArtifact({
+            id: artifact.groundedSearchSourceArtifactId,
+            title: artifact.title,
+            kind: artifact.kind,
+            spec: artifact.spec,
+          }),
+        })}` !== artifact.id
+      ) {
+        corrupt();
+      }
+      const thread = state.threads.find((candidate) => candidate.id === run.threadId);
+      const inputMessage = thread?.messages.find((candidate) => candidate.id === run.inputMessageId);
+      if (!thread || !inputMessage || run.search === undefined) corrupt();
+      const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(inputMessage.content);
+      const queryPlan = planIntegrationGroundedSearchQuery(inputMessage.content, run.search.mode, domainConstraint);
+      const expectedAuthority = createIntegrationGroundedSearchArtifactAuthority({
+        query: queryPlan.query,
+        mode: run.search.mode,
+        queryPlanDigest: queryPlan.digest,
+        domainConstraintDigest: domainConstraint?.digest ?? null,
+      });
+      if (canonicalJson(expectedAuthority) !== canonicalJson(authority)) corrupt();
+    } catch (error) {
+      corrupt(error);
+    }
+  } else if (
+    artifact.groundedSearchSourceArtifactId !== undefined ||
+    artifact.groundedSearchAuthority !== undefined
   ) {
     corrupt();
   }
@@ -1988,7 +2124,7 @@ function validateState(state, expectedScope) {
   for (const artifact of state.artifacts) {
     if (artifactIds.has(artifact.id)) corrupt();
     artifactIds.add(artifact.id);
-    validateArtifact(artifact, expectedScope, runsById);
+    validateArtifact(artifact, expectedScope, runsById, state);
     if (artifact.kind === "file") {
       if (artifactWorkerRefs.has(artifact.workerRef)) corrupt();
       artifactWorkerRefs.add(artifact.workerRef);
@@ -2604,7 +2740,7 @@ async function retainedAttachmentGlobalUsage(stateRoot, { testOnly, storagePolic
   }
   let blobs = 0;
   let bytes = 0;
-  for (const entry of scopes.sort((left, right) => left.name.localeCompare(right.name))) {
+  for (const entry of scopes.sort((left, right) => compareText(left.name, right.name))) {
     const scopeDirectory = path.join(scopesDirectory, entry.name);
     if (path.dirname(scopeDirectory) !== scopesDirectory) corrupt();
     const scopeStat = await assertDirectory(scopeDirectory, { leaf: true, testOnly });
@@ -3125,6 +3261,7 @@ function createService(options, { testOnly }) {
         : ZERO_DIGEST;
   const fixedCoordinatorDigest = plannerActivation?.coordinatorDigest || ZERO_DIGEST;
   const plannerActivationDigest = plannerActivation?.digest || ZERO_DIGEST;
+  const plannerRoleStates = plannerActivation?.roles;
   const searchEnabled = testOnly
     ? options.searchEnabled === true
     : plannerActivation?.groundedSearch?.enabled === true && plannerActivation?.groundedSearch?.ready === true;
@@ -3308,7 +3445,7 @@ function createService(options, { testOnly }) {
     let temporaryScopes = 0;
     const staged = entries.filter((entry) => STATE_SCOPE_TEMP_PATTERN.test(entry.name));
     if (staged.length > 16) corrupt();
-    for (const entry of staged.sort((left, right) => left.name.localeCompare(right.name))) {
+    for (const entry of staged.sort((left, right) => compareText(left.name, right.name))) {
       throwIfStartupRecoveryExpired(signal);
       if (!entry.isDirectory() || entry.isSymbolicLink()) corrupt();
       const stagedMatch = STATE_SCOPE_TEMP_PATTERN.exec(entry.name);
@@ -3341,7 +3478,7 @@ function createService(options, { testOnly }) {
       temporaryScopes += 1;
     }
     const canonicalEntries = await fs.readdir(scopesDirectory, { withFileTypes: true });
-    for (const entry of canonicalEntries.sort((left, right) => left.name.localeCompare(right.name))) {
+    for (const entry of canonicalEntries.sort((left, right) => compareText(left.name, right.name))) {
       throwIfStartupRecoveryExpired(signal);
       if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[a-f0-9]{64}$/u.test(entry.name)) corrupt();
       const scopeDirectory = path.join(scopesDirectory, entry.name);
@@ -3352,7 +3489,7 @@ function createService(options, { testOnly }) {
       if (!names.some((item) => item.name === "state.json" && item.isFile() && !item.isSymbolicLink())) {
         corrupt();
       }
-      for (const candidate of temporary.sort((left, right) => left.name.localeCompare(right.name))) {
+      for (const candidate of temporary.sort((left, right) => compareText(left.name, right.name))) {
         throwIfStartupRecoveryExpired(signal);
         if (!candidate.isFile() || candidate.isSymbolicLink()) corrupt();
         const temporaryPath = path.join(scopeDirectory, candidate.name);
@@ -3399,7 +3536,7 @@ function createService(options, { testOnly }) {
       corrupt();
     }
     const scopes = [];
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    for (const entry of entries.sort((left, right) => compareText(left.name, right.name))) {
       throwIfStartupRecoveryExpired(signal);
       const scopeDirectory = path.join(scopesDirectory, entry.name);
       if (path.dirname(scopeDirectory) !== scopesDirectory) corrupt();
@@ -3426,7 +3563,7 @@ function createService(options, { testOnly }) {
           digest: entry.name,
           scope,
           nonterminalRuns: state.runs.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status)).length,
-          pendingDocumentIntents: state.documentCommitIntents.filter((intent) => intent.status === "pending").length,
+          pendingDocumentIntents: pendingOptionalDocumentRunCount(state),
         }));
       } catch (error) {
         if (error instanceof IntegrationAnalysisSessionError) throw error;
@@ -3477,6 +3614,7 @@ function createService(options, { testOnly }) {
             nonterminalRunsObserved: null,
             nonterminalRunsRecovered: 0,
             nonterminalRunsRemaining: null,
+            deferredOptionalDocumentRuns: null,
             pendingDocumentIntentsObserved: null,
             recoveryScopeDigests: Object.freeze([]),
             bounded: true,
@@ -3487,6 +3625,7 @@ function createService(options, { testOnly }) {
         }
         const before = await startupScopeInventory(controller.signal);
         let recoveredRuns = 0;
+        let deferredOptionalDocumentRuns = 0;
         const recoveryScopeDigests = [];
         for (let index = 0; index < before.length; index += 1) {
           throwIfStartupRecoveryExpired(controller.signal);
@@ -3504,7 +3643,16 @@ function createService(options, { testOnly }) {
           });
           throwIfStartupRecoveryExpired(controller.signal);
           if (!state) corrupt();
-          const remaining = state.runs.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status)).length;
+          let remaining = 0;
+          let deferred = 0;
+          for (const run of state.runs) {
+            if (TERMINAL_RUN_STATUSES.has(run.status)) continue;
+            if (isPendingOptionalDocumentRun(state, run)) {
+              deferred += 1;
+            } else {
+              remaining += 1;
+            }
+          }
           if (remaining > 0) {
             fail(
               "ANALYSIS_STARTUP_RECOVERY_INCOMPLETE",
@@ -3515,13 +3663,17 @@ function createService(options, { testOnly }) {
           if (item.nonterminalRuns > 0 || item.pendingDocumentIntents > 0) {
             recoveryScopeDigests.push(item.digest);
           }
-          recoveredRuns += item.nonterminalRuns;
+          recoveredRuns += item.nonterminalRuns - deferred;
+          deferredOptionalDocumentRuns += deferred;
         }
         const after = await startupScopeInventory(controller.signal);
         if (
           after.length !== before.length ||
           after.some((item, index) => item.digest !== before[index].digest) ||
-          after.some((item) => item.nonterminalRuns !== 0)
+          after.some((item) =>
+            item.nonterminalRuns !== 0 &&
+            (documentWorkerClient !== undefined || item.pendingDocumentIntents === 0)
+          )
         ) {
           fail(
             "ANALYSIS_STARTUP_RECOVERY_INCOMPLETE",
@@ -3538,7 +3690,8 @@ function createService(options, { testOnly }) {
           scopeCount: before.length,
           nonterminalRunsObserved: before.reduce((total, item) => total + item.nonterminalRuns, 0),
           nonterminalRunsRecovered: recoveredRuns,
-          nonterminalRunsRemaining: 0,
+          nonterminalRunsRemaining: deferredOptionalDocumentRuns,
+          deferredOptionalDocumentRuns,
           pendingDocumentIntentsObserved: before.reduce(
             (total, item) => total + item.pendingDocumentIntents,
             0
@@ -3665,13 +3818,20 @@ function createService(options, { testOnly }) {
     for (const [callId, state] of calls) {
       if (state.started && !state.terminal) {
         const tex = state.label === "TeX document compiler";
+        const search = state.label === "Grounded search";
         const publicSummary = tex
           ? eventType === "tool.completed"
             ? "TeX source and PDF compiled."
             : /cancelled/iu.test(summary)
               ? "TeX document compilation was cancelled."
               : "TeX document compilation did not complete."
-          : summary;
+          : search
+            ? eventType === "tool.completed"
+              ? "Grounded sources retrieved."
+              : /cancelled/iu.test(summary)
+                ? "Grounded search was cancelled."
+                : "Grounded search did not complete."
+            : summary;
         appendEvent(
           run,
           eventType,
@@ -3716,24 +3876,47 @@ function createService(options, { testOnly }) {
     touchThread(thread, completedAt, { status: "idle", lastRunId: run.id });
   }
 
+  function hasPendingDocumentCommitIntent(state, runId) {
+    return state.documentCommitIntents.some((intent) => intent.runId === runId && intent.status === "pending");
+  }
+
+  function hasPendingDocumentCompileIntent(run) {
+    return run.documentCompileIntent !== undefined;
+  }
+
+  function hasPendingOptionalDocumentWork(state, run) {
+    return (
+      !TERMINAL_RUN_STATUSES.has(run.status) &&
+      (hasPendingDocumentCommitIntent(state, run.id) || hasPendingDocumentCompileIntent(run))
+    );
+  }
+
+  function pendingOptionalDocumentRunCount(state) {
+    return state.runs.filter((run) => hasPendingOptionalDocumentWork(state, run)).length;
+  }
+
+  function isPendingOptionalDocumentRun(state, run) {
+    return documentWorkerClient === undefined && hasPendingOptionalDocumentWork(state, run);
+  }
+
   function recoverInterruptedRuns(state) {
     let changed = false;
     const recoveredAt = timestamp();
     for (const run of state.runs) {
       if (TERMINAL_RUN_STATUSES.has(run.status) || activeRuns.has(run.id)) continue;
       const documentIntents = state.documentCommitIntents.filter((intent) => intent.runId === run.id);
-      if (documentIntents.some((intent) => intent.status === "pending")) {
-        // Do not terminalize a crash-replayable paired document while its
-        // workstation commit ACK is temporarily unavailable. Scoped polling
-        // will retry reconciliation.
-        continue;
-      }
       if (
         documentIntents.length > 0 &&
         documentIntents.every((intent) => intent.status === "committed" && intent.eventsPublished === true)
       ) {
         completeRecoveredDocumentRun(state, run, recoveredAt);
         changed = true;
+        continue;
+      }
+      if (documentIntents.some((intent) => intent.status === "pending") || hasPendingDocumentCompileIntent(run)) {
+        // Do not terminalize a crash-replayable paired document while its
+        // workstation commit ACK or compile issuance is temporarily unavailable.
+        // Scoped polling will retry reconciliation.
         continue;
       }
       closeOpenTools(run, recoveredAt, "Analysis execution was interrupted.");
@@ -3763,6 +3946,10 @@ function createService(options, { testOnly }) {
     let changed = false;
     const irrecoverableReceipts = new Set();
     const irrecoverableRefs = new Set();
+    const terminalCommitLoss = (error) =>
+      error.status === 404 ||
+      error.status === 410 ||
+      (error.status === 409 && error.workerCode === "IDEMPOTENCY_CONFLICT");
     for (const intent of state.documentCommitIntents.filter(({ status }) => status === "pending")) {
       const run = state.runs.find((candidate) => candidate.id === intent.runId);
       // The live planner owns the normal authorize -> worker commit -> ACK
@@ -3792,6 +3979,7 @@ function createService(options, { testOnly }) {
         changed = true;
       } catch (error) {
         if (!(error instanceof IntegrationDocumentWorkerError)) throw error;
+        if (error.code === "ANALYSIS_CANCELLED") throw error;
         const transient =
           error.retryable === true &&
           (error.workerCode === "" || new Set(["WORKER_UNAVAILABLE", "WORKER_STATE_UNAVAILABLE"]).has(error.workerCode));
@@ -3800,9 +3988,12 @@ function createService(options, { testOnly }) {
           // retain the exact pair and its authority for the next scoped poll.
           continue;
         }
-        // An authenticated NOT_FOUND/410/409 or invalid protocol response is
-        // authoritative: the staged pair cannot be safely committed. Remove
-        // its invisible metadata so it cannot lock the thread indefinitely.
+        if (!terminalCommitLoss(error)) {
+          continue;
+        }
+        // Only authenticated absence or exact idempotency conflict is
+        // authoritative loss. Auth, internal, timeout, and protocol failures
+        // retain the byte-for-byte pending intent for a later recovery pass.
         irrecoverableReceipts.add(intent.receiptDigest);
         for (const object of intent.objects) irrecoverableRefs.add(object.ref);
         const failedAt = timestamp();
@@ -3862,6 +4053,49 @@ function createService(options, { testOnly }) {
   async function reconcileDocumentDeletionIntents(scope, state, { signal } = {}) {
     if (!documentWorkerClient) return false;
     let changed = false;
+    const exactManifestIsAbsent = async (intent) => {
+      let allObjectsAbsent = true;
+      for (const object of intent.objects) {
+        const artifact = state.artifacts.find((candidate) =>
+          candidate.kind === "file" &&
+          candidate.workerRef === object.ref &&
+          candidate.runId === object.runId &&
+          candidate.compileReceiptDigest === object.receiptDigest
+        );
+        if (!artifact) corrupt();
+        let observation;
+        try {
+          observation = await documentWorkerClient.content(
+            Object.freeze({
+              principalId: scope.principalId,
+              browserSessionId: scope.browserSessionId,
+              threadId: intent.threadId,
+              runId: object.runId,
+            }),
+            Object.freeze({
+              ref: object.ref,
+              receiptDigest: object.receiptDigest,
+              filename: artifact.spec.filename,
+              mime: artifact.spec.mime,
+              bytes: artifact.spec.bytes,
+              sha256: artifact.spec.sha256,
+              metadataOnly: true,
+            }),
+            { signal }
+          );
+        } catch (error) {
+          if (error instanceof IntegrationDocumentWorkerError && error.retryable) return false;
+          throw error;
+        }
+        if (
+          !new Set([404, 410]).has(observation.status) ||
+          !new Set(["NOT_FOUND", "ARTIFACT_CONTENT_GONE"]).has(observation.workerCode)
+        ) {
+          allObjectsAbsent = false;
+        }
+      }
+      return allObjectsAbsent;
+    };
     for (const intent of state.documentDeletionIntents.filter(
       ({ status }) => !TERMINAL_DOCUMENT_DELETION_STATUSES.has(status)
     )) {
@@ -3914,15 +4148,15 @@ function createService(options, { testOnly }) {
           (error.status === 404 && error.workerCode === "NOT_FOUND") ||
           (error.status === 410 && error.workerCode === "ARTIFACT_CONTENT_GONE")
         ) {
-          // The authenticated worker has authoritatively confirmed that the
-          // exact scoped manifest is absent. The deletion outcome is already
-          // satisfied even if a staged group expired before prepare. Preserve
-          // a distinct cloud observation rather than fabricating a tombstone
-          // ACK, then finish the same metadata/receipt lifecycle as deletion.
-          intent.status = "absent";
-          intent.updatedAt = timestamp();
-          intent.completedAt = intent.updatedAt;
-          changed = true;
+          // A generic delete 404/410 can describe only one missing member of a
+          // multi-object manifest. It is never whole-manifest authority. Probe
+          // every exact scoped ref before allowing cloud metadata removal.
+          if (await exactManifestIsAbsent(intent)) {
+            intent.status = "absent";
+            intent.updatedAt = timestamp();
+            intent.completedAt = intent.updatedAt;
+            changed = true;
+          }
         }
       }
     }
@@ -4353,7 +4587,11 @@ function createService(options, { testOnly }) {
     }
     if (
       progress.toolName !== undefined &&
-      !new Set(["execute_python_analysis", INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]).has(progress.toolName)
+      !new Set([
+        "execute_python_analysis",
+        INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
+        INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+      ]).has(progress.toolName)
     ) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis progress tool is invalid.", { status: 502 });
     }
@@ -4373,12 +4611,17 @@ function createService(options, { testOnly }) {
 
   function callIdForProgress(progress) {
     const number = Number(progress.toolCallNumber || Math.max(1, progress.toolCallsCompleted || 1));
-    const prefix = progress.toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME ? "tex-document" : "analysis";
+    const prefix = progress.toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME
+      ? "tex-document"
+      : progress.toolName === INTEGRATION_GROUNDED_SEARCH_TOOL_NAME
+        ? "grounded-search"
+        : "analysis";
     return `${prefix}-${Math.min(INTEGRATION_ANALYSIS_MAX_TOOL_CALLS, Math.max(1, number))}`;
   }
 
   function toolPresentation(toolName, executionState = "running") {
     const tex = toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME;
+    const search = toolName === INTEGRATION_GROUNDED_SEARCH_TOOL_NAME;
     const terminalSuccess = new Set(["succeeded", "completed"]).has(executionState);
     const terminalFailure = new Set([
       "failed",
@@ -4391,16 +4634,16 @@ function createService(options, { testOnly }) {
       "worker_error",
     ]).has(executionState);
     return Object.freeze({
-      label: tex ? "TeX document compiler" : "Python analysis",
+      label: tex ? "TeX document compiler" : search ? "Grounded search" : "Python analysis",
       terminalSuccess,
       terminalFailure,
       summary: terminalSuccess
-        ? tex ? "TeX source and PDF compiled." : "Bounded Python analysis completed."
+        ? tex ? "TeX source and PDF compiled." : search ? "Grounded sources retrieved." : "Bounded Python analysis completed."
         : terminalFailure
-          ? tex ? "TeX document compilation did not complete." : "Bounded Python analysis did not complete."
+          ? tex ? "TeX document compilation did not complete." : search ? "Grounded search did not complete." : "Bounded Python analysis did not complete."
           : new Set(["starting", "queued"]).has(executionState)
-            ? tex ? "TeX document compilation is preparing." : "Bounded Python analysis is preparing."
-            : tex ? "TeX document compilation is running." : "Bounded Python analysis is running.",
+            ? tex ? "TeX document compilation is preparing." : search ? "Grounded search is preparing." : "Bounded Python analysis is preparing."
+            : tex ? "TeX document compilation is running." : search ? "Grounded search is running." : "Bounded Python analysis is running.",
     });
   }
 
@@ -4520,7 +4763,8 @@ function createService(options, { testOnly }) {
 
   async function recordArtifact(scope, threadId, runId, rawArtifact, revisionLineage = null) {
     const privateFile = inspectIntegrationDocumentWorkerFileArtifact(rawArtifact);
-    const artifact = normalizeOwnedArtifact(rawArtifact, scope, threadId, runId);
+    const sourceArtifact = sanitizeIntegrationArtifact(rawArtifact);
+    const artifact = normalizeOwnedArtifact(sourceArtifact, scope, threadId, runId);
     if (artifact.kind === "file") {
       if (!privateFile) {
         fail("ANALYSIS_FILE_ARTIFACT_UNSEALED", "File artifacts must originate from the bound workstation worker.", {
@@ -4651,6 +4895,32 @@ function createService(options, { testOnly }) {
         fail("ANALYSIS_ARTIFACT_CAPACITY_EXHAUSTED", "Run artifact capacity is exhausted.", { status: 409 });
       }
       const createdAt = timestamp();
+      let groundedSearchAuthority;
+      if (artifact.kind === "sources") {
+        if (run.search === undefined) {
+          fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Grounded sources lack a search run authority.", {
+            status: 502,
+          });
+        }
+        const thread = findThread(state, threadId);
+        const inputMessage = thread.messages.find((message) => message.id === run.inputMessageId);
+        if (!inputMessage) corrupt();
+        const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(inputMessage.content);
+        const queryPlan = planIntegrationGroundedSearchQuery(inputMessage.content, run.search.mode, domainConstraint);
+        groundedSearchAuthority = createIntegrationGroundedSearchArtifactAuthority({
+          query: queryPlan.query,
+          mode: run.search.mode,
+          queryPlanDigest: queryPlan.digest,
+          domainConstraintDigest: domainConstraint?.digest ?? null,
+        });
+        if (
+          sourceArtifact.id !== integrationGroundedSearchBoundArtifactId(sourceArtifact.spec, groundedSearchAuthority)
+        ) {
+          fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Grounded source artifact authority is invalid.", {
+            status: 502,
+          });
+        }
+      }
       const record = {
         ...artifact,
         principalId: scope.principalId,
@@ -4659,6 +4929,12 @@ function createService(options, { testOnly }) {
         threadId,
         runId,
         createdAt,
+        ...(groundedSearchAuthority === undefined
+          ? {}
+          : {
+              groundedSearchSourceArtifactId: sourceArtifact.id,
+              groundedSearchAuthority,
+            }),
       };
       state.artifacts.push(record);
       appendEvent(run, "artifact.created", { artifact }, createdAt);
@@ -4740,6 +5016,217 @@ function createService(options, { testOnly }) {
         });
       }
       return { changed: false, result: true };
+    });
+  }
+
+  async function authorizeDocumentCompile(scope, threadId, runId, proposedRequest) {
+    if (
+      proposedRequest?.schemaVersion ===
+      INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_REFRESH_SCHEMA_VERSION
+    ) {
+      let refresh;
+      try {
+        refresh = integrationExactKeys(
+          proposedRequest,
+          ["schemaVersion", "previousIssuanceId", "compileAuthorityEpoch", "contentDigest"],
+          "document compile issue refresh",
+          ["schemaVersion", "previousIssuanceId", "compileAuthorityEpoch", "contentDigest"]
+        );
+        if (
+          !/^iss_[a-f0-9]{16}_[a-f0-9]{64}$/u.test(refresh.previousIssuanceId) ||
+          !Number.isSafeInteger(refresh.compileAuthorityEpoch) ||
+          refresh.compileAuthorityEpoch < 1 ||
+          !/^[a-f0-9]{64}$/u.test(refresh.contentDigest)
+        ) throw new Error("document compile refresh authority is invalid");
+      } catch (error) {
+        fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile refresh is invalid.", {
+          status: 500,
+          cause: error,
+        });
+      }
+      return mutate(scope, (state) => {
+        const run = findRun(state, runId);
+        const existing = run.documentCompileIntent;
+        if (
+          run.threadId !== threadId ||
+          TERMINAL_RUN_STATUSES.has(run.status) ||
+          !existing ||
+          existing.requestId !== null ||
+          existing.compileAuthorityTokenDigest !== null ||
+          existing.operationDigest !== null ||
+          existing.issuanceId !== refresh.previousIssuanceId ||
+          existing.contentDigest !== refresh.contentDigest ||
+          refresh.compileAuthorityEpoch <= existing.compileAuthorityEpoch
+        ) {
+          fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile issuance cannot be refreshed.", {
+            status: 409,
+          });
+        }
+        existing.compileAuthorityEpoch = refresh.compileAuthorityEpoch;
+        existing.issuanceId = createDocumentWorkerCompileIssuanceId(refresh.compileAuthorityEpoch);
+        return {
+          changed: true,
+          result: Object.freeze({
+            schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_INTENT_SCHEMA_VERSION,
+            issuanceId: existing.issuanceId,
+            compileAuthorityEpoch: existing.compileAuthorityEpoch,
+            contentDigest: existing.contentDigest,
+          }),
+        };
+      });
+    }
+    let candidate = null;
+    let request = null;
+    let contentDigest;
+    let requirementsDigest;
+    try {
+      if (
+        proposedRequest?.schemaVersion ===
+        INTEGRATION_DOCUMENT_WORKER_COMPILE_INTENT_CANDIDATE_SCHEMA_VERSION
+      ) {
+        candidate = integrationExactKeys(
+          proposedRequest,
+          [
+            "schemaVersion",
+            "compileAuthorityEpoch",
+            "scope",
+            "filename",
+            "source",
+            "sourceSha256",
+            "requirements",
+          ],
+          "document compile intent candidate",
+          [
+            "schemaVersion",
+            "compileAuthorityEpoch",
+            "scope",
+            "filename",
+            "source",
+            "sourceSha256",
+            "requirements",
+          ]
+        );
+        if (
+          !Number.isSafeInteger(candidate.compileAuthorityEpoch) ||
+          candidate.compileAuthorityEpoch < 1 ||
+          crypto.createHash("sha256").update(candidate.source, "utf8").digest("hex") !==
+            candidate.sourceSha256
+        ) {
+          throw new Error("document compile candidate authority is inconsistent");
+        }
+        contentDigest = digestDocumentWorkerCompileContent(candidate);
+        requirementsDigest = contractDigest(candidate.requirements);
+      } else {
+        request = validateDocumentWorkerCompileRequest(proposedRequest);
+        contentDigest = digestDocumentWorkerCompileContent(request);
+        requirementsDigest = contractDigest(request.requirements);
+      }
+    } catch (error) {
+      fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile intent is invalid.", {
+        status: 500,
+        cause: error,
+      });
+    }
+    return mutate(scope, (state) => {
+      const run = findRun(state, runId);
+      if (run.threadId !== threadId || TERMINAL_RUN_STATUSES.has(run.status)) {
+        fail("ANALYSIS_CANCELLED", "Document compile lost its active run authority.", { status: 499 });
+      }
+      if (
+        (request || candidate).scope.principalId !== scope.principalId ||
+        (request || candidate).scope.browserSessionId !== scope.browserSessionId ||
+        (request || candidate).scope.threadId !== threadId ||
+        (request || candidate).scope.runId !== runId
+      ) {
+        fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile scope is invalid.", {
+          status: 500,
+        });
+      }
+      const existing = run.documentCompileIntent;
+      if (candidate !== null) {
+        if (existing !== undefined) {
+          if (
+            existing.contentDigest !== contentDigest ||
+            existing.sourceSha256 !== candidate.sourceSha256 ||
+            existing.requirementsDigest !== requirementsDigest
+          ) {
+            fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile intent conflicts with this run.", {
+              status: 409,
+            });
+          }
+          return {
+            changed: false,
+            result: Object.freeze({
+              schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_INTENT_SCHEMA_VERSION,
+              issuanceId: existing.issuanceId,
+              compileAuthorityEpoch: existing.compileAuthorityEpoch,
+              contentDigest: existing.contentDigest,
+            }),
+          };
+        }
+        const issuanceId = createDocumentWorkerCompileIssuanceId(candidate.compileAuthorityEpoch);
+        run.documentCompileIntent = {
+          schemaVersion: DOCUMENT_COMPILE_INTENT_SCHEMA_VERSION,
+          issuanceId,
+          requestId: null,
+          compileAuthorityEpoch: candidate.compileAuthorityEpoch,
+          compileAuthorityTokenDigest: null,
+          contentDigest,
+          operationDigest: null,
+          sourceSha256: candidate.sourceSha256,
+          requirementsDigest,
+          createdAt: timestamp(),
+        };
+        return {
+          changed: true,
+          result: Object.freeze({
+            schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_INTENT_SCHEMA_VERSION,
+            issuanceId,
+            compileAuthorityEpoch: candidate.compileAuthorityEpoch,
+            contentDigest,
+          }),
+        };
+      }
+      if (existing === undefined) {
+        fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile issuance was not persisted.", {
+          status: 503,
+        });
+      }
+      const operationDigest = digestDocumentWorkerCompileOperation(request);
+      const compileAuthorityTokenDigest = crypto
+        .createHash("sha256")
+        .update(request.compileAuthorityToken, "utf8")
+        .digest("hex");
+      if (
+        existing.contentDigest !== contentDigest ||
+        existing.issuanceId !== request.issuanceId ||
+        existing.compileAuthorityEpoch !== request.compileAuthorityEpoch ||
+        existing.sourceSha256 !== request.sourceSha256 ||
+        existing.requirementsDigest !== requirementsDigest
+      ) {
+        fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile intent conflicts with this run.", {
+          status: 409,
+        });
+      }
+      if (existing.requestId !== null) {
+        if (
+          existing.operationDigest !== operationDigest ||
+          existing.requestId !== request.requestId ||
+          existing.compileAuthorityTokenDigest !== compileAuthorityTokenDigest
+        ) {
+          fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile intent conflicts with this run.", {
+            status: 409,
+          });
+        }
+        return {
+          changed: false,
+          result: request,
+        };
+      }
+      existing.requestId = request.requestId;
+      existing.compileAuthorityTokenDigest = compileAuthorityTokenDigest;
+      existing.operationDigest = operationDigest;
+      return { changed: true, result: request };
     });
   }
 
@@ -4866,7 +5353,7 @@ function createService(options, { testOnly }) {
       }
       if (
         !cancelled &&
-        documentIntents.some((intent) => intent.status === "pending")
+        (documentIntents.some((intent) => intent.status === "pending") || hasPendingDocumentCompileIntent(run))
       ) {
         return { changed: false, result: ownedRun(run) };
       }
@@ -4978,6 +5465,8 @@ function createService(options, { testOnly }) {
             if (inspectIntegrationDocumentWorkerFileArtifact(artifact)) privateDocumentEvidence.push(artifact);
             await recordArtifact(scope, threadId, runId, artifact, revisionLineage);
           },
+          onDocumentCompileIntent: async (request) =>
+            authorizeDocumentCompile(scope, threadId, runId, request),
           onDocumentCommitIntent: async (fileArtifacts) =>
             authorizeDocumentCommit(scope, threadId, runId, fileArtifacts),
           onFinal: async (value) => {
@@ -5531,6 +6020,7 @@ function createService(options, { testOnly }) {
           : { attachments: true, attachmentAuthority: fixedAttachmentAuthority }),
         ...(searchEnabled ? { search: true } : {}),
         ...(documentCreationEnabled ? { files: true } : {}),
+        ...(plannerRoleStates === undefined ? {} : { roles: plannerRoleStates }),
       });
     },
 
@@ -5592,7 +6082,7 @@ function createService(options, { testOnly }) {
       const scope = normalizeScopeFromContext(context);
       return inspect(scope, (state) => {
         const threads = [...(state?.threads || [])].sort(
-          (left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.id.localeCompare(left.id)
+          (left, right) => compareText(right.updatedAt, left.updatedAt) || compareText(right.id, left.id)
         );
         let start = 0;
         if (payload.before) {

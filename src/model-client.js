@@ -339,10 +339,12 @@ function messagesWithTextToolProtocol(config, messages, tools) {
 export function parseTextToolCalls(content = "") {
   const text = String(content || "");
   if (!hasTextToolCallMarker(text)) return [];
+  if (hasDsmlToolCallMarker(text)) return parseDsmlToolCalls(text);
 
   const calls = [];
   for (const call of parseRequestedToolCalls(text)) calls.push(call);
   for (const call of parseXmlToolCalls(text, calls.length)) calls.push(call);
+  for (const call of parseDsmlToolCalls(text, calls.length)) calls.push(call);
   const jsonBlock = text.match(/TOOL_CALLS\s*:\s*```(?:json)?\s*([\s\S]*?)```/i);
   if (jsonBlock?.[1]) {
     try {
@@ -401,8 +403,17 @@ function hasTextToolCallMarker(content = "") {
     text.includes("[TOOL_CALLS]") ||
     /TOOL_CALLS\s*:/i.test(text) ||
     /Requested tools?\s*:/i.test(text) ||
-    /<tool_calls?>/i.test(text)
+    /<tool_calls?>/i.test(text) ||
+    hasDsmlToolCallMarker(text)
   );
+}
+
+function hasDsmlToolCallMarker(content = "") {
+  const text = String(content || "");
+  const scan = text.length > MAX_DSML_TEXT_TOOL_MARKER_SCAN_CHARACTERS
+    ? text.slice(0, MAX_DSML_TEXT_TOOL_MARKER_SCAN_CHARACTERS)
+    : text;
+  return /<[|｜]{2}DSML[|｜]{2}\s*tool_calls\b/iu.test(scan);
 }
 
 function decodeXmlToolArgs(value = "") {
@@ -440,6 +451,202 @@ function parseXmlToolCalls(content = "", offset = 0) {
         arguments: rawArgs || "{}",
       },
     });
+  }
+  return calls;
+}
+
+function decodeDsmlToolText(value = "") {
+  return decodeXmlToolArgs(
+    String(value || "")
+      .replaceAll("＜", "<")
+      .replaceAll("＞", ">")
+      .replaceAll("＂", '"')
+      .replaceAll("＇", "'")
+      .replaceAll("＆", "&")
+  );
+}
+
+function normalizeTextToolArguments(name, args = {}) {
+  if (
+    name === "read_file" &&
+    !Object.hasOwn(args, "path") &&
+    Object.hasOwn(args, "file") &&
+    typeof args.file === "string"
+  ) {
+    const { file, ...rest } = args;
+    return { path: file, ...rest };
+  }
+  return args;
+}
+
+const DSML_TEXT_TOOL_MARKER = "[|｜]{2}DSML[|｜]{2}";
+const MAX_DSML_TEXT_TOOL_BYTES = 64 * 1024;
+const MAX_DSML_TEXT_TOOL_MARKER_SCAN_CHARACTERS = MAX_DSML_TEXT_TOOL_BYTES + 256;
+const MAX_DSML_TEXT_TOOL_CALLS = 16;
+const MAX_DSML_TEXT_TOOL_PARAMETERS = 64;
+const MAX_DSML_TEXT_TOOL_PARAMETER_BYTES = 16 * 1024;
+
+function dsmlSkipWhitespace(text = "", offset = 0) {
+  let index = offset;
+  while (index < text.length && /\s/u.test(text[index])) index += 1;
+  return index;
+}
+
+function parseDsmlAttributes(attrs = "", allowedNames = []) {
+  const allowed = new Set(allowedNames);
+  const values = new Map();
+  const text = String(attrs || "");
+  const pattern = /([A-Za-z0-9_-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/yu;
+  let offset = 0;
+  while (offset < text.length) {
+    offset = dsmlSkipWhitespace(text, offset);
+    if (offset >= text.length) break;
+    pattern.lastIndex = offset;
+    const match = pattern.exec(text);
+    if (!match) return null;
+    const name = String(match[1] || "").toLowerCase();
+    if (!allowed.has(name) || values.has(name)) return null;
+    values.set(name, decodeDsmlToolText(match[2] ?? match[3] ?? "").trim());
+    offset = pattern.lastIndex;
+  }
+  return values;
+}
+
+function matchDsmlOpenTag(text = "", tag = "", offset = 0) {
+  const pattern = new RegExp(`<${DSML_TEXT_TOOL_MARKER}${tag}\\b([^>]*)>`, "iyu");
+  pattern.lastIndex = offset;
+  return pattern.exec(text);
+}
+
+function matchDsmlCloseTag(text = "", tag = "", offset = 0) {
+  const pattern = new RegExp(`<\\/${DSML_TEXT_TOOL_MARKER}${tag}>`, "iyu");
+  pattern.lastIndex = offset;
+  return pattern.exec(text);
+}
+
+function findDsmlCloseTag(text = "", tag = "", offset = 0) {
+  const pattern = new RegExp(`<\\/${DSML_TEXT_TOOL_MARKER}${tag}>`, "giu");
+  pattern.lastIndex = offset;
+  return pattern.exec(text);
+}
+
+function dsmlParameterType(attrs) {
+  const declared = [];
+  if (attrs.has("type")) {
+    const type = attrs.get("type");
+    if (!["string", "boolean", "number", "json"].includes(type)) return null;
+    declared.push(type);
+  }
+  for (const flag of ["string", "boolean", "number", "json"]) {
+    if (!attrs.has(flag)) continue;
+    if (attrs.get(flag) !== "true") return null;
+    declared.push(flag);
+  }
+  const unique = [...new Set(declared)];
+  if (unique.length > 1) return null;
+  return unique[0] || "";
+}
+
+function parseDsmlParameterValue(type = "", rawValue = "") {
+  if (Buffer.byteLength(String(rawValue || ""), "utf8") > MAX_DSML_TEXT_TOOL_PARAMETER_BYTES) {
+    throw new Error("Oversized DSML parameter");
+  }
+  const value = decodeDsmlToolText(rawValue).trim();
+  if (type === "string") return value;
+  if (type === "boolean") {
+    if (value === "true") return true;
+    if (value === "false") return false;
+    throw new Error("Invalid DSML boolean parameter");
+  }
+  if (type === "number") {
+    if (!/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/u.test(value)) {
+      throw new Error("Invalid DSML number parameter");
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) throw new Error("Invalid DSML number parameter");
+    return numeric;
+  }
+  if (type === "json") return JSON.parse(value || "null");
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function parseDsmlParameters(body = "") {
+  const args = {};
+  let offset = 0;
+  let count = 0;
+  while (offset < body.length) {
+    offset = dsmlSkipWhitespace(body, offset);
+    if (offset >= body.length) break;
+    if (count >= MAX_DSML_TEXT_TOOL_PARAMETERS) return null;
+    const open = matchDsmlOpenTag(body, "parameter", offset);
+    if (!open || open.index !== offset) return null;
+    const attrs = parseDsmlAttributes(open[1] || "", ["name", "type", "string", "boolean", "number", "json"]);
+    if (!attrs || !attrs.has("name")) return null;
+    const name = attrs.get("name");
+    if (!/^[A-Za-z0-9_-]{1,128}$/u.test(name) || Object.hasOwn(args, name)) return null;
+    const type = dsmlParameterType(attrs);
+    if (type === null) return null;
+    const valueStart = offset + open[0].length;
+    const close = findDsmlCloseTag(body, "parameter", valueStart);
+    if (!close) return null;
+    try {
+      args[name] = parseDsmlParameterValue(type, body.slice(valueStart, close.index));
+    } catch {
+      return null;
+    }
+    count += 1;
+    offset = close.index + close[0].length;
+  }
+  return args;
+}
+
+function parseDsmlToolCalls(content = "", offset = 0) {
+  const text = String(content || "");
+  if (Buffer.byteLength(text, "utf8") > MAX_DSML_TEXT_TOOL_BYTES) return [];
+  const openPattern = new RegExp(`<${DSML_TEXT_TOOL_MARKER}tool_calls\\b([^>]*)>`, "giu");
+  const closePattern = new RegExp(`<\\/${DSML_TEXT_TOOL_MARKER}tool_calls>`, "giu");
+  const outerOpen = [...text.matchAll(openPattern)];
+  const outerClose = [...text.matchAll(closePattern)];
+  if (outerOpen.length !== 1 || outerClose.length !== 1) return [];
+  const open = outerOpen[0];
+  const close = outerClose[0];
+  if ((open[1] || "") !== "" || close.index <= open.index + open[0].length) return [];
+  if (text.slice(0, open.index).trim()) return [];
+  if (text.slice(close.index + close[0].length).trim()) return [];
+
+  const body = text.slice(open.index + open[0].length, close.index);
+  const calls = [];
+  let bodyOffset = 0;
+  while (bodyOffset < body.length) {
+    bodyOffset = dsmlSkipWhitespace(body, bodyOffset);
+    if (bodyOffset >= body.length) break;
+    if (calls.length >= MAX_DSML_TEXT_TOOL_CALLS) return [];
+    const invoke = matchDsmlOpenTag(body, "invoke", bodyOffset);
+    if (!invoke || invoke.index !== bodyOffset) return [];
+    const attrs = parseDsmlAttributes(invoke[1] || "", ["name", "type"]);
+    if (!attrs || !attrs.has("name")) return [];
+    const name = attrs.get("name");
+    if (!/^[A-Za-z0-9_-]{1,128}$/u.test(name)) return [];
+    if (attrs.has("type") && attrs.get("type") !== "function") return [];
+    const invokeBodyStart = bodyOffset + invoke[0].length;
+    const invokeClose = findDsmlCloseTag(body, "invoke", invokeBodyStart);
+    if (!invokeClose) return [];
+    const args = parseDsmlParameters(body.slice(invokeBodyStart, invokeClose.index));
+    if (!args) return [];
+    if (name === "read_file" && Object.hasOwn(args, "file") && Object.hasOwn(args, "path")) return [];
+    calls.push({
+      id: `text-tool-${offset + calls.length + 1}`,
+      type: "function",
+      function: {
+        name,
+        arguments: JSON.stringify(normalizeTextToolArguments(name, args)),
+      },
+    });
+    bodyOffset = invokeClose.index + invokeClose[0].length;
   }
   return calls;
 }
@@ -514,6 +721,7 @@ function textBeforeToolCallMarker(content = "") {
     .split("TOOL_CALLS:")[0]
     .split(/Requested tools?\s*:/i)[0]
     .split(/<tool_calls?>/i)[0]
+    .split(/<[|｜]{2}DSML[|｜]{2}tool_calls>/iu)[0]
     .split("<|tool_call>")[0]
     .trim();
 }
@@ -526,7 +734,7 @@ export function normalizeTextToolCallResponse(response) {
   if (calls.length === 0) {
     const cleanedContent = textBeforeToolCallMarker(message.content || "");
     if (!hasTextToolCallMarker(message.content || "")) return response;
-    if (cleanedContent) {
+    if (cleanedContent && !hasDsmlToolCallMarker(message.content || "")) {
       return {
         ...response,
         choices: response.choices.map((choice, index) =>

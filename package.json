@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.257-integration.16",
+  "version": "0.20.257-integration.17",
   "type": "module",
   "description": "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
   "license": "Apache-2.0",
@@ -100,6 +100,7 @@
     "scripts/smoke-integration-document-session-broker.js",
     "scripts/smoke-integration-document-worker-contract.js",
     "scripts/smoke-integration-document-worker-store.js",
+    "scripts/smoke-integration-document-worker-longevity.js",
     "scripts/smoke-integration-document-worker-service.js",
     "scripts/smoke-integration-document-worker-server.js",
     "scripts/github-hosted-release-environment.js",
@@ -270,12 +271,13 @@
     "smoke:integration-document-session-broker": "node scripts/smoke-integration-document-session-broker.js",
     "smoke:integration-document-worker-contract": "node scripts/smoke-integration-document-worker-contract.js",
     "smoke:integration-document-worker-store": "node scripts/smoke-integration-document-worker-store.js",
+    "smoke:integration-document-worker-longevity": "node scripts/smoke-integration-document-worker-longevity.js",
     "smoke:integration-document-worker-service": "node scripts/smoke-integration-document-worker-service.js",
     "smoke:integration-document-worker-server": "node scripts/smoke-integration-document-worker-server.js",
     "smoke:integration-document-worker-systemd-boundary": "node scripts/smoke-integration-document-worker-systemd-boundary.js",
     "smoke:integration-document-worker-real-compile": "node scripts/smoke-integration-document-worker-real-compile.js",
     "smoke:integration-document-worker-cross-boundary": "node scripts/smoke-integration-document-worker-cross-boundary.js .",
-    "test:document-worker": "npm run smoke:integration-document-worker-contract && npm run smoke:integration-document-worker-store && npm run smoke:integration-document-worker-service && npm run smoke:integration-document-worker-server && npm run smoke:integration-document-worker-systemd-boundary && npm run smoke:integration-document-worker-real-compile",
+    "test:document-worker": "npm run smoke:integration-document-worker-contract && npm run smoke:integration-document-worker-store && npm run smoke:integration-document-worker-longevity && npm run smoke:integration-document-worker-service && npm run smoke:integration-document-worker-server && npm run smoke:integration-document-worker-systemd-boundary && npm run smoke:integration-document-worker-real-compile",
     "smoke:integration-grounded-search": "node scripts/smoke-integration-grounded-search.js",
     "smoke:integration-analysis-planner": "node scripts/smoke-integration-analysis-planner.js",
     "smoke:integration-analysis-session-service": "node scripts/smoke-integration-analysis-session-service.js",
@@ -298,6 +300,7 @@
     "fast-xml-parser": "^5.8.0",
     "katex": "0.16.47",
     "openai": "^6.3.0",
-    "playwright": "^1.55.0"
+    "playwright": "^1.55.0",
+    "tldts": "^7.4.11"
   }
 }

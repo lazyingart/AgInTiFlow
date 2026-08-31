@@ -9,13 +9,18 @@ import {
   loadIntegrationAnalysisLocalModelCredential,
   loadIntegrationAnalysisServiceConfig,
   isMissingIntegrationAnalysisDocumentWorkerCredentialError,
+  isMissingIntegrationAnalysisOptionalCredentialError,
   publicIntegrationAnalysisServiceConfig,
 } from "./integration-analysis-config.js";
 import {
   INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY,
   loadTrustedPrincipalProxyCredential,
 } from "./integration-config.js";
-import { composeProductionIntegrationAnalysisServer } from "./integration-analysis-server.js";
+import {
+  assertDistinctIntegrationAnalysisCredentials,
+  composeProductionIntegrationAnalysisServer,
+} from "./integration-analysis-server.js";
+import { loadExecutionWorkerSystemdCredential } from "./execution-worker-client.js";
 
 const FORBIDDEN_SECRET_ENVIRONMENT = Object.freeze([
   "AGINTI_INTEGRATION_BEARER_TOKEN",
@@ -45,6 +50,10 @@ const FORBIDDEN_SECRET_ENVIRONMENT = Object.freeze([
   "AGINTI_DOCUMENT_ARTIFACT_EDGE_TOKEN_FILE",
   "DOCUMENT_ARTIFACT_EDGE_TOKEN",
   "DOCUMENT_ARTIFACT_EDGE_TOKEN_FILE",
+  "AGINTI_EXECUTION_WORKER_TOKEN",
+  "AGINTI_EXECUTION_WORKER_TOKEN_FILE",
+  "EXECUTION_WORKER_TOKEN",
+  "EXECUTION_WORKER_TOKEN_FILE",
 ]);
 const MAIN_OPTION_KEYS = Object.freeze(["env", "filePolicy", "processLike", "stdout", "waitForSignal"]);
 const FILE_POLICY_KEYS = Object.freeze(["allowRootOwner", "ownerUid"]);
@@ -121,7 +130,7 @@ function writeJsonLine(stream, value) {
   stream.write(`${JSON.stringify(value)}\n`);
 }
 
-export function integrationAnalysisCliSummary(config, status) {
+export function integrationAnalysisCliSummary(config, status, roleStates) {
   const publicConfig = publicIntegrationAnalysisServiceConfig(config);
   return Object.freeze({
     ok: true,
@@ -135,6 +144,7 @@ export function integrationAnalysisCliSummary(config, status) {
     localModel: publicConfig.localModel,
     ...(publicConfig.groundedSearch === undefined ? {} : { groundedSearch: publicConfig.groundedSearch }),
     ...(publicConfig.documentWorker === undefined ? {} : { documentWorker: publicConfig.documentWorker }),
+    ...(roleStates === undefined ? {} : { roles: roleStates }),
     trustedPrincipalProxy: publicConfig.trustedPrincipalProxy,
   });
 }
@@ -162,11 +172,14 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const env = options.env || process.env;
   assertCredentialEnvironment(env);
   const config = await loadIntegrationAnalysisServiceConfig(parsed.configPath, options.filePolicy || {});
-  const [proxyToken, localModelApiKey, groundedSearchApiKey, documentWorkerCredential] = await Promise.all([
+  const [proxyToken, localModelApiKey, groundedSearchApiKey, documentWorkerCredential, executionWorkerCredential] = await Promise.all([
     loadTrustedPrincipalProxyCredential(),
     loadIntegrationAnalysisLocalModelCredential(),
     config.groundedSearch?.enabled === true
-      ? loadIntegrationAnalysisGroundedSearchCredential()
+      ? loadIntegrationAnalysisGroundedSearchCredential().catch((error) => {
+          if (isMissingIntegrationAnalysisOptionalCredentialError(error)) return undefined;
+          throw error;
+        })
       : Promise.resolve(undefined),
     config.documentWorker?.enabled === true
       ? loadIntegrationAnalysisDocumentWorkerCredential().catch((error) => {
@@ -174,19 +187,44 @@ export async function main(argv = process.argv.slice(2), options = {}) {
           throw error;
         })
       : Promise.resolve(undefined),
+    loadExecutionWorkerSystemdCredential(),
   ]);
+  assertDistinctIntegrationAnalysisCredentials({
+    model: localModelApiKey,
+    trustedBff: proxyToken,
+    executionWorker: executionWorkerCredential,
+    ...(groundedSearchApiKey === undefined ? {} : { groundedSearch: groundedSearchApiKey }),
+    ...(documentWorkerCredential === undefined ? {} : { documentEdge: documentWorkerCredential }),
+  });
   const trustedPrincipalProxyClient = createIntegrationAnalysisTrustedProxyClient(config, proxyToken);
   const stdout = options.stdout || process.stdout;
   if (parsed.command === "check") {
-    const result = integrationAnalysisCliSummary(config, "checked-analysis-ready-to-probe");
-    writeJsonLine(stdout, result);
-    return result;
+    const integrationServer = await composeProductionIntegrationAnalysisServer({
+      config,
+      trustedPrincipalProxyClient,
+      localModelApiKey,
+      executionWorkerCredential,
+      ...(groundedSearchApiKey === undefined ? {} : { groundedSearchApiKey }),
+      ...(documentWorkerCredential === undefined ? {} : { documentWorkerCredential }),
+    });
+    try {
+      const result = integrationAnalysisCliSummary(
+        config,
+        "checked-analysis-ready-to-listen",
+        integrationServer.roles
+      );
+      writeJsonLine(stdout, result);
+      return result;
+    } finally {
+      await integrationServer.close().catch(() => {});
+    }
   }
 
   const integrationServer = await composeProductionIntegrationAnalysisServer({
     config,
     trustedPrincipalProxyClient,
     localModelApiKey,
+    executionWorkerCredential,
     ...(groundedSearchApiKey === undefined ? {} : { groundedSearchApiKey }),
     ...(documentWorkerCredential === undefined ? {} : { documentWorkerCredential }),
   });
@@ -194,7 +232,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   let handedOff = false;
   let shutdown = null;
   try {
-    writeJsonLine(stdout, integrationAnalysisCliSummary(config, "listening-analysis"));
+    writeJsonLine(stdout, integrationAnalysisCliSummary(config, "listening-analysis", integrationServer.roles));
     if (options.waitForSignal === false) {
       handedOff = true;
       return integrationServer;
@@ -202,7 +240,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     const processLike = options.processLike || process;
     shutdown = shutdownWaiter(processLike);
     await shutdown.promise;
-    return integrationAnalysisCliSummary(config, "closed-analysis");
+    return integrationAnalysisCliSummary(config, "closed-analysis", integrationServer.roles);
   } finally {
     shutdown?.dispose();
     if (!handedOff) await integrationServer.close();

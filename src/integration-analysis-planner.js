@@ -34,10 +34,14 @@ import {
   inspectIntegrationDocumentWorkerFileArtifact,
 } from "./integration-document-worker-client.js";
 import {
+  INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
   IntegrationGroundedSearchError,
+  assertIntegrationGroundedSearchDomainSources,
   assertIntegrationGroundedSearchActivation,
   assertIntegrationGroundedSearchClient,
   createIntegrationGroundedSearchClient,
+  deriveIntegrationGroundedSearchDomainConstraint,
+  planIntegrationGroundedSearchQuery,
 } from "./integration-grounded-search.js";
 import {
   AGENT_WORKER_SCHEMA_VERSION,
@@ -816,14 +820,28 @@ function normalizeRunInput(value) {
 function normalizeRunOptions(value = {}) {
   const options = exactObject(
     value,
-    ["signal", "priorDocument", "onProgress", "onArtifact", "onDocumentCommitIntent", "onFinal"],
+    [
+      "signal",
+      "priorDocument",
+      "onProgress",
+      "onArtifact",
+      "onDocumentCompileIntent",
+      "onDocumentCommitIntent",
+      "onFinal",
+    ],
     [],
     "analysis run options"
   );
   if (options.signal !== undefined && !(options.signal instanceof AbortSignal)) {
     fail("ANALYSIS_REQUEST_INVALID", "analysis signal must be an AbortSignal.", { status: 400 });
   }
-  for (const key of ["onProgress", "onArtifact", "onDocumentCommitIntent", "onFinal"]) {
+  for (const key of [
+    "onProgress",
+    "onArtifact",
+    "onDocumentCompileIntent",
+    "onDocumentCommitIntent",
+    "onFinal",
+  ]) {
     if (options[key] !== undefined && typeof options[key] !== "function") {
       fail("ANALYSIS_REQUEST_INVALID", `${key} must be a function.`, { status: 400 });
     }
@@ -1728,6 +1746,23 @@ function translateError(error, signal) {
   });
 }
 
+function optionalDocumentWorkerActivationErrorIsFatal(error) {
+  return error instanceof IntegrationDocumentWorkerError &&
+    (
+      error.workerCode === "UNAUTHORIZED" ||
+      error.code === "DOCUMENT_WORKER_PROTOCOL_INVALID"
+    );
+}
+
+function optionalGroundedSearchActivationErrorIsFatal(error) {
+  return error instanceof IntegrationGroundedSearchError &&
+    new Set([
+      "GROUNDED_SEARCH_AUTH_FAILED",
+      "GROUNDED_SEARCH_RESPONSE_INVALID",
+      "GROUNDED_SEARCH_PROTOCOL_INVALID",
+    ]).has(error.code);
+}
+
 function createPlanner({
   coordinator,
   localModelConfig,
@@ -1736,6 +1771,8 @@ function createPlanner({
   groundedSearchClient,
   documentWorkerClient,
   requireSystemdCredential,
+  requireConfiguredCapabilities,
+  roleConfiguration,
   modelTransport,
 }) {
   assertIntegrationAnalysisCoordinator(coordinator, { requireSystemdCredential });
@@ -1786,6 +1823,7 @@ function createPlanner({
     callerSelectableEndpoint: false,
     callerSelectableModel: false,
     callerSelectableCredential: false,
+    configuredCapabilitiesRequiredAtStartup: requireConfiguredCapabilities === true,
     boundedPublicConversation: true,
     maximumConversationMessages: INTEGRATION_ANALYSIS_MAX_CONVERSATION_MESSAGES,
     boundedPriorArtifactContext: true,
@@ -1842,6 +1880,29 @@ function createPlanner({
     serverIntegrated: false,
   });
   const attestation = Object.freeze({ ...proofUnsigned, digest: contractDigest(proofUnsigned) });
+  const documentWorkerConfigured =
+    roleConfiguration?.documentWorker === true || documentWorkerClient !== undefined;
+  const groundedSearchConfigured =
+    roleConfiguration?.groundedSearch === true || groundedSearchClient !== undefined;
+  const executionWorkerConfigured = true;
+
+  function roleState(role, { configured, status, reason, observedAt }) {
+    const ready = status === "ready";
+    return Object.freeze({
+      schemaVersion: "aginti-analysis-role-state-v1",
+      role,
+      configured,
+      status,
+      ready,
+      observedAt,
+      reason,
+      actionable: !configured
+        ? "configure role before advertising the capability"
+        : ready
+          ? null
+          : "repair the private route or credential, then reactivate",
+    });
+  }
   // Production runs are pinned to an explicit startup activation. Test-only
   // planners may still run directly when no activation was requested, but an
   // observed unavailable/disabled worker remains unavailable until the caller
@@ -1859,7 +1920,20 @@ function createPlanner({
     const readinessProof = validateCoordinatorReadinessProof(
       await coordinator.readiness({ signal: options.signal })
     );
+    const observedAt = new Date().toISOString();
+    const executionWorkerRole = roleState("executionWorker", {
+      configured: executionWorkerConfigured,
+      status: "ready",
+      reason: null,
+      observedAt,
+    });
     let documentWorkerActivation;
+    let documentWorkerRole = roleState("documentWorker", {
+      configured: documentWorkerConfigured,
+      status: documentWorkerConfigured ? "degraded" : "disabled",
+      reason: documentWorkerConfigured ? "credential_unavailable" : "not_configured",
+      observedAt,
+    });
     if (documentWorkerClient !== undefined) {
       try {
         const candidate = await documentWorkerClient.activate({
@@ -1870,16 +1944,43 @@ function createPlanner({
             client: documentWorkerClient,
             allowTestOnly: !requireSystemdCredential,
           });
+          documentWorkerRole = roleState("documentWorker", {
+            configured: true,
+            status: "ready",
+            reason: null,
+            observedAt,
+          });
+        } else {
+          documentWorkerRole = roleState("documentWorker", {
+            configured: true,
+            status: "degraded",
+            reason: "creation_disabled",
+            observedAt,
+          });
         }
       } catch (error) {
         if (options.signal?.aborted) throw error;
+        if (optionalDocumentWorkerActivationErrorIsFatal(error)) throw error;
+        if (requireConfiguredCapabilities) throw error;
         // Document creation is additive. Keep ordinary Agent online and omit
         // file creation from capabilities when the workstation route is down.
         documentWorkerActivation = undefined;
+        documentWorkerRole = roleState("documentWorker", {
+          configured: true,
+          status: "degraded",
+          reason: "route_unavailable",
+          observedAt,
+        });
       }
     }
     documentCreationActivationState = documentWorkerActivation === undefined ? false : true;
     let groundedSearchActivation;
+    let groundedSearchRole = roleState("groundedSearch", {
+      configured: groundedSearchConfigured,
+      status: groundedSearchConfigured ? "degraded" : "disabled",
+      reason: groundedSearchConfigured ? "credential_unavailable" : "not_configured",
+      observedAt,
+    });
     if (groundedSearchClient !== undefined) {
       try {
         groundedSearchActivation = assertIntegrationGroundedSearchActivation(
@@ -1888,11 +1989,25 @@ function createPlanner({
           }),
           { client: groundedSearchClient, allowTestOnly: !requireSystemdCredential }
         );
+        groundedSearchRole = roleState("groundedSearch", {
+          configured: true,
+          status: "ready",
+          reason: null,
+          observedAt,
+        });
       } catch (error) {
         if (options.signal?.aborted) throw error;
+        if (optionalGroundedSearchActivationErrorIsFatal(error)) throw error;
+        if (requireConfiguredCapabilities) throw error;
         // Search is additive. A missing private route must leave ordinary Agent
         // analysis available while keeping Search absent from capabilities.
         groundedSearchActivation = undefined;
+        groundedSearchRole = roleState("groundedSearch", {
+          configured: true,
+          status: "degraded",
+          reason: "route_unavailable",
+          observedAt,
+        });
       }
     }
     const unsigned = Object.freeze({
@@ -1906,6 +2021,11 @@ function createPlanner({
       modelBindingDigest: attestation.fixedModelBindingDigest,
       readinessDigest: readinessProof.digest,
       readinessProof,
+      roles: Object.freeze({
+        executionWorker: executionWorkerRole,
+        documentWorker: documentWorkerRole,
+        groundedSearch: groundedSearchRole,
+      }),
       ...(documentWorkerActivation === undefined ? {} : { documentWorker: documentWorkerActivation }),
       ...(groundedSearchActivation === undefined ? {} : { groundedSearch: groundedSearchActivation }),
     });
@@ -1919,6 +2039,7 @@ function createPlanner({
         groundedSearchActivation,
         documentWorkerClient,
         documentWorkerActivation,
+        roles: unsigned.roles,
         requireSystemdCredential,
       })
     );
@@ -2106,14 +2227,44 @@ function createPlanner({
         if (groundedSearchClient === undefined) {
           fail("GROUNDED_SEARCH_NOT_READY", "Grounded search is not operational.", { status: 503 });
         }
-        const grounding = await groundedSearchClient.search({
-          query: input.prompt,
-          mode: input.search.mode,
-          limit: input.search.limit,
-          ...(signal === undefined ? {} : { signal }),
+        await emitProgress("executing", {
+          toolName: INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+          toolCallNumber: 1,
+          executionState: "starting",
         });
-        await captureArtifact(grounding.artifact);
-        messages.splice(messages.length - 1, 0, groundedEvidenceMessage(grounding));
+        try {
+          const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(input.prompt);
+          const queryPlan = planIntegrationGroundedSearchQuery(input.prompt, input.search.mode, domainConstraint);
+          const grounding = assertIntegrationGroundedSearchDomainSources(
+            await groundedSearchClient.search({
+              query: queryPlan.query,
+              mode: input.search.mode,
+	              limit: input.search.limit,
+	              queryPlanDigest: queryPlan.digest,
+	              domainConstraintDigest: domainConstraint?.digest ?? null,
+	              allowedDomains: queryPlan.allowedDomains,
+	              arxivIdentifiers: queryPlan.arxivIdentifiers,
+	              doiIdentifiers: queryPlan.doiIdentifiers,
+              ...(signal === undefined ? {} : { signal }),
+            }),
+            domainConstraint
+          );
+          await captureArtifact(grounding.artifact);
+          await emitProgress("executing", {
+            toolName: INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+            toolCallNumber: 1,
+            executionState: "succeeded",
+            artifactCount: 1,
+          });
+          messages.splice(messages.length - 1, 0, groundedEvidenceMessage(grounding));
+        } catch (error) {
+          await emitProgress("executing", {
+            toolName: INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+            toolCallNumber: 1,
+            executionState: "failed",
+          }).catch(() => {});
+          throw error;
+        }
       }
       if (documentArtifactIntent.required) {
         if (documentWorkerClient === undefined || documentCreationActivationState === false) {
@@ -2134,6 +2285,11 @@ function createPlanner({
           }));
         } else {
           messages[0] = Object.freeze({ role: "system", content: texDocumentSystemPrompt(documentArtifactIntent) });
+        }
+        if (!options.onDocumentCompileIntent) {
+          fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compilation lacks durable session authority.", {
+            status: 503,
+          });
         }
         let compiled;
         let toolCall;
@@ -2194,7 +2350,7 @@ function createPlanner({
             compiled = await documentWorkerClient.compile(
               scope,
               Object.freeze({ ...toolCall.args, requirements: documentArtifactIntent.requirements }),
-              { signal }
+              { signal, authorizeRequest: options.onDocumentCompileIntent }
             );
           } catch (error) {
             await emitProgress("executing", {
@@ -2672,6 +2828,42 @@ export function assertIntegrationAnalysisPlanner(value, { requireSystemdCredenti
   return value;
 }
 
+function assertActivationRoleState(value, role) {
+  const candidate = exactObject(
+    value,
+    ["schemaVersion", "role", "configured", "status", "ready", "observedAt", "reason", "actionable"],
+    ["schemaVersion", "role", "configured", "status", "ready", "observedAt", "reason", "actionable"],
+    `${role} activation role state`,
+    { code: "ANALYSIS_ACTIVATION_INVALID", status: 500 }
+  );
+  if (
+    candidate.schemaVersion !== "aginti-analysis-role-state-v1" ||
+    candidate.role !== role ||
+    typeof candidate.configured !== "boolean" ||
+    !new Set(["disabled", "configured", "degraded", "ready"]).has(candidate.status) ||
+    candidate.ready !== (candidate.status === "ready") ||
+    Date.parse(candidate.observedAt) !== Date.parse(candidate.observedAt) ||
+    new Date(Date.parse(candidate.observedAt)).toISOString() !== candidate.observedAt
+  ) {
+    throw new TypeError("integration analysis planner activation role state is invalid");
+  }
+  if (candidate.status === "ready") {
+    if (candidate.configured !== true || candidate.reason !== null || candidate.actionable !== null) {
+      throw new TypeError("integration analysis planner activation ready role state is invalid");
+    }
+  } else if (
+    typeof candidate.reason !== "string" ||
+    candidate.reason.length < 3 ||
+    candidate.reason.length > 96 ||
+    typeof candidate.actionable !== "string" ||
+    candidate.actionable.length < 3 ||
+    candidate.actionable.length > 240
+  ) {
+    throw new TypeError("integration analysis planner activation degraded role state is invalid");
+  }
+  return candidate;
+}
+
 export function assertIntegrationAnalysisPlannerActivation(
   value,
   { planner, requireSystemdCredential = true } = {}
@@ -2706,6 +2898,19 @@ export function assertIntegrationAnalysisPlannerActivation(
     throw new TypeError("integration analysis planner activation digest is invalid");
   }
   validateCoordinatorReadinessProof(value.readinessProof);
+  exactObject(
+    value.roles,
+    ["executionWorker", "documentWorker", "groundedSearch"],
+    ["executionWorker", "documentWorker", "groundedSearch"],
+    "analysis activation role states",
+    { code: "ANALYSIS_ACTIVATION_INVALID", status: 500 }
+  );
+  const executionWorkerRole = assertActivationRoleState(value.roles.executionWorker, "executionWorker");
+  const documentWorkerRole = assertActivationRoleState(value.roles.documentWorker, "documentWorker");
+  const groundedSearchRole = assertActivationRoleState(value.roles.groundedSearch, "groundedSearch");
+  if (executionWorkerRole.status !== "ready") {
+    throw new TypeError("integration analysis planner activation execution role is unavailable");
+  }
   if (value.documentWorker !== undefined) {
     assertIntegrationDocumentWorkerActivation(value.documentWorker, {
       client: metadata.documentWorkerClient,
@@ -2717,8 +2922,13 @@ export function assertIntegrationAnalysisPlannerActivation(
     ) {
       throw new TypeError("integration analysis planner activation document worker identity is invalid");
     }
+    if (documentWorkerRole.status !== "ready") {
+      throw new TypeError("integration analysis planner activation document role is inconsistent");
+    }
   } else if (metadata.documentWorkerActivation !== undefined) {
     throw new TypeError("integration analysis planner activation omitted its document worker identity");
+  } else if (documentWorkerRole.status === "ready") {
+    throw new TypeError("integration analysis planner activation document role lacks authority");
   }
   if (value.groundedSearch !== undefined) {
     assertIntegrationGroundedSearchActivation(value.groundedSearch, {
@@ -2728,8 +2938,13 @@ export function assertIntegrationAnalysisPlannerActivation(
     if (metadata.groundedSearchActivation !== value.groundedSearch) {
       throw new TypeError("integration analysis planner activation search identity is invalid");
     }
+    if (groundedSearchRole.status !== "ready") {
+      throw new TypeError("integration analysis planner activation search role is inconsistent");
+    }
   } else if (metadata.groundedSearchActivation !== undefined) {
     throw new TypeError("integration analysis planner activation omitted its search identity");
+  } else if (groundedSearchRole.status === "ready") {
+    throw new TypeError("integration analysis planner activation search role lacks authority");
   }
   return value;
 }
@@ -2737,11 +2952,32 @@ export function assertIntegrationAnalysisPlannerActivation(
 export function createIntegrationAnalysisPlanner(value = {}) {
   const options = exactObject(
     value,
-    ["coordinator", "localModelConfig", "groundedSearchConfig", "documentWorkerConfig", "documentWorkerClient"],
+    [
+      "coordinator",
+      "localModelConfig",
+      "groundedSearchConfig",
+      "documentWorkerConfig",
+      "documentWorkerClient",
+      "configuredRoles",
+    ],
     ["coordinator", "localModelConfig"],
     "analysis planner configuration",
     { code: "ANALYSIS_CONFIGURATION_INVALID", status: 500 }
   );
+  if (options.configuredRoles !== undefined) {
+    exactObject(
+      options.configuredRoles,
+      ["groundedSearch", "documentWorker", "executionWorker"],
+      [],
+      "analysis configured roles",
+      { code: "ANALYSIS_CONFIGURATION_INVALID", status: 500 }
+    );
+    for (const key of Reflect.ownKeys(options.configuredRoles)) {
+      if (typeof options.configuredRoles[key] !== "boolean") {
+        fail("ANALYSIS_CONFIGURATION_INVALID", "Configured role flags must be boolean.", { status: 500 });
+      }
+    }
+  }
   const normalized = normalizeModelBinding(options.localModelConfig);
   const groundedSearchClient = options.groundedSearchConfig === undefined
     ? undefined
@@ -2762,6 +2998,8 @@ export function createIntegrationAnalysisPlanner(value = {}) {
     groundedSearchClient,
     documentWorkerClient,
     requireSystemdCredential: true,
+    requireConfiguredCapabilities: false,
+    roleConfiguration: options.configuredRoles,
     modelTransport: "localllm-fixed-loopback",
   });
 }
@@ -2769,11 +3007,40 @@ export function createIntegrationAnalysisPlanner(value = {}) {
 export function createTestOnlyIntegrationAnalysisPlanner(value = {}) {
   const options = exactObject(
     value,
-    ["coordinator", "localModelConfig", "modelClient", "complete", "groundedSearchClient", "documentWorkerClient"],
+    [
+      "coordinator",
+      "localModelConfig",
+      "modelClient",
+      "complete",
+      "groundedSearchClient",
+      "documentWorkerClient",
+      "requireConfiguredCapabilities",
+      "configuredRoles",
+    ],
     ["coordinator", "localModelConfig", "modelClient", "complete"],
     "test analysis planner configuration",
     { code: "ANALYSIS_CONFIGURATION_INVALID", status: 500 }
   );
+  if (
+    options.requireConfiguredCapabilities !== undefined &&
+    typeof options.requireConfiguredCapabilities !== "boolean"
+  ) {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Configured capability startup policy is invalid.", { status: 500 });
+  }
+  if (options.configuredRoles !== undefined) {
+    exactObject(
+      options.configuredRoles,
+      ["groundedSearch", "documentWorker", "executionWorker"],
+      [],
+      "test analysis configured roles",
+      { code: "ANALYSIS_CONFIGURATION_INVALID", status: 500 }
+    );
+    for (const key of Reflect.ownKeys(options.configuredRoles)) {
+      if (typeof options.configuredRoles[key] !== "boolean") {
+        fail("ANALYSIS_CONFIGURATION_INVALID", "Configured role flags must be boolean.", { status: 500 });
+      }
+    }
+  }
   return createPlanner({
     coordinator: options.coordinator,
     localModelConfig: options.localModelConfig,
@@ -2782,6 +3049,8 @@ export function createTestOnlyIntegrationAnalysisPlanner(value = {}) {
     groundedSearchClient: options.groundedSearchClient,
     documentWorkerClient: options.documentWorkerClient,
     requireSystemdCredential: false,
+    requireConfiguredCapabilities: options.requireConfiguredCapabilities === true,
+    roleConfiguration: options.configuredRoles,
     modelTransport: "test-only-injected-model",
   });
 }

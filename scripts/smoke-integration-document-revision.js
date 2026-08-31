@@ -153,7 +153,7 @@ function createRevisionRunner(client, observations = []) {
           source,
           requirements: compileRequirements(intent.requirements.minimumFigureCount),
         },
-        { signal: options.signal }
+        { signal: options.signal, authorizeRequest: options.onDocumentCompileIntent }
       );
       await options.onArtifact?.(compiled.artifacts[0]);
       await options.onArtifact?.(compiled.artifacts[1]);

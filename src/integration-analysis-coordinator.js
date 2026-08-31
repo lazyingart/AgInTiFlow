@@ -411,10 +411,21 @@ export function assertIntegrationAnalysisCoordinator(value, { requireSystemdCred
 }
 
 export async function createSystemdIntegrationAnalysisCoordinator(...args) {
-  if (args.length !== 0) {
+  if (args.length > 1) {
     fail("EXECUTION_CREDENTIAL_SOURCE_FORBIDDEN", "production analysis coordinator accepts no overrides.");
   }
-  const client = await createSystemdExecutionWorkerClient();
+  let client;
+  if (args.length === 0) {
+    client = await createSystemdExecutionWorkerClient();
+  } else {
+    const options = exactObject(
+      args[0],
+      ["executionWorkerCredential"],
+      ["executionWorkerCredential"],
+      "production analysis coordinator credential binding"
+    );
+    client = await createSystemdExecutionWorkerClient({ token: options.executionWorkerCredential });
+  }
   return createCoordinator(client, { requireSystemdCredential: true });
 }
 

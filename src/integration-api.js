@@ -113,7 +113,7 @@ export const INTEGRATION_ANALYSIS_PRELISTEN_RECOVERY_SCHEMA_VERSION =
 const INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION = "aginti-integration-analysis-coordinator-v1";
 const ANALYSIS_ROUTER_ACTIVATIONS = new WeakMap();
 const ABSOLUTE_PATH_PATTERN =
-  /(?:^|[\s("'`])(?:\/(?:workspace|home|users|root|etc|usr|var|opt|srv|run|tmp|proc|sys|dev|mnt|media|aginti-(?:home|cache|env))(?:\/[^\s"'`<>)\]]*)?|[A-Za-z]:\\[^\s"'`<>)\]]*)/giu;
+  /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
 
 class IntegrationApiError extends Error {
   constructor(code, message, { status = 500, details = {} } = {}) {
@@ -129,7 +129,7 @@ class IntegrationApiError extends Error {
 
 function redactPublicText(value) {
   return redactSensitiveText(value).replace(ABSOLUTE_PATH_PATTERN, (match) => {
-    const prefix = /^[\s("'`]/u.test(match) ? match[0] : "";
+    const prefix = /^[\s("'`<>\[{=]/u.test(match) ? match[0] : "";
     return `${prefix}[REDACTED_PATH]`;
   });
 }
@@ -915,7 +915,7 @@ function assertAnalysisPrelistenRecoveryProof(value, sessionService, idempotency
   const stateKeys = [
     "schemaVersion", "owner", "beforeListen", "performed", "statePersistenceMode", "scopeCount",
     "nonterminalRunsObserved", "nonterminalRunsRecovered", "nonterminalRunsRemaining",
-    "pendingDocumentIntentsObserved", "recoveryScopeDigests", "bounded", "timeoutMs", "digest",
+    "deferredOptionalDocumentRuns", "pendingDocumentIntentsObserved", "recoveryScopeDigests", "bounded", "timeoutMs", "digest",
   ];
   const state = exactDataObject(
     proof.stateRecovery,
@@ -952,12 +952,15 @@ function assertAnalysisPrelistenRecoveryProof(value, sessionService, idempotency
       ? (!Number.isSafeInteger(state.scopeCount) || state.scopeCount < 0 ||
         !Number.isSafeInteger(state.nonterminalRunsObserved) || state.nonterminalRunsObserved < 0 ||
         !Number.isSafeInteger(state.nonterminalRunsRecovered) || state.nonterminalRunsRecovered < 0 ||
-        state.nonterminalRunsRecovered !== state.nonterminalRunsObserved ||
-        state.nonterminalRunsRemaining !== 0 ||
+        !Number.isSafeInteger(state.deferredOptionalDocumentRuns) ||
+        state.deferredOptionalDocumentRuns < 0 ||
+        state.nonterminalRunsRecovered + state.deferredOptionalDocumentRuns !== state.nonterminalRunsObserved ||
+        state.nonterminalRunsRemaining !== state.deferredOptionalDocumentRuns ||
         !Number.isSafeInteger(state.pendingDocumentIntentsObserved) ||
         state.pendingDocumentIntentsObserved < 0)
       : (state.scopeCount !== null || state.nonterminalRunsObserved !== null ||
         state.nonterminalRunsRecovered !== 0 || state.nonterminalRunsRemaining !== null ||
+        state.deferredOptionalDocumentRuns !== null ||
         state.pendingDocumentIntentsObserved !== null)) ||
     !Array.isArray(state.recoveryScopeDigests) || !Object.isFrozen(state.recoveryScopeDigests) ||
     state.recoveryScopeDigests.some((digest) => typeof digest !== "string" || !/^[a-f0-9]{64}$/u.test(digest)) ||
@@ -1355,7 +1358,7 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
     serviceCapabilities,
     [
       "analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "search", "files",
-      "attachments", "attachmentAuthority",
+      "attachments", "attachmentAuthority", "roles",
     ],
     ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume"],
     "analysis service capabilities",
@@ -1597,6 +1600,7 @@ function activatedCapabilitiesForService(options, activationMetadata) {
     search: metadata.serviceCapabilities.search === true,
     files: metadata.serviceCapabilities.files === true,
     attachments: metadata.serviceCapabilities.attachments === true,
+    ...(metadata.serviceCapabilities.roles === undefined ? {} : { roles: metadata.serviceCapabilities.roles }),
   });
 }
 
@@ -2153,7 +2157,7 @@ export function createActivatedIntegrationAnalysisRouter(options = {}) {
 }
 
 function assertPublicCapabilityResponse(value = {}) {
-  const response = integrationExactKeys(value, ["schemaVersion", "enabled", "agent", "model", "actions", "attachments", "search", "artifacts"], "agent capabilities", [
+  const response = integrationExactKeys(value, ["schemaVersion", "enabled", "agent", "model", "actions", "attachments", "search", "roles", "artifacts"], "agent capabilities", [
     "schemaVersion",
     "enabled",
     "agent",
@@ -2187,6 +2191,60 @@ function assertPublicCapabilityResponse(value = {}) {
         ["enabled", "modes", "maximumSources"]
       );
   const artifacts = integrationExactKeys(response.artifacts, ["kinds", "schemaVersion"], "agent capabilities artifacts", ["kinds", "schemaVersion"]);
+  let roles;
+  if (response.roles !== undefined) {
+    const roleEnvelope = integrationExactKeys(
+      response.roles,
+      ["executionWorker", "documentWorker", "groundedSearch"],
+      "agent capabilities roles",
+      ["executionWorker", "documentWorker", "groundedSearch"]
+    );
+    const roleSnapshots = {};
+    for (const roleName of ["executionWorker", "documentWorker", "groundedSearch"]) {
+      const role = integrationExactKeys(
+        roleEnvelope[roleName],
+        ["schemaVersion", "role", "configured", "status", "ready", "observedAt", "reason", "actionable"],
+        `agent capabilities ${roleName} role`,
+        ["schemaVersion", "role", "configured", "status", "ready", "observedAt", "reason", "actionable"]
+      );
+      if (
+        role.schemaVersion !== "aginti-analysis-role-state-v1" ||
+        role.role !== roleName ||
+        typeof role.configured !== "boolean" ||
+        !new Set(["disabled", "configured", "degraded", "ready"]).has(role.status) ||
+        role.ready !== (role.status === "ready") ||
+        Date.parse(role.observedAt) !== Date.parse(role.observedAt) ||
+        new Date(Date.parse(role.observedAt)).toISOString() !== role.observedAt
+      ) {
+        integrationInvalid("agent role capabilities are invalid");
+      }
+      if (role.status === "ready") {
+        if (role.configured !== true || role.reason !== null || role.actionable !== null) {
+          integrationInvalid("agent ready role capability is invalid");
+        }
+      } else if (
+        typeof role.reason !== "string" ||
+        role.reason.length < 3 ||
+        role.reason.length > 96 ||
+        typeof role.actionable !== "string" ||
+        role.actionable.length < 3 ||
+        role.actionable.length > 240
+      ) {
+        integrationInvalid("agent degraded role capability is invalid");
+      }
+      roleSnapshots[roleName] = Object.freeze({
+        schemaVersion: role.schemaVersion,
+        role: role.role,
+        configured: role.configured,
+        status: role.status,
+        ready: role.ready,
+        observedAt: role.observedAt,
+        reason: role.reason,
+        actionable: role.actionable,
+      });
+    }
+    roles = Object.freeze(roleSnapshots);
+  }
   if (agent.kind !== "aginti" || agent.label !== "AgInTi Agent") integrationInvalid("agent authority must be AgInTi");
   if (model.label !== "LocalLLM") integrationInvalid("agent inference label must be LocalLLM");
   if (![actions.cancel, actions.resume, actions.retry, attachments.enabled, search.enabled].every((flag) => typeof flag === "boolean")) {
@@ -2271,6 +2329,7 @@ function assertPublicCapabilityResponse(value = {}) {
           }),
         }
       : {}),
+    ...(roles === undefined ? {} : { roles }),
     artifacts: Object.freeze({
       kinds: Object.freeze(artifactKinds),
       schemaVersion: AGENT_WORKER_SCHEMA_VERSION,

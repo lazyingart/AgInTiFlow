@@ -99,14 +99,23 @@ function waitForShutdown(processLike) {
   });
 }
 
-export async function composeProductionIntegrationDocumentWorker({ config, bearerToken }) {
+export function createIntegrationDocumentWorkerCliFailStop(processLike = process) {
+  return async function integrationDocumentWorkerCliFailStop() {
+    processLike.exitCode = 1;
+    if (typeof processLike.exit === "function") {
+      processLike.exit(1);
+    }
+  };
+}
+
+export async function composeProductionIntegrationDocumentWorker({ config, bearerToken, onFailStop }) {
   let store;
   let service;
   try {
     await assertIntegrationDocumentWorkerRuntimeActivation();
     store = await openIntegrationDocumentWorkerStore({ stateRoot: config.stateRoot });
     service = createIntegrationDocumentWorkerService({ config, store });
-    return createIntegrationDocumentWorkerServer({ config, service, bearerToken });
+    return createIntegrationDocumentWorkerServer({ config, service, bearerToken, onFailStop });
   } catch (error) {
     await service?.close().catch(() => {});
     await store?.close().catch(() => {});
@@ -118,12 +127,17 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const parsed = parseIntegrationDocumentWorkerArguments(argv);
   const env = options.env || process.env;
   const stdout = options.stdout || process.stdout;
+  const processLike = options.processLike || process;
   assertCredentialEnvironment(env);
   await assertIntegrationDocumentWorkerRuntimeActivation();
   const filePolicy = options.filePolicy || {};
   const config = await loadIntegrationDocumentWorkerConfig(parsed.configPath, filePolicy);
   const bearerToken = await loadIntegrationDocumentWorkerCredential(filePolicy);
-  const server = await composeProductionIntegrationDocumentWorker({ config, bearerToken });
+  const server = await composeProductionIntegrationDocumentWorker({
+    config,
+    bearerToken,
+    onFailStop: options.onFailStop || createIntegrationDocumentWorkerCliFailStop(processLike),
+  });
   let handedOff = false;
   let waiter = null;
   try {
@@ -132,7 +146,8 @@ export async function main(argv = process.argv.slice(2), options = {}) {
       const result = Object.freeze({
         ok: true,
         status: "checked-document-worker",
-        realCompilerCanary: true,
+        realCompilerCanary: config.creation.enabled,
+        degradedReadDeleteFloor: config.creation.enabled === false,
         config: publicIntegrationDocumentWorkerConfig(config),
         readiness,
       });
@@ -150,7 +165,6 @@ export async function main(argv = process.argv.slice(2), options = {}) {
       handedOff = true;
       return server;
     }
-    const processLike = options.processLike || process;
     waiter = waitForShutdown(processLike);
     await waiter.promise;
     return Object.freeze({ ok: true, status: "closed-document-worker" });

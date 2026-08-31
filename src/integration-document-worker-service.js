@@ -2,7 +2,7 @@ import {
   DOCUMENT_WORKER_LIMITS,
   DOCUMENT_WORKER_SCHEMA_VERSIONS,
   IntegrationDocumentWorkerError,
-  digestNormalizedDocumentWorkerRequest,
+  digestDocumentWorkerCompileOperation,
   documentWorkerFail,
   validateDocumentWorkerCommitRequest,
   validateDocumentWorkerCompileRequest,
@@ -56,7 +56,7 @@ function mapCompilerError(error) {
   });
 }
 
-function readinessResponse(config, runtime) {
+function readinessResponse(config, runtime, compileAuthorityEpoch) {
   const compiler = runtime === null
     ? null
     : Object.freeze({
@@ -76,7 +76,9 @@ function readinessResponse(config, runtime) {
     schemaVersion: DOCUMENT_WORKER_SCHEMA_VERSIONS.readinessResponse,
     ready: true,
     creationEnabled: config.creation.enabled,
+    compileAuthorityEpoch,
     protocols: Object.freeze({
+      compileIssue: DOCUMENT_WORKER_SCHEMA_VERSIONS.compileIssueRequest,
       compile: DOCUMENT_WORKER_SCHEMA_VERSIONS.compileRequest,
       commit: DOCUMENT_WORKER_SCHEMA_VERSIONS.commitRequest,
       content: DOCUMENT_WORKER_SCHEMA_VERSIONS.contentRequest,
@@ -197,15 +199,24 @@ function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
 
   async function activateInternal(requireCompilerCanary) {
     if (closed) documentWorkerFail("WORKER_UNAVAILABLE", "Document worker is closed.", { status: 503 });
+    const inventory = await store.inspect();
     if (activated) {
       if (requireCompilerCanary) await inspectCompilerRuntime();
+      readiness = readinessResponse(
+        normalizedConfig,
+        normalizedConfig.creation.enabled ? await inspectCompilerRuntime() : null,
+        inventory.compileAuthorityEpoch
+      );
       return readiness;
     }
-    await store.inspect();
     const runtime = normalizedConfig.creation.enabled || requireCompilerCanary
       ? await inspectCompilerRuntime()
       : null;
-    readiness = readinessResponse(normalizedConfig, normalizedConfig.creation.enabled ? runtime : null);
+    readiness = readinessResponse(
+      normalizedConfig,
+      normalizedConfig.creation.enabled ? runtime : null,
+      inventory.compileAuthorityEpoch
+    );
     activated = true;
     return readiness;
   }
@@ -215,7 +226,10 @@ function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
   }
 
   async function check() {
-    return activateInternal(true);
+    // The rollback floor must remain able to serve already committed objects
+    // when the TeX toolchain is unavailable.  Enabled creation still makes the
+    // compiler activation canary a hard pre-listen requirement.
+    return activateInternal(normalizedConfig.creation.enabled);
   }
 
   async function compile(requestInput, { signal } = {}) {
@@ -230,9 +244,9 @@ function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
     if (signal?.aborted) {
       documentWorkerFail("WORKER_UNAVAILABLE", "Document compilation was interrupted.", { status: 503 });
     }
-    const replay = await store.lookupCompile(request);
-    if (replay) return replay;
-    const requestDigest = digestNormalizedDocumentWorkerRequest(request);
+    const reservation = await store.reserveCompile(request);
+    if (reservation.replay) return reservation.replay;
+    const requestDigest = digestDocumentWorkerCompileOperation(request);
     const active = inFlight.get(request.requestId);
     if (active) {
       if (active.requestDigest !== requestDigest) {
@@ -265,16 +279,25 @@ function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
     return promise;
   }
 
+  async function issueCompile(requestInput) {
+    assertActive();
+    if (!normalizedConfig.creation.enabled) {
+      documentWorkerFail("WORKER_CREATION_DISABLED", "Document artifact creation is disabled.", { status: 503 });
+    }
+    return store.issueCompile(requestInput);
+  }
+
   const service = {
     schemaVersion: DOCUMENT_WORKER_SERVICE_SCHEMA_VERSION,
     config: normalizedConfig,
     activate,
     check,
-    readiness(requestInput) {
+    async readiness(requestInput) {
       assertActive();
       validateDocumentWorkerReadinessRequest(requestInput);
-      return readiness;
+      return activateInternal(false);
     },
+    issueCompile,
     compile,
     commit(requestInput) {
       assertActive();

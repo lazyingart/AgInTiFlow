@@ -138,6 +138,9 @@ async function protectedTextFile(filePath, {
   label,
   ownerUid,
   allowRootOwner,
+  exactUid,
+  exactGid,
+  exactMode,
   minimumBytes,
   maximumBytes,
 }) {
@@ -156,8 +159,13 @@ async function protectedTextFile(filePath, {
       named.isSymbolicLink() ||
       !named.isFile() ||
       named.nlink !== 1 ||
-      !permittedOwner(named, ownerUid, allowRootOwner) ||
-      ((named.mode & 0o777) & 0o077) !== 0 ||
+      (exactUid === undefined
+        ? !permittedOwner(named, ownerUid, allowRootOwner)
+        : named.uid !== exactUid) ||
+      (exactGid !== undefined && named.gid !== exactGid) ||
+      (exactMode === undefined
+        ? ((named.mode & 0o777) & 0o077) !== 0
+        : (named.mode & 0o777) !== exactMode) ||
       named.size < minimumBytes ||
       named.size > maximumBytes
     ) {
@@ -196,11 +204,18 @@ function filePolicy(options = {}) {
   return Object.freeze({ ownerUid, allowRootOwner: options.allowRootOwner !== false });
 }
 
+function currentGid() {
+  return typeof process.getgid === "function" ? process.getgid() : 0;
+}
+
 export async function loadIntegrationDocumentWorkerConfig(
   filePath = DOCUMENT_WORKER_CONFIG_PATH,
   options = {}
 ) {
-  const policy = filePolicy(options);
+  const productionConfig = filePath === DOCUMENT_WORKER_CONFIG_PATH;
+  const policy = productionConfig
+    ? Object.freeze({ exactUid: 0, exactGid: currentGid(), exactMode: 0o440 })
+    : filePolicy(options);
   const raw = await protectedTextFile(filePath, {
     label: "Document worker config",
     ...policy,
@@ -232,7 +247,6 @@ export function parseIntegrationDocumentWorkerCredential(raw) {
 }
 
 async function validateCredentialDirectory(options) {
-  const policy = filePolicy(options);
   try {
     const [real, stat] = await Promise.all([
       fs.realpath(DOCUMENT_WORKER_CREDENTIALS_DIRECTORY),
@@ -242,12 +256,13 @@ async function validateCredentialDirectory(options) {
       real !== DOCUMENT_WORKER_CREDENTIALS_DIRECTORY ||
       stat.isSymbolicLink() ||
       !stat.isDirectory() ||
-      !permittedOwner(stat, policy.ownerUid, true) ||
-      ((stat.mode & 0o777) & 0o022) !== 0
+      stat.uid !== 0 ||
+      stat.gid !== 0 ||
+      (stat.mode & 0o777) !== 0o550
     ) {
       fail("DOCUMENT_WORKER_CREDENTIAL_INVALID", "Systemd credential directory is unsafe.");
     }
-    return policy;
+    return Object.freeze({ exactUid: 0, exactGid: 0, exactMode: 0o440 });
   } catch (error) {
     if (error instanceof IntegrationDocumentWorkerConfigError) throw error;
     fail("DOCUMENT_WORKER_CREDENTIAL_INVALID", "Systemd credential directory is unavailable.", error);

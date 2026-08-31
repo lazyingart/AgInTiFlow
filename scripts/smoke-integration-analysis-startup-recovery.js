@@ -499,6 +499,7 @@ try {
   const residueProof = await residueService.recoverBeforeListen({ timeoutMs: 30_000 });
   assert.equal(residueProof.scopeCount, 18);
   assert.equal(residueProof.nonterminalRunsRecovered, 18);
+  assert.equal(residueProof.deferredOptionalDocumentRuns, 0);
   for (let index = 0; index < residuePayloads.length; index += 1) {
     const names = await fs.readdir(path.join(residueScopeRoot, residueScopeNames[index]));
     assert.equal(names.some((name) => name.startsWith(".state.")), false);
@@ -629,6 +630,7 @@ try {
   assert.equal(partialRetryProof.nonterminalRunsObserved, 13);
   assert.equal(partialRetryProof.nonterminalRunsRecovered, 13);
   assert.equal(partialRetryProof.nonterminalRunsRemaining, 0);
+  assert.equal(partialRetryProof.deferredOptionalDocumentRuns, 0);
   const retriedSnapshots = await scopeStateSnapshots(partialRoot);
   for (const snapshot of retriedSnapshots) {
     assert(snapshot.envelope.state.runs.every((run) => run.status === "failed"));
@@ -670,6 +672,7 @@ try {
   assert.equal(proof.nonterminalRunsObserved, 18);
   assert.equal(proof.nonterminalRunsRecovered, 18);
   assert.equal(proof.nonterminalRunsRemaining, 0);
+  assert.equal(proof.deferredOptionalDocumentRuns, 0);
   assert.equal(proof.recoveryScopeDigests.length, 18);
   assert.equal(new Set(proof.recoveryScopeDigests).size, 18);
   assert.equal(recoveryService.getStartupRecoveryProof(), proof);
@@ -768,6 +771,7 @@ try {
   const compatibleProof = await compatibleRecovery.recoverBeforeListen({ timeoutMs: 1_000 });
   assert.equal(compatibleProof.performed, false);
   assert.equal(compatibleProof.scopeCount, null);
+  assert.equal(compatibleProof.deferredOptionalDocumentRuns, null);
   assert.deepEqual(await fs.readFile(compatibleState), compatibleBefore);
   for (const residue of [compatibleStateTemporary, compatibleStagedDirectory]) {
     await fs.access(residue).then(

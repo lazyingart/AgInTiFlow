@@ -10,13 +10,16 @@ import {
 import {
   TEST_SCOPE,
   fakeCompiledPayload,
+  issueTestCompileRequest,
   readStream,
   testCommitRequest,
   testCompileRequest,
+  testCompileIssueRequest,
   testContentRequest,
   testDeleteRequest,
   testEvidence,
 } from "./fixtures/integration-document-worker-smoke-fixture.js";
+import { canonicalJson, contractDigest } from "../src/integration-policy.js";
 
 async function expectCode(operation, code) {
   await assert.rejects(operation, (error) => error?.code === code);
@@ -27,7 +30,8 @@ async function temporaryRoot(label) {
 }
 
 async function stage(store, label) {
-  const request = testCompileRequest(label);
+  const request = await issueTestCompileRequest(store, label);
+  await store.reserveCompile(request);
   const response = await store.stageCompile({
     request,
     evidence: testEvidence(request),
@@ -55,12 +59,32 @@ async function verifyReadablePdf(store, compileResponse, expected, range) {
   }
 }
 
+async function tamperLedger(root, mutate) {
+  const filename = path.join(root, "ledger.json");
+  const envelope = JSON.parse(await fs.readFile(filename, "utf8"));
+  mutate(envelope.ledger);
+  const unsigned = {
+    schemaVersion: envelope.schemaVersion,
+    ledger: envelope.ledger,
+  };
+  await fs.writeFile(
+    filename,
+    `${canonicalJson({ ...unsigned, digest: contractDigest(unsigned) })}\n`,
+    { mode: 0o600 }
+  );
+}
+
 const roots = [];
 try {
   const lifecycleRoot = await temporaryRoot("lifecycle");
   roots.push(lifecycleRoot);
   let store = await openIntegrationDocumentWorkerStore({ stateRoot: lifecycleRoot });
   const staged = await stage(store, "lifecycle");
+  const issuanceReplay = await store.issueCompile(testCompileIssueRequest("lifecycle"));
+  assert.equal(issuanceReplay.issuanceId, staged.request.issuanceId);
+  assert.equal(issuanceReplay.requestId, staged.request.requestId);
+  assert.equal(issuanceReplay.compileAuthorityToken, staged.request.compileAuthorityToken);
+  assert.equal((await store.inspect()).compileReservations, 1);
   const expectedPdf = fakeCompiledPayload(staged.request, "lifecycle").pdf.bytes;
   assert.equal((await store.lookupCompile(staged.request)).receipt.digest, staged.response.receipt.digest);
   await expectCode(
@@ -115,6 +139,7 @@ try {
 
   await store.close();
   store = await openIntegrationDocumentWorkerStore({ stateRoot: lifecycleRoot });
+  assert.deepEqual(await store.issueCompile(testCompileIssueRequest("lifecycle")), issuanceReplay);
   await verifyReadablePdf(store, staged.response, expectedPdf);
 
   const activeContent = await store.openContent(testContentRequest(staged.response, "pdf"));
@@ -245,6 +270,72 @@ try {
   await verifyReadablePdf(store, retained.response, retainedPdf);
   await store.close();
 
+  const issueLossRoot = await temporaryRoot("issue-response-loss");
+  roots.push(issueLossRoot);
+  let loseIssueResponse = false;
+  store = await openIntegrationDocumentWorkerStore({
+    stateRoot: issueLossRoot,
+    checkpoint(event) {
+      if (loseIssueResponse && event === "after-ledger-rename-before-directory-sync") {
+        loseIssueResponse = false;
+        throw new Error("simulated compile issue response loss");
+      }
+    },
+  });
+  const lostIssueRequest = testCompileIssueRequest("issue-response-loss");
+  loseIssueResponse = true;
+  await expectCode(() => store.issueCompile(lostIssueRequest), "WORKER_STATE_UNAVAILABLE");
+  await store.close();
+  store = await openIntegrationDocumentWorkerStore({ stateRoot: issueLossRoot });
+  const recoveredIssue = await store.issueCompile(lostIssueRequest);
+  assert.deepEqual(await store.issueCompile(lostIssueRequest), recoveredIssue);
+  assert.equal((await store.inspect()).compileReservations, 1);
+  await store.close();
+
+  const forgedEvidenceRoot = await temporaryRoot("forged-evidence");
+  roots.push(forgedEvidenceRoot);
+  store = await openIntegrationDocumentWorkerStore({ stateRoot: forgedEvidenceRoot });
+  const forgedEvidenceRequest = await issueTestCompileRequest(store, "forged-evidence");
+  await store.reserveCompile(forgedEvidenceRequest);
+  await expectCode(
+    () => store.stageCompile({
+      request: forgedEvidenceRequest,
+      evidence: { ...testEvidence(forgedEvidenceRequest), verifiedFigureCount: 1 },
+      compiled: fakeCompiledPayload(forgedEvidenceRequest, "forged-evidence"),
+    }),
+    "WORKER_STATE_UNAVAILABLE"
+  );
+  await store.close();
+
+  const tamperedCommittedRoot = await temporaryRoot("tampered-committed-lifecycle");
+  roots.push(tamperedCommittedRoot);
+  store = await openIntegrationDocumentWorkerStore({ stateRoot: tamperedCommittedRoot });
+  await stage(store, "tampered-committed-lifecycle");
+  await store.close();
+  await tamperLedger(tamperedCommittedRoot, (ledger) => {
+    ledger.groups[0].state = "committed";
+    ledger.groups[0].committedAt = "2026-08-26T00:00:00.000Z";
+  });
+  await expectCode(
+    () => openIntegrationDocumentWorkerStore({ stateRoot: tamperedCommittedRoot }),
+    "WORKER_STATE_UNAVAILABLE"
+  );
+
+  const tamperedDeletionRoot = await temporaryRoot("tampered-deletion-lifecycle");
+  roots.push(tamperedDeletionRoot);
+  store = await openIntegrationDocumentWorkerStore({ stateRoot: tamperedDeletionRoot });
+  const tamperedDeletion = await stage(store, "tampered-deletion-lifecycle");
+  await commit(store, tamperedDeletion, "tampered-deletion-lifecycle");
+  await store.delete(testDeleteRequest(tamperedDeletion.response, "prepare", "tampered-deletion-lifecycle"));
+  await store.close();
+  await tamperLedger(tamperedDeletionRoot, (ledger) => {
+    ledger.groups[0].state = "committed";
+  });
+  await expectCode(
+    () => openIntegrationDocumentWorkerStore({ stateRoot: tamperedDeletionRoot }),
+    "WORKER_STATE_UNAVAILABLE"
+  );
+
   for (const event of ["before-ledger-rename", "after-ledger-rename-before-directory-sync"]) {
     const faultRoot = await temporaryRoot(`persistence-${event}`);
     roots.push(faultRoot);
@@ -255,8 +346,9 @@ try {
         if (armed && candidate === event) throw new Error(`simulated persistence fault: ${event}`);
       },
     });
+    const faultRequest = await issueTestCompileRequest(store, `persistence-${event}`);
+    await store.reserveCompile(faultRequest);
     armed = true;
-    const faultRequest = testCompileRequest(`persistence-${event}`);
     await expectCode(
       () => store.stageCompile({
         request: faultRequest,

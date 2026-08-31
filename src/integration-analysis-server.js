@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import http from "node:http";
 import { performance } from "node:perf_hooks";
 import { types as utilTypes } from "node:util";
@@ -40,6 +41,39 @@ export const INTEGRATION_ANALYSIS_SERVER_ENABLED = true;
 export const DEFAULT_INTEGRATION_ANALYSIS_START_TIMEOUT_MS = 5_000;
 export const DEFAULT_INTEGRATION_ANALYSIS_CLOSE_TIMEOUT_MS = 5_000;
 export const DEFAULT_INTEGRATION_ANALYSIS_PRELISTEN_RECOVERY_TIMEOUT_MS = 180_000;
+
+const INTEGRATION_CREDENTIAL_ROLES = Object.freeze([
+  "model", "trustedBff", "groundedSearch", "documentEdge", "executionWorker",
+]);
+
+export function assertDistinctIntegrationAnalysisCredentials(value) {
+  if (!plainDataObject(value)) {
+    fail("ANALYSIS_CREDENTIAL_INVALID", "Analysis credential roles are invalid.");
+  }
+  const credentials = value;
+  const keys = Reflect.ownKeys(credentials);
+  if (
+    keys.some((key) => typeof key !== "string" || !INTEGRATION_CREDENTIAL_ROLES.includes(key)) ||
+    !Object.hasOwn(credentials, "model") ||
+    !Object.hasOwn(credentials, "trustedBff")
+  ) fail("ANALYSIS_CREDENTIAL_INVALID", "Analysis credential roles are invalid.");
+  const digests = [];
+  for (const key of keys) {
+    const token = Object.getOwnPropertyDescriptor(credentials, key)?.value;
+    if (typeof token !== "string" || token.length < 16 || token.length > 4096 || /[\r\n\u0000]/u.test(token)) {
+      fail("ANALYSIS_CREDENTIAL_INVALID", "Analysis credential role framing is invalid.");
+    }
+    digests.push(crypto.createHash("sha256").update(token, "utf8").digest());
+  }
+  for (let left = 0; left < digests.length; left += 1) {
+    for (let right = left + 1; right < digests.length; right += 1) {
+      if (crypto.timingSafeEqual(digests[left], digests[right])) {
+        fail("ANALYSIS_CREDENTIAL_INVALID", "Analysis credential roles must be pairwise distinct.");
+      }
+    }
+  }
+  return true;
+}
 
 export function integrationAnalysisVisionEligibleForStatePersistenceMode(mode, enabled = false) {
   if (!Object.values(INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES).includes(mode)) {
@@ -287,6 +321,7 @@ function createManagedProductionServer({
   coordinator,
   activation,
   startupRecoveryProof,
+  roles,
 }) {
   let closePromise = null;
 
@@ -304,6 +339,7 @@ function createManagedProductionServer({
     config: server.config,
     activation,
     startupRecoveryProof,
+    ...(roles === undefined ? {} : { roles }),
     async start() {
       try {
         return await server.start();
@@ -573,25 +609,24 @@ export function createIntegrationAnalysisServer(options = {}) {
 export async function composeProductionIntegrationAnalysisServer(options = {}) {
   exactOptions(
     options,
-    ["config", "trustedPrincipalProxyClient", "localModelApiKey", "groundedSearchApiKey", "documentWorkerCredential"],
-    ["config", "trustedPrincipalProxyClient", "localModelApiKey"],
+    [
+      "config",
+      "trustedPrincipalProxyClient",
+      "localModelApiKey",
+      "groundedSearchApiKey",
+      "documentWorkerCredential",
+      "executionWorkerCredential",
+    ],
+    ["config", "trustedPrincipalProxyClient", "localModelApiKey", "executionWorkerCredential"],
     "analysis production composition options"
   );
   const config = validateIntegrationAnalysisServiceConfig(options.config);
   const searchEnabled = config.groundedSearch?.enabled === true;
   const searchCredentialPresent = Object.prototype.hasOwnProperty.call(options, "groundedSearchApiKey");
-  if (searchEnabled !== searchCredentialPresent) {
+  if (!searchEnabled && searchCredentialPresent) {
     fail(
       "ANALYSIS_CREDENTIAL_INVALID",
-      searchEnabled
-        ? "The enabled private grounded search route requires its distinct systemd credential."
-        : "A grounded search credential is forbidden while grounded search is disabled."
-    );
-  }
-  if (searchEnabled && options.groundedSearchApiKey === options.localModelApiKey) {
-    fail(
-      "ANALYSIS_CREDENTIAL_INVALID",
-      "Grounded search and LocalLLM model access require distinct systemd credentials."
+      "A grounded search credential is forbidden while grounded search is disabled."
     );
   }
   const documentWorkerEnabled = config.documentWorker?.enabled === true;
@@ -600,26 +635,25 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
     ? Object.getOwnPropertyDescriptor(options.trustedPrincipalProxyClient, "token")?.value
     : undefined;
   if (!documentWorkerEnabled && documentCredentialPresent) {
-    fail("ANALYSIS_CREDENTIAL_INVALID", "A document worker credential is forbidden while document creation is disabled.");
-  }
-  if (
-    documentCredentialPresent &&
-    new Set([
-      options.localModelApiKey,
-      options.groundedSearchApiKey,
-      trustedProxyToken,
-    ].filter(Boolean)).has(options.documentWorkerCredential)
-  ) {
     fail(
       "ANALYSIS_CREDENTIAL_INVALID",
-      "Document worker access requires a credential distinct from model, search, and trusted BFF access."
+      "A document worker credential is forbidden while document creation is disabled."
     );
   }
+  assertDistinctIntegrationAnalysisCredentials({
+    model: options.localModelApiKey,
+    trustedBff: trustedProxyToken,
+    executionWorker: options.executionWorkerCredential,
+    ...(searchCredentialPresent ? { groundedSearch: options.groundedSearchApiKey } : {}),
+    ...(documentCredentialPresent ? { documentEdge: options.documentWorkerCredential } : {}),
+  });
   let coordinator;
   let sessionService;
   let server;
   try {
-    coordinator = await createSystemdIntegrationAnalysisCoordinator();
+    coordinator = await createSystemdIntegrationAnalysisCoordinator({
+      executionWorkerCredential: options.executionWorkerCredential,
+    });
     const documentWorkerClient = documentCredentialPresent
       ? createIntegrationDocumentWorkerClient({
           endpoint: config.documentWorker.endpoint,
@@ -633,7 +667,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
         ...config.localModel,
         apiKey: options.localModelApiKey,
       },
-      ...(searchEnabled
+      ...(searchEnabled && searchCredentialPresent
         ? {
             groundedSearchConfig: {
               endpoint: config.groundedSearch.endpoint,
@@ -644,8 +678,15 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
           }
         : {}),
       ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
+      configuredRoles: {
+        groundedSearch: searchEnabled,
+        documentWorker: documentWorkerEnabled,
+      },
     });
     const plannerActivation = await planner.activate();
+    const activatedDocumentWorkerClient = plannerActivation.documentWorker === undefined
+      ? undefined
+      : documentWorkerClient;
     const startupProof = plannerActivation.readinessProof;
     const visionEligible = integrationAnalysisVisionEligibleForStatePersistenceMode(
       config.statePersistence.mode,
@@ -673,7 +714,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
       stateRoot: config.stateRoot,
       statePersistenceMode: config.statePersistence.mode,
       plannerActivation,
-      ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
+      ...(activatedDocumentWorkerClient === undefined ? {} : { documentWorkerClient: activatedDocumentWorkerClient }),
       ...(visionActivation === undefined
         ? {}
         : { visionClient: visionClientCandidate, visionActivation }),
@@ -703,6 +744,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
       coordinator,
       activation: completed.activation,
       startupRecoveryProof: completed.startupRecoveryProof,
+      roles: plannerActivation.roles,
     });
   } catch (error) {
     try {

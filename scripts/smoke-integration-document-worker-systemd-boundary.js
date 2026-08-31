@@ -13,6 +13,7 @@ import {
   validateIntegrationDocumentWorkerConfig,
 } from "../src/integration-document-worker-config.js";
 import { parseIntegrationDocumentWorkerArguments } from "../src/integration-document-worker-cli.js";
+import { INTEGRATION_TEX_LIMITS } from "../src/integration-tex-compiler.js";
 import {
   DOCUMENT_WORKER_NODE_RUNTIME,
   DOCUMENT_WORKER_RUNTIME_ANCESTRY,
@@ -64,7 +65,7 @@ assert.equal(config.listen.host, "127.0.0.1");
 assert.equal(config.listen.port, 18102);
 assert.equal(config.stateRoot, "/var/lib/aginti-document-worker");
 assert.equal(config.creation.enabled, false);
-assert.equal(config.creation.maximumConcurrentCompiles, 2);
+assert.equal(config.creation.maximumConcurrentCompiles, 1);
 assert.match(unit, /^User=aginti-document-worker$/mu);
 assert.match(unit, /^Group=aginti-document-worker$/mu);
 assert.match(unit, /^UMask=0077$/mu);
@@ -96,6 +97,23 @@ assert.match(unit, /^IPAddressDeny=any$/mu);
 assert.match(unit, /^IPAddressAllow=localhost$/mu);
 assert.match(unit, /^SocketBindAllow=tcp:18102$/mu);
 assert.match(unit, /^MemorySwapMax=0$/mu);
+const timeoutStartSeconds = Number(/^TimeoutStartSec=([0-9]+)s$/mu.exec(unit)?.[1]);
+assert(
+  timeoutStartSeconds >= 2 * Math.ceil(INTEGRATION_TEX_LIMITS.maximumWallTimeMs / 1000) + 30,
+  "two fixed compiler canaries plus store/listener startup require explicit start headroom"
+);
+const memoryMax = Number(/^MemoryMax=([0-9]+)$/mu.exec(unit)?.[1]);
+const tasksMax = Number(/^TasksMax=([0-9]+)$/mu.exec(unit)?.[1]);
+assert.equal(Number.isSafeInteger(memoryMax), true);
+assert.equal(Number.isSafeInteger(tasksMax), true);
+assert(
+  memoryMax >= INTEGRATION_TEX_LIMITS.addressSpaceBytes + 512 * 1024 * 1024,
+  "the single compiler child must leave at least 512 MiB cgroup headroom for Node, bwrap, and buffers"
+);
+assert(
+  tasksMax >= INTEGRATION_TEX_LIMITS.maximumProcesses + 32,
+  "the single compiler child must leave at least 32 cgroup tasks for the service and wrappers"
+);
 assert.match(unit, /^LimitCORE=0$/mu);
 assert.doesNotMatch(unit, /^ConditionPathIsReadWrite=/mu);
 assert.doesNotMatch(unit, /Bearer\s+[A-Za-z0-9._~+/=-]{32,}/u);

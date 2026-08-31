@@ -51,8 +51,20 @@ import {
   INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
 } from "../src/integration-analysis-state-persistence.js";
 import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
+import {
+  INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+  createIntegrationGroundedSearchArtifactAuthority,
+  deriveIntegrationGroundedSearchDomainConstraint,
+  integrationGroundedSearchBoundArtifactId,
+  planIntegrationGroundedSearchQuery,
+} from "../src/integration-grounded-search.js";
 import { INTEGRATION_RPC_PATHS, canonicalJson, contractDigest } from "../src/integration-policy.js";
 import { validatePublicIntegrationEvent } from "../src/integration-events.js";
+import {
+  INTEGRATION_DOCUMENT_WORKER_COMPILE_INTENT_CANDIDATE_SCHEMA_VERSION,
+  INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
+} from "../src/integration-document-worker-client.js";
+import { compileRequirements, createDocumentWorkerFixture } from "./test-document-worker-fixture.js";
 
 const PRINCIPAL_ID = "principal-analysis-0001";
 const OTHER_PRINCIPAL_ID = "principal-analysis-0002";
@@ -252,23 +264,27 @@ function fibonacciSummaryArtifact() {
   });
 }
 
-function sourcesArtifact(mode = "web") {
+function sourcesArtifact(mode = "web", queryAuthority = null) {
+  const spec = {
+    schemaVersion: "1",
+    sources: [{
+      index: 1,
+      title: `Verified ${mode} source`,
+      url: `https://example.test/evidence/${mode}`,
+      snippet: "Bounded evidence persisted before the grounded answer was synthesized.",
+      providers: ["provider-one"],
+      kind: mode === "papers" ? "paper" : "web",
+      publishedDate: "2026-08-25",
+      doi: mode === "papers" ? "10.1234/aginti.search" : null,
+    }],
+  };
   return sanitizeIntegrationArtifact({
+    ...(queryAuthority === null
+      ? {}
+      : { id: integrationGroundedSearchBoundArtifactId(spec, queryAuthority) }),
     title: "Grounded sources",
     kind: "sources",
-    spec: {
-      schemaVersion: "1",
-      sources: [{
-        index: 1,
-        title: `Verified ${mode} source`,
-        url: `https://example.test/evidence/${mode}`,
-        snippet: "Bounded evidence persisted before the grounded answer was synthesized.",
-        providers: ["provider-one"],
-        kind: mode === "papers" ? "paper" : "web",
-        publishedDate: "2026-08-25",
-        doi: mode === "papers" ? "10.1234/aginti.search" : null,
-      }],
-    },
+    spec,
   });
 }
 
@@ -961,6 +977,111 @@ function createFakeRunner() {
   return runner;
 }
 
+function createPendingDocumentRunner(documentWorkerClient) {
+  return Object.freeze({
+    async run(scope, _input, options = {}) {
+      const source = [
+        "\\documentclass{article}",
+        "\\begin{document}",
+        "Pending optional document recovery fixture.",
+        "\\end{document}",
+        "",
+      ].join("\n");
+      const compiled = await documentWorkerClient.compile(
+        scope,
+        Object.freeze({
+          filename: "pending-optional-document.tex",
+          source,
+          requirements: compileRequirements(0),
+        }),
+        Object.freeze({
+          signal: options.signal,
+          authorizeRequest: options.onDocumentCompileIntent,
+        })
+      );
+      void INTEGRATION_DOCUMENT_WORKER_TOOL_NAME;
+      for (const artifact of compiled.artifacts) await options.onArtifact?.(artifact);
+      throw runnerError("ANALYSIS_DOCUMENT_COMMIT_PENDING_FIXTURE", "simulated crash before document commit ACK");
+    },
+  });
+}
+
+function createPendingCompileIntentRunner() {
+  return Object.freeze({
+    async run(scope, _input, options = {}) {
+      const source = [
+        "\\documentclass{article}",
+        "\\begin{document}",
+        "Pending optional document compile issue fixture.",
+        "\\end{document}",
+        "",
+      ].join("\n");
+      await options.onDocumentCompileIntent?.(Object.freeze({
+        schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_INTENT_CANDIDATE_SCHEMA_VERSION,
+        compileAuthorityEpoch: 1,
+        scope,
+        filename: "pending-optional-document-compile.tex",
+        source,
+        sourceSha256: crypto.createHash("sha256").update(source, "utf8").digest("hex"),
+        requirements: compileRequirements(0),
+      }));
+      throw runnerError(
+        "ANALYSIS_DOCUMENT_COMPILE_PENDING_FIXTURE",
+        "simulated crash after document compile issuance"
+      );
+    },
+  });
+}
+
+function createCommittedDocumentRunner(documentWorkerClient) {
+  return Object.freeze({
+    async run(scope, _input, options = {}) {
+      const source = [
+        "\\documentclass{article}",
+        "\\begin{document}",
+        "Committed optional document deletion fixture.",
+        "\\end{document}",
+        "",
+      ].join("\n");
+      const compiled = await documentWorkerClient.compile(
+        scope,
+        Object.freeze({
+          filename: "committed-optional-document.tex",
+          source,
+          requirements: compileRequirements(0),
+        }),
+        Object.freeze({
+          signal: options.signal,
+          authorizeRequest: options.onDocumentCompileIntent,
+        })
+      );
+      for (const artifact of compiled.artifacts) await options.onArtifact?.(artifact);
+      const result = plannerResult({
+        text: "The document pair is ready.",
+        artifacts: compiled.artifacts,
+        toolCalls: 1,
+        executionStatus: "succeeded",
+      });
+      await options.onFinal?.(result);
+      return result;
+    },
+  });
+}
+
+function documentWorkerErrorResponse(status, code) {
+  const bytes = Buffer.from(`${JSON.stringify({ error: { code } })}\n`, "utf8");
+  return new Response(bytes, {
+    status,
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Length": String(bytes.byteLength),
+      "Content-Type": "application/json; charset=utf-8",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
 async function waitFor(predicate, label, timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -1040,6 +1161,279 @@ async function stateFile(root) {
   assert.equal(scopeEntries.length, 1);
   assert.match(scopeEntries[0], /^[a-f0-9]{64}$/u);
   return path.join(root, "scopes", scopeEntries[0], "state.json");
+}
+
+async function createPendingDocumentState(root) {
+  const worker = createDocumentWorkerFixture();
+  const client = worker.client();
+  const runner = createPendingDocumentRunner(client);
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot: root,
+    documentWorkerClient: client,
+    documentWorkerEnabled: true,
+  });
+  try {
+    const thread = await service.createThread({ title: "Pending optional document" }, context());
+    const started = await service.startRun({
+      threadId: thread.thread.id,
+      input: { text: "Create a concise TeX source and compiled PDF status report." },
+    }, context());
+    await service.waitForIdle();
+    const persistedFile = await stateFile(root);
+    const bytes = await fs.readFile(persistedFile);
+    const envelope = JSON.parse(bytes.toString("utf8"));
+    const run = envelope.state.runs.find((candidate) => candidate.id === started.run.id);
+    assert(run, "pending document run was not persisted");
+    assert.equal(run.status, "running", "pending document run must remain nonterminal for recovery");
+    assert.equal(run.schedulingState, "running");
+    assert.equal(run.documentCompileIntent?.compileAuthorityTokenDigest?.length, 64);
+    assert.equal(run.documentCompileIntent?.operationDigest?.length, 64);
+    assert.equal(envelope.state.documentCommitIntents.length, 1);
+    assert.equal(envelope.state.documentCommitIntents[0].status, "pending");
+    assert.equal(envelope.state.documentCommitIntents[0].runId, started.run.id);
+    assert.doesNotMatch(bytes.toString("utf8"), /wca_/u, "cloud state leaked a worker compile capability token");
+    assert.doesNotMatch(
+      bytes.toString("utf8"),
+      /Pending optional document recovery fixture/u,
+      "cloud state leaked raw TeX document content"
+    );
+    await service.close({ mode: "wait" });
+    service = null;
+    return Object.freeze({
+      worker,
+      stateFile: persistedFile,
+      bytes,
+      threadId: thread.thread.id,
+      runId: started.run.id,
+    });
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function createPendingCompileIntentState(root) {
+  const worker = createDocumentWorkerFixture();
+  const runner = createPendingCompileIntentRunner();
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot: root,
+    documentWorkerClient: worker.client(),
+    documentWorkerEnabled: true,
+  });
+  try {
+    const thread = await service.createThread({ title: "Pending optional document compile" }, context());
+    const started = await service.startRun({
+      threadId: thread.thread.id,
+      input: { text: "Create a concise TeX source and compiled PDF status report." },
+    }, context());
+    await service.waitForIdle();
+    const persistedFile = await stateFile(root);
+    const bytes = await fs.readFile(persistedFile);
+    const envelope = JSON.parse(bytes.toString("utf8"));
+    const run = envelope.state.runs.find((candidate) => candidate.id === started.run.id);
+    assert(run, "pending compile-intent run was not persisted");
+    assert.equal(run.status, "running", "pending compile-intent run must remain nonterminal for recovery");
+    assert.equal(run.schedulingState, "running");
+    assert.match(run.documentCompileIntent?.issuanceId, /^iss_[a-f0-9]{16}_[a-f0-9]{64}$/u);
+    assert.equal(run.documentCompileIntent?.requestId, null);
+    assert.equal(run.documentCompileIntent?.compileAuthorityTokenDigest, null);
+    assert.equal(run.documentCompileIntent?.operationDigest, null);
+    assert.equal(run.documentCompileIntent?.contentDigest?.length, 64);
+    assert.equal(envelope.state.documentCommitIntents.length, 0);
+    assert.doesNotMatch(bytes.toString("utf8"), /wca_/u, "cloud state leaked a worker compile capability token");
+    assert.doesNotMatch(
+      bytes.toString("utf8"),
+      /Pending optional document compile issue fixture/u,
+      "cloud state leaked raw TeX document content"
+    );
+    await service.close({ mode: "wait" });
+    service = null;
+    return Object.freeze({
+      stateFile: persistedFile,
+      bytes,
+      threadId: thread.thread.id,
+      runId: started.run.id,
+    });
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function optionalDocumentRecoveryDegradationRoundTrip(temporaryRoot, fakeRunner) {
+  const root = path.join(temporaryRoot, "optional-document-deferred-startup");
+  const pending = await createPendingDocumentState(root);
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: fakeRunner,
+    stateRoot: root,
+  });
+  try {
+    const proof = await service.recoverBeforeListen({ timeoutMs: 5_000 });
+    assert.equal(proof.nonterminalRunsObserved, 1);
+    assert.equal(proof.nonterminalRunsRecovered, 0);
+    assert.equal(proof.nonterminalRunsRemaining, 1);
+    assert.equal(proof.deferredOptionalDocumentRuns, 1);
+    assert.equal(proof.pendingDocumentIntentsObserved, 1);
+    assert.deepEqual(await fs.readFile(pending.stateFile), pending.bytes);
+
+    const unrelatedScope = context("principal-analysis-doc-defer-0001", "d".repeat(64));
+    const thread = await service.createThread({ title: "Unrelated core traffic" }, unrelatedScope);
+    const started = await service.startRun(
+      { threadId: thread.thread.id, input: { text: "ordinary unrelated analysis" } },
+      unrelatedScope
+    );
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: started.run.id }, unrelatedScope)).run.status, "completed");
+  } finally {
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function optionalDocumentCompileRecoveryDegradationRoundTrip(temporaryRoot, fakeRunner) {
+  const root = path.join(temporaryRoot, "optional-document-compile-deferred-startup");
+  const pending = await createPendingCompileIntentState(root);
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: fakeRunner,
+    stateRoot: root,
+  });
+  try {
+    const proof = await service.recoverBeforeListen({ timeoutMs: 5_000 });
+    assert.equal(proof.nonterminalRunsObserved, 1);
+    assert.equal(proof.nonterminalRunsRecovered, 0);
+    assert.equal(proof.nonterminalRunsRemaining, 1);
+    assert.equal(proof.deferredOptionalDocumentRuns, 1);
+    assert.equal(proof.pendingDocumentIntentsObserved, 1);
+    assert.deepEqual(await fs.readFile(pending.stateFile), pending.bytes);
+
+    const unrelatedScope = context("principal-analysis-doc-compile-defer", "e".repeat(64));
+    const thread = await service.createThread({ title: "Unrelated core traffic after compile defer" }, unrelatedScope);
+    const started = await service.startRun(
+      { threadId: thread.thread.id, input: { text: "ordinary unrelated analysis" } },
+      unrelatedScope
+    );
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: started.run.id }, unrelatedScope)).run.status, "completed");
+  } finally {
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function optionalDocumentCommitRecoveryErrorPreservesState(temporaryRoot) {
+  const scenarios = [
+    Object.freeze({
+      name: "unauthorized",
+      setup(worker) {
+        worker.failNextCommit("UNAUTHORIZED");
+      },
+      expectedCode: "ANALYSIS_STARTUP_RECOVERY_INCOMPLETE",
+    }),
+    Object.freeze({
+      name: "internal-error",
+      setup(worker) {
+        worker.failNextCommit("INTERNAL_ERROR");
+      },
+      expectedCode: "ANALYSIS_STARTUP_RECOVERY_INCOMPLETE",
+    }),
+    Object.freeze({
+      name: "malformed-response",
+      setup(worker) {
+        worker.malformNextCommitResponse();
+      },
+      expectedCode: "ANALYSIS_STARTUP_RECOVERY_INCOMPLETE",
+    }),
+    Object.freeze({
+      name: "aborted-timeout",
+      setup(worker) {
+        worker.hangNextCommit();
+      },
+      expectedCode: "ANALYSIS_STARTUP_RECOVERY_TIMEOUT",
+      timeoutMs: 100,
+    }),
+  ];
+  for (const scenario of scenarios) {
+    const root = path.join(temporaryRoot, `optional-document-commit-${scenario.name}`);
+    const pending = await createPendingDocumentState(root);
+    scenario.setup(pending.worker);
+    let service = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: createFakeRunner(),
+      stateRoot: root,
+      documentWorkerClient: pending.worker.client(),
+      documentWorkerEnabled: true,
+    });
+    try {
+      await expectCode(
+        service.recoverBeforeListen({ timeoutMs: scenario.timeoutMs ?? 5_000 }),
+        scenario.expectedCode
+      );
+      assert.deepEqual(await fs.readFile(pending.stateFile), pending.bytes, `${scenario.name} recovery mutated state`);
+    } finally {
+      await service.close({ mode: "abort" }).catch(() => {});
+    }
+  }
+}
+
+async function optionalDocumentDeletionProbeOutagePreservesState(temporaryRoot) {
+  const root = path.join(temporaryRoot, "optional-document-delete-probe-outage");
+  let contentProbeCount = 0;
+  const worker = createDocumentWorkerFixture({
+    contentResponseTransform(response) {
+      contentProbeCount += 1;
+      if (contentProbeCount === 2) return documentWorkerErrorResponse(503, "WORKER_UNAVAILABLE");
+      return response;
+    },
+  });
+  const client = worker.client();
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: createCommittedDocumentRunner(client),
+    stateRoot: root,
+    documentWorkerClient: client,
+    documentWorkerEnabled: true,
+  });
+  try {
+    const created = await service.createThread({ title: "Deletion probe outage" }, context());
+    const started = await service.startRun(
+      { threadId: created.thread.id, input: { text: "Create the document pair." } },
+      context()
+    );
+    await service.waitForIdle();
+    const completed = (await service.getRunStatus({ runId: started.run.id }, context())).run;
+    assert.equal(completed.status, "completed", JSON.stringify(completed.error));
+    const artifacts = (await service.listArtifacts({ runId: started.run.id }, context())).artifacts;
+    assert.equal(artifacts.length, 2, "document runner did not persist the source/PDF pair");
+    const persistedFile = await stateFile(root);
+    const beforeDelete = await fs.readFile(persistedFile);
+
+    worker.failNextDelete("ARTIFACT_CONTENT_GONE");
+    await expectCode(
+      service.deleteThread({ threadId: created.thread.id }, context()),
+      "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE"
+    );
+    assert.equal(contentProbeCount, 2, "delete absence probe did not inspect the exact manifest members");
+    const afterDelete = JSON.parse(await fs.readFile(persistedFile, "utf8"));
+    assert.equal(afterDelete.state.documentDeletionIntents.length, 1);
+    assert.equal(afterDelete.state.documentDeletionIntents[0].status, "pending");
+    assert.equal(afterDelete.state.documentDeletionIntents[0].reason, "thread-delete");
+    assert.equal(afterDelete.state.threads.some((thread) => thread.id === created.thread.id), true);
+    assert.equal(afterDelete.state.artifacts.length, artifacts.length);
+    assert.notDeepEqual(
+      await fs.readFile(persistedFile),
+      beforeDelete,
+      "creating the pending deletion intent must be durable"
+    );
+    const pendingSnapshot = await fs.readFile(persistedFile);
+    worker.failNextDelete("ARTIFACT_CONTENT_GONE");
+    await expectCode(
+      service.deleteThread({ threadId: created.thread.id }, context()),
+      "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE"
+    );
+    assert.deepEqual(
+      await fs.readFile(persistedFile),
+      pendingSnapshot,
+      "retryable metadata outage after generic delete 410 must not remove the pending deletion intent"
+    );
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
+  }
 }
 
 function exactKeys(value, expected, label) {
@@ -1571,13 +1965,50 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
           priorArtifacts: Object.freeze(input.priorArtifacts.map(publicArtifactProjection)),
         }),
       }));
+      if (input.search !== undefined) {
+        await options.onProgress?.(Object.freeze({
+          phase: "executing",
+          toolCallsCompleted: 0,
+          toolName: INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+          toolCallNumber: 1,
+          executionState: "starting",
+        }));
+      }
       if (input.prompt === "Trigger a bounded search failure") {
+        await options.onProgress?.(Object.freeze({
+          phase: "executing",
+          toolCallsCompleted: 0,
+          toolName: INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+          toolCallNumber: 1,
+          executionState: "failed",
+        }));
         const error = new Error("private upstream details must not escape");
         error.code = "GROUNDED_SEARCH_TIMEOUT";
         throw error;
       }
-      const artifacts = input.search === undefined ? [] : [sourcesArtifact(input.search.mode)];
+      let artifacts = [];
+      if (input.search !== undefined) {
+        const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(input.prompt);
+        const queryPlan = planIntegrationGroundedSearchQuery(input.prompt, input.search.mode, domainConstraint);
+        const queryAuthority = createIntegrationGroundedSearchArtifactAuthority({
+          query: queryPlan.query,
+          mode: input.search.mode,
+          queryPlanDigest: queryPlan.digest,
+          domainConstraintDigest: domainConstraint?.digest ?? null,
+        });
+        artifacts = [sourcesArtifact(input.search.mode, queryAuthority)];
+      }
       for (const artifact of artifacts) await options.onArtifact?.(artifact);
+      if (input.search !== undefined) {
+        await options.onProgress?.(Object.freeze({
+          phase: "executing",
+          toolCallsCompleted: 0,
+          toolName: INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+          toolCallNumber: 1,
+          executionState: "succeeded",
+          artifactCount: 1,
+        }));
+      }
       const result = plannerResult({
         text: input.search === undefined ? "Corrected local answer." : `Grounded ${input.search.mode} answer [1].`,
         artifacts,
@@ -1608,6 +2039,22 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
     const firstArtifacts = await service.listArtifacts({ runId: first.run.id }, context());
     assert.equal(firstArtifacts.artifacts.length, 1);
     assert.equal(firstArtifacts.artifacts[0].kind, "sources");
+    assert.deepEqual(Object.keys(firstArtifacts.artifacts[0].spec).sort(), ["schemaVersion", "sources"]);
+    assert.match(firstArtifacts.artifacts[0].id, /^art_[a-f0-9]{64}$/u);
+    const firstEventResult = await service.loadRunEvents(eventsRequest(first.run.id), context());
+    const firstEvents = await firstEventResult.publicEventLedger.loadEventsAfter(0);
+    const searchStartedIndex = firstEvents.findIndex(
+      (event) => event.type === "tool.started" && event.payload.publicLabel === "Grounded search"
+    );
+    const sourcesCreatedIndex = firstEvents.findIndex(
+      (event) => event.type === "artifact.created" && event.payload.artifact?.kind === "sources"
+    );
+    const searchCompletedIndex = firstEvents.findIndex(
+      (event) => event.type === "tool.completed" && event.payload.publicLabel === "Grounded search"
+    );
+    assert(searchStartedIndex >= 0);
+    assert(sourcesCreatedIndex > searchStartedIndex);
+    assert(searchCompletedIndex > sourcesCreatedIndex);
 
     const callsBeforeReplay = calls.length;
     await service.close({ mode: "wait" });
@@ -1657,6 +2104,30 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
       failedState.state.runs.find((run) => run.id === failed.run.id).search,
       failedSearch,
       "failed retrieval must retain exact durable search intent"
+    );
+    const failedEventResult = await restarted.loadRunEvents(eventsRequest(failed.run.id), context());
+    const failedEvents = await failedEventResult.publicEventLedger.loadEventsAfter(0);
+    assert(failedEvents.some(
+      (event) => event.type === "tool.started" && event.payload.publicLabel === "Grounded search"
+    ));
+    assert(failedEvents.some(
+      (event) => event.type === "tool.failed" && event.payload.publicLabel === "Grounded search"
+    ));
+    assert.equal(failedEvents.some(
+      (event) => event.type === "tool.completed" && event.payload.publicLabel === "Grounded search"
+    ), false);
+
+    const cleanNext = await restarted.resumeRun({
+      runId: failed.run.id,
+      input: { text: "Answer the corrected turn without search" },
+    }, context());
+    await restarted.waitForIdle();
+    const cleanEventResult = await restarted.loadRunEvents(eventsRequest(cleanNext.run.id), context());
+    const cleanEvents = await cleanEventResult.publicEventLedger.loadEventsAfter(0);
+    assert.equal(
+      cleanEvents.some((event) => event.payload?.publicLabel === "Grounded search"),
+      false,
+      "the next non-search turn must not retain stale grounded-search activity"
     );
   } finally {
     await service?.close({ mode: "abort" }).catch(() => {});
@@ -3076,6 +3547,10 @@ async function main() {
     await retainedMultiImageRoundTrip(temporaryRoot);
     await r67StatePersistenceCompatibilityRoundTrip(temporaryRoot);
     await concurrentNoFileDeleteStartRoundTrip(temporaryRoot, fakeRunner);
+    await optionalDocumentRecoveryDegradationRoundTrip(temporaryRoot, fakeRunner);
+    await optionalDocumentCompileRecoveryDegradationRoundTrip(temporaryRoot, fakeRunner);
+    await optionalDocumentCommitRecoveryErrorPreservesState(temporaryRoot);
+    await optionalDocumentDeletionProbeOutagePreservesState(temporaryRoot);
     const service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });
     assertIntegrationAnalysisSessionService(service, { allowTestOnly: true });
     assert.throws(() => assertIntegrationAnalysisSessionService(service), /test-only/u);
