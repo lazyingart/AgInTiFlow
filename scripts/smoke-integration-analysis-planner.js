@@ -2598,8 +2598,7 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
       assert.match(feedback.correction, /compute its parameters inside this execution/u);
       return toolResponse(source("valid_geometry"));
     }
-    assert.equal(payload.tools, undefined);
-    return textResponse("The geometrically verified linear classifier plot is ready.");
+    throw new Error("server-verified classifier evidence must not require a prose synthesis turn");
   }, {
     worker: fakeWorker((request, signal) => {
       workerCalls += 1;
@@ -2619,16 +2618,39 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
       onProgress: (value) => progress.push(value),
     }
   );
-  assert.equal(modelStep, 3);
+  assert.equal(modelStep, 2);
   assert.equal(workerCalls, 2);
   assert.equal(result.toolCalls, 2);
-  assert.equal(published.length, 1, "invalid classifier geometry must never be published");
+  assert.equal(published.length, 2, "only the valid plot and its server-derived table may be published");
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot", "table"]);
+  const verifiedTable = result.artifacts[1];
+  assert.equal(verifiedTable.title, "Server-verified linear classifier values");
+  const modelValues = Object.fromEntries(
+    verifiedTable.spec.rows
+      .filter(({ kind }) => kind === "Model")
+      .map(({ label, value }) => [label, value])
+  );
+  assert.deepEqual(modelValues, {
+    "Weight x": 0.25,
+    "Weight y": 0.25,
+    Intercept: -2,
+    "Geometric margin": 2.82842712475,
+  });
+  assert.deepEqual(
+    new Set(verifiedTable.spec.rows.filter(({ kind }) => kind === "Sample").map((row) => row.class)),
+    new Set(["Class 0 Points", "Class 1 Points"])
+  );
+  assert.equal(
+    new Set(verifiedTable.spec.rows.filter(({ kind }) => kind === "Support vector").map((row) => row.class)).size,
+    2
+  );
   assert.equal(
     progress.filter(({ executionState }) => executionState === "succeeded").length,
     1,
     "only geometrically valid classifier evidence may report success"
   );
-  assert.equal(result.text, "The geometrically verified linear classifier plot is ready.");
+  assert.match(result.text, /Agent independently derived/u);
+  assert.doesNotMatch(result.text, /fit_verified/u);
   validated.coordinator.close();
 }
 
