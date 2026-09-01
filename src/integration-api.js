@@ -214,8 +214,8 @@ export async function writeIntegrationArtifactContentResponse(res, result, { ran
   ) {
     throw new IntegrationApiError("INTERNAL_ERROR", "Artifact content range is invalid.", { status: 500 });
   }
-  res.status(rangeRequested ? 206 : 200);
-  res.set({
+  res.statusCode = rangeRequested ? 206 : 200;
+  const headers = {
     "Accept-Ranges": "bytes",
     "Cache-Control": "no-store, private",
     "Content-Disposition": contentDisposition(result.filename),
@@ -228,7 +228,11 @@ export async function writeIntegrationArtifactContentResponse(res, result, { ran
     ...(rangeRequested
       ? { "Content-Range": `bytes ${result.start}-${result.end}/${result.totalBytes}` }
       : {}),
-  });
+  };
+  // Express's high-level response.set() normalizes text media types by adding
+  // a charset. Artifact MIME is authenticated metadata, so preserve it exactly
+  // through Node's response header primitive for both text and binary files.
+  for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
   if (result.metadataOnly) {
     try {
       res.end();

@@ -1235,6 +1235,7 @@ class CaptureContentResponse extends Writable {
   }
   status(code) { this.statusCode = code; return this; }
   set(headers) { this.headers = { ...headers }; return this; }
+  setHeader(name, value) { this.headers[name] = value; return this; }
   _write(chunk, _encoding, callback) { this.chunks.push(Buffer.from(chunk)); callback(); }
 }
 async function captureContentResponse(result, options) {
@@ -1287,6 +1288,59 @@ assert.equal(metadataOnlyResponse.statusCode, 200);
 assert.equal(metadataOnlyResponse.headers["Content-Length"], "0");
 assert.equal(metadataOnlyResponse.headers["X-Artifact-Content-Length"], "8");
 assert.equal(metadataOnlyResponse.body, undefined);
+const markdownBytes = Buffer.from("# exact MIME\n", "utf8");
+const markdownResponse = await captureContentResponse({
+  schemaVersion: "aginti-artifact-content-v1",
+  artifactId,
+  filename: "notes.md",
+  mime: "text/markdown",
+  totalBytes: markdownBytes.byteLength,
+  sha256: crypto.createHash("sha256").update(markdownBytes).digest("hex"),
+  start: 0,
+  end: markdownBytes.byteLength - 1,
+  partial: false,
+  metadataOnly: false,
+  body: new Response(markdownBytes).body,
+  cleanup() {},
+});
+assert.equal(markdownResponse.headers["Content-Type"], "text/markdown");
+assert.deepEqual(markdownResponse.body, markdownBytes);
+const exactMimeApp = express();
+exactMimeApp.get("/artifact", async (_req, res, next) => {
+  try {
+    await writeIntegrationArtifactContentResponse(res, {
+      schemaVersion: "aginti-artifact-content-v1",
+      artifactId,
+      filename: "notes.md",
+      mime: "text/markdown",
+      totalBytes: markdownBytes.byteLength,
+      sha256: crypto.createHash("sha256").update(markdownBytes).digest("hex"),
+      start: 0,
+      end: markdownBytes.byteLength - 1,
+      partial: false,
+      metadataOnly: false,
+      body: new Response(markdownBytes).body,
+      cleanup() {},
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+const exactMimeServer = http.createServer(exactMimeApp);
+await new Promise((resolve, reject) => {
+  exactMimeServer.once("error", reject);
+  exactMimeServer.listen(0, "127.0.0.1", resolve);
+});
+try {
+  const address = exactMimeServer.address();
+  const response = await fetch(`http://127.0.0.1:${address.port}/artifact`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/markdown",
+    "Express must not append a charset to authenticated artifact MIME metadata");
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), markdownBytes);
+} finally {
+  await new Promise((resolve, reject) => exactMimeServer.close((error) => error ? reject(error) : resolve()));
+}
 await assert.rejects(
   captureContentResponse({
     schemaVersion: "aginti-artifact-content-v1",

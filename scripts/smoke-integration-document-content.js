@@ -90,6 +90,7 @@ class CaptureResponse extends Writable {
   }
   status(value) { this.statusCode = value; return this; }
   set(value) { Object.assign(this.headers, value); return this; }
+  setHeader(name, value) { this.headers[name] = value; return this; }
   _write(chunk, _encoding, callback) { this.chunks.push(Buffer.from(chunk)); callback(); }
 }
 
