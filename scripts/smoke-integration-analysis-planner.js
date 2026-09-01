@@ -2256,6 +2256,9 @@ async function leadingGeneralFileImperativesRequireTheFileWorker() {
     "Create exactly three downloadable files named notes.md, results.csv, and demo.html.",
     "Write a downloadable status.md file with a short verified status.",
     "Produce two attachments named data.json and README.txt.",
+    "Using the verified results above, create exactly two downloadable files: growth-report.md and growth-data.csv. The Markdown report must summarize the comparison and include the verified table values; the CSV must contain those same five rows. Do not rerun the calculation.",
+    "Based on the preceding analysis, write summary.md and measurements.csv as downloadable files without rerunning Python.",
+    "Turn the results above into two files named report.md and data.csv.",
   ];
   for (let index = 0; index < prompts.length; index += 1) {
     let modelCalls = 0;
