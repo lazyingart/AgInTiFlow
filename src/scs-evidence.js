@@ -583,6 +583,7 @@ const REQUESTED_ARTIFACT_FORMATS = [
   { extension: ".pptx", pattern: /\b(?:pptx|powerpoint)\b/i, description: "editable PowerPoint deck" },
   { extension: ".odp", pattern: /\b(?:odp|open(?:office|document) presentation)\b/i, description: "editable ODP deck" },
   { extension: ".pdf", pattern: /\bpdf\b/i, description: "PDF document" },
+  { extension: ".md", pattern: /(?:\bmarkdown\b|\.md\b)/i, description: "Markdown document" },
   {
     extension: ".tex",
     pattern: /(?:\b(?:editable\s+)?(?:latex|tex)\s+source\b|\.tex\b)/i,
@@ -593,6 +594,64 @@ const REQUESTED_ARTIFACT_FORMATS = [
   { extension: ".png", pattern: /\bpng\b/i, description: "PNG image" },
   { extension: ".svg", pattern: /\bsvg\b/i, description: "editable SVG image" },
 ];
+
+function requestedArtifactFormatHasOutputIntent(source = "", format = {}) {
+  const extension = String(format.extension || "").toLocaleLowerCase("en-US");
+  if (!extension || !format.pattern) return false;
+  if (
+    inferExactOutputPaths(source).some(
+      (candidate) => path.extname(candidate).toLocaleLowerCase("en-US") === extension
+    )
+  ) {
+    return true;
+  }
+
+  const matcher = new RegExp(
+    format.pattern.source,
+    format.pattern.flags.includes("g") ? format.pattern.flags : `${format.pattern.flags}g`
+  );
+  const outputAction =
+    /\b(?:compile|convert|create|deliver|export|generate|keep|make|output|prepare|preserve|produce|provide|render|retain|return|reuse|save|send|write)\b/i;
+  const directRequest =
+    /\b(?:can|could|would|will)\s+you\b|\b(?:i|we)\s+(?:also\s+)?(?:need|want|would\s+like|request)\b|\b(?:please|kindly)\b/i;
+  for (const match of source.matchAll(matcher)) {
+    const index = Number(match.index || 0);
+    const clauseStart = Math.max(
+      source.lastIndexOf(".", index - 1),
+      source.lastIndexOf("!", index - 1),
+      source.lastIndexOf("?", index - 1),
+      source.lastIndexOf(";", index - 1),
+      source.lastIndexOf("。", index - 1),
+      source.lastIndexOf("！", index - 1),
+      source.lastIndexOf("？", index - 1),
+      source.lastIndexOf("；", index - 1),
+      source.lastIndexOf("\n", index - 1)
+    );
+    const nextBoundaries = [".", "!", "?", ";", "。", "！", "？", "；", "\n"]
+      .map((delimiter) => source.indexOf(delimiter, index + String(match[0] || "").length))
+      .filter((candidate) => candidate >= 0);
+    const clauseEnd = nextBoundaries.length ? Math.min(...nextBoundaries) : source.length;
+    const clause = source.slice(clauseStart + 1, clauseEnd);
+    const matchOffset = index - clauseStart - 1;
+    const before = clause.slice(Math.max(0, matchOffset - 180), matchOffset);
+    const after = clause.slice(matchOffset + String(match[0] || "").length, matchOffset + 120);
+    if (outputAction.test(before) || directRequest.test(before)) return true;
+    if (
+      /\b(?:as|into|to)\s+(?:an?\s+)?$/i.test(before) &&
+      /\b(?:compile|convert|export|render|save)\b/i.test(clause)
+    ) {
+      return true;
+    }
+    if (
+      /^\s*(?:output|deliverable|file|document|report|version|copy)\b/i.test(after) &&
+      outputAction.test(clause)
+    ) {
+      return true;
+    }
+    if (/^\s*(?:please|required|requested)\b/i.test(after)) return true;
+  }
+  return false;
+}
 
 function artifactRequestHasOutputIntent(goal = "", taskProfile = "") {
   const source = stripForbiddenLanguage(String(goal || ""));
@@ -622,7 +681,7 @@ export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") 
   };
 
   for (const format of REQUESTED_ARTIFACT_FORMATS) {
-    if (!format.pattern.test(source)) continue;
+    if (!requestedArtifactFormatHasOutputIntent(source, format)) continue;
     add({
       id: `format:${format.extension}`,
       kind: "format",
@@ -1456,6 +1515,41 @@ function requiresSourceGrounding(goal = "") {
   );
 }
 
+function goalRequestsPublishAction(goal = "") {
+  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
+  const action =
+    "(?:publish|deploy|submit|upload\\s+to|generate\\s+(?:a\\s+)?video|npm\\s+publish)";
+  const release =
+    "(?:release|ship)(?:\\s+(?:(?:the|this|that|a|an)\\s+)?(?:package|version|build|app|application|software|library|plugin|extension|product)|\\s+(?:to|on|via|through))|cut\\s+(?:a\\s+)?release";
+  const clauses = text
+    .split(/[\n.!?;，；。！？]+/u)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+  for (const clause of clauses) {
+    if (
+      new RegExp(
+        `^(?:(?:and|also|then|next|finally|please|kindly)\\s+)*(?:${action}|${release})\\b`,
+        "i"
+      ).test(clause)
+    ) {
+      return true;
+    }
+    if (
+      new RegExp(
+        `\\b(?:(?:can|could|would|will)\\s+you|(?:i|we)\\s+(?:need|want|would\\s+like)\\s+(?:you\\s+)?to|you\\s+(?:must|should|need\\s+to|have\\s+to)|please|kindly|then|next|finally)\\b[^.\\n;]{0,140}\\b(?:${action}|${release})\\b`,
+        "i"
+      ).test(clause)
+    ) {
+      return true;
+    }
+  }
+  return (
+    /(?:请|請|需要|必须|必須|帮我|幫我|立即|现在|現在)[^。；\n]{0,100}(?:发布|發布|部署|提交|上传|上傳|生成视频|生成影片)/u.test(
+      text
+    ) || /^(?:发布|發布|部署|提交|上传|上傳|生成视频|生成影片)/u.test(text)
+  );
+}
+
 function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCriteria = []) {
   const positiveGoal = stripForbiddenLanguage(goal);
   const text = normalizedText(positiveGoal);
@@ -1531,16 +1625,7 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   ) {
     categories.add("visual");
   }
-  const explicitPublishAction =
-    textHas(
-      text,
-      /\b(?:publish|deploy|submit|upload to|generate video|external service|npm publish)\b/
-    ) ||
-    textHas(
-      text,
-      /\b(?:release|ship)\s+(?:(?:the|this|that|a|an)\s+)?(?:package|version|build|app|application|software|library|plugin|extension|product)\b|\b(?:release|ship)\s+(?:to|on|via|through)\b|\bcut\s+(?:a\s+)?release\b/
-    ) ||
-    /发布|部署|提交|生成视频|外部服务/.test(text);
+  const explicitPublishAction = goalRequestsPublishAction(positiveGoal);
   if (explicitPublishAction) {
     categories.add("publish");
   }
