@@ -5034,6 +5034,183 @@ function shellBraceGroups(value = "") {
   return groups;
 }
 
+function unquotedShellControlDelimiter(value = "", keyword = "", startIndex = 0) {
+  const text = String(value || "");
+  const expected = String(keyword || "").toLowerCase();
+  let quote = "";
+  let escaped = false;
+  for (let index = Math.max(0, Number(startIndex || 0)); index < text.length; index += 1) {
+    const char = text[index];
+    if (quote === "'") {
+      if (char === "'") quote = "";
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') quote = "";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char !== ";") continue;
+    const suffix = text.slice(index + 1).match(/^\s*([A-Za-z]+)\b/u);
+    if (String(suffix?.[1] || "").toLowerCase() === expected) return index;
+  }
+  return -1;
+}
+
+function boundedTestAvailabilityProbe(value = "") {
+  let command = normalizeProjectCommand(value);
+  if (!command || /(?:`|\$\()/u.test(command)) return false;
+  command = command
+    .replace(/(?:^|\s)(?:\d*>>?|&>>?)\s*(?:"\/dev\/null"|'\/dev\/null'|\/dev\/null)/gu, " ")
+    .trim()
+    .replace(/^(?:[A-Za-z_]\w*=(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|]+)\s*)+/u, "")
+    .trim();
+  const tokens = tokenizeShellWords(command);
+  if (
+    ["command", "which"].includes(String(tokens[0] || "")) &&
+    (tokens[0] !== "command" || tokens[1] === "-v")
+  ) {
+    const target = tokens[0] === "command" ? tokens[2] : tokens[1];
+    return Boolean(target && /^[A-Za-z0-9_.+-]+$/u.test(target) && tokens.length <= 3);
+  }
+  const executable = String(tokens[0] || "").split(/[\\/]/u).at(-1) || "";
+  const codeIndex = tokens.indexOf("-c");
+  if (!/^python(?:\d+(?:\.\d+)*)?$/iu.test(executable) || codeIndex < 1) return false;
+  const code = String(tokens[codeIndex + 1] || "").trim();
+  if (!code || codeIndex + 2 !== tokens.length) return false;
+  return /^(?:import\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*|from\s+[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s+import\s+[A-Za-z_]\w*)$/u.test(
+    code
+  );
+}
+
+function boundedTestCommandClassification(value = "") {
+  const command = normalizeProjectCommand(value);
+  const executableCommand = command
+    .replace(/^(?:[A-Za-z_]\w*=(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|]+)\s*)+/u, "")
+    .trim();
+  return {
+    command,
+    executableCommand,
+    policy: classifyCommand(executableCommand),
+  };
+}
+
+function parseBoundedConditionalTestWrapper(value = "") {
+  let normalized = normalizeProjectCommand(value);
+  if (!normalized) return null;
+  normalized = normalized.replace(
+    /^cd\s+(?:"[^"\n]+"|'[^'\n]+'|[^\s;&|]+)\s*&&\s*/u,
+    ""
+  );
+  if (!/^if\s+/u.test(normalized)) return null;
+  const thenAt = unquotedShellControlDelimiter(normalized, "then", 3);
+  if (thenAt < 0) return null;
+  const thenMatch = normalized.slice(thenAt + 1).match(/^\s*then\b/u);
+  if (!thenMatch) return null;
+  const thenBodyStart = thenAt + 1 + thenMatch[0].length;
+  const elseAt = unquotedShellControlDelimiter(normalized, "else", thenBodyStart);
+  if (elseAt < 0) return null;
+  const elseMatch = normalized.slice(elseAt + 1).match(/^\s*else\b/u);
+  if (!elseMatch) return null;
+  const elseBodyStart = elseAt + 1 + elseMatch[0].length;
+  const fiAt = unquotedShellControlDelimiter(normalized, "fi", elseBodyStart);
+  if (fiAt < 0 || !/^\s*fi\s*$/u.test(normalized.slice(fiAt + 1))) return null;
+
+  const condition = normalized.slice(3, thenAt).trim();
+  const thenCommand = normalizeProjectCommand(
+    normalized.slice(thenBodyStart, elseAt).trim()
+  );
+  const elseCommand = normalizeProjectCommand(
+    normalized.slice(elseBodyStart, fiAt).trim()
+  );
+  if (!boundedTestAvailabilityProbe(condition)) return null;
+  const branches = [thenCommand, elseCommand];
+  const classifications = branches.map((candidate) =>
+    boundedTestCommandClassification(candidate)
+  );
+  const policies = classifications.map((candidate) => candidate.policy);
+  if (
+    branches.some((candidate) => {
+      const sequence = parseTopLevelShellSequence(candidate);
+      return (
+        !candidate ||
+        sequence.openQuote ||
+        sequence.trailingEscape ||
+        sequence.trailingSeparator ||
+        sequence.commands.length !== 1
+      );
+    }) ||
+    policies.some((policy) => policy.substantiveTest !== true)
+  ) {
+    return null;
+  }
+  return {
+    command: thenCommand,
+    alternateCommand: elseCommand,
+    wrappedCommand: normalizeProjectCommand(value),
+    statusSource: "process",
+    semanticallyReadOnly: policies.every(
+      (policy, index) =>
+        !commandCanMutateProjectContent(
+          classifications[index].executableCommand,
+          policy
+        )
+    ),
+  };
+}
+
+function capturedStatusEcho(value = "", statusVariable = "") {
+  const label =
+    "(?:(?:[A-Z][A-Z0-9_]{0,31}_)?(?:EXIT|STATUS|RESULT)(?:_CODE)?)";
+  const variable = String(statusVariable || "");
+  const statusOperand = variable
+    ? `\\$(?:\\{${variable.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}\\}|${variable.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")})`
+    : "\\$\\?";
+  return String(value || "").trim().match(
+    new RegExp(
+      `^echo\\s+(?:-n\\s+)?["']?(?<label>${label})\\s*[:=]\\s*${statusOperand}["']?$`,
+      "iu"
+    )
+  );
+}
+
+function boundedReadOnlyTestPrefixCommand(value = "") {
+  const command = normalizeProjectCommand(value);
+  if (!command) return false;
+  const tokens = tokenizeShellWords(command);
+  if (
+    ["date", "echo", "printf"].includes(String(tokens[0] || "")) &&
+    !/(?:`|\$\()/u.test(command)
+  ) {
+    return true;
+  }
+  if (
+    ["cat", "grep", "head", "stat", "tail", "wc"].includes(
+      String(tokens[0] || "")
+    ) &&
+    !/(?:`|\$\(|[|<>])/u.test(command)
+  ) {
+    return true;
+  }
+  const policy = classifyCommand(command);
+  return (
+    policy.writesWorkspace !== true &&
+    policy.mayMutateProject !== true &&
+    policy.substantiveTest !== true
+  );
+}
+
 function parseCapturedTestExitStatusWrapper(value = "") {
   const normalized = normalizeProjectCommand(value);
   if (!normalized) return null;
@@ -5044,7 +5221,7 @@ function parseCapturedTestExitStatusWrapper(value = "") {
       sequence.openQuote ||
       sequence.trailingEscape ||
       (sequence.trailingSeparator && sequence.trailingSeparator !== ";") ||
-      sequence.commands.length < 3
+      sequence.commands.length < 1
     ) {
       continue;
     }
@@ -5071,7 +5248,7 @@ function parseCapturedTestExitStatusWrapper(value = "") {
         continue;
       }
       const testCommand = normalizeProjectCommand(sequence.commands[index - 1]);
-      if (classifyCommand(testCommand).substantiveTest !== true) continue;
+      if (boundedTestCommandClassification(testCommand).policy.substantiveTest !== true) continue;
       return {
         command: testCommand,
         wrappedCommand: normalized,
@@ -5080,8 +5257,108 @@ function parseCapturedTestExitStatusWrapper(value = "") {
         statusVariable,
       };
     }
+
+    for (let index = 0; index < sequence.commands.length - 1; index += 1) {
+      const testCommand = normalizeProjectCommand(sequence.commands[index]);
+      const directEcho = capturedStatusEcho(sequence.commands[index + 1]);
+      if (
+        !directEcho ||
+        boundedTestCommandClassification(testCommand).policy.substantiveTest !== true
+      ) {
+        continue;
+      }
+      if (
+        sequence.commands.slice(0, index).some(
+          (candidate) => !boundedReadOnlyTestPrefixCommand(candidate)
+        ) ||
+        sequence.commands.length !== index + 2
+      ) {
+        continue;
+      }
+      const outsideGroup = `${normalized.slice(0, group.start)} ${normalized.slice(group.end + 1)}`;
+      if (
+        /\b(?:echo|printf)\b[^;&|\n]{0,240}\b(?:EXIT|STATUS|RESULT)(?:_CODE)?\s*[:=]/iu.test(
+          outsideGroup
+        )
+      ) {
+        continue;
+      }
+      return {
+        command: testCommand,
+        wrappedCommand: normalized,
+        label: String(directEcho.groups?.label || "").toUpperCase(),
+        statusSource: "captured-group",
+      };
+    }
+
+    const bodyCommands = sequence.commands.map((candidate) =>
+      normalizeProjectCommand(candidate)
+    );
+    const testCommand = bodyCommands.at(-1) || "";
+    if (
+      boundedTestCommandClassification(testCommand).policy.substantiveTest !== true ||
+      bodyCommands.slice(0, -1).some(
+        (candidate) => !boundedReadOnlyTestPrefixCommand(candidate)
+      )
+    ) {
+      continue;
+    }
+    const suffix = normalized
+      .slice(group.end + 1)
+      .replace(
+        /^\s*(?:(?:\d*>>?|&>>?)\s*(?:"[^"\n]+"|'[^'\n]+'|&\d+|[^\s;&|]+)\s*)+/u,
+        ""
+      )
+      .replace(/^\s*;\s*/u, "");
+    const suffixSequence = parseTopLevelShellSequence(suffix);
+    if (
+      !suffix ||
+      suffixSequence.openQuote ||
+      suffixSequence.trailingEscape ||
+      suffixSequence.trailingSeparator ||
+      suffixSequence.commands.length < 2
+    ) {
+      continue;
+    }
+    const statusAssignment = String(suffixSequence.commands[0] || "")
+      .trim()
+      .match(/^([A-Za-z_]\w*)\s*=\s*\$\?$/u);
+    if (!statusAssignment) continue;
+    const statusEcho = capturedStatusEcho(
+      suffixSequence.commands[1],
+      statusAssignment[1]
+    );
+    if (!statusEcho) continue;
+    if (
+      suffixSequence.commands.slice(2).some((candidate) => {
+        if (
+          /\b(?:echo|printf)\b[^;&|\n]{0,240}\b(?:[A-Z][A-Z0-9_]{0,31}_)?(?:EXIT|STATUS|RESULT)(?:_CODE)?\s*[:=]/iu.test(
+            candidate
+          )
+        ) {
+          return true;
+        }
+        return !boundedReadOnlyTestPrefixCommand(candidate);
+      })
+    ) {
+      continue;
+    }
+    return {
+      command: testCommand,
+      wrappedCommand: normalized,
+      label: String(statusEcho.groups?.label || "").toUpperCase(),
+      statusSource: "captured-group",
+      statusVariable: statusAssignment[1],
+    };
   }
   return null;
+}
+
+function projectTestCommandWrapper(command = "") {
+  return (
+    parseCapturedTestExitStatusWrapper(command) ||
+    parseBoundedConditionalTestWrapper(command)
+  );
 }
 
 function projectExitStatusWrapper(command = "") {
@@ -5161,6 +5438,7 @@ function isRetainedExactVerificationCommand(command = "", config = {}) {
 export function isSubstantiveTestCommand(command = "", config = {}) {
   if (isRetainedExactVerificationCommand(command, config)) return true;
   const normalized = normalizeProjectCommand(normalizeCommandForPolicy(command, config));
+  if (projectTestCommandWrapper(normalized)) return true;
   const text = projectExitStatusWrapper(normalized)?.command || normalized;
   if (!text) return false;
   const classification = classifyCommand(text);
@@ -5278,9 +5556,16 @@ function explicitExitProbeStatus(command = "", result = {}) {
 
   let status = parseExplicitExitStatus(result.stdout || "");
   if (status === null && exitProbe.statusSource === "captured-group") {
+    const escapedLabel = String(exitProbe.label || "")
+      .replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     const matches = [
       ...String(result.stdout || "").matchAll(
-        /(?:^|\n)\s*(?:EXIT|STATUS|RESULT)(?:_CODE)?\s*[:=]\s*(-?\d+)\s*(?=\n|$)/giu
+        escapedLabel
+          ? new RegExp(
+              `(?:^|\\n)\\s*${escapedLabel}\\s*[:=]\\s*(-?\\d+)\\s*(?=\\n|$)`,
+              "giu"
+            )
+          : /(?:^|\n)\s*(?:EXIT|STATUS|RESULT)(?:_CODE)?\s*[:=]\s*(-?\d+)\s*(?=\n|$)/giu
       ),
     ];
     if (matches.length) status = Number(matches.at(-1)[1]);
@@ -6853,6 +7138,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
 
   if (toolName === "run_command") {
     const command = normalizeProjectCommand(toolResult.args?.command || "");
+    const testCommandWrapper = projectTestCommandWrapper(command);
     const retainedExactVerification = isRetainedExactVerificationCommand(
       command,
       config
@@ -6966,6 +7252,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       command &&
         toolResult.blocked !== true &&
         !retainedExactVerification &&
+        testCommandWrapper?.semanticallyReadOnly !== true &&
         !disposableGeneratedCleanup &&
         !disposableGeneratedVerificationSideEffects &&
         !scopedTaskArtifactWrite &&
@@ -6989,6 +7276,9 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     }
     if (readOnlyArtifactValidation) {
       toolResult.readOnlyArtifactValidation = true;
+    }
+    if (testCommandWrapper?.semanticallyReadOnly === true) {
+      toolResult.boundedReadOnlyTestWrapper = true;
     }
     let requiredBatch = currentRequiredCommandBatch(verification, requiredCommands);
     const activeExecutionContract = state.meta?.activeExecutionContract;
@@ -13043,6 +13333,7 @@ function commandWritesOnlyEvidenceMatching(command = "", pathMatches = () => fal
       .trim();
     if (!withoutAssignments) return true;
     const commandTokens = tokenizeShellWords(withoutAssignments);
+    if (boundedReadOnlyTestPrefixCommand(withoutAssignments)) return true;
     const teeTargets = evidenceTargetsFromTee(commandTokens);
     if (teeTargets.length) {
       const safe = teeTargets.every(pathMatches);
