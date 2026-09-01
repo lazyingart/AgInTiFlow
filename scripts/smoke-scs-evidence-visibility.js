@@ -33,6 +33,19 @@ const groupBriefingContract = deriveScsTaskContract({
   ].join(" "),
   taskProfile: "research",
 });
+const sourceIntakeAuditContract = deriveScsTaskContract({
+  goal: [
+    "Create one concise coherent Markdown report with exactly five numbered cases:",
+    "(1) a bare video has no publication;",
+    "(2) a current same-chat publish request authorizes only the exact referenced video through autopublish-video plus LazyEdit, while this audit performs no external action;",
+    "(3) Finder recovery remains evidence-limited;",
+    "(4) mp.weixin recovery never asks for browser verification;",
+    "(5) PDF/archive intake uses the guarded document reader.",
+    "Run only the focused existing unit test and write agent-result.json.",
+    "Do not send, publish, submit, upload, alter queues, or open a GUI.",
+  ].join(" "),
+  taskProfile: "auto",
+});
 const scopedReadThenWriteRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), "aginti-scoped-read-then-write-")
 );
@@ -82,6 +95,16 @@ assert.deepEqual(
   groupBriefingContract.requiredArtifactKinds.map((item) => item.id),
   ["format:.pdf"],
   "an ordinary chat answer was incorrectly converted into a separate answer-key artifact"
+);
+assert.deepEqual(
+  sourceIntakeAuditContract.requiredArtifactKinds.map((item) => item.id),
+  ["format:.md"],
+  "a Markdown-only audit inferred PDF from a described PDF intake case"
+);
+assert.equal(
+  sourceIntakeAuditContract.requiredEvidence.some((item) => item.category === "publish"),
+  false,
+  "a read-only audit of a publish contract fabricated a publish action obligation"
 );
 assert.deepEqual(
   educationArtifactContract.requiredArtifactKinds.map((item) => item.id).sort(),
