@@ -2362,6 +2362,7 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
     "  {'name':'Decision Boundary','points':boundary},",
     "  {'name':'Support Vectors','points':[{'x':x,'y':y} for x,y in supports]},",
     "]",
+    "emit_markdown('Unverified SVM prose', '# SVM result\\nWeights: 0.5000, -0.8000. Three support vectors.')",
     "emit_plot('Model-generated SVM fit', {'schemaVersion':'1','type':'scatter','xLabel':'x1','yLabel':'x2','series':series})",
   ].join("\n");
   const documentSource = [
@@ -2387,7 +2388,11 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
       return toolResponse(analysisSource);
     }
     assert.equal(modelStep, 2);
-    assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]);
+    assert.deepEqual(
+      payload.tools.map(({ function: fn }) => fn.name),
+      [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME],
+      JSON.stringify(payload.messages.slice(-2))
+    );
     const documentEvidence = JSON.stringify(payload.messages);
     assert.match(documentEvidence, /aginti-compound-document-execution-evidence-v1/u);
     assert.match(documentEvidence, /Server-verified linear classifier values/u);
@@ -2395,6 +2400,7 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
     assert.match(documentEvidence, /Decision Boundary/u);
     assert.match(documentEvidence, /Support Vectors/u);
     assert.match(documentEvidence, /Geometric margin/u);
+    assert.doesNotMatch(documentEvidence, /0\.5000|-0\.8000|Three support vectors/u);
     assert.doesNotMatch(documentEvidence, /QAOA|prior-qaoa/iu);
     return texToolResponse("svm-model-result.tex", documentSource);
   }, {
@@ -2431,10 +2437,25 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
         },
       };
       const artifact = sanitizeIntegrationArtifact({
-        id: artifactId(request, rawArtifact),
+        id: artifactId(request, rawArtifact, 1),
         ...rawArtifact,
       });
-      return terminalResult(request, signal, [artifact], { stdout: "ignored worker output\n", stderr: "" });
+      const unverifiedMarkdown = {
+        title: "Unverified SVM prose",
+        kind: "markdown",
+        spec: {
+          schemaVersion: "1",
+          markdown: "# SVM result\nWeights: 0.5000, -0.8000. Three support vectors.",
+        },
+      };
+      const markdownArtifact = sanitizeIntegrationArtifact({
+        id: artifactId(request, unverifiedMarkdown),
+        ...unverifiedMarkdown,
+      });
+      return terminalResult(request, signal, [markdownArtifact, artifact], {
+        stdout: "ignored worker output\n",
+        stderr: "",
+      });
     }),
   });
   const progress = [];

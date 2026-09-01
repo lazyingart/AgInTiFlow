@@ -3177,6 +3177,7 @@ function createPlanner({
     const executeOnce = async (executionInput, toolCallNumber) => {
       let lastExecutionState = "";
       let terminalSuccessPending = false;
+      let verifiedClassifierGeometry = false;
       await emitProgress("executing", {
         toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
         toolCallNumber,
@@ -3223,6 +3224,7 @@ function createPlanner({
             execution.artifacts
           );
           if (canonicalArtifacts !== execution.artifacts) {
+            verifiedClassifierGeometry = true;
             execution = Object.freeze({ ...execution, artifacts: canonicalArtifacts });
           }
         }
@@ -3252,9 +3254,12 @@ function createPlanner({
           ? derivedLinearClassifierTable(input.prompt, plotElementRequirements, execution.artifacts)
           : null;
         if (verifiedClassifierTable !== null) {
+          const authoritativeArtifacts = verifiedClassifierGeometry
+            ? execution.artifacts.filter(({ kind }) => kind !== "markdown")
+            : execution.artifacts;
           execution = Object.freeze({
             ...execution,
-            artifacts: Object.freeze([...execution.artifacts, verifiedClassifierTable]),
+            artifacts: Object.freeze([...authoritativeArtifacts, verifiedClassifierTable]),
           });
         }
         const acceptedArtifactIds = new Set(execution.artifacts.map(({ id }) => id));
