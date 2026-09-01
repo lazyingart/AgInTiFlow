@@ -1313,6 +1313,12 @@ assert.deepEqual(
   { mode: "web", depth: "quick" }
 );
 assert.deepEqual(
+  inferIntegrationDeepResearchRequestFromPrompt(
+    "Run quick deep research on the official SQLite documentation about WAL versus rollback journaling."
+  ),
+  { mode: "web", depth: "quick" }
+);
+assert.deepEqual(
   inferIntegrationDeepResearchRequestFromPrompt("请全面研究这个主题并给出证据。"),
   { mode: "both", depth: "deep" }
 );

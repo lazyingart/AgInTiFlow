@@ -66,7 +66,8 @@ const EXPLICIT_DEEP_RESEARCH_NEGATION =
   /\b(?:do\s+not|don't|dont|never|avoid|skip|without|no\s+need\s+to)\b[^.!?;\r\n]{0,120}\b(?:deep|thorough|comprehensive|in[-\s]?depth|extensive)\s+(?:research|investigation|review)\b|(?:不要|无需|無需|避免|跳过|跳過)[^。！？\r\n]{0,80}(?:深度|深入|全面)(?:研究|调研|調研|检索|檢索)/iu;
 const EXPLICIT_DEEP_RESEARCH_DIRECTIVE =
   /\b(?:deep|thorough|comprehensive|in[-\s]?depth|extensive)\s+(?:(?:web|internet|online|papers?|scholarly|academic|literature)(?:\s+and\s+(?:web|internet|online|papers?|scholarly|academic|literature))?\s+)?(?:research|investigation|review)\b|\b(?:research|investigate|review)\b[^.!?;\r\n]{0,80}\b(?:deeply|thoroughly|comprehensively|in\s+depth)\b|(?:深度|深入|全面)(?:研究|调研|調研|检索|檢索|文献综述|文獻綜述)/iu;
-const WEB_SEARCH_MODE_DIRECTIVE = /\b(?:web|internet|online)\b/iu;
+const WEB_SEARCH_MODE_DIRECTIVE =
+  /\b(?:web|internet|online)\b|\bofficial\b[^.!?;\r\n]{0,80}\b(?:docs?|documentation|website|site)\b/iu;
 const PAPER_SEARCH_MODE_DIRECTIVE =
   /\b(?:papers?|paper\s+search|scholarly|academic|peer[-\s]?reviewed|arxiv|literature|publications?)\b/iu;
 const SOURCE_KEYS = Object.freeze([
