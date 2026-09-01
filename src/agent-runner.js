@@ -5495,10 +5495,12 @@ export function isSubstantiveTestCommand(command = "", config = {}) {
   if (isRetainedExactVerificationCommand(command, config)) return true;
   const normalized = normalizeProjectCommand(normalizeCommandForPolicy(command, config));
   if (projectTestCommandWrapper(normalized)) return true;
-  const text = projectExitStatusWrapper(normalized)?.command || normalized;
+  const wrappedTestCommand =
+    projectExitStatusWrapper(normalized)?.command || normalized;
+  const text = normalizeLeadingWorkspaceCd(wrappedTestCommand, config);
   if (!text) return false;
-  const classification = classifyCommand(text);
-  if (classification.substantiveTest !== true) return false;
+  const classification = boundedTestCommandClassification(text);
+  if (classification.policy.substantiveTest !== true) return false;
   const sequence = parseTopLevelShellSequence(text);
   if (sequence.commands.length <= 1) return true;
   if (!sequence.separators.every((separator) => separator === "&&")) return false;
@@ -5506,9 +5508,17 @@ export function isSubstantiveTestCommand(command = "", config = {}) {
   let lastTestIndex = -1;
   let lastMutationIndex = -1;
   sequence.commands.forEach((segment, index) => {
-    const segmentPolicy = classifyCommand(segment);
+    const segmentClassification = boundedTestCommandClassification(segment);
+    const segmentPolicy = segmentClassification.policy;
     if (segmentPolicy.substantiveTest === true) lastTestIndex = index;
-    if (commandCanMutateProjectContent(segment, segmentPolicy)) lastMutationIndex = index;
+    if (
+      commandCanMutateProjectContent(
+        segmentClassification.executableCommand,
+        segmentPolicy
+      )
+    ) {
+      lastMutationIndex = index;
+    }
   });
   return lastTestIndex >= 0 && lastTestIndex >= lastMutationIndex;
 }
