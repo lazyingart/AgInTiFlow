@@ -11,6 +11,7 @@ import {
   modelPlanningTimeoutRetryRoute,
   nextStepRuntimeConfig,
   recordAlreadyCommittedRepositoryRepair,
+  recordProjectVerificationOutcome,
   runAgent,
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
@@ -155,43 +156,42 @@ try {
       artifact_root: scopedArtifactRoot,
     })}`,
   ].join("\n");
-  const scopedRuntime = nextStepRuntimeConfig(
-    { commandCwd: scopedRepairRoot, goal: scopedGoal },
-    {
-      goal: scopedGoal,
-      commandCwd: scopedRepairRoot,
-      meta: {
-        goalContract: {
-          revision: 1,
-          currentRequest: scopedGoal,
-          currentHash: "scoped-repair",
-        },
-        activeExecutionContract: {
-          revision: 1,
-          refreshedAt,
-          startedMutationRevision: 0,
-          requiresWorkspaceMutation: true,
-          requiresFileMutation: true,
-          requiresSourceGrounding: true,
-        },
-        projectVerification: {
-          mutationRevision: 0,
-          mutationHistory: [],
-          testRuns: [],
-          discoveredTests: [],
-        },
-        toolLoop: {
-          recent: [{
-            toolName: "read_file",
-            ok: true,
-            blocked: false,
-            path: scopedSource,
-            at: groundedAt,
-          }],
-        },
+  const scopedState = {
+    goal: scopedGoal,
+    commandCwd: scopedRepairRoot,
+    meta: {
+      goalContract: {
+        revision: 1,
+        currentRequest: scopedGoal,
+        currentHash: "scoped-repair",
       },
-    }
-  );
+      activeExecutionContract: {
+        revision: 1,
+        refreshedAt,
+        startedMutationRevision: 0,
+        requiresWorkspaceMutation: true,
+        requiresFileMutation: true,
+        requiresSourceGrounding: true,
+      },
+      projectVerification: {
+        mutationRevision: 0,
+        mutationHistory: [],
+        testRuns: [],
+        discoveredTests: [],
+      },
+      toolLoop: {
+        recent: [{
+          toolName: "read_file",
+          ok: true,
+          blocked: false,
+          path: scopedSource,
+          at: groundedAt,
+        }],
+      },
+    },
+  };
+  const scopedConfig = { commandCwd: scopedRepairRoot, goal: scopedGoal };
+  const scopedRuntime = nextStepRuntimeConfig(scopedConfig, scopedState);
   assert.equal(scopedRuntime.scopedArtifactTask, true);
   assert.equal(
     scopedRuntime.completionFreshMutationRequired,
@@ -200,6 +200,34 @@ try {
   );
   assert.deepEqual(scopedRuntime.completionFreshMutationPaths, [scopedSource]);
   assert.equal(scopedRuntime.completionFreshMutationNeedsSourceRead, false);
+  recordProjectVerificationOutcome(
+    scopedState,
+    {
+      toolName: "write_file",
+      ok: true,
+      path: scopedSource,
+      args: { path: scopedSource },
+      change: {
+        path: scopedSource,
+        beforeHash: "rejected-report",
+        afterHash: "corrected-report",
+        beforeBytes: 18,
+        afterBytes: 96,
+      },
+    },
+    { ...scopedConfig, ...scopedRuntime }
+  );
+  assert.deepEqual(
+    scopedState.meta.activeExecutionContract.scopedArtifactMutationPaths,
+    [scopedSource],
+    "a successful scoped artifact write did not persist its current-turn mutation"
+  );
+  const scopedRuntimeAfterWrite = nextStepRuntimeConfig(scopedConfig, scopedState);
+  assert.equal(
+    scopedRuntimeAfterWrite.completionFreshMutationRequired,
+    undefined,
+    "a successful current-turn scoped artifact write remained trapped in source-mutation recovery"
+  );
 } finally {
   await fs.rm(scopedRepairRoot, { recursive: true, force: true });
 }

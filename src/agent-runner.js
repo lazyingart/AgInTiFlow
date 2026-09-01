@@ -6622,6 +6622,28 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
   const projectMutationPaths = successfulProjectMutationPaths(toolResult, state, config);
   const privateMutationPaths = successfulPrivateVerificationMutationPaths(toolResult);
   const materialMutationPaths = materialProjectMutationPaths(toolResult, state, config);
+  const scopedArtifactMutationPaths = successfulScopedArtifactMutationPaths(
+    toolResult,
+    state,
+    config
+  );
+  const activeExecutionContract = state.meta?.activeExecutionContract;
+  if (
+    ["write_file", "apply_patch"].includes(toolName) &&
+    scopedArtifactMutationPaths.length > 0 &&
+    Number(activeExecutionContract?.revision || 0) ===
+      Number(state.meta?.goalContract?.revision || 0)
+  ) {
+    activeExecutionContract.scopedArtifactMutationAt = now;
+    activeExecutionContract.scopedArtifactMutationPaths = [
+      ...new Set([
+        ...(Array.isArray(activeExecutionContract.scopedArtifactMutationPaths)
+          ? activeExecutionContract.scopedArtifactMutationPaths
+          : []),
+        ...scopedArtifactMutationPaths,
+      ]),
+    ].slice(0, 24);
+  }
   if (["write_file", "apply_patch"].includes(toolName) && privateMutationPaths.length) {
     delete state.meta.verifiedCompletionCandidate;
     verification.privateMutationRevision += 1;
@@ -6669,7 +6691,6 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
           }
         : {}),
     }, config);
-    const activeExecutionContract = state.meta?.activeExecutionContract;
     if (
       materialMutationPaths.length > 0 &&
       Number(activeExecutionContract?.revision || 0) ===
@@ -13820,6 +13841,33 @@ function successfulMutationPaths(toolResult = {}) {
   return [...new Set([toolResult.path, ...changes.map((change) => change.path)].filter(Boolean))];
 }
 
+function successfulScopedArtifactMutationPaths(
+  toolResult = {},
+  state = {},
+  config = {}
+) {
+  const artifactRoot = String(
+    config.scopedArtifactRoot ||
+      scopedArtifactRoot(completionContractGoal(config, state)) ||
+      ""
+  ).trim();
+  if (!artifactRoot) return [];
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const resolvedRoot = path.resolve(commandCwd, artifactRoot);
+  return successfulMutationPaths(toolResult)
+    .map((candidate) => path.resolve(commandCwd, String(candidate || "")))
+    .filter((candidate) => {
+      const relative = path.relative(resolvedRoot, candidate);
+      return (
+        relative === "" ||
+        (!relative.startsWith("..") && !path.isAbsolute(relative))
+      );
+    })
+    .map((candidate) => path.relative(commandCwd, candidate).replace(/\\/g, "/"));
+}
+
 function successfulWorkspaceMutationPaths(toolResult = {}) {
   if (!toolResult || toolResult.blocked || toolResult.skipped) return [];
   if (!["write_file", "apply_patch"].includes(String(toolResult.toolName || ""))) return [];
@@ -15321,6 +15369,20 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     runtimeConfig.scopedArtifactRoot = scopedRootRelative.replace(/\\/g, "/");
     runtimeConfig.workspaceWritePathScopeRoots = [runtimeConfig.scopedArtifactRoot];
   }
+  const scopedArtifactMutationAt = Date.parse(
+    String(groundingExecutionContract.scopedArtifactMutationAt || "")
+  );
+  const executionContractRefreshedAt = Date.parse(
+    String(groundingExecutionContract.refreshedAt || "")
+  );
+  const groundingScopedArtifactMutationSatisfied = Boolean(
+    scopedArtifactTask &&
+      Number.isFinite(scopedArtifactMutationAt) &&
+      (
+        !Number.isFinite(executionContractRefreshedAt) ||
+        scopedArtifactMutationAt >= executionContractRefreshedAt
+      )
+  );
   if (
     (
       groundingTaskContract.requiresSourceGrounding === true ||
@@ -15435,7 +15497,8 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const currentTurnRequiresFreshMutation = Boolean(
     groundingExecutionContract.requiresFileMutation === true &&
       groundingExecutionContract.requiresSourceGrounding === true &&
-      !groundingFreshMutationSatisfied
+      !groundingFreshMutationSatisfied &&
+      !groundingScopedArtifactMutationSatisfied
   );
   const explicitHeadRestore = currentTurnRequiresFreshMutation
     ? explicitlyRequestedDirtyHeadRestore(state, config)
