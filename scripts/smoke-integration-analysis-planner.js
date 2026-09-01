@@ -2352,8 +2352,8 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
   const documentWorker = createDocumentWorkerFixture();
   const analysisSource = [
     "model_selected_sample = True",
-    "class_a = [(0.5, 1.5), (1.5, 2.5)]",
-    "class_b = [(5.5, 5.5), (6.5, 6.5)]",
+    "class_a = [(-3 + i * 0.04, -2 + (i % 7) * 0.05) for i in range(50)]",
+    "class_b = [(1 + i * 0.04, 1 + (i % 7) * 0.05) for i in range(50)]",
     "boundary = [{'x': 0, 'y': 8}, {'x': 8, 'y': 0}]",
     "supports = [class_a[-1], class_b[0]]",
     "series = [",
@@ -2388,9 +2388,14 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
     }
     assert.equal(modelStep, 2);
     assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]);
-    assert.match(JSON.stringify(payload.messages), /aginti-compound-document-execution-evidence-v1/u);
-    assert.match(JSON.stringify(payload.messages), /Server-verified linear classifier values/u);
-    assert.doesNotMatch(JSON.stringify(payload.messages), /QAOA|prior-qaoa/iu);
+    const documentEvidence = JSON.stringify(payload.messages);
+    assert.match(documentEvidence, /aginti-compound-document-execution-evidence-v1/u);
+    assert.match(documentEvidence, /Server-verified linear classifier values/u);
+    assert.match(documentEvidence, /sampledPoints/u);
+    assert.match(documentEvidence, /Decision Boundary/u);
+    assert.match(documentEvidence, /Support Vectors/u);
+    assert.match(documentEvidence, /Geometric margin/u);
+    assert.doesNotMatch(documentEvidence, /QAOA|prior-qaoa/iu);
     return texToolResponse("svm-model-result.tex", documentSource);
   }, {
     documentWorkerClient: documentWorker.client(),
@@ -2406,10 +2411,22 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
           xLabel: "X1",
           yLabel: "X2",
           series: [
-            { name: "Class 0", points: [{ x: 1, y: 2 }, { x: 2, y: 3 }, { x: 3, y: 1 }] },
-            { name: "Class 1", points: [{ x: 4, y: 2 }, { x: 5, y: 4 }, { x: 6, y: 5 }] },
+            {
+              name: "Class 0",
+              points: Array.from({ length: 50 }, (_value, index) => ({
+                x: -3 + index * 0.04,
+                y: -2 + (index % 7) * 0.05,
+              })),
+            },
+            {
+              name: "Class 1",
+              points: Array.from({ length: 50 }, (_value, index) => ({
+                x: 1 + index * 0.04,
+                y: 1 + (index % 7) * 0.05,
+              })),
+            },
             { name: "Decision Boundary", points: [{ x: 1.75, y: 5 }, { x: 4.25, y: 0 }] },
-            { name: "Support Vectors", points: [{ x: 2, y: 3 }, { x: 3, y: 1 }, { x: 4, y: 2 }] },
+            { name: "Support Vectors", points: [{ x: -1.04, y: -2 }, { x: 1, y: 1 }] },
           ],
         },
       };
@@ -2758,7 +2775,7 @@ async function compileItUsesImmediatePlotInsteadOfOlderDocument() {
     return texToolResponse("svm-immediate-result.tex", source);
   }, { documentWorkerClient: documentWorker.client() });
   const result = await routed.planner.run(
-    scope("run_00000000-0000-4000-8000-000000000171"),
+    scope("run_00000000-0000-4000-8000-000000000180"),
     {
       prompt,
       conversation: [
@@ -3088,6 +3105,30 @@ async function exactQaoaFigurePromptCommitsBeforeFinalCallback() {
 
 async function texToolRetriesAreBoundedAndSanitized() {
   const correctedSource = "\\documentclass{article}\n\\begin{document}Corrected.\\end{document}\n";
+  let unavailableStep = 0;
+  const unavailableWorker = createDocumentWorkerFixture();
+  const unavailable = fixture(async (_client, payload) => {
+    unavailableStep += 1;
+    if (unavailableStep === 1) throw new Error("private provider response parse failure");
+    assert.equal(unavailableStep, 2);
+    assert.match(payload.messages.at(-1).content, /malformed or truncated/u);
+    assert.doesNotMatch(payload.messages.at(-1).content, /provider response parse failure/u);
+    return texToolResponse("corrected-unavailable.tex", correctedSource);
+  }, { documentWorkerClient: unavailableWorker.client() });
+  const unavailableProgress = [];
+  const unavailableResult = await unavailable.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000171"),
+    { prompt: "Create a LaTeX source and compiled PDF report." },
+    documentRunOptions({
+      onProgress: (value) => unavailableProgress.push(value),
+    })
+  );
+  assert.equal(unavailableResult.toolCalls, 2);
+  assert.equal(unavailableWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length, 1);
+  assert(unavailableProgress.some((item) => item.toolCallNumber === 1 && item.executionState === "failed"));
+  assert(unavailableProgress.some((item) => item.toolCallNumber === 2 && item.executionState === "succeeded"));
+  unavailable.coordinator.close();
+
   let malformedStep = 0;
   const malformedWorker = createDocumentWorkerFixture();
   const malformed = fixture(async (_client, payload) => {

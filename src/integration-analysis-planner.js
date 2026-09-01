@@ -101,6 +101,10 @@ const CONVERSATION_TOTAL_MAX_BYTES = 48 * 1024;
 const MODEL_ARTIFACT_EVIDENCE_MAX_BYTES = 6 * 1024;
 const MODEL_TOOL_FEEDBACK_MAX_BYTES = 8 * 1024;
 const MODEL_TOOL_FEEDBACK_MAX_TOKENS = 2 * 1024;
+const MODEL_COMPACT_SCATTER_POINTS_PER_SERIES = 6;
+const MODEL_COMPACT_CATEGORICAL_VALUES_PER_SERIES = 12;
+const MODEL_COMPACT_TABLE_ROWS = 10;
+const MODEL_COMPACT_MARKDOWN_BYTES = 1024;
 const EXECUTION_STREAM_DISPLAY_MAX_BYTES = 4 * 1024;
 const MAXIMUM_FINAL_GROUNDING_RETRIES = 1;
 const MAXIMUM_GROUNDED_SEARCH_NARRATION_RETRIES = 1;
@@ -1403,6 +1407,132 @@ function modelArtifactSummary(input) {
   });
 }
 
+function evenlyBoundedIndices(length, maximum) {
+  if (!Number.isSafeInteger(length) || length < 0 || !Number.isSafeInteger(maximum) || maximum < 1) {
+    fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "Bounded artifact evidence indices were invalid.", {
+      status: 502,
+    });
+  }
+  if (length <= maximum) return Object.freeze(Array.from({ length }, (_value, index) => index));
+  if (maximum === 1) return Object.freeze([0]);
+  const indices = [];
+  for (let offset = 0; offset < maximum; offset += 1) {
+    indices.push(Math.round((offset * (length - 1)) / (maximum - 1)));
+  }
+  return Object.freeze([...new Set(indices)]);
+}
+
+function edgeAndEvenlyBoundedIndices(length, maximum, { leading = 2, trailing = 6 } = {}) {
+  if (length <= maximum) return evenlyBoundedIndices(length, maximum);
+  const selected = new Set();
+  for (let index = 0; index < Math.min(length, leading); index += 1) selected.add(index);
+  for (let index = Math.max(0, length - trailing); index < length; index += 1) selected.add(index);
+  for (const index of evenlyBoundedIndices(length, maximum)) {
+    if (selected.size >= maximum) break;
+    selected.add(index);
+  }
+  return Object.freeze([...selected].sort((left, right) => left - right));
+}
+
+function compactPlotEvidence(artifact) {
+  if (artifact.spec.type === "scatter") {
+    return Object.freeze({
+      kind: "plot",
+      title: artifact.title,
+      contentOmitted: true,
+      contentDigest: contractDigest({ kind: artifact.kind, title: artifact.title, spec: artifact.spec }),
+      spec: Object.freeze({
+        schemaVersion: artifact.spec.schemaVersion,
+        type: artifact.spec.type,
+        xLabel: artifact.spec.xLabel,
+        yLabel: artifact.spec.yLabel,
+        series: Object.freeze(artifact.spec.series.map((series) => {
+          const indices = evenlyBoundedIndices(
+            series.points.length,
+            MODEL_COMPACT_SCATTER_POINTS_PER_SERIES
+          );
+          return Object.freeze({
+            name: series.name,
+            pointCount: series.points.length,
+            sampledPoints: Object.freeze(indices.map((index) => Object.freeze({
+              index,
+              ...series.points[index],
+            }))),
+          });
+        })),
+      }),
+    });
+  }
+  return Object.freeze({
+    kind: "plot",
+    title: artifact.title,
+    contentOmitted: true,
+    contentDigest: contractDigest({ kind: artifact.kind, title: artifact.title, spec: artifact.spec }),
+    spec: Object.freeze({
+      schemaVersion: artifact.spec.schemaVersion,
+      type: artifact.spec.type,
+      ...(typeof artifact.spec.xLabel === "string" ? { xLabel: artifact.spec.xLabel } : {}),
+      ...(typeof artifact.spec.yLabel === "string" ? { yLabel: artifact.spec.yLabel } : {}),
+      labelCount: artifact.spec.labels.length,
+      series: Object.freeze(artifact.spec.series.map((series) => {
+        const indices = evenlyBoundedIndices(
+          series.data.length,
+          MODEL_COMPACT_CATEGORICAL_VALUES_PER_SERIES
+        );
+        return Object.freeze({
+          name: series.name,
+          valueCount: series.data.length,
+          sampledValues: Object.freeze(indices.map((index) => Object.freeze({
+            index,
+            label: artifact.spec.labels[index],
+            value: series.data[index],
+          }))),
+        });
+      })),
+    }),
+  });
+}
+
+function compactTableEvidence(artifact) {
+  const indices = edgeAndEvenlyBoundedIndices(artifact.spec.rows.length, MODEL_COMPACT_TABLE_ROWS);
+  return Object.freeze({
+    kind: "table",
+    title: artifact.title,
+    contentOmitted: true,
+    contentDigest: contractDigest({ kind: artifact.kind, title: artifact.title, spec: artifact.spec }),
+    spec: Object.freeze({
+      schemaVersion: artifact.spec.schemaVersion,
+      columns: artifact.spec.columns,
+      rowCount: artifact.spec.rows.length,
+      sampledRows: Object.freeze(indices.map((index) => Object.freeze({
+        index,
+        row: artifact.spec.rows[index],
+      }))),
+    }),
+  });
+}
+
+function compactMarkdownEvidence(artifact) {
+  return Object.freeze({
+    kind: "markdown",
+    title: artifact.title,
+    contentOmitted: true,
+    contentDigest: contractDigest({ kind: artifact.kind, title: artifact.title, spec: artifact.spec }),
+    spec: Object.freeze({
+      schemaVersion: artifact.spec.schemaVersion,
+      characterCount: artifact.spec.markdown.length,
+      excerpt: truncateUtf8(artifact.spec.markdown, MODEL_COMPACT_MARKDOWN_BYTES),
+    }),
+  });
+}
+
+function compactModelArtifactEvidence(input) {
+  const artifact = publicArtifact(input);
+  if (artifact.kind === "plot") return compactPlotEvidence(artifact);
+  if (artifact.kind === "table") return compactTableEvidence(artifact);
+  return compactMarkdownEvidence(artifact);
+}
+
 function modelArtifactEvidence(inputs, { forceSummary = false } = {}) {
   const complete = inputs.map((input) => {
     const artifact = publicArtifact(input);
@@ -1418,14 +1548,17 @@ function modelArtifactEvidence(inputs, { forceSummary = false } = {}) {
   ) {
     return Object.freeze({ complete: true, items: Object.freeze(complete) });
   }
-  let summaries = inputs.map((input) => {
-    const artifact = publicArtifact(input);
-    return Object.freeze({
-      ...modelArtifactSummary(artifact),
-      contentOmitted: true,
-      contentDigest: contractDigest({ kind: artifact.kind, title: artifact.title, spec: artifact.spec }),
+  let summaries = inputs.map((input) => compactModelArtifactEvidence(input));
+  if (Buffer.byteLength(canonicalJson(summaries), "utf8") > MODEL_ARTIFACT_EVIDENCE_MAX_BYTES) {
+    summaries = inputs.map((input) => {
+      const artifact = publicArtifact(input);
+      return Object.freeze({
+        ...modelArtifactSummary(artifact),
+        contentOmitted: true,
+        contentDigest: contractDigest({ kind: artifact.kind, title: artifact.title, spec: artifact.spec }),
+      });
     });
-  });
+  }
   if (Buffer.byteLength(canonicalJson(summaries), "utf8") > MODEL_ARTIFACT_EVIDENCE_MAX_BYTES) {
     summaries = [Object.freeze({
       contentOmitted: true,
@@ -3469,23 +3602,40 @@ function createPlanner({
             }
             throw error;
           }
-          const toolResponse = await complete(
-            modelClient,
-            compilePayload,
-            config,
-            `bounded TeX document model step ${attempt}`
-          );
-          assertNotAborted(signal);
+          let toolResponse;
+          try {
+            toolResponse = await complete(
+              modelClient,
+              compilePayload,
+              config,
+              `bounded TeX document model step ${attempt}`
+            );
+            assertNotAborted(signal);
+          } catch (error) {
+            if (signal?.aborted) throw error;
+            await emitProgress("executing", {
+              toolName: INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
+              toolCallNumber: documentToolCallOffset + attempt,
+              executionState: "failed",
+            });
+            if (attempt === 1) {
+              messages.push(Object.freeze({ role: "user", content: TEX_TOOL_RETRY_INSTRUCTIONS.malformed }));
+              continue;
+            }
+            throw error;
+          }
           try {
             toolCall = bindExactTexToolSource(
               normalizeTexToolMessage(toolResponse),
               exactDocumentSource
             );
           } catch (error) {
-            const retryableMalformed = new Set([
-              "ANALYSIS_TEX_TOOL_CALL_INVALID",
-              "ANALYSIS_TEX_TOOL_REQUIRED",
-            ]).has(error?.code);
+            const retryableMalformed =
+              !(error instanceof IntegrationAnalysisPlannerError) ||
+              new Set([
+                "ANALYSIS_TEX_TOOL_CALL_INVALID",
+                "ANALYSIS_TEX_TOOL_REQUIRED",
+              ]).has(error?.code);
             await emitProgress("executing", {
               toolName: INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
               toolCallNumber: documentToolCallOffset + attempt,
