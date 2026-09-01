@@ -4967,6 +4967,130 @@ function normalizeProjectCommand(command = "") {
   return canonicalizeShellCommand(command);
 }
 
+function shellBraceGroups(value = "") {
+  const text = String(value || "");
+  const groups = [];
+  let quote = "";
+  let escaped = false;
+  let start = -1;
+  let depth = 0;
+
+  const isGroupOpen = (index) => {
+    if (text[index] !== "{" || text[index - 1] === "$") return false;
+    const before = text[index - 1] || "";
+    const after = text[index + 1] || "";
+    return (!before || /[\s;&|()]/u.test(before)) && /\s/u.test(after);
+  };
+  const isGroupClose = (index) => {
+    if (text[index] !== "}") return false;
+    const before = text[index - 1] || "";
+    const after = text[index + 1] || "";
+    return /\s/u.test(before) && (!after || /[\s;&|<>)]/u.test(after));
+  };
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote === "'") {
+      if (char === "'") quote = "";
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') quote = "";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (start < 0 && isGroupOpen(index)) {
+      start = index;
+      depth = 1;
+      continue;
+    }
+    if (start >= 0 && isGroupOpen(index)) {
+      depth += 1;
+      continue;
+    }
+    if (start >= 0 && isGroupClose(index)) {
+      depth -= 1;
+      if (depth > 0) continue;
+      groups.push({
+        start,
+        end: index,
+        body: text.slice(start + 1, index).trim(),
+      });
+      start = -1;
+      depth = 0;
+    }
+  }
+  return groups;
+}
+
+function parseCapturedTestExitStatusWrapper(value = "") {
+  const normalized = normalizeProjectCommand(value);
+  if (!normalized) return null;
+  const label = "(?:EXIT|STATUS|RESULT)(?:_CODE)?";
+  for (const group of shellBraceGroups(normalized)) {
+    const sequence = parseTopLevelShellSequence(group.body);
+    if (
+      sequence.openQuote ||
+      sequence.trailingEscape ||
+      (sequence.trailingSeparator && sequence.trailingSeparator !== ";") ||
+      sequence.commands.length < 3
+    ) {
+      continue;
+    }
+    for (let index = 1; index < sequence.commands.length - 1; index += 1) {
+      const statusAssignment = String(sequence.commands[index] || "")
+        .trim()
+        .match(/^([A-Za-z_]\w*)\s*=\s*\$\?$/u);
+      if (!statusAssignment) continue;
+      const statusVariable = statusAssignment[1];
+      const escapedVariable = statusVariable.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+      const statusEcho = String(sequence.commands[index + 1] || "").trim();
+      const echoPattern = new RegExp(
+        `^echo\\s+(?:-n\\s+)?["']?(?<label>${label})\\s*[:=]\\s*\\$(?:\\{${escapedVariable}\\}|${escapedVariable})["']?$`,
+        "iu"
+      );
+      const echoMatch = statusEcho.match(echoPattern);
+      if (!echoMatch) continue;
+      const outsideGroup = `${normalized.slice(0, group.start)} ${normalized.slice(group.end + 1)}`;
+      if (
+        /\b(?:echo|printf)\b[^;&|\n]{0,240}\b(?:EXIT|STATUS|RESULT)(?:_CODE)?\s*[:=]/iu.test(
+          outsideGroup
+        )
+      ) {
+        continue;
+      }
+      const testCommand = normalizeProjectCommand(sequence.commands[index - 1]);
+      if (classifyCommand(testCommand).substantiveTest !== true) continue;
+      return {
+        command: testCommand,
+        wrappedCommand: normalized,
+        label: String(echoMatch.groups?.label || "").toUpperCase(),
+        statusSource: "captured-group",
+        statusVariable,
+      };
+    }
+  }
+  return null;
+}
+
+function projectExitStatusWrapper(command = "") {
+  return (
+    parseNonMutatingExitStatusWrapper(command) ||
+    parseCapturedTestExitStatusWrapper(command)
+  );
+}
+
 function normalizeLeadingWorkspaceCd(command = "", config = {}) {
   const normalized = normalizeProjectCommand(command);
   const sequence = parseTopLevelShellSequence(normalized);
@@ -5037,7 +5161,7 @@ function isRetainedExactVerificationCommand(command = "", config = {}) {
 export function isSubstantiveTestCommand(command = "", config = {}) {
   if (isRetainedExactVerificationCommand(command, config)) return true;
   const normalized = normalizeProjectCommand(normalizeCommandForPolicy(command, config));
-  const text = parseNonMutatingExitStatusWrapper(normalized)?.command || normalized;
+  const text = projectExitStatusWrapper(normalized)?.command || normalized;
   if (!text) return false;
   const classification = classifyCommand(text);
   if (classification.substantiveTest !== true) return false;
@@ -5142,7 +5266,7 @@ function testRunRepresentsInvalidInvocation(testRun = {}) {
 
 function explicitExitProbeStatus(command = "", result = {}) {
   const normalizedCommand = normalizeProjectCommand(command);
-  const exitProbe = parseNonMutatingExitStatusWrapper(normalizedCommand);
+  const exitProbe = projectExitStatusWrapper(normalizedCommand);
   if (!exitProbe) {
     return {
       present: false,
@@ -5152,9 +5276,19 @@ function explicitExitProbeStatus(command = "", result = {}) {
     };
   }
 
+  let status = parseExplicitExitStatus(result.stdout || "");
+  if (status === null && exitProbe.statusSource === "captured-group") {
+    const matches = [
+      ...String(result.stdout || "").matchAll(
+        /(?:^|\n)\s*(?:EXIT|STATUS|RESULT)(?:_CODE)?\s*[:=]\s*(-?\d+)\s*(?=\n|$)/giu
+      ),
+    ];
+    if (matches.length) status = Number(matches.at(-1)[1]);
+  }
+
   return {
     present: true,
-    status: parseExplicitExitStatus(result.stdout || ""),
+    status,
     command: exitProbe.command,
     wrappedCommand: exitProbe.wrappedCommand || exitProbe.command,
   };
@@ -7396,7 +7530,7 @@ export function recordAlreadyCommittedRepositoryRepair(state = {}, toolResult = 
 
 function projectTestCommandKey(command = "") {
   const normalized = normalizeProjectCommand(command);
-  const exitProbe = parseNonMutatingExitStatusWrapper(normalized);
+  const exitProbe = projectExitStatusWrapper(normalized);
   const invocation = normalizeProjectCommand(exitProbe?.command || normalized)
     // These wrappers alter bytecode/output handling, not the tests selected or
     // executed. Treating them as distinct suites can leave an old failure
@@ -12777,40 +12911,106 @@ function commandWritesOnlyEvidenceMatching(command = "", pathMatches = () => fal
   for (const match of normalized.matchAll(
     /(?:^|[\s;&|])([A-Za-z_]\w*)\s*=\s*("[^"\n]+"|'[^'\n]+'|[^\s;&|]+)/g
   )) {
-    assignments.set(
-      match[1],
-      String(match[2] || "").replace(/^["']|["']$/g, "")
-    );
+    assignments.set(match[1], String(match[2] || "").replace(/^["']|["']$/g, ""));
   }
-  const resolveTarget = (value = "") => {
-    const target = String(value || "")
+  const resolveTarget = (value = "", seen = new Set()) => {
+    let target = String(value || "")
       .trim()
       .replace(/^["']|["']$/g, "");
-    const variable = target.match(/^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$/);
-    return variable
-      ? String(assignments.get(variable[1] || variable[2]) || "")
-      : target;
+    if (!target || /\$\(|`/u.test(target)) return "";
+    for (let depth = 0; depth < 8; depth += 1) {
+      let unresolved = false;
+      let changed = false;
+      const expanded = target.replace(
+        /\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/gu,
+        (match, bracedName, bareName) => {
+          const name = bracedName || bareName;
+          if (!assignments.has(name) || seen.has(name)) {
+            unresolved = true;
+            return match;
+          }
+          const nextSeen = new Set(seen);
+          nextSeen.add(name);
+          const resolved = resolveTarget(assignments.get(name), nextSeen);
+          if (!resolved) {
+            unresolved = true;
+            return match;
+          }
+          changed = true;
+          return resolved;
+        }
+      );
+      target = expanded;
+      if (unresolved) return "";
+      if (!changed) return target;
+    }
+    return "";
   };
-  const tokens = tokenizeShellWords(normalized);
-  if (tokens[0] === "tee") {
+  const evidenceTargetsFromTee = (tokens = []) => {
+    if (tokens[0] !== "tee") return [];
     let index = 1;
     if (["-a", "--append"].includes(tokens[index])) index += 1;
     if (tokens[index] === "--") index += 1;
-    const targets = tokens.slice(index).map(resolveTarget);
+    return tokens.slice(index).map((target) => resolveTarget(target));
+  };
+  const evidenceTargetsFromMkdir = (tokens = []) =>
+    tokens[0] === "mkdir"
+      ? tokens
+          .slice(1)
+          .filter((token) => token !== "-p" && token !== "--")
+          .map((target) => resolveTarget(target))
+      : [];
+  const boundedEchoProbeIsReadOnly = (segment = "") => {
+    const source = String(segment || "").trim();
+    const sourceTokens = tokenizeShellWords(source);
+    if (!["echo", "printf"].includes(String(sourceTokens[0] || ""))) return false;
+    if (source.includes("`") || !source.includes("$(")) return !source.includes("`");
+    const substitutions = [];
+    const remainder = source.replace(/\$\(([^()]*)\)/gu, (match, body) => {
+      substitutions.push(String(body || ""));
+      return "";
+    });
+    if (!substitutions.length || remainder.includes("$(")) return false;
+    return substitutions.every((body) => {
+      const sequence = parseTopLevelShellSequence(body);
+      if (
+        sequence.openQuote ||
+        sequence.trailingEscape ||
+        sequence.trailingSeparator ||
+        !sequence.commands.length
+      ) {
+        return false;
+      }
+      return sequence.commands.every((candidate) => {
+        const candidateTokens = tokenizeShellWords(candidate);
+        if (["echo", "printf"].includes(String(candidateTokens[0] || ""))) {
+          return !String(candidate || "").includes("$(") && !String(candidate || "").includes("`");
+        }
+        if (["[", "test"].includes(String(candidateTokens[0] || ""))) {
+          const operands = candidateTokens.filter(
+            (token) => !["[", "]", "test", "!", "-e", "-f", "-r", "-s"].includes(token)
+          );
+          return operands.length > 0 && operands.every((operand) => Boolean(resolveTarget(operand)));
+        }
+        const policy = classifyCommand(candidate);
+        return policy.writesWorkspace !== true && policy.mayMutateProject !== true;
+      });
+    });
+  };
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] === "tee") {
+    const targets = evidenceTargetsFromTee(tokens);
     return targets.length > 0 && targets.every(pathMatches);
   }
   if (tokens[0] === "mkdir") {
-    const targets = tokens
-      .slice(1)
-      .filter((token) => token !== "-p" && token !== "--")
-      .map(resolveTarget);
+    const targets = evidenceTargetsFromMkdir(tokens);
     return targets.length > 0 && targets.every(pathMatches);
   }
 
   let strippedEvidenceRedirect = false;
   let rejectedRedirect = false;
   const withoutEvidenceRedirects = normalized.replace(
-    /(^|\s)(?:\d*>>?|&>>?)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/g,
+    /(^|\s)(?:\d*>>?|&>>?)\s*("[^"]+"|'[^']+'|&\d+|[^\s;&|]+)/g,
     (match, prefix, target) => {
       const resolvedTarget = resolveTarget(target);
       if (/^(?:&\d+|\/dev\/null)$/u.test(resolvedTarget)) return prefix;
@@ -12822,15 +13022,19 @@ function commandWritesOnlyEvidenceMatching(command = "", pathMatches = () => fal
       return prefix;
     }
   ).trim();
-  if (rejectedRedirect || !strippedEvidenceRedirect || !withoutEvidenceRedirects) {
+  if (rejectedRedirect || !withoutEvidenceRedirects) {
     return false;
   }
   const sequence = parseTopLevelShellSequence(withoutEvidenceRedirects);
   if (sequence.openQuote || sequence.trailingEscape || sequence.trailingSeparator) {
     return false;
   }
-  return sequence.commands.every((segment) => {
+  let sawEvidenceWrite = strippedEvidenceRedirect;
+  const safeSequence = sequence.commands.every((segment) => {
     const withoutAssignments = String(segment || "")
+      .trim()
+      .replace(/^\{\s*/u, "")
+      .replace(/\s*\}$/u, "")
       .trim()
       .replace(
         /^(?:[A-Za-z_]\w*=(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|]+)\s*)+/u,
@@ -12839,6 +13043,19 @@ function commandWritesOnlyEvidenceMatching(command = "", pathMatches = () => fal
       .trim();
     if (!withoutAssignments) return true;
     const commandTokens = tokenizeShellWords(withoutAssignments);
+    const teeTargets = evidenceTargetsFromTee(commandTokens);
+    if (teeTargets.length) {
+      const safe = teeTargets.every(pathMatches);
+      if (safe) sawEvidenceWrite = true;
+      return safe;
+    }
+    const mkdirTargets = evidenceTargetsFromMkdir(commandTokens);
+    if (mkdirTargets.length) {
+      const safe = mkdirTargets.every(pathMatches);
+      if (safe) sawEvidenceWrite = true;
+      return safe;
+    }
+    if (boundedEchoProbeIsReadOnly(withoutAssignments)) return true;
     if (
       ["cat", "cd", "head", "ls", "stat", "tail", "wc"].includes(
         String(commandTokens[0] || "")
@@ -12852,6 +13069,7 @@ function commandWritesOnlyEvidenceMatching(command = "", pathMatches = () => fal
       underlyingPolicy.mayMutateProject !== true
     );
   });
+  return safeSequence && sawEvidenceWrite;
 }
 
 function commandWritesOnlyPrivateVerificationEvidence(command = "") {
