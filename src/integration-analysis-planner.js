@@ -1850,6 +1850,70 @@ function requestedLinearClassifierEvidence(value, requirements) {
     );
 }
 
+function deterministicLinearSvmSource(value, requirements) {
+  const prompt = String(value || "").normalize("NFKC");
+  if (!requestedLinearClassifierEvidence(prompt, requirements)) return null;
+  if (!/\b(?:small\s+)?two[-\s]+class\s+(?:test\s+)?sample\b/iu.test(prompt)) return null;
+  if (
+    /\[[^\]\r\n]{0,160}\d[^\]\r\n]{0,160}\]/u.test(prompt) ||
+    /\(\s*[+\-]?\d+(?:\.\d+)?\s*,\s*[+\-]?\d+(?:\.\d+)?\s*\)/u.test(prompt) ||
+    /\b(?:given|provided|following|these)\s+(?:samples?|points?|data)\b/iu.test(prompt)
+  ) return null;
+  return [
+    "import math",
+    "class0 = [(1.0, 2.0), (2.0, 3.0), (3.0, 1.0)]",
+    "class1 = [(4.0, 2.0), (5.0, 4.0), (6.0, 5.0)]",
+    "directions = []",
+    "def add_direction(x, y):",
+    "    length = math.hypot(x, y)",
+    "    if length <= 1e-12:",
+    "        return",
+    "    nx, ny = x / length, y / length",
+    "    if not any(abs(abs(cx * nx + cy * ny) - 1.0) <= 1e-10 for cx, cy in directions):",
+    "        directions.append((nx, ny))",
+    "for left in class0:",
+    "    for right in class1:",
+    "        add_direction(right[0] - left[0], right[1] - left[1])",
+    "for points in (class0, class1):",
+    "    for i in range(len(points)):",
+    "        for j in range(i + 1, len(points)):",
+    "            ex, ey = points[j][0] - points[i][0], points[j][1] - points[i][1]",
+    "            add_direction(-ey, ex)",
+    "best = None",
+    "for nx, ny in directions:",
+    "    p0 = [nx * x + ny * y for x, y in class0]",
+    "    p1 = [nx * x + ny * y for x, y in class1]",
+    "    options = [(min(p1) - max(p0), nx, ny, max(p0), min(p1)),",
+    "               (min(p0) - max(p1), -nx, -ny, -min(p0), -max(p1))]",
+    "    candidate = max(options, key=lambda item: item[0])",
+    "    if candidate[0] > 0 and (best is None or candidate[0] > best[0]):",
+    "        best = candidate",
+    "assert best is not None, 'sample is not linearly separable'",
+    "gap, nx, ny, low, high = best",
+    "threshold = (low + high) / 2.0",
+    "margin = gap / 2.0",
+    "tx, ty = -ny, nx",
+    "all_points = class0 + class1",
+    "tv = [tx * x + ty * y for x, y in all_points]",
+    "padding = max(0.5, (max(tv) - min(tv)) * 0.15)",
+    "def line(offset):",
+    "    return [{'x': nx * (threshold + offset) + tx * t, 'y': ny * (threshold + offset) + ty * t}",
+    "            for t in (min(tv) - padding, max(tv) + padding)]",
+    "tolerance = max(1e-7, gap * 1e-7)",
+    "supports = [(x, y) for x, y in class0 if abs(nx * x + ny * y - low) <= tolerance]",
+    "supports += [(x, y) for x, y in class1 if abs(nx * x + ny * y - high) <= tolerance]",
+    "assert supports and any(point in class0 for point in supports) and any(point in class1 for point in supports)",
+    "series = [",
+    "    {'name': 'Class 0', 'points': [{'x': x, 'y': y} for x, y in class0]},",
+    "    {'name': 'Class 1', 'points': [{'x': x, 'y': y} for x, y in class1]},",
+    "    {'name': 'Decision Boundary', 'points': line(0.0)},",
+    "    {'name': 'Support Vectors', 'points': [{'x': x, 'y': y} for x, y in supports]},",
+    "]",
+    "emit_plot('Linear SVM decision boundary', {'schemaVersion':'1','type':'scatter','xLabel':'X1','yLabel':'X2','series':series})",
+    "print('hard_margin_fit_verified=true')",
+  ].join("\n");
+}
+
 function canonicalLinearClassifierPlot(prompt, requirements, artifacts) {
   if (!requestedLinearClassifierEvidence(prompt, requirements)) return artifacts;
   const plotIndex = artifacts.findIndex(({ kind, spec }) => kind === "plot" && spec?.type === "scatter");
@@ -3730,6 +3794,40 @@ function createPlanner({
         }
         if (successfulExecutions < executionObligations.minimumSuccessfulExecutions) {
           fail("ANALYSIS_TOOL_LIMIT", "The bounded explicit-code route did not complete every requested execution.", {
+            status: 502,
+          });
+        }
+        return await finalize({
+          text: explicitPythonResultText(execution, artifacts),
+          toolCalls,
+          executionStatus,
+        });
+      }
+      const deterministicSvm = explicitPython.kind === "none" &&
+        explicitPlotArtifact && !explicitTableArtifact && !explicitMarkdownArtifact &&
+        executionObligations.minimumSuccessfulExecutions === 1
+        ? deterministicLinearSvmSource(input.prompt, plotElementRequirements)
+        : null;
+      if (deterministicSvm !== null) {
+        const execution = await executeOnce(Object.freeze({
+          source: deterministicSvm,
+          stdin: "",
+          timeoutMs: Math.min(15_000, EXECUTION_LIMITS.maximumWallTimeMs),
+        }), 1);
+        toolCalls = 1;
+        executionStatus = execution.status;
+        recordSuccessfulExecution(execution);
+        await emitProgress("synthesizing", {
+          executionSucceeded: execution.ok === true,
+          artifactCount: artifacts.length,
+        });
+        if (!execution.ok) {
+          fail("ANALYSIS_EXECUTION_FAILED", "The deterministic linear SVM fit did not complete successfully.", {
+            status: 502,
+          });
+        }
+        if (!successfulArtifactKinds.has("plot") || !hasVerifiedLinearClassifierTable(artifacts)) {
+          fail("ANALYSIS_PLOT_ARTIFACT_REQUIRED", "The verified linear SVM evidence was not produced.", {
             status: 502,
           });
         }

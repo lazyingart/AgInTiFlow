@@ -2549,15 +2549,6 @@ async function requestedPlotSeriesAreValidatedBeforePublication() {
 async function linearClassifierGeometryIsValidatedBeforePublication() {
   const prompt =
     "Run Python to fit a linear SVM on a two-class sample and expose a decision-boundary plot with sample points and support vectors.";
-  const source = (marker) => [
-    `marker = '${marker}'`,
-    "emit_plot('Linear SVM', {'schemaVersion':'1','type':'scatter','xLabel':'x','yLabel':'y','series':[",
-    "  {'name':'Class 0 Points','points':[{'x':1,'y':1},{'x':2,'y':2}]},",
-    "  {'name':'Class 1 Points','points':[{'x':6,'y':6},{'x':7,'y':7}]},",
-    "  {'name':'Decision Boundary','points':[{'x':0,'y':8},{'x':8,'y':0}]},",
-    "  {'name':'Support Vectors','points':[{'x':2,'y':2},{'x':6,'y':6}]},",
-    "]})",
-  ].join("\n");
   const artifactFor = (request, valid) => {
     const artifact = Object.freeze({
       title: "Linear SVM",
@@ -2589,11 +2580,13 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
   const progress = [];
   const validated = fixture(async () => {
     modelStep += 1;
-    assert.equal(modelStep, 1, "server canonicalization must avoid a correction or prose turn");
-    return toolResponse(source("invalid_geometry"));
+    throw new Error("deterministic SVM route must not invoke LocalLLM");
   }, {
     worker: fakeWorker((request, signal) => {
       workerCalls += 1;
+      assert.match(request.source, /hard_margin_fit_verified=true/u);
+      assert.match(request.source, /for left in class0/u);
+      assert.match(request.source, /Decision Boundary/u);
       return terminalResult(
         request,
         signal,
@@ -2610,7 +2603,7 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
       onProgress: (value) => progress.push(value),
     }
   );
-  assert.equal(modelStep, 1);
+  assert.equal(modelStep, 0);
   assert.equal(workerCalls, 1);
   assert.equal(result.toolCalls, 1);
   assert.equal(published.length, 2, "only the valid plot and its server-derived table may be published");
