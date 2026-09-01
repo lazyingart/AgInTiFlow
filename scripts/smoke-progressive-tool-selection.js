@@ -734,6 +734,41 @@ assertStrict.deepEqual(
   { path: mandatoryRefreshPath },
   "mandatory patch-context recovery did not preserve the exact constrained path"
 );
+const scopedMandatoryRefreshPath =
+  "output/webapp/agent/tasks/source-intake-audit/report.md";
+const scopedMandatoryRefreshRoot =
+  "output/webapp/agent/tasks/source-intake-audit";
+const scopedMandatoryRefreshReadDescriptor = {
+  ...canonicalReadDescriptor,
+  function: {
+    ...canonicalReadDescriptor.function,
+    parameters: {
+      ...canonicalReadDescriptor.function.parameters,
+      properties: {
+        path: { type: "string", enum: [scopedMandatoryRefreshPath] },
+      },
+    },
+  },
+};
+const recoveredScopedMandatoryRefresh =
+  recoverRequiredPatchContextReadWithoutToolCall(
+    {
+      commandCwd: process.cwd(),
+      scopedArtifactRoot: scopedMandatoryRefreshRoot,
+      patchContextRefreshRequired: true,
+      patchContextRefreshPath: scopedMandatoryRefreshPath,
+    },
+    [],
+    createToolContract([scopedMandatoryRefreshReadDescriptor, tool("finish")]),
+    { ok: true, calls: [], acceptedToolCalls: [], deferredToolCalls: [] }
+  );
+assertStrict.deepEqual(
+  JSON.parse(
+    recoveredScopedMandatoryRefresh.acceptedToolCalls[0].function.arguments
+  ),
+  { path: scopedMandatoryRefreshPath },
+  "mandatory patch-context recovery rejected the exact scoped task artifact"
+);
 const recoveredPrematureRefreshFinish = recoverRequiredPatchContextReadWithoutToolCall(
   {
     patchContextRefreshRequired: true,

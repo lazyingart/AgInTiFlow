@@ -1009,6 +1009,93 @@ assert.equal(
   "the first exact-search mismatch did not immediately open one bounded current-source refresh"
 );
 const tracebackFirstRefreshState = structuredClone(stalePatchRefreshState);
+const scopedArtifactPath =
+  "output/webapp/agent/tasks/source-intake-audit/report.md";
+const scopedArtifactRoot = path.join(
+  repoRoot,
+  "output/webapp/agent/tasks/source-intake-audit"
+);
+const scopedArtifactGoal = [
+  "Correct and verify the exact source-intake audit report.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "task",
+    request: "Correct and verify the exact source-intake audit report.",
+    artifact_root: scopedArtifactRoot,
+  })}`,
+].join("\n");
+const scopedArtifactRefreshState = {
+  commandCwd: repoRoot,
+  meta: {
+    goalContract: {
+      revision: 9,
+      activeGoal: scopedArtifactGoal,
+      taskGoal: scopedArtifactGoal,
+      history: [],
+    },
+    projectVerification: {
+      mutationRevision: 2,
+      testRuns: [],
+    },
+    toolLoop: {
+      stagnationEpoch: 4,
+      recent: [],
+    },
+  },
+};
+const scopedArtifactRefresh = patchContextRefreshDecision(
+  scopedArtifactRefreshState,
+  {
+    toolName: "apply_patch",
+    args: {
+      path: scopedArtifactPath,
+      search: "Planned dynamic check: run the guarded document reader test.",
+      replace: "Guarded document reader test: passed.",
+    },
+    ok: false,
+    category: "workspace-patch",
+    error: `Patch search text was not found in ${scopedArtifactPath}.`,
+  }
+);
+assert.equal(
+  scopedArtifactRefresh?.path,
+  scopedArtifactPath,
+  "a stale patch inside the exact scoped task artifact root was not recoverable"
+);
+scopedArtifactRefreshState.meta.toolLoop.patchContextRequired =
+  scopedArtifactRefresh;
+assert.equal(
+  activePatchContextRefresh(scopedArtifactRefreshState)?.path,
+  scopedArtifactPath,
+  "the scoped task-artifact refresh marker was rejected as a generic output path"
+);
+assert.equal(
+  nextStepRuntimeConfig(baseConfig, scopedArtifactRefreshState)
+    .patchContextRefreshPath,
+  scopedArtifactPath,
+  "the scoped task-artifact refresh path did not reach the next constrained turn"
+);
+const scopedArtifactSource = [
+  "# Source Intake Audit",
+  "",
+  "Document reader verification is pending.",
+  "",
+].join("\n");
+assert.equal(
+  consumePatchContextRefreshRead(scopedArtifactRefreshState, {
+    toolName: "read_file",
+    args: { path: scopedArtifactPath },
+    result: { path: scopedArtifactPath },
+    content: scopedArtifactSource,
+    ok: true,
+  })?.path,
+  scopedArtifactPath,
+  "an exact reread did not consume the scoped task-artifact refresh"
+);
+assert.equal(
+  activePatchContextRepair(scopedArtifactRefreshState)?.path,
+  scopedArtifactPath,
+  "the scoped task-artifact reread did not leave a bounded repair anchor"
+);
 tracebackFirstRefreshState.meta.projectVerification.testRuns[0].failureSummary =
   'File "./service_ctl.py", line 139 -> return start_service(args.state_dir, args.host, args.port) parser = argparse.ArgumentParser()';
 const tracebackFirstRefresh = patchContextRefreshDecision(tracebackFirstRefreshState, {

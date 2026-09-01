@@ -10171,7 +10171,8 @@ export function repeatedStaticToolBlock(state, toolName, args = {}, config = {})
     (
       (
         requiredPatchRefresh &&
-        safeRecoveryEvidencePath(args?.path) === requiredPatchRefresh.path
+        safePatchContextEvidencePath(args?.path, state, config) ===
+          requiredPatchRefresh.path
       ) ||
       boundedFailedTestReadPaths.includes(safeRecoveryEvidencePath(args?.path))
     )
@@ -12681,7 +12682,9 @@ function isPrivateVerificationEvidencePath(value = "") {
 }
 
 function isScopedTaskArtifactEvidencePath(value = "", state = {}, config = {}) {
-  const artifactRoot = scopedArtifactRoot(completionContractGoal(config, state));
+  const artifactRoot =
+    scopedArtifactRoot(completionContractGoal(config, state)) ||
+    String(config.scopedArtifactRoot || "").trim();
   if (!artifactRoot) return false;
   const raw = String(value || "")
     .trim()
@@ -12698,6 +12701,41 @@ function isScopedTaskArtifactEvidencePath(value = "", state = {}, config = {}) {
     relative === "" ||
       (!relative.startsWith("..") && !path.isAbsolute(relative))
   );
+}
+
+function safePatchContextEvidencePath(value = "", state = {}, config = {}) {
+  const sourcePath = safeRecoveryEvidencePath(value);
+  if (sourcePath) return sourcePath;
+
+  const raw = String(value || "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/\\/g, "/");
+  if (
+    !raw ||
+    raw.includes("\0") ||
+    /^https?:\/\//i.test(raw) ||
+    /(?:secret|credential|password|private[-_]?key|access[-_]?token)/i.test(raw)
+  ) {
+    return "";
+  }
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const absolutePath = path.isAbsolute(raw)
+    ? path.resolve(raw)
+    : path.resolve(commandCwd, raw);
+  const relativePath = path.relative(commandCwd, absolutePath).replace(/\\/g, "/");
+  if (
+    !relativePath ||
+    relativePath.startsWith("..") ||
+    path.isAbsolute(relativePath) ||
+    !PLAIN_TEXT_FILE_EXTENSIONS.has(path.extname(relativePath).toLowerCase()) ||
+    !isScopedTaskArtifactEvidencePath(raw, state, config)
+  ) {
+    return "";
+  }
+  return relativePath;
 }
 
 function commandWritesOnlyEvidenceMatching(command = "", pathMatches = () => false) {
@@ -17610,10 +17648,11 @@ function validatedPatchContextCompleteSource(marker = {}) {
 
 export function activePatchContextRefresh(state = {}) {
   const marker = state.meta?.toolLoop?.patchContextRequired;
+  const markerPath = safePatchContextEvidencePath(marker?.path, state);
   if (
     !marker ||
     Number(marker.version || 0) !== PATCH_CONTEXT_REFRESH_VERSION ||
-    !safeRecoveryEvidencePath(marker.path)
+    !markerPath
   ) {
     return null;
   }
@@ -17644,16 +17683,17 @@ export function activePatchContextRefresh(state = {}) {
   }
   return {
     ...marker,
-    path: safeRecoveryEvidencePath(marker.path),
+    path: markerPath,
   };
 }
 
 export function activePatchContextRepair(state = {}) {
   const marker = state.meta?.toolLoop?.patchContextRepair;
+  const markerPath = safePatchContextEvidencePath(marker?.path, state);
   if (
     !marker ||
     Number(marker.version || 0) !== PATCH_CONTEXT_REPAIR_VERSION ||
-    !safeRecoveryEvidencePath(marker.path) ||
+    !markerPath ||
     !String(marker.search || "") ||
     !String(marker.searchHash || "")
   ) {
@@ -17694,8 +17734,7 @@ export function activePatchContextRepair(state = {}) {
   const samePathFocuses = diagnosticMatchesRevision
     ? (Array.isArray(diagnostic.focuses) ? diagnostic.focuses : []).filter(
         (focus) =>
-          safeRecoveryEvidencePath(focus?.path) ===
-            safeRecoveryEvidencePath(marker.path) &&
+          safePatchContextEvidencePath(focus?.path, state) === markerPath &&
           String(focus?.directSearch || "")
       )
     : [];
@@ -17712,7 +17751,7 @@ export function activePatchContextRepair(state = {}) {
   const completeSource = validatedPatchContextCompleteSource(marker);
   return {
     ...marker,
-    path: safeRecoveryEvidencePath(marker.path),
+    path: markerPath,
     completeSource,
     completeSourceHash: completeSource ? String(marker.completeSourceHash || "") : "",
     completeSourceBytes: completeSource
@@ -18072,7 +18111,7 @@ function failedTestTracebackLineAnchor(state = {}, targetPath = "") {
 export function bindPatchContextRepairArguments(state = {}, requestedArgs = {}) {
   const marker = activePatchContextRepair(state);
   if (!marker || typeof requestedArgs?.replace !== "string") return null;
-  const requestedPath = safeRecoveryEvidencePath(requestedArgs.path);
+  const requestedPath = safePatchContextEvidencePath(requestedArgs.path, state);
   if (requestedPath && requestedPath !== marker.path) return null;
   const requestedSearch = String(requestedArgs.search || "");
   const boundedSubrange = revisionBoundRequestedPatchSubrange(
@@ -18164,7 +18203,7 @@ export function bindPatchContextRepairArguments(state = {}, requestedArgs = {}) 
 }
 
 export function patchContextScopeMismatchAttemptCount(state = {}, targetPath = "") {
-  const normalizedPath = safeRecoveryEvidencePath(targetPath);
+  const normalizedPath = safePatchContextEvidencePath(targetPath, state);
   if (!normalizedPath) return 0;
   const toolLoop = state.meta?.toolLoop || {};
   const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
@@ -18178,7 +18217,7 @@ export function patchContextScopeMismatchAttemptCount(state = {}, targetPath = "
       entry?.toolName !== "apply_patch" ||
       entry?.ok !== false ||
       entry?.category !== "patch-context-scope-mismatch" ||
-      safeRecoveryEvidencePath(entry?.path) !== normalizedPath ||
+      safePatchContextEvidencePath(entry?.path, state) !== normalizedPath ||
       Number(entry?.stagnationEpoch || 0) !== stagnationEpoch
     ) {
       return false;
@@ -18259,7 +18298,7 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
   const recent = Array.isArray(toolLoop.recent) ? toolLoop.recent : [];
   const samePathRecent = recent.filter(
     (entry) =>
-      safeRecoveryEvidencePath(entry?.path) === targetPath &&
+      safePatchContextEvidencePath(entry?.path, state) === targetPath &&
       Number(entry?.stagnationEpoch || 0) === stagnationEpoch
   );
   const priorMissingSearches = samePathRecent.filter(
@@ -18570,7 +18609,8 @@ export function consumePatchContextRepairMutation(state = {}, toolResult = {}) {
     String(toolResult.toolName || "") !== "apply_patch" ||
     toolResult.ok === false ||
     toolResult.blocked === true ||
-    toolResultWorkspacePath(toolResult) !== safeRecoveryEvidencePath(marker.path) ||
+    toolResultWorkspacePath(toolResult) !==
+      safePatchContextEvidencePath(marker.path, state) ||
     ![
       String(marker.searchHash || ""),
       String(marker.lastBoundSearchHash || ""),
@@ -24211,11 +24251,13 @@ export function recoverRequiredPatchContextReadWithoutToolCall(
   const selectedFailedTestReadMode = Boolean(
     !refreshMode && !repairMode && !selectedFailedTestDiagnosticReadMode && failedTestReadMode
   );
+  const patchContextPath = (value) =>
+    safePatchContextEvidencePath(value, {}, config);
   const exactPath = selectedFailedTestDiagnosticReadMode
     ? safeGeneratedDiagnosticEvidencePath(
         config.testFailureWorkspaceDiagnosticReadPaths?.[0]
       )
-    : safeRecoveryEvidencePath(
+    : (refreshMode || repairMode ? patchContextPath : safeRecoveryEvidencePath)(
         refreshMode
           ? config.patchContextRefreshPath
           : repairMode
@@ -24226,7 +24268,9 @@ export function recoverRequiredPatchContextReadWithoutToolCall(
   const requestedCall = calls.length === 1 ? calls[0] : null;
   const requestedToolName = String(requestedCall?.function?.name || "");
   const requestedArgs = safeParseToolArgs(requestedCall);
-  const requestedPath = safeRecoveryEvidencePath(requestedArgs.path);
+  const requestedPath = (refreshMode || repairMode
+    ? patchContextPath
+    : safeRecoveryEvidencePath)(requestedArgs.path);
   const missingRefreshCall = validation?.ok === true && calls.length === 0 && refreshMode;
   const unavailableContextCall =
     validation?.ok !== true &&
@@ -24295,7 +24339,9 @@ export function recoverRequiredPatchContextReadWithoutToolCall(
     readDescriptor.function?.parameters?.properties?.path?.enum;
   const normalizeAllowedPath = selectedFailedTestDiagnosticReadMode
     ? safeGeneratedDiagnosticEvidencePath
-    : safeRecoveryEvidencePath;
+    : refreshMode || repairMode
+      ? patchContextPath
+      : safeRecoveryEvidencePath;
   if (
     !Array.isArray(allowedPaths) ||
     (!selectedFailedTestReadMode && !selectedFailedTestDiagnosticReadMode && allowedPaths.length !== 1) ||
