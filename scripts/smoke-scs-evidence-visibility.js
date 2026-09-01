@@ -167,6 +167,53 @@ assert.equal(
 );
 fs.rmSync(educationWorkspace, { recursive: true, force: true });
 
+const crowdedWorkspace = fs.mkdtempSync(
+  path.join(os.tmpdir(), "aginti-crowded-scoped-artifact-")
+);
+const crowdedArtifactRoot = path.join(crowdedWorkspace, "output", "task-artifacts");
+const crowdedReportDir = path.join(crowdedArtifactRoot, "reports", "final");
+fs.mkdirSync(crowdedReportDir, { recursive: true });
+for (let index = 0; index < 3005; index += 1) {
+  fs.writeFileSync(
+    path.join(crowdedWorkspace, `unrelated-${String(index).padStart(4, "0")}.txt`),
+    "noise\n",
+    "utf8"
+  );
+}
+fs.writeFileSync(
+  path.join(crowdedReportDir, "wecom-external-group-ai-bot-capabilities.md"),
+  "# Source-grounded report\n",
+  "utf8"
+);
+const crowdedScopedContract = deriveScsTaskContract({
+  goal: [
+    "Save one concise source-grounded Markdown report under the task artifact directory.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request:
+        "Save one concise source-grounded Markdown report under the task artifact directory.",
+      artifact_root: crowdedArtifactRoot,
+    })}`,
+  ].join("\n"),
+  taskProfile: "research",
+});
+const crowdedScopedArtifacts = evaluateRequestedArtifactRequirements(
+  crowdedScopedContract,
+  { commandCwd: crowdedWorkspace, state: {} }
+);
+assert.equal(
+  crowdedScopedArtifacts.ok,
+  true,
+  `a valid scoped Markdown report was hidden by unrelated workspace files: ${crowdedScopedArtifacts.reason}`
+);
+assert(
+  crowdedScopedArtifacts.candidates.some((item) =>
+    item.path.endsWith("wecom-external-group-ai-bot-capabilities.md")
+  ),
+  "the host-declared task artifact root was not inspected before the bounded workspace scan"
+);
+fs.rmSync(crowdedWorkspace, { recursive: true, force: true });
+
 function fakeStudentClient(json) {
   return {
     chat: {
