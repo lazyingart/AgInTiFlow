@@ -2370,6 +2370,35 @@ try {
       /outside the active task artifact scope/.test(String(outsideScopedRead.reason || "")),
     "task-scoped artifact tools could read an unrelated repository file"
   );
+  const writeScopedRead = await executeWorkspaceTool(
+    "read_file",
+    { path: "unrelated.md" },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+      workspaceWritePathScopeRoots: ["output/task-scope"],
+    }
+  );
+  assert(
+    writeScopedRead.content === "unrelated\n",
+    "write-scoped artifact work could not read safe workspace evidence"
+  );
+  const outsideWriteScopedWrite = await executeWorkspaceTool(
+    "write_file",
+    { path: "outside-scoped-write.md", content: "blocked\n" },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+      workspaceWritePathScopeRoots: ["output/task-scope"],
+    }
+  );
+  assert(
+    outsideWriteScopedWrite.blocked === true &&
+      /outside the active task artifact scope/.test(
+        String(outsideWriteScopedWrite.reason || "")
+      ),
+    "write-scoped artifact work could mutate an unrelated repository file"
+  );
   const filenameSearch = await executeWorkspaceTool(
     "search_files",
     { path: ".", query: "routine_entry.py", maxResults: 5 },

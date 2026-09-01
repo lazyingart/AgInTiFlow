@@ -4,7 +4,11 @@ import {
   hasLocalResearchWorkspaceIntent,
   shouldStartWithDeepResearch,
 } from "./research-routing.js";
-import { hasAgintiEvidenceScope, scopedChatopsEvidenceGoal } from "./scs-evidence.js";
+import {
+  deriveScsTaskContract,
+  hasAgintiEvidenceScope,
+  scopedChatopsEvidenceGoal,
+} from "./scs-evidence.js";
 import {
   INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
   isIntegrationTextWorkspaceToolAllowed,
@@ -2204,6 +2208,32 @@ function compactToolNames({ config, goal, profile, messages }) {
   const explicitBundles = bundlesForProfile(profileId(config, profile));
   const inferred = inferredBundles(taskText(goal, config, messages));
   const explicitProfileTools = profileToolNames(profile);
+  const taskContract = deriveScsTaskContract({
+    goal: goal || config.goal || "",
+    taskProfile: profileId(config, profile),
+  });
+  const contractRequiredTools = [];
+  if (
+    (Array.isArray(taskContract.requiredEvidence) &&
+      taskContract.requiredEvidence.some(
+        (item) => String(item?.category || "") === "command"
+      )) ||
+    (Array.isArray(taskContract.requiredProjectCommands) &&
+      taskContract.requiredProjectCommands.length > 0)
+  ) {
+    contractRequiredTools.push("run_command");
+  }
+  if (
+    Array.isArray(taskContract.exactInputPaths) &&
+    taskContract.exactInputPaths.length > 0
+  ) {
+    contractRequiredTools.push("read_file");
+  }
+  for (const name of taskContract.requiredToolCalls || []) {
+    if (COMPACT_ELIGIBLE_TOOL_NAMES.has(String(name || "").trim())) {
+      contractRequiredTools.push(String(name).trim());
+    }
+  }
   const bundleOrder = [];
   for (const bundle of explicitBundles) bundleOrder.push(bundle);
   for (const bundle of inferred) {
@@ -2232,7 +2262,10 @@ function compactToolNames({ config, goal, profile, messages }) {
     for (const name of COMPACT_TOOL_BUNDLES[bundle] || []) append(name);
   }
   for (const name of explicitProfileTools) append(name);
-  return names;
+  const missingContractTools = [
+    ...new Set(contractRequiredTools.filter((name) => !seen.has(name))),
+  ];
+  return [...missingContractTools, ...names];
 }
 
 /**
@@ -2739,21 +2772,9 @@ export function selectProgressiveTools(
   if (config.scopedArtifactTask === true && config.scopedArtifactRoot) {
     const available = new Map(enabled.map(({ name, tool }) => [name, tool]));
     const scopedWorkspaceTools = [
-      constrainScopedArtifactPath(
-        available.get("list_files"),
-        config.scopedArtifactRoot,
-        { commandCwd: config.commandCwd }
-      ),
-      constrainScopedArtifactPath(
-        available.get("read_file"),
-        config.scopedArtifactRoot,
-        { commandCwd: config.commandCwd }
-      ),
-      constrainScopedArtifactPath(
-        available.get("search_files"),
-        config.scopedArtifactRoot,
-        { commandCwd: config.commandCwd }
-      ),
+      available.get("list_files"),
+      available.get("read_file"),
+      available.get("search_files"),
       constrainScopedArtifactPath(
         available.get("write_file"),
         config.scopedArtifactRoot,
@@ -2767,9 +2788,9 @@ export function selectProgressiveTools(
       available.get("run_command"),
     ].filter(Boolean);
 
-    // Artifact isolation limits where the task may read or write; it must not
-    // erase the task's research, browser, or specialist capabilities. Keep
-    // inferred non-file tools while the workspace tools remain root-scoped.
+    // A host-owned artifact root confines artifact writes, but it must not hide
+    // the workspace evidence needed to produce those artifacts. Keep safe reads
+    // and inferred non-file tools available while write tools remain root-scoped.
     const scopedWorkspaceToolNames = new Set(
       scopedWorkspaceTools.map((tool) => openAiFunctionName(tool)).filter(Boolean)
     );

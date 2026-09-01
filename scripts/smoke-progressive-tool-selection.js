@@ -5575,11 +5575,76 @@ const scopedRuntime = nextStepRuntimeConfig(
   }
 );
 assertStrict.equal(scopedRuntime.scopedArtifactTask, true);
-assertStrict.deepEqual(scopedRuntime.workspacePathScopeRoots, ["output/wechat_worker/task"]);
+assertStrict.deepEqual(scopedRuntime.workspaceWritePathScopeRoots, ["output/wechat_worker/task"]);
+assertStrict.equal(
+  scopedRuntime.workspacePathScopeRoots,
+  undefined,
+  "task artifact output incorrectly hid repository evidence from safe reads"
+);
 assertStrict.equal(
   scopedRuntime.repositoryGroundingRequired,
   undefined,
   "an explicit task artifact root still activated generic repository grounding"
+);
+const readOnlyAuditRequest =
+  "Check readiness, read configs/model-policy.json, and report git status without changing source files or sending messages.";
+const readOnlyAuditPrompt = `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+  mode: "task",
+  request: readOnlyAuditRequest,
+  artifact_root: "/workspace/output/webapp/agent/tasks/read-only-audit",
+})}`;
+const readOnlyAuditRuntime = nextStepRuntimeConfig(
+  {
+    provider: "localllm",
+    goal: readOnlyAuditPrompt,
+    commandCwd: "/workspace",
+  },
+  {
+    goal: readOnlyAuditPrompt,
+    commandCwd: "/workspace",
+    meta: {
+      goalContract: {
+        revision: 1,
+        currentRequest: readOnlyAuditRequest,
+      },
+      activeExecutionContract: {
+        revision: 1,
+        startedMutationRevision: 0,
+        requiresWorkspaceMutation: false,
+        requiresFileMutation: false,
+        requiresSourceGrounding: false,
+      },
+      projectVerification: { mutationRevision: 0 },
+    },
+  }
+);
+assertStrict.equal(
+  readOnlyAuditRuntime.scopedArtifactTask,
+  undefined,
+  "an optional host result directory incorrectly sandboxed a read-only workspace audit"
+);
+assertStrict.equal(
+  readOnlyAuditRuntime.workspaceWritePathScopeRoots,
+  undefined,
+  "a read-only workspace audit inherited an unrelated artifact write scope"
+);
+const readOnlyAuditTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    progressiveTools: true,
+    ...readOnlyAuditRuntime,
+  },
+  goal: readOnlyAuditPrompt,
+  profile: "auto",
+  messages: [{ role: "user", content: readOnlyAuditPrompt }],
+});
+assert(
+  names(readOnlyAuditTools).includes("run_command"),
+  "a command-evidence audit omitted run_command from the compact local surface"
+);
+assert(
+  names(readOnlyAuditTools).includes("read_file"),
+  "an audit with an exact workspace input omitted read_file from the compact local surface"
 );
 const scopedPathWriteDescriptor = {
   type: "function",
@@ -5683,9 +5748,9 @@ assertStrict.equal(
   "long-context compaction discarded the host-owned artifact scope"
 );
 assertStrict.deepEqual(
-  longScopedRuntime.workspacePathScopeRoots,
+  longScopedRuntime.workspaceWritePathScopeRoots,
   ["output/wechat_worker/long-scoped-task"],
-  "long-context artifact repair escaped its exact task root"
+  "long-context artifact writes escaped their exact task root"
 );
 assertStrict.equal(
   longScopedRuntime.completionFreshMutationRequired,

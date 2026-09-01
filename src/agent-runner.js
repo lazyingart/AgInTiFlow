@@ -15034,8 +15034,30 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const scopedRootRelative = resolvedScopedRoot
     ? path.relative(commandCwd, resolvedScopedRoot)
     : "";
-  const scopedArtifactTask = Boolean(
+  const exactScopedOutputs = Array.isArray(groundingTaskContract.exactOutputPaths)
+    ? groundingTaskContract.exactOutputPaths
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    : [];
+  const exactOutputsStayInsideScopedRoot = Boolean(
     resolvedScopedRoot &&
+      exactScopedOutputs.length > 0 &&
+      exactScopedOutputs.every((item) => {
+        const absoluteOutput = path.resolve(commandCwd, item);
+        const relativeOutput = path.relative(resolvedScopedRoot, absoluteOutput);
+        return (
+          relativeOutput === "" ||
+          (!relativeOutput.startsWith("..") && !path.isAbsolute(relativeOutput))
+        );
+      })
+  );
+  const scopedArtifactTask = Boolean(
+    (
+      groundingTaskContract.scopedArtifactDeliverable === true ||
+      groundingTaskContract.scopedArtifactOperation === true ||
+      exactOutputsStayInsideScopedRoot
+    ) &&
+      resolvedScopedRoot &&
       scopedRootRelative &&
       !scopedRootRelative.startsWith("..") &&
       !path.isAbsolute(scopedRootRelative)
@@ -15043,7 +15065,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   if (scopedArtifactTask) {
     runtimeConfig.scopedArtifactTask = true;
     runtimeConfig.scopedArtifactRoot = scopedRootRelative.replace(/\\/g, "/");
-    runtimeConfig.workspacePathScopeRoots = [runtimeConfig.scopedArtifactRoot];
+    runtimeConfig.workspaceWritePathScopeRoots = [runtimeConfig.scopedArtifactRoot];
   }
   if (
     (

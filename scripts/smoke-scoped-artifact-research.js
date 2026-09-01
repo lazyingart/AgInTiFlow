@@ -61,11 +61,18 @@ assert(byName.has("read_file"), "scoped research lost read_file");
 assert(byName.has("write_file"), "scoped research lost write_file");
 assert.equal(
   byName.get("read_file").function.parameters.properties.path.pattern,
-  `^(?:output/wechat_worker/daily-research-task)(?:/.*)?$`
+  undefined,
+  "artifact creation must preserve safe reads from workspace evidence"
 );
 assert.equal(
   byName.get("list_files").function.parameters.properties.path.pattern,
-  `^(?:output/wechat_worker/daily-research-task)(?:/.*)?$`
+  undefined,
+  "artifact creation must preserve safe workspace discovery"
+);
+assert.equal(
+  byName.get("write_file").function.parameters.properties.path.pattern,
+  `^(?:output/wechat_worker/daily-research-task)(?:/.*)?$`,
+  "artifact creation did not confine writes to the exact task root"
 );
 assert.equal(
   byName.get("list_files").function.parameters.properties.path.enum,
