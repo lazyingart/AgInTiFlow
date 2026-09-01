@@ -2969,6 +2969,10 @@ function usesFocusedRuntimePrompt(config = {}) {
   return config.executionTier === "focused" && !config.scsActive;
 }
 
+export function completionRequirementCoverageInstruction() {
+  return "Before finishing, check the current user request requirement by requirement. Every distinct subject, requested action, and deliverable must be completed, answered, deliberately grouped under one verified shared state, or named with a concrete blocker. When an authoritative structured routine returns named sections relevant to the request, report every relevant section instead of summarizing only failures or only successes.";
+}
+
 function focusedCapabilityContext(config = {}) {
   return [
     config.allowFileTools
@@ -3012,6 +3016,7 @@ function buildFocusedRuntimeMessages({
         "You are AgInTiFlow, a persistent tool-capable agent.",
         "Answer ordinary conversation directly. For executable work, act through the smallest relevant routine or tool, verify in proportion to risk, then stop.",
         "Treat queued user input as a safe-boundary interruption: preserve every material requirement, merge related consecutive messages, revise the durable goal, and never repeat a completed external side effect.",
+        completionRequirementCoverageInstruction(),
         "Established project routines are capabilities to invoke, not workflows to reimplement. Discover more context only when the current task needs it.",
         formatBehaviorContractForPrompt({ mode: "focused" }),
         languageInstruction(config.language || "en"),
@@ -3230,6 +3235,7 @@ async function createInitialState(config, sessionId) {
             : "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files, run available build/compile/test commands, and surface artifacts through the canvas when useful.",
           "For LaTeX/PDF tasks, check existing latexmk/pdflatex first and compile with the available host or Docker TeX toolchain before installing packages or rebuilding the sandbox.",
           "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
+          completionRequirementCoverageInstruction(),
           browserStateReconciliationGuidance(),
           isRetainedWorkspaceProfile(config)
             ? "Choose descriptive non-conflicting workspace paths for durable outputs."

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  completionRequirementCoverageInstruction,
   continuationExecutionContractDirective,
   removeSupersededCompletionRepairInstructions,
   runAgent,
@@ -16,6 +17,13 @@ import { deriveScsTaskContract, finishResultClaimsIncompleteWork } from "../src/
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-truthful-completion-"));
 process.env.AGINTIFLOW_HOME = path.join(tempRoot, "home");
+
+const completionCoverageInstruction = completionRequirementCoverageInstruction();
+assert.match(completionCoverageInstruction, /requirement by requirement/i);
+assert.match(completionCoverageInstruction, /Every distinct subject/i);
+assert.match(completionCoverageInstruction, /authoritative structured routine/i);
+assert.match(completionCoverageInstruction, /every relevant section/i);
+assert.match(completionCoverageInstruction, /instead of summarizing only failures or only successes/i);
 
 assert.equal(
   finishResultClaimsIncompleteWork(
