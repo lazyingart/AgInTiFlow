@@ -23,6 +23,17 @@ assert.equal(productionIntent.kind, "tex-pdf");
 assert.deepEqual(productionIntent.requiredFormats, ["tex", "pdf"]);
 assert.equal(productionIntent.requirements.minimumFigureCount, 1);
 
+const productionIntegrityPrompt =
+  "Create exactly two downloadable file artifacts named mobile-r137.tex and mobile-r137.pdf. " +
+  "Write a short self-contained LaTeX document titled Mobile R137 General Agent Test. " +
+  "Include one sentence explaining that this PDF was compiled by the general Agent tool workflow and the displayed equation E = mc^2. " +
+  "Actually compile the TeX into a valid PDF using the available TeX compiler. " +
+  "Do not fake or base64-encode the PDF, and create no other file.";
+const productionIntegrityIntent = classifyIntegrationDocumentArtifactIntent(productionIntegrityPrompt, []);
+assert.equal(productionIntegrityIntent.required, true);
+assert.equal(productionIntegrityIntent.kind, "tex-pdf");
+assert.deepEqual(productionIntegrityIntent.requiredFormats, ["tex", "pdf"]);
+
 const exactFencedSource = "\\documentclass{article}\n\\begin{document}\nExact bytes.\n\\end{document}\n";
 const exactFencedPrompt = `Create exact.tex and exact.pdf. Compile this exact source byte-for-byte, including its final newline.\n\n\`\`\`tex\n${exactFencedSource}\`\`\``;
 assert.equal(extractIntegrationExactFencedTeXSource(exactFencedPrompt), exactFencedSource);
@@ -48,6 +59,11 @@ for (const prompt of [
   "Give me a LaTeX source and compiled PDF.",
   "Output a TeX source plus compiled PDF.",
   "Create exactly two downloadable file artifacts named live_document.tex and live_document.pdf. Compile that exact source into the PDF using the document worker. Do not create another artifact and do not merely paste the files into chat.",
+  "Create report.tex and report.pdf. Do not fake the PDF; compile it normally.",
+  "Generate the TeX source and compiled PDF, but never return a placeholder PDF.",
+  "Create both .tex and .pdf deliverables without base64 encoding the PDF.",
+  "Write the LaTeX file and build the PDF; no fake PDF is acceptable.",
+  "Compile a short TeX source into a PDF and do not simulate either file.",
   "请提供 LaTeX 源文件和编译后的 PDF。",
   "我需要 LaTeX 源文件和编译后的 PDF。",
   "制作 LaTeX 和 PDF 文件。",
@@ -65,6 +81,11 @@ for (const prompt of [
   "Prepare a comparison of LaTeX source and compiled PDF internals.",
   "Generate prose explaining a LaTeX source and compiled PDF.",
   "Create a LaTeX source and compiled PDF, but do not create files.",
+  "Create a LaTeX source but do not create the PDF.",
+  "Create mobile-r137.tex and do not compile or output a PDF.",
+  "Write the TeX source only.",
+  "Create a PDF only, without the TeX source.",
+  "Create a report, but do not output TeX or PDF files.",
   "Create neither a LaTeX source nor compiled PDF; just explain them.",
   "Write a LaTeX source-code example that mentions PDF.",
   "Provide advice on creating a LaTeX source and compiled PDF.",
@@ -88,6 +109,22 @@ const revision = classifyIntegrationDocumentArtifactIntent("revise it and recomp
 assert.equal(revision.required, true);
 assert.equal(revision.requirements.minimumFigureCount, 1, "explicit revision retains the figure requirement");
 assert.equal(isIntegrationDocumentArtifactRevision("revise it and recompile", priorConversation), true);
+assert.equal(
+  classifyIntegrationDocumentArtifactIntent(
+    "Update the previous TeX and PDF. Do not fake or base64-encode the PDF.",
+    priorConversation,
+  ).required,
+  true,
+  "format-integrity guards must not cancel an explicit document revision",
+);
+assert.equal(
+  classifyIntegrationDocumentArtifactIntent(
+    "Update the previous TeX source, but do not create or compile the PDF.",
+    priorConversation,
+  ).required,
+  false,
+  "direct negation of a requested document format must still cancel a revision",
+);
 
 const unrelatedPlotConversation = [
   {
