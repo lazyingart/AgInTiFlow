@@ -4556,6 +4556,36 @@ try {
       failedSpacedExitProbeResult.projectTest?.explicitExitStatus === 1,
     "a spaced nonzero test-status wrapper was recorded as successful generic evidence"
   );
+  const pipedUnittestCommand =
+    "python3 -m unittest discover -s tests -p 'test_wechat_document_reader.py' -v 2>&1 | tail -14; echo \"EXIT=${PIPESTATUS[0]}\"";
+  assert(
+    parseNonMutatingExitStatusWrapper(pipedUnittestCommand)?.command ===
+      "python3 -m unittest discover -s tests -p 'test_wechat_document_reader.py' -v 2>&1" &&
+      isSubstantiveTestCommand(pipedUnittestCommand),
+    "the exact bounded PIPESTATUS unittest wrapper lost its test identity"
+  );
+  for (const [status, expectedPassed] of [[0, true], [1, false]]) {
+    const state = { meta: { goalContract: { revision: 1 } } };
+    const result = {
+      toolName: "run_command",
+      ok: true,
+      exitCode: 0,
+      args: { command: pipedUnittestCommand },
+      stdout: `Ran 7 tests in 0.01s\n${status === 0 ? "OK" : "FAILED (failures=1)"}\nEXIT=${status}\n`,
+      stderr: "",
+      commandPolicy: classifyCommand(pipedUnittestCommand),
+    };
+    recordProjectVerificationOutcome(state, result, {
+      commandCwd: workspace,
+      taskProfile: "qa",
+    });
+    assert(
+      result.projectTest?.passed === expectedPassed &&
+        result.projectTest?.explicitExitStatus === status &&
+        state.meta.projectVerification?.mutationRevision === 0,
+      `a PIPESTATUS unittest wrapper was not recorded at the correct status/revision: ${status}`
+    );
+  }
   for (const [command, output, expectedRevision] of [
     ['npm test; printf "EXIT_CODE=%d\\n" "$?"', "EXIT_CODE=0\n", 0],
     ['git push; echo "EXIT=$?"', "EXIT=0\n", 0],
@@ -4577,6 +4607,50 @@ try {
     assert(
       state.meta.projectVerification?.mutationRevision === expectedRevision,
       `a status wrapper changed the inner command's mutation identity: ${command}`
+    );
+  }
+  const boundedFindCommand =
+    `cd ${workspace} && echo "=== CANDIDATES ===" && ` +
+    "find . -maxdepth 4 \\( -name '*.py' -o -name '*.md' \\) -not -path './output/*' 2>/dev/null | sort; echo DONE";
+  const boundedFindPolicy = evaluateCommandPolicy(boundedFindCommand, {
+    commandCwd: workspace,
+    allowShellTool: true,
+    allowDestructive: false,
+    sandboxMode: "host",
+  });
+  assert(
+    boundedFindPolicy.allowed === true &&
+      boundedFindPolicy.category === "read-only" &&
+      boundedFindPolicy.writesWorkspace === false,
+    "the exact bounded read-only find sequence was classified as a project mutation"
+  );
+  const boundedFindState = { meta: { goalContract: { revision: 1 } } };
+  const boundedFindResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: boundedFindCommand },
+    stdout: "./tests/test_wechat_document_reader.py\nDONE\n",
+    stderr: "",
+    commandPolicy: boundedFindPolicy,
+  };
+  recordProjectVerificationOutcome(boundedFindState, boundedFindResult, {
+    commandCwd: workspace,
+    taskProfile: "qa",
+  });
+  assert(
+    boundedFindState.meta.projectVerification?.mutationRevision === 0,
+    "a successful bounded read-only find fabricated a source revision"
+  );
+  for (const command of [
+    "find . -maxdepth 4 -name '*.py' -delete",
+    "find . -maxdepth 4 -name '*.py' -exec touch {} \\;",
+  ]) {
+    const classification = classifyCommand(command);
+    assert(
+      classification.writesWorkspace === true &&
+        ["destructive", "general-shell"].includes(classification.category),
+      `a write-capable find form was accepted as read-only: ${command}`
     );
   }
   const readOnlyValidatorState = { meta: { goalContract: { revision: 1 } } };

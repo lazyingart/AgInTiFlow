@@ -5143,12 +5143,20 @@ function testRunRepresentsInvalidInvocation(testRun = {}) {
 function explicitExitProbeStatus(command = "", result = {}) {
   const normalizedCommand = normalizeProjectCommand(command);
   const exitProbe = parseNonMutatingExitStatusWrapper(normalizedCommand);
-  if (!exitProbe) return { present: false, status: null, command: normalizedCommand };
+  if (!exitProbe) {
+    return {
+      present: false,
+      status: null,
+      command: normalizedCommand,
+      wrappedCommand: normalizedCommand,
+    };
+  }
 
   return {
     present: true,
     status: parseExplicitExitStatus(result.stdout || ""),
     command: exitProbe.command,
+    wrappedCommand: exitProbe.wrappedCommand || exitProbe.command,
   };
 }
 
@@ -6717,7 +6725,10 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     );
     const exitProbe = explicitExitProbeStatus(command, toolResult);
     const mutationCommand = normalizeProjectCommand(
-      normalizeCommandForPolicy(exitProbe.command || command, config)
+      normalizeCommandForPolicy(
+        exitProbe.wrappedCommand || exitProbe.command || command,
+        config
+      )
     );
     // The result proves the command already executed. Classify its semantic
     // mutation capability independently of whether the current policy would

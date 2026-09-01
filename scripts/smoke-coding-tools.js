@@ -1431,7 +1431,7 @@ try {
     "host workspace chmod sequence should remain categorized as permission-change"
   );
   const androidReadonlyProbePolicy = evaluateCommandPolicy(
-    'test -x /usr/bin/gradle && echo "GRADLE_OK" ; test -x /usr/bin/java && /usr/bin/java -version 2>&1 | head -1; adb devices; emulator -list-avds; find android-app -type f | sort',
+    'test -x /usr/bin/gradle && echo "GRADLE_OK" ; test -x /usr/bin/java && /usr/bin/java -version 2>&1 | head -1; adb devices; emulator -list-avds; find android-app -maxdepth 16 -type f | sort',
     hostWorkspacePolicy
   );
   assert(androidReadonlyProbePolicy.allowed, "Android host read-only probes should not require full-host destructive access");
