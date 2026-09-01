@@ -641,11 +641,11 @@ try {
     stateRoot: partialRoot,
     statePersistenceMode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3,
     async beforeStartupRecoveryScope({ index }) {
-      if (index === 5) await new Promise((resolve) => setTimeout(resolve, 125));
+      if (index === 5) await new Promise((resolve) => setTimeout(resolve, 2_000));
     },
   });
   await assert.rejects(
-    () => partialService.recoverBeforeListen({ timeoutMs: 100 }),
+    () => partialService.recoverBeforeListen({ timeoutMs: 1_000 }),
     (error) => error.code === "ANALYSIS_STARTUP_RECOVERY_TIMEOUT"
   );
   await partialService.close({ mode: "abort" });
