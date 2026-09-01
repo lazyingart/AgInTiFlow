@@ -14219,6 +14219,14 @@ function currentGoalRevisionBelongsToActiveTask(state = {}, mutation = {}) {
     return false;
   }
   if (mutationGoalRevision === currentGoalRevision) return true;
+  const explicitMutationTaskHash = String(mutation?.taskHash || "");
+  if (
+    !currentTaskHash ||
+    !explicitMutationTaskHash ||
+    explicitMutationTaskHash !== currentTaskHash
+  ) {
+    return false;
+  }
   const interveningGoalEntries = goalHistory.filter((entry) => {
     const revision = Number(entry?.revision || 0);
     return revision > mutationGoalRevision && revision <= currentGoalRevision;
@@ -14230,7 +14238,7 @@ function currentGoalRevisionBelongsToActiveTask(state = {}, mutation = {}) {
     const entryTaskHash = String(entry?.taskHash || "");
     return (
       (relation === "same-task" || kind === "same-task-continuation") &&
-      (!currentTaskHash || !entryTaskHash || entryTaskHash === currentTaskHash)
+      entryTaskHash === currentTaskHash
     );
   });
 }

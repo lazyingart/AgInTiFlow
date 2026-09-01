@@ -7725,6 +7725,80 @@ try {
       repair: sameTaskResumeDocumentState.meta.completionEvidenceRepair,
     })}`
   );
+  const missingMutationHashState = structuredClone(sameTaskResumeDocumentState);
+  delete missingMutationHashState.meta.projectVerification.mutationHistory[0]
+    .taskHash;
+  let missingMutationHashValidatorInput = null;
+  const missingMutationHashAssessment = await documentQualityCommitAssessment(
+    missingMutationHashState,
+    "run_command",
+    { command: "git add -- retained_memo.pdf && git commit -m memo" },
+    {
+      commandCwd: documentEvidenceWorkspace,
+      taskProfile: "writing",
+      documentArtifactValidator: async (input) => {
+        missingMutationHashValidatorInput = input;
+        return {
+          ok: false,
+          checked: true,
+          artifacts: [],
+          defects: [{ code: "missing-document-artifact" }],
+          reason:
+            "No readable DOCX or PDF artifact was found for the completed document task.",
+        };
+      },
+    }
+  );
+  assert(
+    missingMutationHashAssessment?.ok === false &&
+      missingMutationHashAssessment.category ===
+        "document-quality-incomplete" &&
+      !missingMutationHashValidatorInput?.exactOutputPaths?.includes(
+        "retained_memo.pdf"
+      ),
+    `a cross-revision retained PDF with missing mutation task hash was accepted: ${JSON.stringify({
+      assessment: missingMutationHashAssessment,
+      input: missingMutationHashValidatorInput,
+    })}`
+  );
+  const missingContinuationHashState = structuredClone(
+    sameTaskResumeDocumentState
+  );
+  delete missingContinuationHashState.meta.goalContract.history[1].taskHash;
+  let missingContinuationHashValidatorInput = null;
+  const missingContinuationHashAssessment =
+    await documentQualityCommitAssessment(
+      missingContinuationHashState,
+      "run_command",
+      { command: "git add -- retained_memo.pdf && git commit -m memo" },
+      {
+        commandCwd: documentEvidenceWorkspace,
+        taskProfile: "writing",
+        documentArtifactValidator: async (input) => {
+          missingContinuationHashValidatorInput = input;
+          return {
+            ok: false,
+            checked: true,
+            artifacts: [],
+            defects: [{ code: "missing-document-artifact" }],
+            reason:
+              "No readable DOCX or PDF artifact was found for the completed document task.",
+          };
+        },
+      }
+    );
+  assert(
+    missingContinuationHashAssessment?.ok === false &&
+      missingContinuationHashAssessment.category ===
+        "document-quality-incomplete" &&
+      !missingContinuationHashValidatorInput?.exactOutputPaths?.includes(
+        "retained_memo.pdf"
+      ),
+    `a cross-revision retained PDF with missing same-task continuation hash was accepted: ${JSON.stringify({
+      assessment: missingContinuationHashAssessment,
+      input: missingContinuationHashValidatorInput,
+    })}`
+  );
   const staleSourceResumeState = structuredClone(sameTaskResumeDocumentState);
   staleSourceResumeState.meta.projectVerification = {
     mutationRevision: 3,
