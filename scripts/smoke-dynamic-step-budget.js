@@ -7348,6 +7348,31 @@ try {
     "missing-artifact-commit"
   );
   await fs.mkdir(missingArtifactCommitWorkspace, { recursive: true });
+  const documentEvidenceWorkspace = path.join(
+    tempRoot,
+    "document-evidence"
+  );
+  await fs.mkdir(documentEvidenceWorkspace, { recursive: true });
+  await fs.writeFile(
+    path.join(documentEvidenceWorkspace, "daily_memo.pdf"),
+    "%PDF-1.4\n% current task generated PDF evidence\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(documentEvidenceWorkspace, "retained_memo.pdf"),
+    "%PDF-1.4\n% retained same-task PDF evidence\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(documentEvidenceWorkspace, "stale-root.pdf"),
+    "%PDF-1.4\n% wrong-task stale PDF evidence\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(documentEvidenceWorkspace, "retained_memo.tex"),
+    "\\documentclass{article}\n\\begin{document}\nRetained memo.\n\\end{document}\n",
+    "utf8"
+  );
   const missingArtifactCommitState = {
     goal:
       "Create editable memo.tex and compiled mobile-readable memo.pdf, verify both, and commit only the intentional work.",
@@ -7524,7 +7549,7 @@ try {
     "run_command",
     { command: "git add -- daily_memo.tex daily_memo.pdf && git commit -m memo" },
     {
-      commandCwd: missingArtifactCommitWorkspace,
+      commandCwd: documentEvidenceWorkspace,
       taskProfile: "writing",
       documentArtifactValidator: async (input) => {
         currentGoalDocumentValidatorInput = input;
@@ -7554,6 +7579,277 @@ try {
       ),
     `a current-goal generated root PDF was not discovered safely for pre-commit validation: ${JSON.stringify(
       currentGoalDocumentValidatorInput
+    )}`
+  );
+  const resumedTaskGoal =
+    "Read TASK.md and complete it carefully. Use the complete chat history, verify the finished PDF, and leave the repository clean.";
+  const resumedTaskHash = crypto
+    .createHash("sha256")
+    .update(resumedTaskGoal)
+    .digest("hex");
+  const sameTaskResumeDocumentState = {
+    goal:
+      "Continue the same task. Reuse the existing verified source and PDF unless the diagnostic finds a real defect, then commit cleanly.",
+    messages: [],
+    meta: {
+      taskProfile: "writing",
+      goalContract: {
+        version: 3,
+        revision: 2,
+        activeGoalRevision: 2,
+        taskGoal: resumedTaskGoal,
+        activeGoal:
+          "Continue the same task. Reuse the existing verified source and PDF unless the diagnostic finds a real defect, then commit cleanly.",
+        currentRequest:
+          "Continue the same task. Reuse the existing verified source and PDF unless the diagnostic finds a real defect, then commit cleanly.",
+        taskRelation: "same-task",
+        history: [
+          {
+            revision: 1,
+            kind: "initial",
+            hash: resumedTaskHash,
+            preview: resumedTaskGoal,
+          },
+          {
+            revision: 2,
+            kind: "same-task-continuation",
+            relation: "same-task",
+            hash: crypto
+              .createHash("sha256")
+              .update(
+                "Continue the same task. Reuse the existing verified source and PDF unless the diagnostic finds a real defect, then commit cleanly."
+              )
+              .digest("hex"),
+            taskHash: resumedTaskHash,
+            previousHash: resumedTaskHash,
+          },
+        ],
+      },
+      projectVerification: {
+        mutationRevision: 6,
+        privateMutationRevision: 0,
+        mutationHistory: [
+          {
+            revision: 2,
+            at: "2026-09-01T10:00:00.000Z",
+            toolName: "run_command",
+            paths: ["retained_memo.pdf"],
+            commandCategory: "toolchain",
+            goalRevision: 1,
+            taskHash: resumedTaskHash,
+          },
+          {
+            revision: 3,
+            at: "2026-09-01T10:01:00.000Z",
+            toolName: "run_command",
+            paths: ["stale-root.pdf"],
+            commandCategory: "toolchain",
+            goalRevision: 1,
+            taskHash: "different-task",
+          },
+          {
+            revision: 4,
+            at: "2026-09-01T10:02:00.000Z",
+            toolName: "run_command",
+            paths: ["missing-retained.pdf"],
+            commandCategory: "toolchain",
+            goalRevision: 1,
+            taskHash: resumedTaskHash,
+          },
+          {
+            revision: 5,
+            at: "2026-09-01T10:03:00.000Z",
+            toolName: "apply_patch",
+            paths: ["TASK.md"],
+            patch: {
+              path: "TASK.md",
+              searchHash: "before-task-touch",
+              replaceHash: "temporary-task-touch",
+            },
+            goalRevision: 2,
+            taskHash: resumedTaskHash,
+          },
+          {
+            revision: 6,
+            at: "2026-09-01T10:04:00.000Z",
+            toolName: "apply_patch",
+            paths: ["TASK.md"],
+            patch: {
+              path: "TASK.md",
+              searchHash: "temporary-task-touch",
+              replaceHash: "before-task-touch",
+            },
+            goalRevision: 2,
+            taskHash: resumedTaskHash,
+          },
+        ],
+      },
+    },
+  };
+  let sameTaskResumeValidatorInput = null;
+  const sameTaskResumeAssessment = await documentQualityCommitAssessment(
+    sameTaskResumeDocumentState,
+    "run_command",
+    { command: "git add -- retained_memo.pdf && git commit -m memo" },
+    {
+      commandCwd: documentEvidenceWorkspace,
+      taskProfile: "writing",
+      documentArtifactValidator: async (input) => {
+        sameTaskResumeValidatorInput = input;
+        return {
+          ok: true,
+          checked: true,
+          artifacts: [{ path: "retained_memo.pdf" }],
+          defects: [],
+          reason:
+            "Independent document checks passed for retained_memo.pdf.",
+        };
+      },
+    }
+  );
+  assert(
+    sameTaskResumeAssessment?.ok === true &&
+      sameTaskResumeValidatorInput?.exactOutputPaths?.includes(
+        "retained_memo.pdf"
+      ) &&
+      !sameTaskResumeValidatorInput.exactOutputPaths.includes(
+        "stale-root.pdf"
+      ) &&
+      !sameTaskResumeValidatorInput.exactOutputPaths.includes(
+        "missing-retained.pdf"
+      ) &&
+      sameTaskResumeDocumentState.meta.completionEvidenceRepair === undefined,
+    `same-task resume did not preserve the prior verified document artifact safely: ${JSON.stringify({
+      assessment: sameTaskResumeAssessment,
+      input: sameTaskResumeValidatorInput,
+      repair: sameTaskResumeDocumentState.meta.completionEvidenceRepair,
+    })}`
+  );
+  const staleSourceResumeState = structuredClone(sameTaskResumeDocumentState);
+  staleSourceResumeState.meta.projectVerification = {
+    mutationRevision: 3,
+    privateMutationRevision: 0,
+    mutationHistory: [
+      {
+        revision: 2,
+        at: "2026-09-01T10:00:00.000Z",
+        toolName: "run_command",
+        paths: ["retained_memo.pdf"],
+        commandCategory: "toolchain",
+        goalRevision: 1,
+        taskHash: resumedTaskHash,
+      },
+      {
+        revision: 3,
+        at: "2026-09-01T10:05:00.000Z",
+        toolName: "apply_patch",
+        paths: ["retained_memo.tex"],
+        patch: {
+          path: "retained_memo.tex",
+          searchHash: "old-retained-source",
+          replaceHash: "changed-retained-source",
+        },
+        goalRevision: 2,
+        taskHash: resumedTaskHash,
+      },
+    ],
+  };
+  let staleSourceValidatorInput = null;
+  const staleSourceAssessment = await documentQualityCommitAssessment(
+    staleSourceResumeState,
+    "run_command",
+    { command: "git add -- retained_memo.tex retained_memo.pdf && git commit -m memo" },
+    {
+      commandCwd: documentEvidenceWorkspace,
+      taskProfile: "writing",
+      documentArtifactValidator: async (input) => {
+        staleSourceValidatorInput = input;
+        return {
+          ok: false,
+          checked: true,
+          artifacts: [],
+          defects: [{ code: "missing-document-artifact" }],
+          reason:
+            "No readable DOCX or PDF artifact was found for the completed document task.",
+        };
+      },
+    }
+  );
+  assert(
+    staleSourceAssessment?.ok === false &&
+      staleSourceAssessment.category === "document-quality-incomplete" &&
+      !staleSourceValidatorInput?.exactOutputPaths?.includes(
+        "retained_memo.pdf"
+      ) &&
+      staleSourceResumeState.meta.completionEvidenceRepair
+        ?.documentArtifactGenerationRequired === true &&
+      staleSourceResumeState.meta.completionEvidenceRepair
+        ?.documentArtifactProducerCommand.includes("retained_memo.tex"),
+    `a retained prior PDF survived a later same-task source mutation or failed to keep producer repair active: ${JSON.stringify({
+      assessment: staleSourceAssessment,
+      input: staleSourceValidatorInput,
+      repair: staleSourceResumeState.meta.completionEvidenceRepair,
+    })}`
+  );
+  const differentGoalResumeState = structuredClone(sameTaskResumeDocumentState);
+  differentGoalResumeState.goal =
+    "Start a different memo task and create a new verified PDF.";
+  differentGoalResumeState.meta.goalContract = {
+    version: 3,
+    revision: 2,
+    activeGoalRevision: 2,
+    taskGoal: "Start a different memo task and create a new verified PDF.",
+    activeGoal: "Start a different memo task and create a new verified PDF.",
+    currentRequest:
+      "Start a different memo task and create a new verified PDF.",
+    taskRelation: "different-task",
+    history: [
+      {
+        revision: 1,
+        kind: "initial",
+        hash: resumedTaskHash,
+        preview: resumedTaskGoal,
+      },
+      {
+        revision: 2,
+        kind: "new-task",
+        relation: "different-task",
+        hash: crypto
+          .createHash("sha256")
+          .update("Start a different memo task and create a new verified PDF.")
+          .digest("hex"),
+      },
+    ],
+  };
+  let differentGoalValidatorInput = null;
+  const differentGoalAssessment = await documentQualityCommitAssessment(
+    differentGoalResumeState,
+    "run_command",
+    { command: "git add -- retained_memo.pdf && git commit -m memo" },
+    {
+      commandCwd: documentEvidenceWorkspace,
+      taskProfile: "writing",
+      documentArtifactValidator: async (input) => {
+        differentGoalValidatorInput = input;
+        return {
+          ok: false,
+          checked: true,
+          artifacts: [],
+          defects: [{ code: "missing-document-artifact" }],
+          reason:
+            "No readable DOCX or PDF artifact was found for the completed document task.",
+        };
+      },
+    }
+  );
+  assert(
+    differentGoalAssessment?.ok === false &&
+      differentGoalAssessment.category === "document-quality-incomplete" &&
+      !differentGoalValidatorInput?.exactOutputPaths?.includes(
+        "retained_memo.pdf"
+      ),
+    `a different task reused a prior same-root document artifact: ${JSON.stringify(
+      differentGoalValidatorInput
     )}`
   );
   const unrelatedRootWorkspace = path.join(
@@ -7642,7 +7938,7 @@ try {
     "run_command",
     { command: "git add -- daily_memo.tex daily_memo.pdf && git commit -m memo" },
     {
-      commandCwd: missingArtifactCommitWorkspace,
+      commandCwd: documentEvidenceWorkspace,
       taskProfile: "writing",
       documentArtifactValidator: async (input) => {
         semanticGateValidatorInput = input;

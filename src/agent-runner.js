@@ -10257,7 +10257,7 @@ export async function documentQualityCommitAssessment(
       ? contract.exactOutputPaths
       : []),
     ...exactOutputPathsForState(state),
-    ...currentGoalDocumentArtifactPathsForState(state),
+    ...currentGoalDocumentArtifactPathsForState(state, config),
     ...(Array.isArray(config.taskOwnedCommitPaths)
       ? config.taskOwnedCommitPaths
       : []),
@@ -14186,7 +14186,155 @@ function exactOutputPathsForState(state = {}) {
   ], exclusions).slice(0, 32);
 }
 
-function currentGoalDocumentArtifactPathsForState(state = {}) {
+function currentGoalRevisionBelongsToActiveTask(state = {}, mutation = {}) {
+  const goalContract = state.meta?.goalContract || {};
+  const currentGoalRevision = Math.max(0, Number(goalContract.revision || 0));
+  const mutationGoalRevision = Math.max(0, Number(mutation?.goalRevision || 0));
+  if (
+    currentGoalRevision <= 0 ||
+    mutationGoalRevision <= 0 ||
+    mutationGoalRevision > currentGoalRevision
+  ) {
+    return false;
+  }
+  const taskGoal = String(goalContract.taskGoal || state.goal || "").trim();
+  const currentTaskHash = taskGoal ? hashForLog(taskGoal) : "";
+  const goalHistory = Array.isArray(goalContract.history)
+    ? goalContract.history
+    : [];
+  const mutationGoalEntry = goalHistory.find(
+    (entry) => Number(entry?.revision || 0) === mutationGoalRevision
+  );
+  const mutationTaskHash = String(
+    mutation?.taskHash ||
+      mutationGoalEntry?.taskHash ||
+      (mutationGoalEntry?.kind === "initial" ? mutationGoalEntry?.hash : "") ||
+      ""
+  );
+  if (
+    currentTaskHash &&
+    mutationTaskHash &&
+    mutationTaskHash !== currentTaskHash
+  ) {
+    return false;
+  }
+  if (mutationGoalRevision === currentGoalRevision) return true;
+  const interveningGoalEntries = goalHistory.filter((entry) => {
+    const revision = Number(entry?.revision || 0);
+    return revision > mutationGoalRevision && revision <= currentGoalRevision;
+  });
+  if (!interveningGoalEntries.length) return false;
+  return interveningGoalEntries.every((entry) => {
+    const relation = String(entry?.relation || "");
+    const kind = String(entry?.kind || "");
+    const entryTaskHash = String(entry?.taskHash || "");
+    return (
+      (relation === "same-task" || kind === "same-task-continuation") &&
+      (!currentTaskHash || !entryTaskHash || entryTaskHash === currentTaskHash)
+    );
+  });
+}
+
+function currentGoalDocumentArtifactStillExists(candidate = "", state = {}, config = {}) {
+  const normalized = safeTaskOwnedCommitPath(candidate);
+  if (!normalized || !/\.(?:docx|pdf)$/iu.test(normalized)) return false;
+  if (
+    isPrivateVerificationEvidencePath(normalized) ||
+    isScopedTaskArtifactEvidencePath(normalized, state, config)
+  ) {
+    return false;
+  }
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const absolutePath = path.resolve(commandCwd, normalized);
+  const relativePath = path.relative(commandCwd, absolutePath);
+  if (
+    !relativePath ||
+    relativePath.startsWith("..") ||
+    path.isAbsolute(relativePath)
+  ) {
+    return false;
+  }
+  try {
+    const stat = fsSync.lstatSync(absolutePath);
+    return stat.isFile() && !stat.isSymbolicLink() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+const LIKELY_DOCUMENT_SOURCE_EXTENSIONS = new Set([
+  ".tex",
+  ".md",
+  ".markdown",
+  ".rmd",
+  ".qmd",
+  ".typ",
+]);
+
+function documentArtifactFreshnessKey(value = "") {
+  const candidate = safeTaskOwnedCommitPath(value);
+  if (!candidate) return "";
+  const extension = path.posix.extname(candidate).toLocaleLowerCase("en-US");
+  const basename = path.posix.basename(candidate, extension);
+  const dirname = path.posix.dirname(candidate);
+  return `${dirname === "." ? "" : `${dirname}/`}${basename}`.toLocaleLowerCase("en-US");
+}
+
+function mutationArtifactPaths(mutation = {}) {
+  return [
+    ...(Array.isArray(mutation?.paths) ? mutation.paths : []),
+    ...(Array.isArray(mutation?.projectMutationPaths)
+      ? mutation.projectMutationPaths
+      : []),
+    ...(Array.isArray(mutation?.verifiedGeneratedOutputPaths)
+      ? mutation.verifiedGeneratedOutputPaths
+      : []),
+  ];
+}
+
+function mutationInvalidatesDocumentArtifact(mutation = {}, artifactPath = "") {
+  const artifact = safeTaskOwnedCommitPath(artifactPath);
+  if (!artifact) return false;
+  const artifactKey = documentArtifactFreshnessKey(artifact);
+  if (!artifactKey) return false;
+  for (const value of mutationArtifactPaths(mutation)) {
+    const candidate = safeTaskOwnedCommitPath(value);
+    if (!candidate) continue;
+    if (candidate === artifact) return true;
+    const extension = path.posix.extname(candidate).toLocaleLowerCase("en-US");
+    if (
+      LIKELY_DOCUMENT_SOURCE_EXTENSIONS.has(extension) &&
+      documentArtifactFreshnessKey(candidate) === artifactKey
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function retainedDocumentArtifactMutationIsFresh(
+  state = {},
+  history = [],
+  mutation = {},
+  artifactPath = ""
+) {
+  const artifactRevision = Math.max(0, Number(mutation?.revision || 0));
+  if (artifactRevision <= 0) return false;
+  for (const laterMutation of history) {
+    if (Math.max(0, Number(laterMutation?.revision || 0)) <= artifactRevision) {
+      continue;
+    }
+    if (!currentGoalRevisionBelongsToActiveTask(state, laterMutation)) continue;
+    if (mutationInvalidatesDocumentArtifact(laterMutation, artifactPath)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function currentGoalDocumentArtifactPathsForState(state = {}, config = {}) {
   const verification = state.meta?.projectVerification || {};
   const history = Array.isArray(verification.mutationHistory)
     ? verification.mutationHistory
@@ -14199,7 +14347,7 @@ function currentGoalDocumentArtifactPathsForState(state = {}) {
   const candidates = [];
   const seen = new Set();
   for (const mutation of history) {
-    if (Number(mutation?.goalRevision || 0) !== currentGoalRevision) continue;
+    if (!currentGoalRevisionBelongsToActiveTask(state, mutation)) continue;
     const paths = [
       ...(Array.isArray(mutation?.paths) ? mutation.paths : []),
       ...(Array.isArray(mutation?.projectMutationPaths)
@@ -14214,6 +14362,13 @@ function currentGoalDocumentArtifactPathsForState(state = {}) {
       if (
         !candidate ||
         !/\.(?:docx|pdf)$/iu.test(candidate) ||
+        !currentGoalDocumentArtifactStillExists(candidate, state, config) ||
+        !retainedDocumentArtifactMutationIsFresh(
+          state,
+          history,
+          mutation,
+          candidate
+        ) ||
         seen.has(candidate)
       ) {
         continue;
@@ -21430,7 +21585,7 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   const documentExactOutputPaths = [
     ...(assessment.contract?.exactOutputPaths || []),
     ...exactOutputPathsForState(state),
-    ...currentGoalDocumentArtifactPathsForState(state),
+    ...currentGoalDocumentArtifactPathsForState(state, config),
   ];
   const documentContractText = `${completionContractGoal(config, state)}\n${candidateResult}`;
   const documentDeliverableRequested =
