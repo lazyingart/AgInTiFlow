@@ -11030,6 +11030,62 @@ try {
     })?.category === "repeated-no-progress-call",
     "a third identical unchanged shell probe was not blocked"
   );
+  const missingCanvasPath = path.join(workspace, "report.pdf");
+  const repeatedCanvasState = {
+    meta: {
+      toolLoop: {
+        stagnationEpoch: 4,
+        recent: [
+          {
+            toolName: "send_to_canvas",
+            ok: false,
+            blocked: true,
+            stagnationEpoch: 4,
+            error: `Canvas path does not exist or is not a file: ${missingCanvasPath}`,
+          },
+          {
+            toolName: "send_to_canvas",
+            ok: false,
+            blocked: true,
+            stagnationEpoch: 4,
+            error: `Canvas path does not exist or is not a file: ${missingCanvasPath}`,
+          },
+        ],
+      },
+    },
+  };
+  assert(
+    repeatedNoProgressToolBlock(
+      repeatedCanvasState,
+      "send_to_canvas",
+      {
+        path: missingCanvasPath,
+        title: "Changed title",
+        note: "A cosmetically different note",
+      },
+      { commandCwd: workspace }
+    )?.category === "repeated-no-progress-call",
+    "changed canvas metadata allowed the same missing artifact target to loop"
+  );
+  assert(
+    repeatedNoProgressToolBlock(
+      repeatedCanvasState,
+      "send_to_canvas",
+      { path: path.join(workspace, "different.pdf"), title: "Different artifact" },
+      { commandCwd: workspace }
+    ) === null,
+    "a different canvas artifact was blocked by unrelated missing-path history"
+  );
+  await fs.writeFile(missingCanvasPath, "%PDF-1.4\n", "utf8");
+  assert(
+    repeatedNoProgressToolBlock(
+      repeatedCanvasState,
+      "send_to_canvas",
+      { path: missingCanvasPath, title: "Now available" },
+      { commandCwd: workspace }
+    ) === null,
+    "a canvas artifact created after prior failures remained blocked"
+  );
   assert(
     repeatedNoProgressToolBlock(repeatedProbeState, "run_command", repeatedProbeArgs, {
       commandCwd: workspace,
