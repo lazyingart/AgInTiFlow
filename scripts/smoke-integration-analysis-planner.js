@@ -2426,7 +2426,11 @@ async function texPdfRevisionContextBudgetFailsBeforeInference() {
 }
 
 async function exactQaoaFigurePromptCommitsBeforeFinalCallback() {
-  const prompt = "Write a latex of qaoa compile and give me link of pdf with figures";
+  const prompt = [
+    "Create exactly two downloadable file artifacts named qaoa-figure.tex and qaoa-figure.pdf.",
+    "Write a LaTeX QAOA note with one self-contained figure.",
+    "Do not create any other file.",
+  ].join(" ");
   const source = [
     "\\documentclass{article}",
     "\\usepackage{tikz}",

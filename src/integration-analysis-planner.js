@@ -658,9 +658,20 @@ function unsupportedCapabilityRequests(
     const suppliedTextTarget = /\b(?:in|from)\s+(?:the\s+)?(?:supplied|provided|attached|this|given)\s+(?:text|content|document)\b/iu.test(clause);
     if (!searchEnabled && !suppliedTextTarget && UNSUPPORTED_SEARCH_ACTION.test(clause)) requested.add("search");
     if (UNSUPPORTED_WEB_ACTION.test(clause)) requested.add("web");
-    const fileClause = texPdfEnabled
-      ? clause.replace(/\.(?:tex|pdf)\b|\b(?:latex|tex|pdf)(?:\s+(?:source|file|document|format))?\b/giu, " ")
-      : clause;
+    let fileClause = clause;
+    if (texPdfEnabled) {
+      const namesPairedArtifacts = /\.tex\b/iu.test(clause) && /\.pdf\b/iu.test(clause);
+      fileClause = clause.replace(
+        /\.(?:tex|pdf)\b|\b(?:latex|tex|pdf)(?:\s+(?:source|file|document|format))?\b/giu,
+        " "
+      );
+      if (namesPairedArtifacts) {
+        fileClause = fileClause.replace(
+          /\b(?:exactly\s+)?two\s+(?:downloadable\s+)?(?:file\s+artifacts?|files?|downloads?)\s*(?:named)?\b/giu,
+          " "
+        );
+      }
+    }
     if (!fileCreationEnabled && UNSUPPORTED_FILE_ACTION.test(fileClause)) requested.add("file");
     if (!texPdfEnabled && UNSUPPORTED_SINGLE_TEX_PDF_ACTION.test(clause)) requested.add("file");
     if (UNSUPPORTED_EXTERNAL_ACTION.test(clause)) requested.add("external");
