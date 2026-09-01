@@ -92,6 +92,333 @@ function normalizedComparableText(value = "") {
     .toLowerCase();
 }
 
+const SOURCE_UNRESOLVED_STATUS_PATTERN =
+  /\b(?:awaiting|blocked|login\s+required|no\s+upload\s+started|not\s+(?:yet\s+)?(?:confirmed|complete|completed|verified)|pending|requires?\s+(?:confirmation|verification)|still\s+(?:needs?|requires?)\s+(?:checking|confirmation|verification)|unconfirmed|unverified|waiting)\b|(?:阻塞|登录(?:已)?过期|登入(?:已)?過期|需要登录|需要登入)|(?:尚未|还没|還沒|未)(?:确认|確認|核实|核實|验证|驗證|完成|同步|上传|上傳|发布|發佈)|(?:等待|待)(?:确认|確認|核实|核實|验证|驗證)|(?:需要|必须|必須|要).{0,24}(?:查证|查證|核实|核實|验证|驗證|确认|確認).{0,24}(?:才|后|後).{0,20}(?:完成|写成完成|寫成完成|列为完成|列為完成)|(?:不能|不要).{0,30}(?:写成|寫成|列为|列為|视为|視為).{0,10}(?:完成|已完成)/iu;
+const OUTPUT_COMPLETION_STATUS_PATTERN =
+  /\b(?:archived|backed\s+up|completed|confirmed|delivered|done|finished|paid|posted|published|saved|synced|synchronized|uploaded|verified)\b|(?:已(?:完成|确认|確認|交付|付款|支付|发布|發佈|归档|歸檔|保存|同步|上传|上傳|验证|驗證)|完成事项|完成事項)/iu;
+const OUTPUT_NEGATED_STATUS_PATTERN =
+  /\b(?:not|never|no)\b.{0,28}\b(?:archived|backed\s+up|completed|confirmed|delivered|done|finished|paid|posted|published|saved|synced|synchronized|uploaded|verified)\b|(?:未|没有|沒有|不要|不能).{0,24}(?:完成|确认|確認|交付|付款|支付|发布|發佈|归档|歸檔|保存|同步|上传|上傳|验证|驗證)/iu;
+const STATUS_EVIDENCE_STOP_WORDS = new Set([
+  "action", "actions", "already", "complete", "completed", "confirmation", "confirmed",
+  "been", "current", "done", "evidence", "finished", "has", "item", "items", "pending", "posted", "received",
+  "request", "requested", "requires", "status", "still", "task", "tasks", "unconfirmed",
+  "unverified", "verification", "verified", "waiting",
+]);
+const STATUS_CJK_BIGRAM_STOP_WORDS = new Set([
+  "不要", "不能", "今天", "仍然", "以后", "已完", "完成", "如果", "已经", "目前", "需要",
+  "是否", "等待", "确认", "確認", "明确", "明確", "真正", "才能", "这个", "這個",
+]);
+const STATUS_HAN_CHAR_STOP_CHARS = new Set(
+  [..."的是了和与與及在有为為把被已未不没沒要需会會可到收成完后後前今明这這个個其还還只再"]
+);
+const SOURCE_TOPIC_STOP_WORDS = new Set([
+  "Agents", "Chat", "Completed", "Document", "Generated", "History", "Lachlan",
+  "LaTeX", "Markdown", "PDF", "Project", "Read", "Report", "System", "TASK",
+  "Task", "Timestamps", "Today", "Verify",
+]);
+
+function statusClauses(text = "") {
+  const clauses = [];
+  String(text || "")
+    .replace(/\r/gu, "")
+    .replace(/\n(?=\s*[\u0088•*-]\s+)/gu, "\n\n")
+    .split(/\n\s*\n|\f/gu)
+    .map((paragraph) => paragraph.replace(/\s*\n\s*/gu, " ").trim())
+    .filter(Boolean)
+    .forEach((line, lineIndex) => {
+      line
+        .split(/(?<!\d)\.(?!\d)|[!?;。！？；]+/u)
+        .map((item) => item.replace(/\s+/gu, " ").trim())
+        .filter(Boolean)
+        .forEach((value, clauseIndex) => clauses.push({ value, lineIndex, clauseIndex }));
+    });
+  return clauses;
+}
+
+function statusEntityText(text = "") {
+  return String(text || "").replace(
+    /^\s*(?:\[[^\]\r\n]{1,80}\]\s*)?\d{1,2}:\d{2}(?::\d{2})?\s+[^:：\r\n]{1,80}[:：]\s*/u,
+    ""
+  );
+}
+
+function statusLatinTerms(text = "") {
+  return new Set(
+    (normalizedComparableText(statusEntityText(text)).match(/[a-z][a-z0-9_./+-]{2,}/gu) || [])
+      .map((item) => item.replace(/^[./+-]+|[./+-]+$/gu, ""))
+      .filter((item) => item.length >= 3 && !STATUS_EVIDENCE_STOP_WORDS.has(item))
+  );
+}
+
+function statusHanCharacters(text = "") {
+  return new Set(
+    (statusEntityText(text).match(/\p{Script=Han}/gu) || [])
+      .filter((value) => !STATUS_HAN_CHAR_STOP_CHARS.has(value))
+  );
+}
+
+function statusCjkBigrams(text = "") {
+  const values = new Set();
+  for (const run of statusEntityText(text).match(/\p{Script=Han}+/gu) || []) {
+    for (let index = 0; index + 1 < run.length; index += 1) {
+      const value = run.slice(index, index + 2);
+      if (!STATUS_CJK_BIGRAM_STOP_WORDS.has(value)) values.add(value);
+    }
+  }
+  return values;
+}
+
+function setsOverlap(left, right) {
+  for (const value of left) {
+    if (right.has(value)) return true;
+  }
+  return false;
+}
+
+export function evaluateUnverifiedSourceCompletionClaims({ sourceText = "", outputText = "" } = {}) {
+  const sourceClauses = statusClauses(sourceText).map((clause) => ({
+    ...clause,
+    latin: statusLatinTerms(clause.value),
+    han: statusHanCharacters(clause.value),
+    bigrams: statusCjkBigrams(clause.value),
+  }));
+  const unresolvedIndexes = sourceClauses
+    .map((clause, index) => SOURCE_UNRESOLVED_STATUS_PATTERN.test(clause.value) ? index : -1)
+    .filter((index) => index >= 0);
+  const outputClauses = statusClauses(outputText);
+  const outputClaims = outputClauses
+    .map((clause, index) => {
+      const latin = statusLatinTerms(clause.value);
+      const bigrams = statusCjkBigrams(clause.value);
+      const previous = index > 0 ? outputClauses[index - 1] : null;
+      if (
+        latin.size === 0 &&
+        bigrams.size === 0 &&
+        previous?.lineIndex === clause.lineIndex &&
+        previous.clauseIndex + 1 === clause.clauseIndex
+      ) {
+        for (const term of statusLatinTerms(previous.value)) latin.add(term);
+        for (const term of statusCjkBigrams(previous.value)) bigrams.add(term);
+      }
+      return { ...clause, latin, bigrams };
+    })
+    .filter((clause) =>
+      OUTPUT_COMPLETION_STATUS_PATTERN.test(clause.value) &&
+      !OUTPUT_NEGATED_STATUS_PATTERN.test(clause.value)
+    );
+  const defects = [];
+
+  for (const unresolvedIndex of unresolvedIndexes) {
+    const connected = new Set([unresolvedIndex]);
+    const unresolved = sourceClauses[unresolvedIndex];
+    for (const [candidateIndex, candidate] of sourceClauses.entries()) {
+      if (candidateIndex === unresolvedIndex) continue;
+      const adjacentSameLine =
+        candidate.lineIndex === unresolved.lineIndex &&
+        Math.abs(candidate.clauseIndex - unresolved.clauseIndex) === 1 &&
+        (
+          setsOverlap(candidate.han, unresolved.han) ||
+          setsOverlap(candidate.bigrams, unresolved.bigrams) ||
+          setsOverlap(candidate.latin, unresolved.latin)
+        );
+      if (
+        adjacentSameLine ||
+        setsOverlap(candidate.latin, unresolved.latin) ||
+        setsOverlap(candidate.bigrams, unresolved.bigrams)
+      ) {
+        connected.add(candidateIndex);
+      }
+    }
+    const latinAnchors = new Set();
+    const cjkAnchors = new Set();
+    for (const index of connected) {
+      for (const term of sourceClauses[index].latin) latinAnchors.add(term);
+      for (const term of sourceClauses[index].bigrams) cjkAnchors.add(term);
+    }
+    const conflict = outputClaims.find((claim) =>
+      setsOverlap(claim.latin, latinAnchors) || setsOverlap(claim.bigrams, cjkAnchors)
+    );
+    if (!conflict) continue;
+    const anchor = [...conflict.latin].find((term) => latinAnchors.has(term)) ||
+      [...conflict.bigrams].find((term) => cjkAnchors.has(term)) ||
+      "the same item";
+    defects.push({
+      code: "source-unverified-completion-claim",
+      message:
+        `The output reports ${JSON.stringify(anchor)} as completed, but the authoritative source says that item still requires confirmation or verification. ` +
+        "Keep it pending or unverified until completion evidence is present.",
+    });
+  }
+
+  return { ok: defects.length === 0, defects };
+}
+
+export function sourceTopicCoverageRequested(goal = "", sourceText = "") {
+  const contract = `${goal}\n${sourceText}`;
+  return (
+    /\b(?:complete\s+(?:source|context)|context[- ]complete|full\s+(?:context|source)|read\s+the\s+complete|reconcile(?:d|s|ing)?\s+(?:corrections?|dependencies|source))\b/iu.test(
+      contract
+    ) ||
+    /(?:完整(?:上下文|内容|內容|材料|资料|資料)|阅读全文|閱讀全文|读取完整|讀取完整|综合全部|綜合全部|结合全部|結合全部|对照全部|對照全部|协调更正|協調更正)/u.test(
+      contract
+    )
+  );
+}
+
+function salientSourceTopicAnchors(sourceText = "") {
+  const scores = new Map();
+  const add = (value, weight = 1) => {
+    const cleaned = String(value || "")
+      .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}.+-]+$/gu, "")
+      .trim();
+    if (
+      cleaned.length < 2 ||
+      cleaned.length > 80 ||
+      SOURCE_TOPIC_STOP_WORDS.has(cleaned) ||
+      /\.(?:md|pdf|tex)$/iu.test(cleaned)
+    ) {
+      return;
+    }
+    const key = normalizedComparableText(cleaned);
+    if (!key) return;
+    const prior = scores.get(key) || { value: cleaned, score: 0 };
+    prior.score += weight;
+    if (cleaned.length > prior.value.length) prior.value = cleaned;
+    scores.set(key, prior);
+  };
+
+  for (const clause of statusClauses(sourceText)) {
+    const body = statusEntityText(clause.value);
+    for (const match of body.matchAll(
+      /\b(?:[A-Z]{2,}[A-Z0-9+-]*|[A-Za-z]+\d[A-Za-z0-9.+-]*|[A-Za-z]*\d+[A-Za-z][A-Za-z0-9.+-]*|[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+|[A-Z][a-z]{3,})\b/gu
+    )) {
+      add(match[0], 2);
+    }
+    for (const match of body.matchAll(
+      /(?<![\d.])\d+(?:\.\d+)?\s*(?:V|mA|A|mm|cm|um|µm|nm|ms|Hz|kHz|MHz|GB|MB)\b/giu
+    )) {
+      add(match[0].replace(/\s+/gu, " "), 3);
+    }
+  }
+  return [...scores.values()]
+    .sort((left, right) => right.score - left.score || left.value.localeCompare(right.value))
+    .slice(0, 24)
+    .map((item) => item.value);
+}
+
+export function evaluateSourceTopicCoverage({
+  goal = "",
+  sourceText = "",
+  outputText = "",
+} = {}) {
+  if (!sourceTopicCoverageRequested(goal, sourceText)) {
+    return {
+      ok: true,
+      checked: false,
+      anchors: [],
+      covered: [],
+      missing: [],
+      defects: [],
+    };
+  }
+  const anchors = salientSourceTopicAnchors(sourceText);
+  if (anchors.length < 4 || String(sourceText || "").length < 400) {
+    return {
+      ok: true,
+      checked: false,
+      anchors,
+      covered: [],
+      missing: [],
+      defects: [],
+    };
+  }
+  const covered = anchors.filter((anchor) => containsLiteral(outputText, anchor));
+  const missing = anchors.filter((anchor) => !covered.includes(anchor));
+  const requiredCovered = Math.min(6, Math.max(3, Math.ceil(anchors.length * 0.3)));
+  const defects = covered.length < requiredCovered
+    ? [{
+        code: "source-topic-coverage-incomplete",
+        message:
+          `The report covers only ${covered.length}/${anchors.length} salient source anchors, below the ${requiredCovered}-anchor context-completeness floor. ` +
+          `It appears to describe document generation instead of the source content. Re-read the authoritative material and incorporate its current decisions, statuses, constraints, and ideas. Missing examples: ${missing.slice(0, 8).join(", ")}.`,
+      }]
+    : [];
+  return {
+    ok: defects.length === 0,
+    checked: true,
+    anchors,
+    covered,
+    missing,
+    requiredCovered,
+    defects,
+  };
+}
+
+function latexWithoutComments(source = "") {
+  return String(source || "")
+    .split(/\r?\n/u)
+    .map((line) => {
+      for (let index = 0; index < line.length; index += 1) {
+        if (line[index] !== "%") continue;
+        let slashCount = 0;
+        for (let cursor = index - 1; cursor >= 0 && line[cursor] === "\\"; cursor -= 1) {
+          slashCount += 1;
+        }
+        if (slashCount % 2 === 0) return line.slice(0, index);
+      }
+      return line;
+    })
+    .join("\n");
+}
+
+export function evaluateLatexSourceStructure(source = "") {
+  const uncommented = latexWithoutComments(source);
+  const endings = [...uncommented.matchAll(/\\end\s*\{\s*document\s*\}/gu)];
+  const defects = [];
+  const singletonCommands = ["documentclass", "title", "author", "date"];
+  for (const command of singletonCommands) {
+    const matches = [
+      ...uncommented.matchAll(
+        new RegExp(`^\\\\${command}(?:\\s*\\[[^\\]\\n]*\\])?\\s*\\{`, "gmu")
+      ),
+    ];
+    if (matches.length > 1) {
+      defects.push({
+        code: "latex-duplicate-singleton-command",
+        command,
+        count: matches.length,
+        message: `The LaTeX source contains ${matches.length} active \\${command} declarations; keep one authoritative value.`,
+      });
+    }
+  }
+  if (endings.length === 0) {
+    defects.push({
+      code: "latex-missing-document-end",
+      message: "The LaTeX source has no active \\end{document} marker.",
+    });
+  } else {
+    if (endings.length > 1) {
+      defects.push({
+        code: "latex-duplicate-document-end",
+        message: `The LaTeX source contains ${endings.length} active \\end{document} markers, which indicates duplicated document content.`,
+      });
+    }
+    const firstEnding = endings[0];
+    const trailing = uncommented.slice(firstEnding.index + firstEnding[0].length).trim();
+    if (trailing) {
+      defects.push({
+        code: "latex-content-after-document-end",
+        message: "The LaTeX source contains active content after the first \\end{document} marker.",
+      });
+    }
+  }
+  return {
+    ok: defects.length === 0,
+    endDocumentCount: endings.length,
+    defects,
+  };
+}
+
 function containsLiteral(text = "", literal = "") {
   const normalizedText = normalizedComparableText(text);
   const normalizedLiteral = normalizedComparableText(literal);
@@ -241,7 +568,14 @@ export function evaluatePdfPageBalance(bboxXml = "") {
 }
 
 export function evaluateExtractedDocumentText(text = "") {
-  const unexpected = [...String(text || "").matchAll(/[\u0000-\u0008\u000b\u000e-\u001f\u007f-\u009f\ufffd]/gu)]
+  const source = String(text || "");
+  const unexpected = [...source.matchAll(/[\u0000-\u0008\u000b\u000e-\u001f\u007f-\u009f\ufffd]/gu)]
+    .filter((match) => {
+      if (match[0] !== "\u0088") return true;
+      const before = source.slice(0, match.index);
+      const after = source.slice(match.index + match[0].length);
+      return !/(?:^|[\n\f])\s*$/u.test(before) || !/^\s+\S/u.test(after);
+    })
     .map((match) => match[0].codePointAt(0))
     .filter(Number.isInteger);
   const codePoints = [...new Set(unexpected)].sort((a, b) => a - b);
@@ -283,7 +617,12 @@ export function evaluatePdfTextBounds(bboxXml = "", minimumMargin = MIN_READABLE
   return { ok: pages.length > 0 && defects.length === 0, checked: pages.length > 0, defects };
 }
 
-export function evaluateCurrentStateText({ sourceText = "", outputText = "", currentStateRequired = false } = {}) {
+export function evaluateCurrentStateText({
+  sourceText = "",
+  outputText = "",
+  currentStateRequired = false,
+  goal = "",
+} = {}) {
   const supersededLiterals = extractSupersededLiterals(sourceText);
   const presentSupersededLiterals = supersededLiterals.filter((literal) => containsLiteral(outputText, literal));
   const defects = [];
@@ -305,7 +644,17 @@ export function evaluateCurrentStateText({ sourceText = "", outputText = "", cur
       });
     }
   }
-  return { ok: defects.length === 0, defects, supersededLiterals, presentSupersededLiterals };
+  const unsupportedCompletion = evaluateUnverifiedSourceCompletionClaims({ sourceText, outputText });
+  defects.push(...unsupportedCompletion.defects);
+  const topicCoverage = evaluateSourceTopicCoverage({ goal, sourceText, outputText });
+  defects.push(...topicCoverage.defects);
+  return {
+    ok: defects.length === 0,
+    defects,
+    supersededLiterals,
+    presentSupersededLiterals,
+    topicCoverage,
+  };
 }
 
 function parsedCount(value = "") {
@@ -333,6 +682,122 @@ function actionSectionItemCount(outputText = "") {
 
 export function evaluateDocumentConsistency(outputText = "") {
   const defects = [];
+  const normalizedLines = String(outputText || "")
+    .split(/\r?\n/u)
+    .map((line) => line.replace(/\s+/gu, " ").trim())
+    .filter(Boolean);
+  const repeatedParenthetical = String(outputText || "").match(
+    /\(([^()\n]{3,100})\)\s*\(\1\)/iu
+  );
+  let repeatedWordSequence = "";
+  for (const line of normalizedLines) {
+    const words = line.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu) || [];
+    for (let width = Math.min(8, Math.floor(words.length / 2)); width >= 3; width -= 1) {
+      for (let index = 0; index + width * 2 <= words.length; index += 1) {
+        const left = words.slice(index, index + width).join(" ").toLowerCase();
+        const right = words.slice(index + width, index + width * 2).join(" ").toLowerCase();
+        if (left === right) {
+          repeatedWordSequence = left;
+          break;
+        }
+      }
+      if (repeatedWordSequence) break;
+    }
+    if (repeatedWordSequence) break;
+  }
+  if (repeatedParenthetical || repeatedWordSequence) {
+    defects.push({
+      code: "duplicated-prose-fragment",
+      message: `The reader-facing document repeats the same adjacent prose fragment (${JSON.stringify(
+        repeatedWordSequence || repeatedParenthetical?.[1] || ""
+      )}). Remove the accidental duplication before delivery.`,
+    });
+  }
+
+  const repeatedProseUnits = new Map();
+  for (const unit of String(outputText || "")
+    .replace(/\r/gu, "")
+    .replace(/\f/gu, "\n\n")
+    .replace(/\n(?=\s*[\u0088•*-]\s+)/gu, "\n\n")
+    .split(/\n\s*\n/gu)
+    .flatMap((paragraph) =>
+      paragraph
+        .replace(/\s*\n\s*/gu, " ")
+        .split(/(?<=[.!?。！？])\s+/u)
+    )
+    .map((item) => item.replace(/^[\s\u0088•*-]+/u, "").replace(/\s+/gu, " ").trim())
+    .filter((item) => item.length >= 60)) {
+    const normalized = normalizedComparableText(unit);
+    repeatedProseUnits.set(normalized, (repeatedProseUnits.get(normalized) || 0) + 1);
+  }
+  const repeatedProseUnit = [...repeatedProseUnits.entries()].find(
+    ([, count]) => count > 1
+  )?.[0];
+  if (
+    repeatedProseUnit &&
+    !defects.some((item) => item.code === "duplicated-prose-fragment")
+  ) {
+    defects.push({
+      code: "duplicated-prose-fragment",
+      message: `The reader-facing document repeats the same non-adjacent prose unit (${JSON.stringify(
+        repeatedProseUnit.slice(0, 140)
+      )}). Remove the duplicate before delivery.`,
+    });
+  }
+
+  const completedSection = String(outputText || "").match(
+    /(?:^|\n)\s*(?:completed tasks?|completed today|完成事项|完成事項|今日完成)\s*\n([\s\S]*?)(?=\n\s*(?:pending actions?|pending tasks?|next steps?|clarifications?|future ideas?|等待事项|等待事項|下一步|明确不要做|明確不要做|值得保留的想法)\s*(?:\n|$)|$)/iu
+  )?.[1] || "";
+  if (
+    completedSection &&
+    /\b(?:pending|unverified|awaiting|waiting|not verified|needs? verification|verification (?:is )?pending)\b|(?:待确认|待確認|待核实|待核實|未核实|未核實|未验证|未驗證|等待)/iu.test(
+      completedSection
+    )
+  ) {
+    defects.push({
+      code: "completed-section-contains-unverified-work",
+      message:
+        "The Completed section contains work that is still pending or unverified. Move that item to pending/waiting and state only the verified completion evidence.",
+    });
+  }
+
+  const bulletStatusUnits = String(outputText || "")
+    .split(/(?=^\s*[•*-]\s+)/gmu)
+    .filter((block) => /^\s*[•*-]\s+/u.test(block))
+    .map((block) => block.replace(/\s+/gu, " ").trim())
+    .filter(Boolean);
+  const statusUnits = [...normalizedLines, ...bulletStatusUnits];
+  const completedLines = statusUnits.filter((line) =>
+    /(?:\b(?:completed|done|finished|verified)\b|(?:已完成|完成事项|完成：|已验证))/iu.test(line)
+  );
+  const unresolvedLines = statusUnits.filter((line) =>
+    /(?:\b(?:pending|unverified|awaiting|waiting|not verified|needs? verification)\b|(?:待确认|待核实|未核实|未验证|等待))/iu.test(line)
+  );
+  const statusStopWords = new Set([
+    "action", "actions", "artifact", "artifacts", "completed", "document", "documents",
+    "evidence", "finished", "item", "items", "pending", "project", "projects", "report",
+    "reports", "status", "task", "tasks", "unverified", "verified", "waiting", "work",
+  ]);
+  const statusTerms = (line) => new Set(
+    (line.toLowerCase().match(/[a-z][a-z0-9_-]{3,}/gu) || [])
+      .filter((term) => !statusStopWords.has(term))
+  );
+  let contradictoryTerm = "";
+  for (const completedLine of completedLines) {
+    const completedTerms = statusTerms(completedLine);
+    for (const unresolvedLine of unresolvedLines) {
+      contradictoryTerm = [...statusTerms(unresolvedLine)].find((term) => completedTerms.has(term)) || "";
+      if (contradictoryTerm) break;
+    }
+    if (contradictoryTerm) break;
+  }
+  if (contradictoryTerm) {
+    defects.push({
+      code: "completed-unverified-status-conflict",
+      message: `The document places ${JSON.stringify(contradictoryTerm)} in both completed and unresolved status text. Keep unverified work out of the completed section until evidence exists.`,
+    });
+  }
+
   const sectionCount = actionSectionItemCount(outputText);
   if (sectionCount > 0) {
     for (const match of String(outputText || "").matchAll(ACTION_COUNT_PATTERN)) {
@@ -349,7 +814,7 @@ export function evaluateDocumentConsistency(outputText = "") {
   return { ok: defects.length === 0, defects, actionSectionItemCount: sectionCount };
 }
 
-async function collectSourceDocuments(commandCwd) {
+export async function collectDocumentSourceDocuments(commandCwd, exactInputPaths = []) {
   const documents = [];
   let totalBytes = 0;
   const maxFiles = 128;
@@ -392,6 +857,26 @@ async function collectSourceDocuments(commandCwd) {
   }
 
   await visit(commandCwd, false, 0);
+  const knownPaths = new Set(documents.map((item) => item.path));
+  for (const value of Array.isArray(exactInputPaths) ? exactInputPaths : []) {
+    if (documents.length >= maxFiles || totalBytes >= maxTotalBytes) break;
+    const absolutePath = path.resolve(commandCwd, String(value || ""));
+    if (!isInsideRoot(commandCwd, absolutePath)) continue;
+    const relativePath = portablePath(path.relative(commandCwd, absolutePath));
+    if (!relativePath || knownPaths.has(relativePath)) continue;
+    if (!DOCUMENT_EXTENSIONS.has(path.extname(absolutePath).toLowerCase())) continue;
+    try {
+      const stat = await fs.stat(absolutePath);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > maxFileBytes) continue;
+      if (totalBytes + stat.size > maxTotalBytes) continue;
+      const text = await fs.readFile(absolutePath, "utf8");
+      documents.push({ path: relativePath, text });
+      knownPaths.add(relativePath);
+      totalBytes += stat.size;
+    } catch {
+      // Exact unreadable sources remain visible to the existing source/evidence gates.
+    }
+  }
   return documents;
 }
 
@@ -476,10 +961,35 @@ async function extractDocxText(artifact) {
   return textFromDocumentXml(result.stdout);
 }
 
-function currentStateRequested(goal = "", sourceText = "") {
+export async function documentArtifactVersioningDefect(workspace, artifactPath) {
+  try {
+    await execFileAsync("git", ["ls-files", "--error-unmatch", "--", artifactPath], {
+      cwd: workspace,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 10_000,
+    });
+    return null;
+  } catch {
+    return {
+      code: "document-artifact-not-versioned",
+      path: artifactPath,
+      message:
+        `${artifactPath} is a requested document deliverable but is not tracked by Git. ` +
+        "Remove any ignore rule that hides it, stage it explicitly, and commit the source plus final document artifact.",
+    };
+  }
+}
+
+export function currentStateRequested(goal = "", sourceText = "") {
   const contractText = `${goal}\n${sourceText}`;
-  return /\b(?:authoritative current|current state|latest explicit correction|latest correction|superseded|use the latest)\b/i.test(
-    contractText
+  return (
+    /\b(?:authoritative current|current state|latest explicit correction|latest correction|reconcile(?:d|s|ing)?\s+(?:the\s+)?(?:corrections?|updates?)|superseded|use the latest)\b/i.test(
+      contractText
+    ) ||
+    /(?:更正|纠正|糾正|修正|取消|撤回|以.{0,30}为准|以.{0,30}為準|最新(?:要求|版本|决定|決定)|不要把.{0,60}(?:写成|寫成|列为|列為|视为|視為)(?:完成|已完成))/u.test(
+      contractText
+    )
   );
 }
 
@@ -488,6 +998,8 @@ export async function validateWordDocumentArtifacts({
   candidateResult = "",
   goal = "",
   exactOutputPaths = [],
+  exactInputPaths = [],
+  requireVersioned = false,
 } = {}) {
   const workspace = path.resolve(commandCwd || process.cwd());
   const outputCandidates = [
@@ -511,16 +1023,56 @@ export async function validateWordDocumentArtifacts({
     };
   }
 
-  const sourceDocuments = await collectSourceDocuments(workspace);
+  const sourceDocuments = await collectDocumentSourceDocuments(workspace, exactInputPaths);
   const sourceText = sourceDocuments.map((item) => item.text).join("\n\n");
   const currentStateRequired = currentStateRequested(goal, sourceText);
+  const latexCandidates = new Set(
+    (Array.isArray(exactOutputPaths) ? exactOutputPaths : [])
+      .filter((item) => /\.tex$/iu.test(String(item || "")))
+      .map(String)
+  );
+  for (const artifact of relevantArtifacts) {
+    if (artifact.extension === ".pdf") {
+      latexCandidates.add(artifact.path.replace(/\.pdf$/iu, ".tex"));
+    }
+  }
+  const latexArtifacts = (
+    await resolveExistingArtifacts(workspace, [...latexCandidates])
+  ).filter((item) => item.extension === ".tex");
+  const latexSourceReports = [];
+  for (const artifact of latexArtifacts) {
+    try {
+      const source = await fs.readFile(artifact.absolutePath, "utf8");
+      const structure = evaluateLatexSourceStructure(source);
+      defects.push(...structure.defects.map((item) => ({ ...item, path: artifact.path })));
+      latexSourceReports.push({
+        path: artifact.path,
+        endDocumentCount: structure.endDocumentCount,
+      });
+    } catch (error) {
+      defects.push({
+        code: "latex-source-inspection-failed",
+        path: artifact.path,
+        message: `Could not inspect ${artifact.path}: ${String(error?.message || error).slice(0, 300)}.`,
+      });
+    }
+  }
   const artifactReports = [];
   for (const artifact of relevantArtifacts) {
+    if (requireVersioned) {
+      const versioningDefect = await documentArtifactVersioningDefect(workspace, artifact.path);
+      if (versioningDefect) defects.push(versioningDefect);
+    }
     try {
       if (artifact.extension === ".pdf") {
         const extracted = await extractPdf(artifact);
         const textQuality = evaluateExtractedDocumentText(extracted.text);
-        const semantic = evaluateCurrentStateText({ sourceText, outputText: extracted.text, currentStateRequired });
+        const semantic = evaluateCurrentStateText({
+          sourceText,
+          outputText: extracted.text,
+          currentStateRequired,
+          goal,
+        });
         const consistency = evaluateDocumentConsistency(extracted.text);
         const pageBalance = evaluatePdfPageBalance(extracted.bbox);
         const textBounds = evaluatePdfTextBounds(extracted.bbox);
@@ -551,11 +1103,17 @@ export async function validateWordDocumentArtifacts({
           pages: pageBalance.pages,
           actionSectionItemCount: consistency.actionSectionItemCount,
           supersededLiterals: semantic.supersededLiterals,
+          topicCoverage: semantic.topicCoverage,
         });
       } else {
         const text = await extractDocxText(artifact);
         const textQuality = evaluateExtractedDocumentText(text);
-        const semantic = evaluateCurrentStateText({ sourceText, outputText: text, currentStateRequired });
+        const semantic = evaluateCurrentStateText({
+          sourceText,
+          outputText: text,
+          currentStateRequired,
+          goal,
+        });
         const consistency = evaluateDocumentConsistency(text);
         if (!String(text || "").trim()) {
           defects.push({
@@ -573,6 +1131,7 @@ export async function validateWordDocumentArtifacts({
           textChars: text.length,
           actionSectionItemCount: consistency.actionSectionItemCount,
           supersededLiterals: semantic.supersededLiterals,
+          topicCoverage: semantic.topicCoverage,
         });
       }
     } catch (error) {
@@ -596,6 +1155,7 @@ export async function validateWordDocumentArtifacts({
     ok: uniqueDefects.length === 0,
     checked: true,
     artifacts: artifactReports,
+    latexSources: latexSourceReports,
     sourcePaths: sourceDocuments.map((item) => item.path),
     currentStateRequired,
     defects: uniqueDefects,

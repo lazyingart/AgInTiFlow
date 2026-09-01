@@ -576,6 +576,11 @@ const REQUESTED_ARTIFACT_FORMATS = [
   { extension: ".pptx", pattern: /\b(?:pptx|powerpoint)\b/i, description: "editable PowerPoint deck" },
   { extension: ".odp", pattern: /\b(?:odp|open(?:office|document) presentation)\b/i, description: "editable ODP deck" },
   { extension: ".pdf", pattern: /\bpdf\b/i, description: "PDF document" },
+  {
+    extension: ".tex",
+    pattern: /(?:\b(?:editable\s+)?(?:latex|tex)\s+source\b|\.tex\b)/i,
+    description: "editable LaTeX source",
+  },
   { extension: ".docx", pattern: /\b(?:docx|word document)\b/i, description: "editable Word document" },
   { extension: ".xlsx", pattern: /\b(?:xlsx|excel workbook)\b/i, description: "editable spreadsheet" },
   { extension: ".png", pattern: /\bpng\b/i, description: "PNG image" },

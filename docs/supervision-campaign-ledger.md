@@ -609,3 +609,44 @@ wrong panes, stale markers, and nonzero exits remain rejected.
 The real retained session then finished without repeating the commit or any
 external side effect. The complete npm suite, focused evidence regressions, and
 registry installation passed. The fix is released as AgInTiFlow `0.20.301`.
+
+### Context-complete document repair and semantic validation
+
+Memo retests `082` through `084` exercised a retained LocalLLM document task
+against a realistic mixed-language chat history. The task required a compiled
+PDF, faithful current-state reconciliation, and a committed artifact. The
+campaign exposed three independent AgInTiFlow runtime gaps rather than a
+LabCanvas-specific routing problem.
+
+In `082`, the TeX compiler repeatedly identified one exact line containing an
+unescaped underscore. After several valid repairs, the provider ignored the
+remaining narrow patch schema and attempted to replace the whole document.
+AgInTiFlow now derives the mechanically safe replacement from the compiler
+diagnostic and current source, constrains the trusted patch contract to that
+replacement, and can recover an invalid broad model patch into the exact
+evidence-derived edit. The recovery is limited to one active
+revision-bound producer diagnostic and cannot generalize into an arbitrary
+rewrite.
+
+In `083`, the provider repaired a quality defect by deleting the remainder of
+the TeX document. Patch anchoring now recognizes LaTeX section boundaries and
+binds a defect to its containing section. A replacement is rejected when it
+changes the net balance of revision-bound LaTeX environments, preventing a
+local list repair from dropping later sections or environment terminators.
+
+In `084`, the provider produced and committed a syntactically valid PDF that
+described the document-generation process but omitted the substantive source
+topics. Document validation now extracts bounded salient topic anchors from a
+complete-context source and requires representative coverage when the request
+explicitly asks for complete, reconciled, or context-complete output. It also
+preserves unverified source status, rejects contradictory completion claims,
+validates LaTeX source structure, and keeps decimal measurements such as
+`0.25 mm` intact during status parsing.
+
+The release also preserves requested artifact and project contracts across
+compaction, replays failed requested PDF producers without repeating successful
+side effects, retains exact compiler lines through bounded retries, rejects
+append-only repairs when replacement is required, and caps repair schemas so a
+small local model receives only the actionable tool surface. Focused coding,
+truthful-completion, writing-routing, progressive-tool, document-quality, and
+dynamic-budget suites pass. These fixes are prepared for AgInTiFlow `0.20.302`.

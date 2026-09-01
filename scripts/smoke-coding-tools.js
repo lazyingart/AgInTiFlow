@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildModelTimeoutRetryMessages,
   genericArtifactFilenameBlock,
+  goalClearlyAllowsOverwrite,
   modelTimeoutExhaustionRoute,
   modelTimeoutRetryRoute,
   normalizeNoMatchQueryResult,
@@ -917,6 +918,14 @@ try {
       exactPdfHeaderAuditPolicy.writesWorkspace === false,
     "a bounded workspace-local PDF header audit incorrectly required destructive host permission"
   );
+  const pdfinfoPolicy = evaluateCommandPolicy("pdfinfo report.pdf", hostWorkspacePolicy);
+  assert(
+    pdfinfoPolicy.allowed &&
+      pdfinfoPolicy.category === "read-only" &&
+      pdfinfoPolicy.needsNetwork === false &&
+      pdfinfoPolicy.writesWorkspace === false,
+    "plain workspace-local pdfinfo inspection incorrectly required host permission"
+  );
   for (const unsafeXxdCommand of [
     "xxd -r - output.bin",
     "xxd report.pdf output.hex",
@@ -1181,12 +1190,40 @@ try {
   );
   assert(pdflatexCompilePolicy.allowed, "workspace-local pdflatex compile should be allowed without package installs");
   assert(pdflatexCompilePolicy.category === "toolchain", "workspace-local pdflatex compile should be classified as toolchain");
+  for (const engine of ["xelatex", "lualatex"]) {
+    const unicodeLatexCompilePolicy = evaluateCommandPolicy(
+      `${engine} -interaction=nonstopmode -halt-on-error main.tex`,
+      hostWorkspacePolicy
+    );
+    assert(unicodeLatexCompilePolicy.allowed, `workspace-local ${engine} compile should be allowed without destructive host access`);
+    assert(unicodeLatexCompilePolicy.category === "toolchain", `workspace-local ${engine} compile should be classified as toolchain`);
+  }
   const latexmkCompilePolicy = evaluateCommandPolicy(
     'cd profile-latex-20260506 && latexmk -pdf main.tex 2>&1; echo "LATEXMK_EXIT:$?"',
     dockerWorkspaceNoInstallsPolicy
   );
   assert(latexmkCompilePolicy.allowed, "workspace-local latexmk compile should be allowed without package installs");
   assert(latexmkCompilePolicy.category === "toolchain", "workspace-local latexmk compile should be classified as toolchain");
+  const latexmkSynctexCompilePolicy = evaluateCommandPolicy(
+    "latexmk -synctex=1 -interaction=nonstopmode main.tex",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    latexmkSynctexCompilePolicy.allowed,
+    "bounded workspace-local latexmk synctex compile should be allowed"
+  );
+  assert(
+    latexmkSynctexCompilePolicy.category === "toolchain",
+    "bounded workspace-local latexmk synctex compile should be classified as toolchain"
+  );
+  assert(
+    goalClearlyAllowsOverwrite("Remove the unrelated article and produce the requested memo."),
+    "explicit removal of a wrong artifact did not authorize its coherent replacement"
+  );
+  assert(
+    goalClearlyAllowsOverwrite("删除错误文件后生成正确报告。"),
+    "explicit Chinese deletion request did not authorize coherent replacement"
+  );
   const pythonUnittestPolicy = evaluateCommandPolicy(
     "python3 -m unittest test_data_helper.py 2>&1",
     dockerWorkspaceNoInstallsPolicy

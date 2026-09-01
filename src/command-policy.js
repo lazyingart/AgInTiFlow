@@ -32,6 +32,7 @@ const READ_ONLY_PATTERNS = [
   /^file(?:\s+[-\w./~*]+)+$/,
   /^stat(?:\s+[-\w./~*]+)+$/,
   /^sha256sum(?:\s+[-\w./~*]+)+$/,
+  /^pdfinfo\s+(?:"[^"\n]+"|'[^'\n]+'|[-\w./~]+)$/,
   /^sed\s+-n\s+['"0-9,:p\s-]+(?:\s+[-\w./~*]+)?$/,
   /^git\s+(status|branch|log|show|diff(?:\s+--stat)?|remote\s+-v)(?:\s+.+)?$/,
   /^git\s+rev-parse(?:\s+(?:--show-toplevel|--git-dir|--is-inside-work-tree|--show-prefix|--show-cdup|--abbrev-ref|--verify|--short(?:=\d+)?|[-\w./@^{}~:]+))+$/,
@@ -51,7 +52,7 @@ const READ_ONLY_PATTERNS = [
   /^(?:[-/\w.]+\/)?adb\s+devices(?:\s+-l)?$/,
   /^(?:[-/\w.]+\/)?emulator\s+-list-avds$/,
   /^(?:[-/\w.]+\/)?sdkmanager\s+--list(?:\s+[-\w./:=]+)*$/,
-  /^(?:pdflatex|latexmk)\s+--version$/,
+  /^(?:latexmk|lualatex|pdflatex|xelatex)\s+--version$/,
   /^(?:(?:[-/\w.]+\/)?python(?:3)?\s+)?[-\w./]*xyq_cdp_browser\.py\s+--cdp-url\s+(?:"[^"\n]+"|'[^'\n]+'|[-\w./:@]+)\s+list-pages$/,
   /^test\s+-[efdx]\s+[-\w./~]+$/,
   /^true$/,
@@ -979,8 +980,8 @@ const TOOLCHAIN_PATTERNS = [
   /^(?:[-/\w.]+\/)?python(?:3(?:\.\d+)*)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
   /^Rscript\s+[-\w./]+\.R(?:\s+[-\w./:=]+)*$/,
   /^(?:\.\/gradlew|[-\w./]+\/gradlew)\s+(?:-p\s+[-\w./]+\s+)?(?:(?::[-\w]+:)?(?:assembleDebug|assembleRelease|bundleDebug|bundleRelease|compileDebugKotlin|compileReleaseKotlin|testDebugUnitTest|lintDebug|lint|check|build))(?:\s+[-\w./:=]+)*$/,
-  /^latexmk\s+(?=[-\w./=\s]*-pdf\b)(?:(?:-cd|-pdf|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+[-\w./]+\.tex$/,
-  /^pdflatex\s+(?:(?:-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+|-jobname\s+[-\w./]+)\s+)*[-\w./]+\.tex$/,
+  /^latexmk\s+(?:(?:-cd|-pdf|-synctex(?:=1)?|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+(?:"[-\w./]+\.tex"|'[-\w./]+\.tex'|[-\w./]+\.tex)$/,
+  /^(?:lualatex|pdflatex|xelatex)\s+(?:(?:-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+|-jobname\s+[-\w./]+)\s+)*(?:"[-\w./]+\.tex"|'[-\w./]+\.tex'|[-\w./]+\.tex)$/,
 ];
 
 const PACKAGE_INSTALL_PATTERNS = [

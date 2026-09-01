@@ -39,6 +39,7 @@ The two screenshots below match the current website hero: terminal-first launch 
 | Website | [https://flow.lazying.art](https://flow.lazying.art) |
 | GitHub | [https://github.com/lazyingart/AgInTiFlow](https://github.com/lazyingart/AgInTiFlow) |
 | npm | [https://www.npmjs.com/package/@lazyingart/agintiflow](https://www.npmjs.com/package/@lazyingart/agintiflow) |
+| npm package chart | [https://npm.chart.dev/@lazyingart/agintiflow](https://npm.chart.dev/@lazyingart/agintiflow) |
 | AAPS npm | [https://www.npmjs.com/package/@lazyingart/aaps](https://www.npmjs.com/package/@lazyingart/aaps) |
 | Product positioning | [references/agintiflow-product-positioning.md](references/agintiflow-product-positioning.md) |
 | Full archived README reference | [references/notes/readme-full-reference-2026-05-05.md](references/notes/readme-full-reference-2026-05-05.md) |

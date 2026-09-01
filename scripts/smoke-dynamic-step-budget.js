@@ -11,6 +11,7 @@ import { acquireSessionRunLock, runAgent } from "../src/agent-runner.js";
 import { RESEARCH_VERSION } from "../src/deep-research.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { classifyCommand, evaluateCommandPolicy } from "../src/command-policy.js";
+import { createToolContract } from "../src/tool-contract.js";
 import {
   browserSubmitFinishIssue,
   isRecoverableShellToolResult,
@@ -41,7 +42,12 @@ import {
   completionEvidenceNeedsCommand,
   completionRepairMutationRequirement,
   compactFailedTestEvidence,
+  consumeGeneratedArtifactProducerDiagnosticRead,
+  consumePatchContextRefreshRead,
   continuationAddsConcreteRequirement,
+  documentSourceMaterialMutationBlock,
+  documentQualityCommitAssessment,
+  derivePatchContextAnchor,
   enqueueFailedTestRepairInstruction,
   failedTestWorkspaceDiagnosticReadPaths,
   failedTestRequiresCleanRepositoryState,
@@ -53,15 +59,18 @@ import {
   failedTestMembershipPredicates,
   failedTestMockBehaviorContract,
   groundedDeclarationPatchFromPartialFile,
+  generatedArtifactProducerDiagnosticLineAnchor,
   isCompletedContinuationNoop,
   isSubstantiveTestCommand,
   mergeDurableGitEvidence,
   nextStepRuntimeConfig,
   patchContextRefreshDecision,
+  patchContextReplacementScopeIssue,
   patchContextScopeMismatchAttemptCount,
   parseGitPorcelainStatus,
   pythonMainGuardOrderDefects,
   projectAcceptanceFromMarkdown,
+  prematureRequestedArtifactCommitBlock,
   projectTestVerificationFinishBlock,
   prospectivePythonExactPatchSyntaxBlock,
   preservesCurrentTaskBoundary,
@@ -69,10 +78,12 @@ import {
   pythonTopLevelDefinitionDuplicates,
   recordCanonicalGeneratedOutputProgress,
   recordAlreadyCommittedRepositoryRepair,
+  recordDurableEvidenceCategories,
   recordProjectVerificationOutcome,
   repositoryStateInspectionCommand,
   recordExactOutputProgress,
   recordStaticDiscoveryProgress,
+  recoverProducerDiagnosticEvidencePatch,
   resetGoalScopedRuntimeState,
   resetSameTaskExecutionContract,
   resetStaticDiscoveryAfterContextLoss,
@@ -7143,6 +7154,810 @@ try {
       phase: repairedSourceBeforeProducerPhase,
     })}`
   );
+  const documentRepairBeforeProducerState = structuredClone(
+    repairedSourceBeforeProducerState
+  );
+  documentRepairBeforeProducerState.meta.projectVerification.testRuns = [];
+  documentRepairBeforeProducerState.meta.completionEvidenceRepair = {
+    key: "document-quality-repair",
+    at: "2026-08-27T19:00:00.000Z",
+    mutationRevision: 9,
+    requiresFreshFileMutation: true,
+    requiredFreshMutationRevision: 10,
+    artifactQualityRepairRequired: true,
+  };
+  const documentRepairBeforeProducerRuntime = nextStepRuntimeConfig(
+    {
+      provider: "deepseek",
+      taskProfile: "writing",
+      commandCwd: workspace,
+      goal: documentRepairBeforeProducerState.goal,
+    },
+    documentRepairBeforeProducerState
+  );
+  assert(
+    documentRepairBeforeProducerRuntime.generatedArtifactProducerPending === true &&
+      documentRepairBeforeProducerRuntime.generatedArtifactProducerCommand ===
+        "python3 build_deck.py" &&
+      documentRepairBeforeProducerRuntime.taskOwnedCommitPending !== true,
+    `a document-quality source repair reached Git completion before rebuilding its derived artifact: ${JSON.stringify(
+      documentRepairBeforeProducerRuntime
+    )}`
+  );
+  const missingDocumentRequirement = completionRepairMutationRequirement({
+    contract: { requiresFileMutation: false },
+    evaluation: { missing: [] },
+    documentQuality: {
+      checked: true,
+      ok: false,
+      defects: [{ code: "missing-document-artifact" }],
+    },
+    projectMutationRevision: 7,
+    documentArtifactProducerAvailable: true,
+  });
+  assert(
+    missingDocumentRequirement.requiresFreshFileMutation === false &&
+      missingDocumentRequirement.documentArtifactGenerationRequired === true &&
+      missingDocumentRequirement.artifactQualityRepairRequired === false,
+    `a missing compiled document incorrectly reopened source mutation: ${JSON.stringify(
+      missingDocumentRequirement
+    )}`
+  );
+  const missingDocumentSourceRequirement = completionRepairMutationRequirement({
+    contract: { requiresFileMutation: false },
+    evaluation: { missing: [] },
+    documentQuality: {
+      checked: true,
+      ok: false,
+      defects: [{ code: "missing-document-artifact" }],
+    },
+    projectMutationRevision: 7,
+    documentArtifactProducerAvailable: false,
+  });
+  assert(
+    missingDocumentSourceRequirement.requiresFreshFileMutation === true &&
+      missingDocumentSourceRequirement.documentArtifactGenerationRequired === false &&
+      missingDocumentSourceRequirement.artifactQualityRepairRequired === true &&
+      missingDocumentSourceRequirement.requiredFreshMutationRevision === 8,
+    `a missing document artifact without source did not require source creation: ${JSON.stringify(
+      missingDocumentSourceRequirement
+    )}`
+  );
+  await fs.writeFile(
+    path.join(workspace, "report.tex"),
+    "\\documentclass{article}\\begin{document}Report\\end{document}\n",
+    "utf8"
+  );
+  const missingDocumentArtifactState = {
+    goal: "Compile the prepared report.tex into report.pdf, verify it, and commit the intentional work.",
+    messages: [],
+    meta: {
+      taskProfile: "writing",
+      goalContract: {
+        revision: 1,
+        activeGoalRevision: 1,
+      },
+      projectVerification: {
+        mutationRevision: 1,
+        privateMutationRevision: 0,
+        mutationHistory: [{
+          revision: 1,
+          at: "2026-08-27T19:10:00.000Z",
+          toolName: "write_file",
+          paths: ["report.tex"],
+          goalRevision: 1,
+        }],
+        commandRuns: [],
+        testRuns: [],
+      },
+      completionEvidenceRepair: {
+        key: "missing-document-artifact",
+        at: "2026-08-27T19:11:00.000Z",
+        mutationRevision: 1,
+        requiresFreshFileMutation: false,
+        requiredFreshMutationRevision: 0,
+        artifactQualityRepairRequired: false,
+        documentArtifactGenerationRequired: true,
+        documentArtifactProducerCommand:
+          "pdflatex -interaction=nonstopmode -halt-on-error 'report.tex'",
+      },
+    },
+  };
+  const missingDocumentArtifactRuntime = nextStepRuntimeConfig(
+    {
+      goal: missingDocumentArtifactState.goal,
+      provider: "localllm",
+      taskProfile: "writing",
+      commandCwd: workspace,
+    },
+    missingDocumentArtifactState
+  );
+  assert(
+    missingDocumentArtifactRuntime.generatedArtifactProducerPending === true &&
+      missingDocumentArtifactRuntime.generatedArtifactProducerCommand ===
+        "pdflatex -interaction=nonstopmode -halt-on-error 'report.tex'" &&
+      missingDocumentArtifactRuntime.completionFreshMutationRequired !== true &&
+      missingDocumentArtifactRuntime.taskOwnedCommitPending !== true,
+    `a missing document artifact did not schedule its bounded producer before Git completion: ${JSON.stringify(
+      missingDocumentArtifactRuntime
+    )}`
+  );
+  const failedDocumentProducerState = structuredClone(
+    missingDocumentArtifactState
+  );
+  recordProjectVerificationOutcome(
+    failedDocumentProducerState,
+    {
+      toolName: "run_command",
+      ok: false,
+      exitCode: 1,
+      args: {
+        command:
+          "pdflatex -interaction=nonstopmode -halt-on-error 'report.tex'",
+      },
+      stdout: "! LaTeX Error: Undefined control sequence at line 12.\nNo output PDF file produced.",
+      stderr: "",
+      commandPolicy: {
+        category: "toolchain",
+        writesWorkspace: true,
+        mayMutateProject: true,
+      },
+      projectMutationPaths: ["report.aux", "report.log"],
+    },
+    {
+      goal: failedDocumentProducerState.goal,
+      provider: "localllm",
+      taskProfile: "writing",
+      commandCwd: workspace,
+      generatedArtifactProducerPending: true,
+      generatedArtifactProducerCommand:
+        "pdflatex -interaction=nonstopmode -halt-on-error 'report.tex'",
+    }
+  );
+  assert(
+    failedDocumentProducerState.meta.generatedArtifactProducerFailure?.sourcePaths?.includes(
+      "report.tex"
+    ),
+    `a failed generated-artifact producer did not retain its exact source repair contract: ${JSON.stringify(
+      failedDocumentProducerState.meta.generatedArtifactProducerFailure || {}
+    )}`
+  );
+  const failedDocumentProducerRuntime = nextStepRuntimeConfig(
+    {
+      goal: failedDocumentProducerState.goal,
+      provider: "localllm",
+      taskProfile: "writing",
+      commandCwd: workspace,
+    },
+    failedDocumentProducerState
+  );
+  assert(
+    failedDocumentProducerRuntime.generatedArtifactProducerRepairActive === true &&
+      failedDocumentProducerRuntime.completionFreshMutationRequired === true &&
+      failedDocumentProducerRuntime.completionFreshMutationRevision === 2 &&
+      failedDocumentProducerRuntime.completionFreshMutationPaths.includes(
+        "report.tex"
+      ) &&
+      failedDocumentProducerRuntime.generatedArtifactProducerPending !== true,
+    `a failed generated-artifact producer was replayed instead of routing to bounded source repair: ${JSON.stringify(
+      failedDocumentProducerRuntime
+    )}`
+  );
+  const missingArtifactCommitWorkspace = path.join(
+    tempRoot,
+    "missing-artifact-commit"
+  );
+  await fs.mkdir(missingArtifactCommitWorkspace, { recursive: true });
+  const missingArtifactCommitState = {
+    goal:
+      "Create editable memo.tex and compiled mobile-readable memo.pdf, verify both, and commit only the intentional work.",
+    messages: [],
+    meta: {
+      taskProfile: "writing",
+      goalContract: {
+        revision: 1,
+        activeGoalRevision: 1,
+        currentRequest:
+          "Create editable memo.tex and compiled mobile-readable memo.pdf, verify both, and commit only the intentional work.",
+      },
+      projectVerification: {
+        mutationRevision: 1,
+        privateMutationRevision: 0,
+        mutationHistory: [{ revision: 1, paths: ["memo.md"] }],
+      },
+    },
+  };
+  assert(
+    prematureRequestedArtifactCommitBlock(
+      missingArtifactCommitState,
+      "run_command",
+      {
+        command:
+          "git add -- 'memo.md' && git commit -m 'Complete LaTeX report'",
+      },
+      {
+        goal: missingArtifactCommitState.goal,
+        taskProfile: "writing",
+        commandCwd: missingArtifactCommitWorkspace,
+      }
+    )?.category === "requested-artifact-incomplete",
+    "Git completion was allowed before exact requested document artifacts existed"
+  );
+  const precommitDocumentQualityState = {
+    goal:
+      "Create editable memo.tex and compiled mobile-readable memo.pdf, verify both, and commit only the intentional work.",
+    messages: [],
+    meta: {
+      taskProfile: "writing",
+      goalContract: {
+        revision: 2,
+        activeGoalRevision: 2,
+        activeGoal:
+          "Create editable memo.tex and compiled mobile-readable memo.pdf, verify both, and commit only the intentional work.",
+      },
+      projectVerification: {
+        mutationRevision: 3,
+        privateMutationRevision: 0,
+        mutationHistory: [{
+          revision: 3,
+          toolName: "write_file",
+          paths: ["memo.tex"],
+        }],
+      },
+    },
+  };
+  let precommitValidatorInput = null;
+  const precommitQualityBlock = await documentQualityCommitAssessment(
+    precommitDocumentQualityState,
+    "run_command",
+    {
+      command:
+        "git add -- 'memo.tex' 'memo.pdf' && git commit -m 'Complete memo'",
+    },
+    {
+      commandCwd: missingArtifactCommitWorkspace,
+      taskProfile: "writing",
+      taskOwnedCommitPaths: ["memo.tex", "memo.pdf"],
+      documentArtifactValidator: async (input) => {
+        precommitValidatorInput = input;
+        return {
+          ok: false,
+          checked: true,
+          artifacts: [{ path: "memo.pdf" }],
+          defects: [{
+            code: "duplicated-prose-fragment",
+            message: "The report repeats one non-adjacent paragraph.",
+          }],
+          reason: "The report repeats one non-adjacent paragraph.",
+        };
+      },
+    }
+  );
+  assert(
+    precommitQualityBlock?.ok === false &&
+      precommitQualityBlock.category === "document-quality-incomplete" &&
+      precommitDocumentQualityState.meta.completionEvidenceRepair
+        ?.requiresFreshFileMutation === true &&
+      precommitDocumentQualityState.meta.completionEvidenceRepair
+        ?.requiredFreshMutationRevision === 4,
+    "a failed independent document check did not block Git and open a bounded source repair"
+  );
+  assertStrict.deepEqual(
+    precommitValidatorInput?.exactOutputPaths,
+    ["memo.tex", "memo.pdf"],
+    "pre-commit document validation should inspect the exact task-owned commit paths when filenames were inferred during execution"
+  );
+  const precommitQualityPass = await documentQualityCommitAssessment(
+    precommitDocumentQualityState,
+    "run_command",
+    {
+      command:
+        "git add -- 'memo.tex' 'memo.pdf' && git commit -m 'Complete memo'",
+    },
+    {
+      commandCwd: missingArtifactCommitWorkspace,
+      taskProfile: "writing",
+      documentArtifactValidator: async () => ({
+        ok: true,
+        checked: true,
+        artifacts: [{ path: "memo.pdf" }],
+        defects: [],
+        reason: "Independent document checks passed.",
+      }),
+    }
+  );
+  assert(
+    precommitQualityPass?.ok === true &&
+      precommitDocumentQualityState.meta.completionEvidenceRepair === undefined,
+    "a passing pre-commit document check did not clear its bounded repair marker"
+  );
+  await fs.writeFile(
+    path.join(missingArtifactCommitWorkspace, "TASK.md"),
+    [
+      "# Task",
+      "Produce an editable LaTeX source plus a compiled mobile-readable PDF.",
+      "Verify the PDF and commit only intentional project files.",
+    ].join("\n"),
+    "utf8"
+  );
+  const groundedTaskCallId = "grounded-project-task";
+  const groundedTaskState = {
+    goal:
+      "This project is incomplete. Inspect it, finish it properly, verify it, and commit the intentional work.",
+    messages: [
+      {
+        role: "assistant",
+        tool_calls: [{
+          id: groundedTaskCallId,
+          type: "function",
+          function: {
+            name: "read_file",
+            arguments: JSON.stringify({ path: "TASK.md" }),
+          },
+        }],
+      },
+      {
+        role: "tool",
+        tool_call_id: groundedTaskCallId,
+        content: JSON.stringify({
+          ok: true,
+          toolName: "read_file",
+          path: "TASK.md",
+          content: [
+            "# Task",
+            "Produce an editable LaTeX source plus a compiled mobile-readable PDF.",
+            "Verify the PDF and commit only intentional project files.",
+          ].join("\n"),
+          contentTruncated: false,
+          contentTruncatedByLines: false,
+        }),
+      },
+    ],
+    meta: {
+      taskProfile: "writing",
+      goalContract: {
+        revision: 1,
+        activeGoalRevision: 1,
+        activeGoal:
+          "This project is incomplete. Inspect it, finish it properly, verify it, and commit the intentional work.",
+      },
+      projectVerification: {
+        mutationRevision: 0,
+        privateMutationRevision: 0,
+      },
+    },
+  };
+  const groundedTaskContract = completionTaskContract(
+    {
+      goal: groundedTaskState.goal,
+      taskProfile: "writing",
+      commandCwd: missingArtifactCommitWorkspace,
+    },
+    groundedTaskState
+  );
+  assert(
+    groundedTaskContract.requiredArtifactKinds.some(
+      (item) => item.extension === ".tex"
+    ) &&
+      groundedTaskContract.requiredArtifactKinds.some(
+        (item) => item.extension === ".pdf"
+      ) &&
+      groundedTaskContract.requiredGitActions.includes("commit"),
+    `a completely read project TASK did not become the artifact/Git contract for a generic finish request: ${JSON.stringify(
+      groundedTaskContract
+    )}`
+  );
+  const compactedGroundedTaskState = structuredClone(groundedTaskState);
+  recordProjectVerificationOutcome(
+    compactedGroundedTaskState,
+    {
+      toolName: "read_file",
+      ok: true,
+      path: "TASK.md",
+      args: { path: "TASK.md" },
+      content: [
+        "# Task",
+        "Produce an editable LaTeX source plus a compiled mobile-readable PDF.",
+        "Verify the PDF and commit only intentional project files.",
+      ].join("\n"),
+      contentTruncated: false,
+      contentTruncatedByLines: false,
+    },
+    {
+      goal: compactedGroundedTaskState.goal,
+      taskProfile: "writing",
+      commandCwd: missingArtifactCommitWorkspace,
+    }
+  );
+  compactedGroundedTaskState.messages = [];
+  const compactedGroundedContract = completionTaskContract(
+    {
+      goal: compactedGroundedTaskState.goal,
+      taskProfile: "writing",
+      commandCwd: missingArtifactCommitWorkspace,
+    },
+    compactedGroundedTaskState
+  );
+  assert(
+    compactedGroundedContract.requiredArtifactKinds.some(
+      (item) => item.extension === ".tex"
+    ) &&
+      compactedGroundedContract.requiredArtifactKinds.some(
+        (item) => item.extension === ".pdf"
+      ),
+    `compaction discarded the persisted project TASK artifact contract: ${JSON.stringify(
+      compactedGroundedContract
+    )}`
+  );
+  const missingRequestedSourceRuntime = nextStepRuntimeConfig(
+    {
+      goal: compactedGroundedTaskState.goal,
+      taskProfile: "writing",
+      commandCwd: missingArtifactCommitWorkspace,
+    },
+    compactedGroundedTaskState
+  );
+  assert(
+    missingRequestedSourceRuntime.requestedArtifactRequirementsPending === true &&
+      missingRequestedSourceRuntime.requestedArtifactCreationExtensions?.includes(".tex"),
+    `a missing requested LaTeX source did not activate deterministic creation: ${JSON.stringify(
+      missingRequestedSourceRuntime
+    )}`
+  );
+  assertStrict.equal(
+    buildKnownConstrainedPhasePlan(
+      {
+        goal: compactedGroundedTaskState.goal,
+        taskProfile: "writing",
+        commandCwd: missingArtifactCommitWorkspace,
+      },
+      compactedGroundedTaskState,
+      missingRequestedSourceRuntime
+    )?.mode,
+    "requested-artifact-creation",
+    "a missing requested editable source did not become the only constrained phase"
+  );
+  const resetCompactedGroundedTaskState = structuredClone(compactedGroundedTaskState);
+  resetGoalScopedRuntimeState(resetCompactedGroundedTaskState);
+  assertStrict.equal(
+    resetCompactedGroundedTaskState.meta.groundedProjectTaskInstruction,
+    undefined,
+    "goal reset retained a stale persisted project TASK contract"
+  );
+  await fs.writeFile(
+    path.join(missingArtifactCommitWorkspace, "memo.tex"),
+    "\\documentclass{article}\\begin{document}Memo\\end{document}\n",
+    "utf8"
+  );
+  const requestedLatexProducerFailureState = structuredClone(
+    compactedGroundedTaskState
+  );
+  requestedLatexProducerFailureState.meta.projectVerification = {
+    mutationRevision: 1,
+    privateMutationRevision: 0,
+    mutationHistory: [{
+      revision: 1,
+      toolName: "write_file",
+      paths: ["memo.tex"],
+      goalRevision: 1,
+    }],
+    commandRuns: [],
+    testRuns: [],
+  };
+  requestedLatexProducerFailureState.meta.generatedArtifactProducerFailure = {
+    version: 1,
+    command: "pdflatex -interaction=nonstopmode -halt-on-error 'memo.tex'",
+    attempts: 1,
+    goalRevision: 1,
+    mutationRevision: 1,
+    sourcePaths: ["memo.tex"],
+    failureSummary:
+      "! Missing $ inserted.\nl.12 This report synthesizes the complete `chat_history.md` evidence.",
+    at: new Date().toISOString(),
+  };
+  const requestedLatexProducerFailureRuntime = nextStepRuntimeConfig(
+    {
+      goal: requestedLatexProducerFailureState.goal,
+      taskProfile: "writing",
+      commandCwd: missingArtifactCommitWorkspace,
+    },
+    requestedLatexProducerFailureState
+  );
+  assert(
+    requestedLatexProducerFailureRuntime.generatedArtifactProducerRepairActive === true &&
+      requestedLatexProducerFailureRuntime.completionFreshMutationRequired === true &&
+      requestedLatexProducerFailureRuntime.completionFreshMutationPaths?.includes("memo.tex") &&
+      requestedLatexProducerFailureRuntime.generatedArtifactProducerPending !== true,
+    `a failed producer for a semantically requested PDF replayed instead of routing to source repair: ${JSON.stringify(
+      requestedLatexProducerFailureRuntime
+    )}`
+  );
+  const diagnosticLatexSource = [
+    "\\documentclass{article}",
+    "\\usepackage{geometry}",
+    "\\geometry{margin=20mm}",
+    "\\title{Project Memo}",
+    "\\author{}",
+    "\\date{}",
+    "\\begin{document}",
+    "\\maketitle",
+    "\\begin{abstract}",
+    "The memo preserves bounded project evidence.",
+    "The source remains editable and reviewable.",
+    "This report synthesizes the complete `chat_history.md` evidence.",
+    "\\end{abstract}",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  await fs.writeFile(
+    path.join(missingArtifactCommitWorkspace, "memo.tex"),
+    diagnosticLatexSource,
+    "utf8"
+  );
+  const directDiagnosticAnchor = generatedArtifactProducerDiagnosticLineAnchor(
+    requestedLatexProducerFailureState,
+    "memo.tex",
+    diagnosticLatexSource
+  );
+  const sectionedLatexSource = [
+    "\\documentclass{article}",
+    "\\begin{document}",
+    "\\section*{Completed}",
+    "\\begin{itemize}",
+    "\\item Book backup is verified.",
+    "\\end{itemize}",
+    "\\section*{Pending}",
+    "\\begin{itemize}",
+    "\\item Instagram login is required.",
+    "\\end{itemize}",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  const latexSectionAnchor = derivePatchContextAnchor(
+    sectionedLatexSource,
+    "\\item Book backup is verified."
+  );
+  assert(
+    latexSectionAnchor?.anchorIdentity === "latex:section:Completed" &&
+      latexSectionAnchor.lineStart === 3 &&
+      latexSectionAnchor.lineEnd === 6 &&
+      !latexSectionAnchor.search.includes("\\section*{Pending}"),
+    `a LaTeX document repair widened beyond its containing section: ${JSON.stringify(
+      latexSectionAnchor
+    )}`
+  );
+  assert(
+    patchContextReplacementScopeIssue(
+      latexSectionAnchor,
+      [
+        "\\section*{Completed}",
+        "\\begin{itemize}",
+        "\\item Book backup remains unverified.",
+        "",
+      ].join("\n")
+    )?.changedLatexEnvironments?.includes("itemize"),
+    "a LaTeX section repair was allowed to drop its closing environment boundary"
+  );
+  assert(
+    directDiagnosticAnchor?.anchorKind === "producer-diagnostic-line" &&
+      directDiagnosticAnchor.lineStart === 12 &&
+      directDiagnosticAnchor.lineEnd === 12 &&
+      directDiagnosticAnchor.search.includes("`chat_history.md`") &&
+      !directDiagnosticAnchor.search.includes("\\begin{abstract}"),
+    `a compiler line diagnostic widened beyond its exact current source line: ${JSON.stringify(
+      directDiagnosticAnchor
+    )}`
+  );
+  const consumedProducerDiagnostic =
+    consumeGeneratedArtifactProducerDiagnosticRead(
+      requestedLatexProducerFailureState,
+      {
+        toolName: "read_file",
+        ok: true,
+        path: "memo.tex",
+        content: diagnosticLatexSource,
+      }
+    );
+  const diagnosticRepairRuntime = nextStepRuntimeConfig(
+    {
+      goal: requestedLatexProducerFailureState.goal,
+      taskProfile: "writing",
+      commandCwd: missingArtifactCommitWorkspace,
+    },
+    requestedLatexProducerFailureState
+  );
+  assert(
+    consumedProducerDiagnostic?.diagnosticLine === 12 &&
+      consumedProducerDiagnostic.repairHint.includes("chat\\_history.md") &&
+      diagnosticRepairRuntime.patchContextRepairRequired === true &&
+      diagnosticRepairRuntime.patchContextRepairAnchorKind ===
+        "producer-diagnostic-line" &&
+      diagnosticRepairRuntime.patchContextRepairLineStart === 12 &&
+      diagnosticRepairRuntime.patchContextRepairLineEnd === 12 &&
+      diagnosticRepairRuntime.patchContextRepairTriggerCategory ===
+        "generated-artifact-producer-diagnostic" &&
+      diagnosticRepairRuntime.patchContextRepairDiagnosticHint.includes(
+        "chat\\_history.md"
+      ) &&
+      diagnosticRepairRuntime.patchContextRepairEvidenceReplacement.includes(
+        "chat\\_history.md"
+      ),
+    `a successful producer-source read did not install an exact diagnostic-bound repair: ${JSON.stringify({
+      consumedProducerDiagnostic,
+      diagnosticRepairRuntime,
+    })}`
+  );
+  const diagnosticEvidenceReplacement =
+    diagnosticRepairRuntime.patchContextRepairEvidenceReplacement;
+  const producerDiagnosticContract = createToolContract([
+      {
+        type: "function",
+        function: {
+          name: "apply_patch",
+          description: "Apply one exact compiler-evidenced repair.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", enum: ["memo.tex"] },
+              search: { type: "string" },
+              replace: {
+                type: "string",
+                enum: [diagnosticEvidenceReplacement],
+              },
+              expectedReplacements: { type: "integer", enum: [1] },
+            },
+            required: ["replace"],
+            additionalProperties: false,
+          },
+        },
+      },
+    ]);
+  const recoveredOversizedProducerPatch =
+    recoverProducerDiagnosticEvidencePatch(
+      diagnosticRepairRuntime,
+      requestedLatexProducerFailureState,
+      [
+        {
+          id: "call_oversized_producer_patch",
+          type: "function",
+          function: {
+            name: "apply_patch",
+            arguments: JSON.stringify({
+              replace: `${directDiagnosticAnchor.search}${diagnosticLatexSource}`,
+            }),
+          },
+        },
+      ],
+      producerDiagnosticContract,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "TOOL_ARGUMENTS_SCHEMA_INVALID",
+            path: "$",
+          },
+          {
+            code: "ARGUMENT_STRING_TOO_LONG",
+            path: "$.replace",
+          },
+        ],
+      }
+    );
+  assert(
+    recoveredOversizedProducerPatch?.ok === true &&
+      recoveredOversizedProducerPatch
+        .recoveredProducerDiagnosticEvidencePatch === true &&
+      JSON.parse(
+        recoveredOversizedProducerPatch.acceptedToolCalls[0].function
+          .arguments
+      ).replace === diagnosticEvidenceReplacement,
+    `an oversized local-model patch was not recovered as the exact compiler-evidenced replacement: ${JSON.stringify(
+      recoveredOversizedProducerPatch
+    )}`
+  );
+  const appendOnlyProducerRepair = bindPatchContextRepairArguments(
+    requestedLatexProducerFailureState,
+    {
+      replace:
+        `${directDiagnosticAnchor.search.trimEnd()} Compilation is verified.\n`,
+    }
+  );
+  assert(
+    appendOnlyProducerRepair?.scopeIssue?.retainedFailedAnchor === true,
+    "an append-only producer repair retained the complete compiler-failing line unchanged"
+  );
+  const producerScopeRefresh = patchContextRefreshDecision(
+    requestedLatexProducerFailureState,
+    {
+      toolName: "apply_patch",
+      ok: false,
+      category: "patch-context-scope-mismatch",
+      args: {
+        path: "memo.tex",
+        searchHash: directDiagnosticAnchor.searchHash,
+      },
+    }
+  );
+  assert(
+    producerScopeRefresh?.producerDiagnosticRepair === true &&
+      producerScopeRefresh.diagnosticLine === 12 &&
+      producerScopeRefresh.completeFileFallback === false,
+    `a rejected producer patch discarded its exact diagnostic location: ${JSON.stringify(
+      producerScopeRefresh
+    )}`
+  );
+  delete requestedLatexProducerFailureState.meta.toolLoop.patchContextRepair;
+  requestedLatexProducerFailureState.meta.toolLoop.patchContextRequired =
+    producerScopeRefresh;
+  const refreshedProducerDiagnostic = consumePatchContextRefreshRead(
+    requestedLatexProducerFailureState,
+    {
+      toolName: "read_file",
+      ok: true,
+      path: "memo.tex",
+      content: diagnosticLatexSource,
+    }
+  );
+  assert(
+    refreshedProducerDiagnostic?.repairAnchorKind ===
+      "producer-diagnostic-line" &&
+      refreshedProducerDiagnostic.repairAnchorLineStart === 12 &&
+      refreshedProducerDiagnostic.repairAnchorLineEnd === 12 &&
+      requestedLatexProducerFailureState.meta.toolLoop.patchContextRepair
+        ?.triggerCategory === "generated-artifact-producer-diagnostic" &&
+      requestedLatexProducerFailureState.meta.toolLoop.patchContextRepair
+        ?.repairHint.includes("chat\\_history.md"),
+    `a producer retry refresh widened its compiler line into a broad source anchor: ${JSON.stringify(
+      refreshedProducerDiagnostic
+    )}`
+  );
+  const correctedProducerRepair = bindPatchContextRepairArguments(
+    requestedLatexProducerFailureState,
+    {
+      replace:
+        "This report synthesizes the complete \\texttt{chat\\_history.md} evidence.\n",
+    }
+  );
+  assert(
+    correctedProducerRepair?.scopeIssue === null &&
+      correctedProducerRepair.args.search === directDiagnosticAnchor.search,
+    `a direct correction of the compiler-reported source line was not accepted: ${JSON.stringify(
+      correctedProducerRepair
+    )}`
+  );
+  assert(
+    prematureRequestedArtifactCommitBlock(
+      groundedTaskState,
+      "run_command",
+      {
+        command:
+          "git add -- 'memo_report.tex' && git commit -m 'Finish report'",
+      },
+      {
+        goal: groundedTaskState.goal,
+        taskProfile: "writing",
+        commandCwd: missingArtifactCommitWorkspace,
+      }
+    )?.category === "requested-artifact-incomplete",
+    "a generic project-finish request ignored the artifact contract from its completely read TASK.md"
+  );
+  for (const command of [
+    "pdflatex -interaction=nonstopmode -halt-on-error 'memo.tex'",
+    'xelatex -interaction=nonstopmode -halt-on-error "memo.tex"',
+    "latexmk -pdf -interaction=nonstopmode -halt-on-error 'memo.tex'",
+  ]) {
+    const policy = evaluateCommandPolicy(command, {
+      commandCwd: missingArtifactCommitWorkspace,
+      allowShellTool: true,
+      allowDestructive: false,
+      sandboxMode: "host",
+      packageInstallPolicy: "block",
+    });
+    assert(
+      policy.allowed === true && policy.category === "toolchain",
+      `a bounded quoted LaTeX producer was not allowed: ${command}`
+    );
+  }
   assert(
     isSubstantiveTestCommand(generatedDeckValidator, {
       commandCwd: workspace,
@@ -8621,6 +9436,42 @@ try {
   assert(isStaticDiscoveryToolCall("run_command", { command: "ls -la ../Musia" }), "static ls discovery was not classified");
   assert(isStaticDiscoveryToolCall("read_image", { path: "snapshot.png" }), "image perception was not classified as static discovery");
   assert(
+    isStaticDiscoveryToolCall("web_search", { query: "project memo guidance" }) &&
+      isStaticDiscoveryToolCall("read_web_page", { url: "https://example.com/memo" }),
+    "read-only web discovery was allowed to reset convergence"
+  );
+  const repeatedWebQuerySignature = staticToolCallSignature(
+    "web_search",
+    { query: "  Project   Memo Guidance ", maxResults: 10 },
+    { commandCwd: workspace }
+  );
+  assert(
+    repeatedWebQuerySignature ===
+      staticToolCallSignature(
+        "web_search",
+        { query: "project memo guidance", provider: "research" },
+        { commandCwd: workspace }
+      ),
+    "equivalent web searches did not share one semantic discovery signature"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedWebQuerySignature]: 2 },
+            staticOrder: [repeatedWebQuerySignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "web_search",
+      { query: "project memo guidance", maxResults: 5 },
+      { commandCwd: workspace }
+    )?.category === "repeated-read-only-call",
+    "a third semantically identical web search was not blocked"
+  );
+  assert(
     !shouldResetStaticDiscoveryPhase({ ok: false, toolName: "read_image", args: { path: "missing.png" } }),
     "failed non-mutating perception should not reset static discovery convergence"
   );
@@ -8794,6 +9645,186 @@ try {
     "the next-step runtime did not carry the convergence suppression into tool selection"
   );
   assert(
+    JSON.stringify(
+      convergenceSuppressedToolNames({
+        meta: {
+          toolLoop: {
+            stagnationEpoch: 7,
+            recent: [
+              {
+                toolName: "run_command",
+                ok: false,
+                blocked: true,
+                category: "repeated-no-progress-call",
+                stagnationEpoch: 7,
+              },
+              {
+                toolName: "read_file",
+                ok: true,
+                blocked: false,
+                stagnationEpoch: 7,
+              },
+            ],
+          },
+        },
+      })
+    ) === JSON.stringify(["run_command"]),
+    "a harmless read incorrectly re-enabled a convergence-blocked command before mutation"
+  );
+  assert(
+    convergenceSuppressedToolNames({
+      meta: {
+        toolLoop: {
+          stagnationEpoch: 8,
+          recent: [
+            {
+              toolName: "run_command",
+              ok: false,
+              blocked: true,
+              category: "repeated-no-progress-call",
+              stagnationEpoch: 7,
+            },
+            {
+              toolName: "apply_patch",
+              ok: true,
+              blocked: false,
+              successfulMutation: true,
+              stagnationEpoch: 8,
+            },
+          ],
+        },
+      },
+    }).length === 0,
+    "a completed mutation did not clear an earlier convergence suppression epoch"
+  );
+  const boundedSynthesisWorkspace = path.join(
+    tempRoot,
+    "bounded-local-synthesis"
+  );
+  await fs.mkdir(boundedSynthesisWorkspace, { recursive: true });
+  await fs.writeFile(
+    path.join(boundedSynthesisWorkspace, "TASK.md"),
+    "Read chat_history.md and produce an editable LaTeX source plus a compiled PDF.\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(boundedSynthesisWorkspace, "chat_history.md"),
+    "Current facts for the local memo.\n",
+    "utf8"
+  );
+  const boundedSynthesisMessages = [
+    {
+      role: "assistant",
+      tool_calls: [{
+        id: "bounded-task-read",
+        type: "function",
+        function: {
+          name: "read_file",
+          arguments: JSON.stringify({ path: "TASK.md" }),
+        },
+      }],
+    },
+    {
+      role: "tool",
+      tool_call_id: "bounded-task-read",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "TASK.md",
+        content:
+          "Read chat_history.md and produce an editable LaTeX source plus a compiled PDF.\n",
+        contentTruncated: false,
+        contentTruncatedByLines: false,
+      }),
+    },
+    {
+      role: "assistant",
+      tool_calls: [{
+        id: "bounded-source-read",
+        type: "function",
+        function: {
+          name: "read_file",
+          arguments: JSON.stringify({ path: "chat_history.md" }),
+        },
+      }],
+    },
+    {
+      role: "tool",
+      tool_call_id: "bounded-source-read",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "chat_history.md",
+        content: "Current facts for the local memo.\n",
+        contentTruncated: false,
+        contentTruncatedByLines: false,
+      }),
+    },
+  ];
+  const boundedSynthesisState = {
+    goal:
+      "This project is incomplete. Inspect it, finish it, verify it, and commit the intentional work.",
+    messages: boundedSynthesisMessages,
+    meta: {
+      taskProfile: "writing",
+      goalContract: {
+        revision: 4,
+        activeGoalRevision: 4,
+        activeGoal:
+          "This project is incomplete. Inspect it, finish it, verify it, and commit the intentional work.",
+      },
+      projectVerification: {
+        mutationRevision: 0,
+        privateMutationRevision: 0,
+      },
+      toolLoop: {
+        recent: ["web_search", "read_web_page"].map((toolName) => ({
+          toolName,
+          ok: true,
+          blocked: false,
+          goalRevision: 4,
+          mutationRevision: 0,
+        })),
+      },
+    },
+  };
+  assert(
+    [
+      "web_search",
+      "read_web_page",
+      "web_research",
+      "deep_research",
+      "open_url",
+    ].every((toolName) =>
+      convergenceSuppressedToolNames(boundedSynthesisState, {
+        commandCwd: boundedSynthesisWorkspace,
+        taskProfile: "writing",
+      }).includes(toolName)
+    ),
+    "a source-complete local synthesis task retained unbounded external research tools"
+  );
+  const explicitResearchState = structuredClone(boundedSynthesisState);
+  explicitResearchState.goal =
+    "Research the latest evidence and cite primary sources in the report.";
+  explicitResearchState.meta.goalContract.activeGoal =
+    explicitResearchState.goal;
+  assert(
+    !convergenceSuppressedToolNames(explicitResearchState, {
+      commandCwd: boundedSynthesisWorkspace,
+      taskProfile: "writing",
+    }).includes("web_search"),
+    "an explicit external research task lost its web tools to the local-synthesis budget"
+  );
+  const mutatedSynthesisState = structuredClone(boundedSynthesisState);
+  mutatedSynthesisState.meta.projectVerification.mutationRevision = 1;
+  assert(
+    !convergenceSuppressedToolNames(mutatedSynthesisState, {
+      commandCwd: boundedSynthesisWorkspace,
+      taskProfile: "writing",
+    }).includes("web_search"),
+    "a fresh source mutation did not reset the bounded local-synthesis web budget"
+  );
+  assert(
     convergenceSuppressedToolNames({
       meta: {
         toolLoop: {
@@ -8889,6 +9920,31 @@ try {
       generatedArtifactProducerCommand: repeatedProbeArgs.command,
     }) === null,
     "the exact authoritative generated-artifact producer remained blocked by stale no-progress history"
+  );
+  const currentProducerAttemptState = structuredClone(repeatedProbeState);
+  currentProducerAttemptState.meta.goalContract = { revision: 3 };
+  currentProducerAttemptState.meta.projectVerification = {
+    mutationRevision: 5,
+  };
+  currentProducerAttemptState.meta.toolLoop.recent =
+    currentProducerAttemptState.meta.toolLoop.recent.map((entry) => ({
+      ...entry,
+      generatedArtifactProducerAttempt: true,
+      goalRevision: 3,
+      mutationRevision: 5,
+    }));
+  assert(
+    repeatedNoProgressToolBlock(
+      currentProducerAttemptState,
+      "run_command",
+      repeatedProbeArgs,
+      {
+        commandCwd: workspace,
+        generatedArtifactProducerPending: true,
+        generatedArtifactProducerCommand: repeatedProbeArgs.command,
+      }
+    )?.category === "repeated-no-progress-call",
+    "a current failed generated-artifact producer was allowed to loop"
   );
   assert(
     repeatedNoProgressToolBlock(repeatedProbeState, "run_command", repeatedProbeArgs, {
@@ -9446,6 +10502,13 @@ try {
       buildTaskOwnedCommitCommand(["secrets/key.txt"], "Unsafe secret path") === "",
     "the task-owned commit routine accepted a protected workspace path"
   );
+  assert(
+    buildTaskOwnedCommitCommand(
+      ["main.tex", "main.pdf", "main.synctex.gz"],
+      "Commit verified report"
+    ) === "",
+    "the task-owned commit routine accepted a generated LaTeX synchronization file"
+  );
   const pendingVerificationState = {
     goal: "Finish the current task after fresh verification.",
     messages: oversizedRepositoryState.messages,
@@ -9556,6 +10619,99 @@ try {
       incompleteCommitCompletionState
     ).verifiedCompletionPending !== true,
     "one passing test forced finish-only mode while the task's required commit remained unsatisfied"
+  );
+  const postCommitWorkspace = path.join(tempRoot, "post-task-owned-commit");
+  await fs.mkdir(postCommitWorkspace, { recursive: true });
+  await fs.writeFile(path.join(postCommitWorkspace, "memo.md"), "# Verified memo\n");
+  const postCommitGoal = "Create memo.md, verify the result, and commit the intentional work.";
+  const postCommitState = {
+    goal: postCommitGoal,
+    commandCwd: postCommitWorkspace,
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          ok: true,
+          toolName: "write_file",
+          path: "memo.md",
+          goalRevision: 1,
+          projectMutationRevision: 1,
+        }),
+      },
+    ],
+    meta: {
+      taskProfile: "writing",
+      goalContract: {
+        revision: 1,
+        currentRequest: postCommitGoal,
+        taskGoal: postCommitGoal,
+        activeGoal: postCommitGoal,
+        activeGoalRevision: 1,
+      },
+      durableEvidenceCategories: ["file", "command"],
+      projectVerification: {
+        mutationRevision: 1,
+        privateMutationRevision: 0,
+        mutationHistory: [{
+          revision: 1,
+          at: new Date().toISOString(),
+          toolName: "write_file",
+          paths: ["memo.md"],
+          goalRevision: 1,
+        }],
+        commandRuns: [{
+          command: "test -s memo.md",
+          at: new Date().toISOString(),
+          ok: true,
+          mutationRevision: 1,
+          privateMutationRevision: 0,
+        }],
+      },
+    },
+  };
+  const boundedCommitResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command: "git add -- 'memo.md' && git commit -m 'Commit verified memo'",
+    },
+    stdout: "[main abc1234] Commit verified memo\n 1 file changed, 1 insertion(+)\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(postCommitState, boundedCommitResult, {
+    goal: postCommitGoal,
+    taskProfile: "writing",
+    commandCwd: postCommitWorkspace,
+    taskOwnedCommitPending: true,
+    taskOwnedCommitPaths: ["memo.md"],
+  });
+  recordDurableEvidenceCategories(postCommitState, boundedCommitResult);
+  const postCommitCompletionRuntime = nextStepRuntimeConfig(
+    { goal: postCommitGoal, provider: "localllm", taskProfile: "writing", commandCwd: postCommitWorkspace },
+    postCommitState
+  );
+  assert(
+    postCommitCompletionRuntime.verifiedCompletionPending === true &&
+      postCommitCompletionRuntime.taskOwnedCommitCompletionPending === true &&
+      postCommitCompletionRuntime.taskOwnedCommitPending !== true,
+    `a successful bounded task-owned commit did not converge directly to a finish-only turn: ${JSON.stringify({
+      verifiedCompletionPending: postCommitCompletionRuntime.verifiedCompletionPending,
+      taskOwnedCommitCompletionPending:
+        postCommitCompletionRuntime.taskOwnedCommitCompletionPending,
+      taskOwnedCommitPending: postCommitCompletionRuntime.taskOwnedCommitPending,
+      marker: postCommitState.meta.projectVerification?.taskOwnedCompletionCommit,
+    })}`
+  );
+  assert(
+    buildConstrainedRecoveryRequest(
+      postCommitState,
+      { provider: "localllm", taskProfile: "writing", commandCwd: postCommitWorkspace },
+      {},
+      12,
+      postCommitCompletionRuntime
+    )?.mode === "verified-completion",
+    "post-commit convergence reopened ordinary tool execution instead of final validation"
   );
   const staleCompletionState = structuredClone(verifiedCompletionState);
   staleCompletionState.meta.projectVerification.mutationRevision += 1;
@@ -11309,6 +12465,68 @@ try {
       { commandCwd: workspace, taskProfile: "writing", artifactValidationPhase: true }
     ) === null,
     "source-input protection blocked a declared output repair"
+  );
+  const sourceReadMessages = [
+    {
+      role: "assistant",
+      tool_calls: [{
+        id: "read-writing-source-task",
+        type: "function",
+        function: { name: "read_file", arguments: JSON.stringify({ path: "TASK.md" }) },
+      }],
+    },
+    {
+      role: "tool",
+      tool_call_id: "read-writing-source-task",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "TASK.md",
+        content: "Create memo.tex and memo.pdf from chat_history.md without changing source files.",
+        contentTruncated: false,
+        contentTruncatedByLines: false,
+      }),
+    },
+  ];
+  const discoveredWritingSourceState = {
+    goal: "Inspect this incomplete writing project, finish it, verify it, and commit the intentional work.",
+    messages: sourceReadMessages,
+    meta: {
+      taskProfile: "writing",
+      goalContract: {
+        revision: 1,
+        activeGoal: "Inspect this incomplete writing project, finish it, verify it, and commit the intentional work.",
+      },
+    },
+  };
+  assert(
+    documentSourceMaterialMutationBlock(
+      discoveredWritingSourceState,
+      "apply_patch",
+      { path: "TASK.md", search: "Create", replace: "Created" },
+      { commandCwd: workspace, taskProfile: "writing" }
+    )?.category === "document-source-material-mutation",
+    "a discovered writing-task instruction source remained writable without explicit user authorization"
+  );
+  const explicitTaskEditState = structuredClone(discoveredWritingSourceState);
+  explicitTaskEditState.meta.goalContract.activeGoal = "Update TASK.md to correct its output instructions.";
+  assert(
+    documentSourceMaterialMutationBlock(
+      explicitTaskEditState,
+      "apply_patch",
+      { path: "TASK.md", search: "Create", replace: "Created" },
+      { commandCwd: workspace, taskProfile: "writing" }
+    ) === null,
+    "an explicit user request to edit an exact writing source was blocked"
+  );
+  assert(
+    documentSourceMaterialMutationBlock(
+      discoveredWritingSourceState,
+      "apply_patch",
+      { path: "TASK.md", search: "Create", replace: "Created" },
+      { commandCwd: workspace, taskProfile: "code" }
+    ) === null,
+    "document-source immutability leaked into a coding profile"
   );
   for (const patch of [
     '*** Begin Patch\n*** Delete File: "report.md"\n*** End Patch',

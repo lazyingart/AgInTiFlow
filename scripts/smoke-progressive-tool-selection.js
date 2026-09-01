@@ -18,6 +18,7 @@ import {
 import { requestNextStep } from "../src/model-client.js";
 import {
   buildConstrainedRecoveryRequest,
+  bindPatchContextRepairArguments,
   buildModelTimeoutRetryMessages,
   completionContractGoal,
   completionTaskContract,
@@ -29,6 +30,7 @@ import {
   recoverFocusedPatchUniqueSubrangeAsExactPatch,
   recoverFocusedPatchTrailingWhitespaceAsExactPatch,
   recoverFocusedWholeFileWriteAsExactPatch,
+  recoverUnanchoredCompletePatchAsWholeFileWrite,
   recoverGroundedPathlessPatchAsExactPatch,
   recoverRequiredPatchContextReadWithoutToolCall,
   recoverRequiredRepositoryGroundingToolCall,
@@ -1934,6 +1936,60 @@ assertStrict.deepEqual(
   generatedArtifactProducerTools[0].function.parameters.properties.command.enum,
   ["python3 build_deck.py"],
   "the generated-artifact producer command was not schema-constrained"
+);
+const requestedArtifactCreationTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    requestedArtifactRequirementsPending: true,
+    requestedArtifactCreationExtensions: [".tex"],
+    taskOwnedCommitPending: true,
+    taskOwnedPendingGitActions: ["add", "commit"],
+    taskOwnedCommitPaths: ["memo.md"],
+  },
+  goal: "Produce the requested editable LaTeX source and compiled PDF.",
+  profile: "writing",
+});
+sameNames(
+  requestedArtifactCreationTools,
+  ["write_file"],
+  "a substitute intermediate mutation reached Git completion before the requested editable source existed"
+);
+const requestedArtifactWrite = requestedArtifactCreationTools[0];
+assertStrict.deepEqual(
+  requestedArtifactWrite.function.parameters.properties.mode.enum,
+  ["create"],
+  "requested source creation allowed overwrite mode"
+);
+const requestedArtifactPathPattern = new RegExp(
+  requestedArtifactWrite.function.parameters.properties.path.pattern
+);
+assert(requestedArtifactPathPattern.test("memo.tex"));
+assert(!requestedArtifactPathPattern.test("memo.md"));
+assert(!requestedArtifactPathPattern.test("../memo.tex"));
+
+const requestedArtifactProducerBeforeCommitTools = selectProgressiveTools(allTools, {
+  config: {
+    provider: "localllm",
+    requestedArtifactRequirementsPending: true,
+    requestedArtifactCreationExtensions: [],
+    generatedArtifactProducerPending: true,
+    generatedArtifactProducerCommand:
+      "pdflatex -interaction=nonstopmode -halt-on-error 'memo.tex'",
+    taskOwnedCommitPending: true,
+    taskOwnedPendingGitActions: ["add", "commit"],
+    taskOwnedCommitPaths: ["memo.tex"],
+  },
+  goal: "Compile the requested PDF and commit the verified artifacts.",
+  profile: "writing",
+});
+sameNames(
+  requestedArtifactProducerBeforeCommitTools,
+  ["run_command", "finish"],
+  "task-owned Git completion outranked the missing requested artifact producer"
+);
+assertStrict.deepEqual(
+  requestedArtifactProducerBeforeCommitTools[0].function.parameters.properties.command.enum,
+  ["pdflatex -interaction=nonstopmode -halt-on-error 'memo.tex'"]
 );
 const disabledGeneratedArtifactProducerTools = selectProgressiveTools(allTools, {
   config: {
@@ -6439,6 +6495,212 @@ try {
 } finally {
   await fs.rm(focusedTranslationRoot, { recursive: true, force: true });
 }
+
+const completePatchTranslationRoot = await fs.mkdtemp(
+  path.join(os.tmpdir(), "agintiflow-complete-patch-translation-")
+);
+try {
+  const currentDocument = [
+    "\\documentclass{article}",
+    "\\begin{document}",
+    "Old report body that must be revised.",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  const revisedDocument = currentDocument.replace(
+    "Old report body that must be revised.",
+    "Revised report body with the retained document envelope."
+  );
+  await fs.writeFile(
+    path.join(completePatchTranslationRoot, "main.tex"),
+    currentDocument,
+    "utf8"
+  );
+  const completePatchDescriptor = {
+    type: "function",
+    function: {
+      name: "apply_patch",
+      description: "Apply one exact patch.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", enum: ["main.tex"] },
+          search: { type: "string" },
+          replace: { type: "string" },
+          expectedReplacements: { type: "integer", enum: [1] },
+        },
+        required: ["path", "search", "replace"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const completeWriteDescriptor = {
+    type: "function",
+    function: {
+      name: "write_file",
+      description: "Write one complete file.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", enum: ["main.tex"] },
+          content: { type: "string" },
+          mode: { type: "string", enum: ["create", "overwrite"] },
+        },
+        required: ["path", "content", "mode"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const completeContract = createToolContract([
+    completePatchDescriptor,
+    completeWriteDescriptor,
+  ]);
+  const unanchoredCompleteCall = contractCall(
+    "unanchored-complete-patch",
+    "apply_patch",
+    {
+      path: "main.tex",
+      replace: revisedDocument,
+      expectedReplacements: 1,
+    }
+  );
+  const unanchoredValidation = resolveDispatchableToolCallBatch(
+    [unanchoredCompleteCall],
+    completeContract
+  );
+  assert(!unanchoredValidation.ok, "unanchored complete patch unexpectedly passed directly");
+  const recoveredCompletePatch =
+    await recoverUnanchoredCompletePatchAsWholeFileWrite(
+      {
+        commandCwd: completePatchTranslationRoot,
+        goal: "Repair and replace the retained report.",
+      },
+      {
+        meta: {
+          goalContract: {
+            currentRequest: "Repair and replace the retained report.",
+          },
+        },
+      },
+      [unanchoredCompleteCall],
+      completeContract,
+      unanchoredValidation
+    );
+  assert(recoveredCompletePatch?.ok, "complete patch intent was not translated");
+  assert(
+    recoveredCompletePatch.recoveredUnanchoredCompletePatch,
+    "complete patch translation was not marked"
+  );
+  assertStrict.deepEqual(
+    JSON.parse(recoveredCompletePatch.acceptedToolCalls[0].function.arguments),
+    {
+      path: "main.tex",
+      content: revisedDocument,
+      mode: "overwrite",
+    },
+    "complete patch intent did not become a bounded whole-file write"
+  );
+  assertStrict.equal(
+    await recoverUnanchoredCompletePatchAsWholeFileWrite(
+      {
+        commandCwd: completePatchTranslationRoot,
+        goal: "Create a note without changing existing files.",
+      },
+      { meta: { goalContract: { currentRequest: "Create a note." } } },
+      [unanchoredCompleteCall],
+      completeContract,
+      unanchoredValidation
+    ),
+    null,
+    "complete patch translation bypassed overwrite authorization"
+  );
+  const partialCall = contractCall("partial-unanchored-patch", "apply_patch", {
+    path: "main.tex",
+    replace: "one short replacement line",
+  });
+  assertStrict.equal(
+    await recoverUnanchoredCompletePatchAsWholeFileWrite(
+      {
+        commandCwd: completePatchTranslationRoot,
+        goal: "Repair and replace the retained report.",
+      },
+      {
+        meta: {
+          goalContract: {
+            currentRequest: "Repair and replace the retained report.",
+          },
+        },
+      },
+      [partialCall],
+      completeContract,
+      resolveDispatchableToolCallBatch([partialCall], completeContract)
+    ),
+    null,
+    "a partial replacement was mistaken for a complete-file write"
+  );
+} finally {
+  await fs.rm(completePatchTranslationRoot, { recursive: true, force: true });
+}
+
+const retainedLatexSource = [
+  "\\documentclass{article}",
+  "\\usepackage{fontspec}",
+  "\\setmainfont{Noto Serif}",
+  "\\begin{document}",
+  "\\section{Current decisions}",
+  "Keep the corrected publication and budget facts.",
+  "\\section{Remaining actions}",
+  "Wait for the exact login evidence before publishing.",
+  "\\end{document}",
+  "",
+].join("\n");
+const retainedLatexAnchor = [
+  "\\usepackage{fontspec}",
+  "\\setmainfont{Noto Serif}",
+].join("\n");
+const oversizedLatexReplacement = [
+  "\\usepackage{fontspec}",
+  "% Use the engine default serif family.",
+  "\\begin{document}",
+  "\\section{Current decisions}",
+  "Keep the corrected publication and budget facts.",
+  "\\section{Remaining actions}",
+  "Wait for the exact login evidence before publishing.",
+  "\\end{document}",
+  "",
+].join("\n");
+const retainedLatexBinding = bindPatchContextRepairArguments(
+  {
+    meta: {
+      projectVerification: { mutationRevision: 4, privateMutationRevision: 0 },
+      toolLoop: {
+        patchContextRepair: {
+          version: 1,
+          path: "report.tex",
+          search: retainedLatexAnchor,
+          searchHash: "retained-latex-anchor",
+          sourceHash: crypto.createHash("sha256").update(retainedLatexSource).digest("hex"),
+          completeSource: retainedLatexSource,
+          completeSourceHash: crypto.createHash("sha256").update(retainedLatexSource).digest("hex"),
+          completeSourceBytes: Buffer.byteLength(retainedLatexSource, "utf8"),
+          anchorKind: "focused-lines",
+          anchorIdentity: "font-setup",
+          mutationRevision: 4,
+          privateMutationRevision: 0,
+        },
+      },
+    },
+  },
+  {
+    path: "report.tex",
+    search: "\\setmainfont{Noto Serif}",
+    replace: oversizedLatexReplacement,
+  }
+);
+assert(
+  retainedLatexBinding?.scopeIssue?.duplicatedRetainedSide === "suffix",
+  "a stale whole-document replacement could be rebound into a narrow anchor and duplicate the retained suffix"
+);
 
 const focusedTrailingWhitespaceRoot = await fs.mkdtemp(
   path.join(os.tmpdir(), "agintiflow-focused-patch-whitespace-")

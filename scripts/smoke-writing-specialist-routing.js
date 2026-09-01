@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { checkToolUse } from "../src/guardrails.js";
+import {
+  groundWritingSpecialistArgsFromReadEvidence,
+  successfulReadFileEvidencePaths,
+} from "../src/agent-runner.js";
 import { languageWriterDefaults, runWritingSpecialist } from "../src/writing-specialist.js";
 
 const ENV_KEYS = [
@@ -20,6 +27,7 @@ const ENV_KEYS = [
 ];
 
 const originalEnvironment = Object.fromEntries(ENV_KEYS.map((name) => [name, process.env[name]]));
+let temporaryWorkspace = "";
 const localSession = {
   provider: "localllm",
   model: "localllm-deep",
@@ -33,6 +41,89 @@ function clearWriterEnvironment() {
 }
 
 try {
+  temporaryWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-writer-grounding-"));
+  const sourceText = [
+    "The launch is waiting for explicit approval.",
+    "Correction: the budget is HKD 2,400, not HKD 4,200.",
+    "Do not describe the book as completed; only its outline is verified.",
+  ].join("\n");
+  await fs.writeFile(path.join(temporaryWorkspace, "chat_history.md"), sourceText, "utf8");
+  const readMessages = [
+    {
+      role: "assistant",
+      tool_calls: [{
+        id: "read-source",
+        type: "function",
+        function: {
+          name: "read_file",
+          arguments: JSON.stringify({ path: "chat_history.md" }),
+        },
+      }],
+    },
+    {
+      role: "tool",
+      tool_call_id: "read-source",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "chat_history.md",
+        content: sourceText.slice(0, 24),
+        contentTruncated: true,
+      }),
+    },
+  ];
+  assert.deepEqual(successfulReadFileEvidencePaths(readMessages), [
+    { path: "chat_history.md", complete: false },
+  ]);
+  const sourceArgs = {
+    writingBrief: "Write the current project report based on chat_history.md.",
+    canon: "chat_history.md is the sole source of truth.",
+    constraints: "Reconcile every correction.",
+  };
+  const grounded = await groundWritingSpecialistArgsFromReadEvidence(
+    sourceArgs,
+    { messages: readMessages, meta: {} },
+    { commandCwd: temporaryWorkspace }
+  );
+  assert.deepEqual(grounded.groundedPaths, ["chat_history.md"]);
+  assert.match(grounded.args.writingBrief, /AUTHORITATIVE SOURCE MATERIAL/);
+  assert.match(grounded.args.writingBrief, /budget is HKD 2,400, not HKD 4,200/);
+  assert.match(grounded.args.constraints, /Do not invent generic project details/);
+
+  const creativeArgs = { writingBrief: "Write a restrained harbor scene at dusk." };
+  const creative = await groundWritingSpecialistArgsFromReadEvidence(
+    creativeArgs,
+    { messages: readMessages, meta: {} },
+    { commandCwd: temporaryWorkspace }
+  );
+  assert.strictEqual(creative.args, creativeArgs, "creative writing inherited unrelated source material");
+  assert.deepEqual(creative.groundedPaths, []);
+
+  const mutatedMessages = [
+    ...readMessages,
+    {
+      role: "assistant",
+      tool_calls: [{
+        id: "mutate-source",
+        type: "function",
+        function: {
+          name: "write_file",
+          arguments: JSON.stringify({ path: "chat_history.md", content: "changed" }),
+        },
+      }],
+    },
+    {
+      role: "tool",
+      tool_call_id: "mutate-source",
+      content: JSON.stringify({ ok: true, toolName: "write_file", path: "chat_history.md" }),
+    },
+  ];
+  assert.deepEqual(
+    successfulReadFileEvidencePaths(mutatedMessages),
+    [],
+    "a source mutation did not invalidate stale read evidence"
+  );
+
   clearWriterEnvironment();
   process.env.OPENAI_API_KEY = "ambient-openai-key";
   process.env.DEEPSEEK_API_KEY = "ambient-deepseek-key";
@@ -193,6 +284,7 @@ try {
 
   console.log("writing specialist routing smoke passed");
 } finally {
+  if (temporaryWorkspace) await fs.rm(temporaryWorkspace, { recursive: true, force: true });
   for (const [name, value] of Object.entries(originalEnvironment)) {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;

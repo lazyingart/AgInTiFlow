@@ -151,7 +151,19 @@ function stableStringify(value) {
 }
 
 export function isStaticDiscoveryToolCall(toolName, args = {}) {
-  if (["inspect_project", "list_files", "read_file", "search_files", "read_image"].includes(toolName)) return true;
+  if (
+    [
+      "inspect_project",
+      "list_files",
+      "read_file",
+      "search_files",
+      "read_image",
+      "read_web_page",
+      "web_search",
+    ].includes(toolName)
+  ) {
+    return true;
+  }
   if (toolName !== "run_command") return false;
   const command = String(args.command || "").trim();
   if (!command) return false;
@@ -165,6 +177,25 @@ export function isStaticDiscoveryToolCall(toolName, args = {}) {
 function canonicalDiscoveryPath(value, commandCwd = process.cwd()) {
   const raw = String(value || ".").trim() || ".";
   return path.resolve(commandCwd || process.cwd(), raw);
+}
+
+function canonicalDiscoveryUrl(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function canonicalDiscoveryQuery(value = "") {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase("en-US");
 }
 
 function simpleLsPath(command = "", commandCwd = process.cwd()) {
@@ -198,6 +229,12 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
       query: String(args.query || "").trim(),
       caseSensitive: Boolean(args.caseSensitive),
     })}`;
+  }
+  if (toolName === "web_search") {
+    return `web-search:${canonicalDiscoveryQuery(args.query)}`;
+  }
+  if (toolName === "read_web_page") {
+    return `web-read:${canonicalDiscoveryUrl(args.url)}`;
   }
   if (toolName === "run_command") {
     const lsPath = simpleLsPath(args.command, commandCwd);

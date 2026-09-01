@@ -1355,6 +1355,149 @@ function latestCompleteReadFileEvidence(messages = [], maxChars = 16000) {
   return latest;
 }
 
+export function successfulReadFileEvidencePaths(messages = []) {
+  const callsById = new Map();
+  const readsByPath = new Map();
+  let ordinal = 0;
+  const normalize = (value = "") =>
+    String(value || "")
+      .replace(/\\/g, "/")
+      .replace(/^\.\//, "")
+      .replace(/\/{2,}/g, "/")
+      .trim();
+  const accept = (name, args = {}, payload = {}) => {
+    const sourcePath = normalize(payload.path || args.path || "");
+    if (!sourcePath) return;
+    if (["apply_patch", "write_file"].includes(name)) {
+      for (const [candidate] of readsByPath) {
+        if (retainedPathMatchesAny(candidate, [sourcePath])) readsByPath.delete(candidate);
+      }
+      return;
+    }
+    if (name !== "read_file" || payload.ok === false || payload.blocked || payload.skipped) {
+      return;
+    }
+    readsByPath.set(sourcePath, {
+      path: sourcePath,
+      ordinal: ordinal += 1,
+      complete:
+        payload.contentTruncated !== true &&
+        payload.contentTruncatedByLines !== true &&
+        typeof payload.content === "string",
+    });
+  };
+
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const retained = parseRetainedToolEvidenceMessage(message);
+    if (retained) {
+      accept(retained.name, retained.args, retained.payload);
+      continue;
+    }
+    if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
+      for (const call of message.tool_calls) {
+        const id = String(call?.id || "").trim();
+        if (!id) continue;
+        callsById.set(id, {
+          name: String(call?.function?.name || "").trim(),
+          args: safeParseToolContent(call?.function?.arguments) || {},
+        });
+      }
+      continue;
+    }
+    if (message?.role !== "tool") continue;
+    const call = callsById.get(String(message.tool_call_id || "").trim());
+    const payload = safeParseToolContent(message.content);
+    if (call && payload) accept(call.name, call.args, payload);
+  }
+  return [...readsByPath.values()]
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .map(({ path: sourcePath, complete }) => ({ path: sourcePath, complete }));
+}
+
+function writingRequestNeedsSourceGrounding(args = {}) {
+  const context = [args.writingBrief, args.canon, args.constraints, args.priorDraft]
+    .filter((value) => typeof value === "string")
+    .join("\n");
+  if (!context.trim() || /\bAUTHORITATIVE SOURCE MATERIAL\b/i.test(context)) return false;
+  return (
+    /(?:\b(?:based on|derived from|ground(?:ed|ing)? in|reconcile|source of truth|source material|source document|chat history|meeting notes|input file|read (?:the|all|every)|use (?:the|all|every).{0,24}(?:source|notes?|history|file))\b|(?:^|[\s"'`()])(?:\.{0,2}\/)?(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:csv|json|md|rst|tsv|txt|ya?ml)(?=$|[\s"'`),.;]))/iu.test(context) ||
+    /(?:以.{0,30}(?:文件|资料|材料|记录|聊天记录)为准|根据.{0,30}(?:文件|资料|材料|记录|聊天记录)|阅读(?:全部|所有|每个).{0,20}(?:文件|资料|记录)|来源材料|事实来源)/u.test(context)
+  );
+}
+
+export async function groundWritingSpecialistArgsFromReadEvidence(
+  args = {},
+  state = {},
+  config = {}
+) {
+  if (!writingRequestNeedsSourceGrounding(args)) {
+    return { args, groundedPaths: [], groundedBytes: 0 };
+  }
+  const messages = Array.isArray(state.messages) ? state.messages : [];
+  const readEvidence = successfulReadFileEvidencePaths(messages);
+  if (!readEvidence.length) return { args, groundedPaths: [], groundedBytes: 0 };
+
+  const context = [args.writingBrief, args.canon, args.constraints, args.priorDraft]
+    .filter((value) => typeof value === "string")
+    .join("\n")
+    .replace(/\\/g, "/")
+    .toLocaleLowerCase("en-US");
+  const exactInputs = exactInputPathsForState(state);
+  const explicitlyRelevant = readEvidence.filter((item) => {
+    const normalized = String(item.path || "").replace(/\\/g, "/").replace(/^\.\//, "");
+    const lowered = normalized.toLocaleLowerCase("en-US");
+    const basename = path.posix.basename(lowered);
+    return (
+      context.includes(lowered) ||
+      (basename.includes(".") && context.includes(basename)) ||
+      retainedPathMatchesAny(normalized, exactInputs)
+    );
+  });
+  const selected = (explicitlyRelevant.length ? explicitlyRelevant : readEvidence.slice(-2)).slice(-4);
+  const sourceBlocks = [];
+  const groundedPaths = [];
+  let groundedBytes = 0;
+  const maxTotalBytes = 32 * 1024;
+  const maxFileBytes = 24 * 1024;
+  for (const item of selected) {
+    if (groundedBytes >= maxTotalBytes) break;
+    try {
+      const target = resolveWorkspacePath(config, item.path, { allowReadOnlyRoots: true });
+      const stat = await fs.stat(target.absolutePath);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > maxFileBytes) continue;
+      const remaining = maxTotalBytes - groundedBytes;
+      if (stat.size > remaining) continue;
+      const raw = await fs.readFile(target.absolutePath, "utf8");
+      if (!raw.trim() || raw.includes("\u0000")) continue;
+      const content = redactSensitiveText(raw);
+      sourceBlocks.push([
+        `SOURCE: ${String(item.path).replace(/\\/g, "/")}`,
+        content,
+        "END SOURCE",
+      ].join("\n"));
+      groundedPaths.push(String(item.path).replace(/\\/g, "/"));
+      groundedBytes += Buffer.byteLength(content, "utf8");
+    } catch {
+      // Only already verified, still-readable source files may cross into the writer.
+    }
+  }
+  if (!sourceBlocks.length) return { args, groundedPaths: [], groundedBytes: 0 };
+
+  const sourceConstraint =
+    "Use only the supplied authoritative source material for factual claims. Do not invent generic project details, metrics, milestones, people, systems, or outcomes. Preserve explicit corrections, blockers, pending or unverified states, and no-action boundaries.";
+  return {
+    args: {
+      ...args,
+      writingBrief: `${String(args.writingBrief || "").trim()}\n\nAUTHORITATIVE SOURCE MATERIAL\n${sourceBlocks.join("\n\n")}`.trim(),
+      constraints: [String(args.constraints || "").trim(), sourceConstraint]
+        .filter(Boolean)
+        .join("\n"),
+    },
+    groundedPaths,
+    groundedBytes,
+  };
+}
+
 function retainedToolPairPriority(pair = [], order = 0, outputPaths = [], inputPaths = []) {
   const assistantCall = pair[0]?.tool_calls?.[0];
   const retained = pair.length === 1 ? parseRetainedToolEvidenceMessage(pair[0]) : null;
@@ -2278,6 +2421,14 @@ export function buildKnownConstrainedPhasePlan(
   const repositoryStateRepair = runtimeConfig.testFailureRepositoryStateRepair === true;
   const generatedArtifactProducer =
     runtimeConfig.generatedArtifactProducerPending === true;
+  const requestedArtifactCreation = Boolean(
+    runtimeConfig.requestedArtifactRequirementsPending === true &&
+      Array.isArray(runtimeConfig.requestedArtifactCreationExtensions) &&
+      runtimeConfig.requestedArtifactCreationExtensions.length > 0 &&
+      !generatedArtifactProducer
+  );
+  const generatedArtifactProducerRepair =
+    runtimeConfig.generatedArtifactProducerRepairActive === true;
   const freshSourceMutation = runtimeConfig.completionFreshMutationRequired === true;
   const explicitHeadRestorePending = Boolean(
     freshSourceMutation &&
@@ -2312,6 +2463,7 @@ export function buildKnownConstrainedPhasePlan(
     !repositoryStateRepair &&
     !freshSourceMutation &&
     !generatedArtifactProducer &&
+    !requestedArtifactCreation &&
     !verificationPending &&
     !requiredProjectCommandPending &&
     !verifiedCompletion &&
@@ -2340,6 +2492,7 @@ export function buildKnownConstrainedPhasePlan(
     !taskOwnedCommitPending &&
     !freshSourceMutation &&
     !generatedArtifactProducer &&
+    !requestedArtifactCreation &&
     !command
   ) return null;
 
@@ -2349,6 +2502,8 @@ export function buildKnownConstrainedPhasePlan(
       ? "fresh-source-mutation"
       : generatedArtifactProducer
         ? "generated-artifact-producer"
+      : requestedArtifactCreation
+        ? "requested-artifact-creation"
       : requiredProjectCommandPending
       ? "required-project-command"
       : verificationPending
@@ -2395,6 +2550,19 @@ export function buildKnownConstrainedPhasePlan(
             "2. Do not broaden the path scope or replace the restore with a guessed source patch.",
             "3. After restoration, run the retained verifier once, remove disposable build output, and finish from clean repository evidence.",
           ].join("\n")
+        : generatedArtifactProducerRepair &&
+            runtimeConfig.completionFreshMutationNeedsSourceRead === true
+          ? [
+              "1. Read the exact canonical producer source offered by the runtime.",
+              `2. Repair the concrete producer failure without changing unrelated content: ${compactSingleLine(runtimeConfig.generatedArtifactProducerFailureSummary || "local artifact producer failed", 900)}`,
+              "3. After the source mutation succeeds, rerun the retained producer once and validate the generated artifact.",
+            ].join("\n")
+          : generatedArtifactProducerRepair
+            ? [
+                "1. Apply one bounded correction to the exact grounded producer source now.",
+                `2. Address this concrete failure and nothing unrelated: ${compactSingleLine(runtimeConfig.generatedArtifactProducerFailureSummary || "local artifact producer failed", 900)}`,
+                "3. After the source mutation succeeds, rerun the retained producer once and validate the generated artifact.",
+              ].join("\n")
         : runtimeConfig.completionFreshMutationNeedsSourceRead === true
         ? [
             "1. Read one exact current canonical project file offered by the runtime.",
@@ -2411,6 +2579,12 @@ export function buildKnownConstrainedPhasePlan(
             `1. Run the exact retained local producer command now: ${command}`,
             "2. Rebuild generated artifacts from the latest canonical source mutation; do not rerun the stale validator first or substitute another command.",
             "3. After the producer succeeds, run the exact retained validator and repair only from any fresh concrete failure.",
+          ].join("\n")
+      : requestedArtifactCreation
+        ? [
+            `1. Create one canonical editable source using one of the required extensions: ${runtimeConfig.requestedArtifactCreationExtensions.join(", ")}.`,
+            "2. Use the task instructions and already-read source evidence; do not create a substitute format or perform Git completion.",
+            "3. After the source exists, run its bounded local producer and validate every requested artifact before committing.",
           ].join("\n")
       : artifactCommitPending || taskOwnedCommitPending
       ? [
@@ -2444,11 +2618,18 @@ export function buildKnownConstrainedPhasePlan(
     : freshSourceMutation
       ? explicitHeadRestorePending
         ? "The current request explicitly names a dirty tracked file and asks for its exact HEAD version. Run only the offered provenance-bound restore command; do not guess a replacement patch or touch any other path."
+        : generatedArtifactProducerRepair &&
+            runtimeConfig.completionFreshMutationNeedsSourceRead === true
+          ? "The retained artifact producer failed against the current canonical source. Read only the offered source file now, then apply one bounded correction from the exact failure; do not rerun the unchanged producer or commit the broken artifact state."
+          : generatedArtifactProducerRepair
+            ? "The retained artifact producer failed against the current grounded source. Apply one bounded source correction now; do not rerun the unchanged producer or commit the broken artifact state."
         : runtimeConfig.completionFreshMutationNeedsSourceRead === true
         ? "Completion was rejected because a fresh canonical source correction is still missing. Read one exact offered project file now; command, test, Git, and finish actions remain intentionally unavailable until the source is grounded and materially patched."
         : "Completion was rejected because a fresh canonical source correction is still missing. Use the offered path-bounded apply_patch tool now. Do not substitute another read-only inspection, test rerun, Git command, private verifier edit, or finish claim."
       : generatedArtifactProducer
         ? "A canonical producer source changed after the last successful build. Run only the exact retained local producer command now so validation observes fresh artifacts; do not rerun the stale validator or invent another source edit."
+      : requestedArtifactCreation
+        ? "The authoritative task contract still lacks its requested editable source. Create one canonical source in an offered required format now; substitute artifacts, Git completion, validation claims, and finish remain unavailable until it exists."
       : artifactCommitPending
       ? "The exact artifact and current source changes already passed deterministic checks. Only the required local commit is missing. Call commit_project_changes with a concise factual subject, then finish; do not restart discovery or validation."
       : taskOwnedCommitPending
@@ -2480,11 +2661,12 @@ export function buildConstrainedRecoveryRequest(
   const { mode, command, plan: effectivePlan, recoveryInstruction } = phase;
   const repositoryStateRepair = mode === "repository-state-repair";
   const freshSourceMutation = mode === "fresh-source-mutation";
+  const requestedArtifactCreation = mode === "requested-artifact-creation";
   const artifactCommitPending = mode === "artifact-git-completion";
   const taskOwnedCommitPending = mode === "task-owned-git-completion";
   const requestedOutputCap = Number(runtimeConfig.maxOutputTokens || 0);
   const phaseDefaultOutputCap =
-    freshSourceMutation
+    freshSourceMutation || requestedArtifactCreation
     ? CONSTRAINED_SOURCE_MUTATION_OUTPUT_TOKEN_CAP
     : repositoryStateRepair || artifactCommitPending || taskOwnedCommitPending
     ? CONSTRAINED_REPOSITORY_RECOVERY_OUTPUT_TOKEN_CAP
@@ -2496,7 +2678,7 @@ export function buildConstrainedRecoveryRequest(
       ? runtimeConfig.repositoryStateRecoveryMaxOutputTokens ||
           runtimeConfig.constrainedRecoveryMaxOutputTokens ||
           phaseDefaultOutputCap
-      : freshSourceMutation
+      : freshSourceMutation || requestedArtifactCreation
         ? runtimeConfig.completionFreshMutationMaxOutputTokens ||
             runtimeConfig.constrainedRecoveryMaxOutputTokens ||
             phaseDefaultOutputCap
@@ -2518,7 +2700,7 @@ export function buildConstrainedRecoveryRequest(
     : Number.isFinite(requestedOutputCap) && requestedOutputCap > 0
       ? Math.min(requestedOutputCap, defaultOutputCap)
       : defaultOutputCap;
-  const contextFloor = freshSourceMutation
+  const contextFloor = freshSourceMutation || requestedArtifactCreation
     ? 6144
     : CONSTRAINED_RECOVERY_CONTEXT_TARGET_TOKENS;
   const contextTarget = Math.min(
@@ -3023,7 +3205,7 @@ async function createInitialState(config, sessionId) {
           mcpPromptContext(config),
           isRetainedWorkspaceProfile(config)
             ? `Use only the exact retained ${config.integrationSessionProfile} tools offered in this turn.`
-            : "For substantial writing tasks such as novels, chapters, books, scripts, essays, LaTeX manuscripts, or research-paper prose, call writing_specialist first with only writing context: brief, canon, style, prior draft, target, audience, constraints, and downstream format intent. Do not pass tool policy, shell/browser/file instructions, or agent runtime context into the writer. After the writer returns, the main agent owns saving files, formatting to Markdown/LaTeX/Final Draft, citations, checks, and canvas/file delivery.",
+            : "For substantial writing tasks such as novels, chapters, books, scripts, essays, LaTeX manuscripts, or research-paper prose, call writing_specialist first with only writing context: brief, canon, style, prior draft, target, audience, constraints, and downstream format intent. For source-grounded work, read the exact source and include its relevant actual text rather than passing only a filename. Do not pass tool policy, shell/browser/file instructions, or agent runtime context into the writer. After the writer returns, the main agent owns saving files, formatting to Markdown/LaTeX/Final Draft, citations, checks, and canvas/file delivery.",
           config.allowParallelScouts
             ? `Parallel DeepSeek scouts may run before complex execution. Scout count: ${config.parallelScoutCount}.`
             : "Parallel scouts are disabled.",
@@ -3969,6 +4151,7 @@ export function resetGoalScopedRuntimeState(state = {}) {
     "durableGitEvidence",
     "durableResearchEvidence",
     "failedTestRecoveryPacket",
+    "groundedProjectTaskInstruction",
     "projectVerification",
     "scs",
     "verifiedCompletionCandidate",
@@ -4745,11 +4928,11 @@ export function skippedAfterBlockedToolResult(toolCall, blockedResult) {
   };
 }
 
-function goalClearlyAllowsOverwrite(goal = "") {
+export function goalClearlyAllowsOverwrite(goal = "") {
   const text = String(goal || "").toLowerCase();
   return (
-    /\b(overwrite|replace|update|modify|edit|revise|rewrite|fix|repair|correct|patch|change|append|refresh|regenerate|remember|instruction|instructions|memory|preference|preferences|prefer)\b/i.test(text) ||
-    /覆盖|覆寫|替换|替換|更新|修改|修复|修復|编辑|編輯|改写|改寫|追加|记住|記住|指令|说明|說明|偏好|上書き|置換|修正|編集/.test(text)
+    /\b(overwrite|replace|remove|delete|discard|update|modify|edit|revise|rewrite|fix|repair|correct|patch|change|append|refresh|regenerate|remember|instruction|instructions|memory|preference|preferences|prefer)\b/i.test(text) ||
+    /覆盖|覆寫|替换|替換|删除|刪除|移除|丢弃|丟棄|舍弃|捨棄|更新|修改|修复|修復|编辑|編輯|改写|改寫|追加|记住|記住|指令|说明|說明|偏好|上書き|置換|削除|破棄|修正|編集/.test(text)
   );
 }
 
@@ -6335,6 +6518,24 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       taskProfile: config.taskProfile || state.meta?.taskProfile || "auto",
     });
     const sourcePath = String(toolResult.path || toolResult.args?.path || "");
+    if (
+      /^(?:TASK|BRIEF|INSTRUCTIONS?)(?:\.[^/]*)?$/iu.test(
+        path.posix.basename(sourcePath.replace(/\\/gu, "/"))
+      ) &&
+      Buffer.byteLength(toolResult.content, "utf8") <= 32 * 1024 &&
+      !toolResult.content.includes("\u0000")
+    ) {
+      state.meta.groundedProjectTaskInstruction = {
+        version: 1,
+        path: sourcePath,
+        sha256: hashForLog(toolResult.content),
+        goalRevision: Math.max(
+          0,
+          Number(state.meta?.goalContract?.revision || 0)
+        ),
+        readAt: now,
+      };
+    }
     const acceptanceOptions = {
       commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
       authoritativePaths: [
@@ -6567,7 +6768,10 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         commandMutationPaths,
         state,
         config,
-        { verificationCommand }
+        {
+          verificationCommand:
+            verificationCommand || Boolean(generatedArtifactProducer),
+        }
       );
     const scopedTaskArtifactWrite = commandWritesOnlyScopedTaskArtifacts(
       mutationCommand,
@@ -6711,6 +6915,19 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     }
     if (commandIncludesGitCommit(command)) {
       delete verification.repositoryStateInspection;
+      if (commandSucceeded && config.taskOwnedCommitPending === true) {
+        verification.taskOwnedCompletionCommit = {
+          version: 1,
+          at: now,
+          goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+          mutationRevision: verification.mutationRevision,
+          privateMutationRevision: verification.privateMutationRevision,
+          paths: (Array.isArray(config.taskOwnedCommitPaths)
+            ? config.taskOwnedCommitPaths
+            : []
+          ).map(safeTaskOwnedCommitPath).filter(Boolean).slice(0, 64),
+        };
+      }
     }
     if (
       commandSucceeded &&
@@ -6777,6 +6994,63 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
           }
         : {}),
     };
+    if (generatedArtifactProducer) {
+      if (commandSucceeded) {
+        delete state.meta.generatedArtifactProducerFailure;
+      } else {
+        const priorFailure = state.meta?.generatedArtifactProducerFailure || {};
+        const sourceMutation = [...(verification.mutationHistory || [])]
+          .reverse()
+          .find(
+            (mutation) =>
+              Number(mutation?.revision || 0) === verification.mutationRevision &&
+              ["apply_patch", "write_file"].includes(
+                String(mutation?.toolName || "")
+              )
+          );
+        const outputLines = `${String(toolResult.stderr || "")}\n${String(
+          toolResult.stdout || ""
+        )}`
+          .split(/\r?\n/u)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .slice(-18)
+          .join("\n");
+        const sameFailure = Boolean(
+          Number(priorFailure.version || 0) === 1 &&
+          Number(priorFailure.mutationRevision || -1) ===
+            verification.mutationRevision &&
+          projectCommandsEquivalent(
+            priorFailure.command || "",
+            generatedArtifactProducer,
+            config
+          )
+        );
+        state.meta.generatedArtifactProducerFailure = {
+          version: 1,
+          command: generatedArtifactProducer,
+          attempts: sameFailure
+            ? Math.max(1, Number(priorFailure.attempts || 1)) + 1
+            : 1,
+          goalRevision: Math.max(
+            0,
+            Number(state.meta?.goalContract?.revision || 0)
+          ),
+          mutationRevision: verification.mutationRevision,
+          sourcePaths: (Array.isArray(sourceMutation?.paths)
+            ? sourceMutation.paths
+            : []
+          )
+            .map(safeTaskOwnedCommitPath)
+            .filter(Boolean)
+            .slice(0, 12),
+          failureSummary: redactSensitiveText(outputLines).slice(-2400),
+          at: now,
+        };
+        toolResult.generatedArtifactProducerFailure =
+          state.meta.generatedArtifactProducerFailure;
+      }
+    }
     if (requiredCommand && (commandSucceeded || authoritativeRoutineObserved)) {
       if (!requiredBatch && requiredMutatingCommands.length === 0) {
         requiredBatch = startRequiredCommandBatch(verification, requiredCommands, {
@@ -7112,6 +7386,13 @@ function safeTaskOwnedCommitPath(value = "") {
     return "";
   }
   if (/\.(?:key|pem|p12|pfx|crt|csr)$/iu.test(candidate)) return "";
+  if (
+    /(?:\.synctex(?:\.gz)?|\.aux|\.fdb_latexmk|\.fls|\.lof|\.lot|\.nav|\.snm|\.toc|\.vrb|\.xdv)$/iu.test(
+      candidate
+    )
+  ) {
+    return "";
+  }
   return candidate;
 }
 
@@ -9915,6 +10196,212 @@ export function repeatedStaticToolBlock(state, toolName, args = {}, config = {})
   };
 }
 
+export function prematureRequestedArtifactCommitBlock(
+  state = {},
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (toolName !== "run_command") return null;
+  const gitActions = inferGitActionsFromCommand(args.command || "", {
+    requireFailurePropagation: false,
+  });
+  if (!gitActions.includes("commit")) return null;
+  const contract = completionTaskContract(config, state);
+  const artifactEvaluation = evaluateRequestedArtifactRequirements(contract, {
+    commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
+    state,
+  });
+  if (artifactEvaluation.ok) return null;
+  const missing = Array.isArray(artifactEvaluation.missing)
+    ? artifactEvaluation.missing
+        .map((item) => String(item?.path || item?.category || item?.reason || "").trim())
+        .filter(Boolean)
+    : [];
+  return {
+    reason: missing.length
+      ? `Required artifacts are still missing or invalid: ${missing.join(", ")}.`
+      : "Required artifacts are still missing or invalid.",
+    category: "requested-artifact-incomplete",
+    permissionAdvice: {
+      category: "requested-artifact-incomplete",
+      autoRecover: true,
+      summary: "Artifact creation and validation must finish before Git completion.",
+      instruction:
+        "Create the exact requested source and derived artifacts, run their bounded producer and validation commands, then commit only the verified task-owned paths. Do not commit an intermediate or substitute artifact.",
+      options: [
+        "Create the missing editable source when it does not exist.",
+        "Run the established bounded producer when source exists but the derived artifact is missing.",
+        "Validate the final artifact, then use bounded task-owned Git completion.",
+      ],
+    },
+  };
+}
+
+export async function documentQualityCommitAssessment(
+  state = {},
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (toolName !== "run_command") return null;
+  const gitActions = inferGitActionsFromCommand(args.command || "", {
+    requireFailurePropagation: false,
+  });
+  if (!gitActions.includes("commit")) return null;
+  const contract = completionTaskContract(config, state);
+  const exactOutputPaths = [...new Set([
+    ...(Array.isArray(contract.exactOutputPaths)
+      ? contract.exactOutputPaths
+      : []),
+    ...exactOutputPathsForState(state),
+    ...(Array.isArray(config.taskOwnedCommitPaths)
+      ? config.taskOwnedCommitPaths
+      : []),
+    ...(Array.isArray(config.artifactValidationCommitPaths)
+      ? config.artifactValidationCommitPaths
+      : []),
+    ...(Array.isArray(config.repositoryStateRepairCommitPaths)
+      ? config.repositoryStateRepairCommitPaths
+      : []),
+  ])];
+  const requestedArtifactKinds = Array.isArray(contract.requiredArtifactKinds)
+    ? contract.requiredArtifactKinds
+    : [];
+  const documentRequested = Boolean(
+    exactOutputPaths.some((item) => /\.(?:docx|pdf)$/iu.test(String(item || ""))) ||
+      requestedArtifactKinds.some((item) =>
+        [".docx", ".pdf"].includes(
+          String(item?.format || item?.extension || item || "").toLowerCase()
+        )
+      )
+  );
+  if (!documentRequested) return null;
+
+  let documentQuality;
+  try {
+    const validateDocumentArtifacts =
+      typeof config.documentArtifactValidator === "function"
+        ? config.documentArtifactValidator
+        : validateWordDocumentArtifacts;
+    documentQuality = await validateDocumentArtifacts({
+      commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
+      candidateResult: "",
+      goal: completionContractGoal(config, state),
+      exactOutputPaths,
+      exactInputPaths: [
+        ...(Array.isArray(contract.exactInputPaths)
+          ? contract.exactInputPaths
+          : []),
+        ...exactInputPathsForState(state),
+        ...successfulReadFileEvidencePaths(state.messages || []).map(
+          (item) => item.path
+        ),
+      ],
+      requireVersioned: false,
+    });
+  } catch (error) {
+    documentQuality = {
+      ok: false,
+      checked: true,
+      artifacts: [],
+      defects: [{
+        code: "document-quality-check-failed",
+        message: String(error?.message || error),
+      }],
+      reason: `Independent pre-commit document validation failed: ${String(
+        error?.message || error
+      )}`,
+    };
+  }
+  state.meta = state.meta || {};
+  state.meta.documentArtifactQuality = documentQuality;
+  const assessment = {
+    checked: true,
+    ok: documentQuality.ok === true,
+    documentQuality,
+  };
+  if (assessment.ok) {
+    if (
+      String(state.meta?.completionEvidenceRepair?.key || "").startsWith(
+        "precommit-document-quality:"
+      )
+    ) {
+      delete state.meta.completionEvidenceRepair;
+    }
+    return assessment;
+  }
+
+  const verification = state.meta?.projectVerification || {};
+  const mutationRevision = Math.max(
+    0,
+    Number(verification.mutationRevision || 0)
+  );
+  const documentArtifactProducerCommand = inferredLatexArtifactProducerCommand(
+    state,
+    config
+  );
+  const repair = completionRepairMutationRequirement({
+    contract,
+    evaluation: { missing: [] },
+    documentQuality,
+    projectMutationRevision: mutationRevision,
+    documentArtifactProducerAvailable: Boolean(
+      documentArtifactProducerCommand
+    ),
+  });
+  const reason = String(
+    documentQuality.reason ||
+      "The document artifact failed independent quality checks."
+  );
+  const repairKey = `precommit-document-quality:${mutationRevision}:${hashForLog(
+    reason
+  )}`;
+  const prior = state.meta.completionEvidenceRepair || {};
+  state.meta.completionEvidenceRepair = {
+    key: repairKey,
+    attempts:
+      prior.key === repairKey
+        ? Math.max(0, Number(prior.attempts || 0)) + 1
+        : 1,
+    reason,
+    at: new Date().toISOString(),
+    goalRevision: Math.max(
+      0,
+      Number(state.meta?.goalContract?.revision || 0)
+    ),
+    mutationRevision,
+    requiresFreshFileMutation: repair.requiresFreshFileMutation,
+    requiredFreshMutationRevision: repair.requiredFreshMutationRevision,
+    sourceQualityRepairRequired: repair.sourceQualityRepairRequired,
+    artifactQualityRepairRequired: repair.artifactQualityRepairRequired,
+    documentArtifactGenerationRequired:
+      repair.documentArtifactGenerationRequired,
+    documentArtifactProducerCommand:
+      repair.documentArtifactGenerationRequired
+        ? documentArtifactProducerCommand
+        : "",
+    missingEvidence: [],
+  };
+  return {
+    ...assessment,
+    reason,
+    category: "document-quality-incomplete",
+    permissionAdvice: {
+      category: "document-quality-incomplete",
+      autoRecover: true,
+      summary: "Document quality must pass before Git completion.",
+      instruction:
+        "Repair the exact editable document source from this quality diagnostic, rebuild the derived document, rerun the independent quality check, and only then commit the verified source and artifact together.",
+      options: [
+        "Repair only the document source implicated by the diagnostic.",
+        "Rebuild the derived PDF or DOCX with the established producer.",
+        "Commit the verified task-owned source and artifact together after validation passes.",
+      ],
+    },
+  };
+}
+
 function expectedRepeatedObservationCommand(command = "") {
   return /\b(?:watch|poll|status|queue|sleep)\b|tail\s+-f|tmux\s+capture-pane|\b(?:curl|wget|ps)\b/i.test(
     String(command || "")
@@ -9945,6 +10432,9 @@ function isStaticDiscoveryToolResult(toolResult = {}) {
 
 function successfulToolStateProgress(toolResult = {}) {
   if (!toolResult || toolResult.done || toolResult.ok === false || toolResult.blocked || toolResult.skipped) return false;
+  if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {})) {
+    return false;
+  }
   if (toolResult.toolName === "run_command") {
     return runCommandResultHasDurableProgress(toolResult);
   }
@@ -9981,6 +10471,11 @@ function noProgressOutcomeFingerprint(toolResult = {}) {
 
 export function repeatedNoProgressToolBlock(state, toolName, args = {}, config = {}) {
   if (toolName !== "run_command" || expectedRepeatedObservationCommand(args.command)) return null;
+  const toolLoop = state.meta?.toolLoop || {};
+  const signature = staticToolCallSignature(toolName, args || {}, {
+    commandCwd: config.commandCwd,
+  });
+  const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
   const requestedCommand = projectTestCommandKey(
     normalizeLeadingWorkspaceCd(args.command, config)
   );
@@ -9996,7 +10491,26 @@ export function repeatedNoProgressToolBlock(state, toolName, args = {}, config =
     // did not yet credit generated-artifact rebuilds as mutations. The current
     // exact producer contract is authoritative and gets one executable route;
     // unrelated repeated probes remain guarded below.
-    return null;
+    const mutationRevision = Math.max(
+      0,
+      Number(state.meta?.projectVerification?.mutationRevision || 0)
+    );
+    const goalRevision = Math.max(
+      0,
+      Number(state.meta?.goalContract?.revision || 0)
+    );
+    const currentProducerAttemptExists = (
+      Array.isArray(toolLoop.recent) ? toolLoop.recent : []
+    ).some(
+      (entry) =>
+        entry?.signature === signature &&
+        entry?.toolName === "run_command" &&
+        entry?.generatedArtifactProducerAttempt === true &&
+        entry?.blocked !== true &&
+        Number(entry?.mutationRevision || 0) === mutationRevision &&
+        Number(entry?.goalRevision || 0) === goalRevision
+    );
+    if (!currentProducerAttemptExists) return null;
   }
   const pendingVerificationCommand = projectTestCommandKey(
     normalizeLeadingWorkspaceCd(config.testVerificationCommand, config)
@@ -10022,11 +10536,6 @@ export function repeatedNoProgressToolBlock(state, toolName, args = {}, config =
       return null;
     }
   }
-  const toolLoop = state.meta?.toolLoop || {};
-  const signature = staticToolCallSignature(toolName, args || {}, {
-    commandCwd: config.commandCwd,
-  });
-  const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
   const matches = (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).filter(
     (entry) =>
       entry?.signature === signature &&
@@ -12291,11 +12800,17 @@ const DISPOSABLE_GENERATED_PATH_SEGMENTS = new Set([
 ]);
 
 const DISPOSABLE_GENERATED_FILE_EXTENSIONS = new Set([
+  ".aux",
   ".class",
+  ".fdb_latexmk",
+  ".fls",
+  ".log",
   ".o",
   ".obj",
+  ".out",
   ".pyc",
   ".pyo",
+  ".toc",
 ]);
 
 function disposableGeneratedPath(value = "", commandCwd = process.cwd()) {
@@ -12791,6 +13306,92 @@ function artifactValidationExactInputMutationBlock(state = {}, toolName = "", ar
         "Read the exact input without changing it.",
         "Patch only an exact requested output.",
         "Recover accidental input damage from verified version-control history before finishing.",
+      ],
+    },
+  };
+}
+
+const DOCUMENT_SOURCE_PROFILE_IDS = new Set(["book", "latex", "paper", "writing", "word"]);
+const DOCUMENT_SOURCE_BASENAME_PATTERN =
+  /^(?:agents?|brief|chat[-_ ]?history|conversation[-_ ]?history|instructions?|project[-_ ]?notes?|prompt|readme|requirements?|source(?:[-_ ].*)?|style[-_ ]?notes?|task)(?:\.[^.]+)?$/iu;
+const DOCUMENT_SOURCE_DIRECTORY_PATTERN =
+  /(?:^|\/)(?:input|inputs|material|materials|notes|reference|references|source|sources)(?:\/|$)/iu;
+
+function documentSourcePathCandidate(sourcePath = "") {
+  const normalized = String(sourcePath || "")
+    .replace(/\\/gu, "/")
+    .replace(/^\.\//u, "")
+    .replace(/\/{2,}/gu, "/")
+    .trim();
+  if (!normalized) return false;
+  return (
+    DOCUMENT_SOURCE_DIRECTORY_PATTERN.test(normalized) ||
+    DOCUMENT_SOURCE_BASENAME_PATTERN.test(path.posix.basename(normalized))
+  );
+}
+
+function documentSourceMutationExplicitlyRequested(state = {}, config = {}, sourcePath = "") {
+  const goal = completionContractGoal(config, state);
+  if (!goal) return false;
+  const normalizedPath = String(sourcePath || "").replace(/\\/gu, "/").replace(/^\.\//u, "");
+  const basename = path.posix.basename(normalizedPath);
+  const escapedNames = [normalizedPath, basename]
+    .filter(Boolean)
+    .map((item) => item.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"));
+  if (!escapedNames.length) return false;
+  const namedPath = new RegExp(`(?:${escapedNames.join("|")})`, "iu");
+  const editIntent =
+    /\b(?:change|correct|delete|edit|modify|move|normalize|patch|remove|rename|replace|rewrite|update)\b|(?:修改|改动|更新|重写|替换|删除|移动|重命名|修正|编辑)|(?:変更|編集|更新|書き換え|置換|削除|移動|名前変更|修正)/iu;
+  return goal
+    .split(/[!?;\n。！？；]+/u)
+    .some((segment) => namedPath.test(segment) && editIntent.test(segment));
+}
+
+export function documentSourceMaterialMutationBlock(
+  state = {},
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  const taskProfile = String(config.taskProfile || state.meta?.taskProfile || "").toLowerCase();
+  if (
+    !DOCUMENT_SOURCE_PROFILE_IDS.has(taskProfile) ||
+    !["write_file", "apply_patch"].includes(toolName)
+  ) {
+    return null;
+  }
+  const commandCwd = config.commandCwd || state.commandCwd || process.cwd();
+  const outputs = new Set(
+    exactOutputPathsForState(state).flatMap((item) => artifactValidationPathKeys(item, commandCwd))
+  );
+  const sourceReads = successfulReadFileEvidencePaths(state.messages || [])
+    .filter((item) => item.complete && documentSourcePathCandidate(item.path));
+  const protectedInputs = new Map();
+  for (const source of sourceReads) {
+    if (documentSourceMutationExplicitlyRequested(state, config, source.path)) continue;
+    for (const key of artifactValidationPathKeys(source.path, commandCwd)) {
+      if (!outputs.has(key)) protectedInputs.set(key, source.path);
+    }
+  }
+  if (!protectedInputs.size) return null;
+  const protectedPath = artifactValidationMutationPaths(toolName, args, commandCwd)
+    .find((item) => protectedInputs.has(item));
+  if (!protectedPath) return null;
+  const sourcePath = protectedInputs.get(protectedPath);
+  return {
+    reason:
+      `${sourcePath} was read as authoritative source material for this document task. ` +
+      "The user did not request editing that source, so only the derived deliverables may change.",
+    category: "document-source-material-mutation",
+    permissionAdvice: {
+      category: "document-source-material-mutation",
+      autoRecover: true,
+      summary: "Preserve source material and repair the derived document instead.",
+      instruction:
+        "Leave the source file unchanged. Apply the correction to the requested report, memo, manuscript, or export, then verify and commit only those intentional deliverables.",
+      options: [
+        "Patch the derived document source.",
+        "Read the authoritative source again without changing it.",
       ],
     },
   };
@@ -13936,11 +14537,77 @@ export function completionContractGoal(config = {}, state = {}) {
     .join("\n\n");
 }
 
+function groundedProjectTaskInstructionText(state = {}, config = {}, directContract = {}) {
+  const directHasConcreteDeliverable = [
+    directContract.exactOutputPaths,
+    directContract.requiredArtifactKinds,
+    directContract.requiredProjectCommands,
+    directContract.requiredTextTerms,
+    directContract.requiredExecutableTerms,
+  ].some((items) => Array.isArray(items) && items.length > 0);
+  if (directHasConcreteDeliverable) return "";
+  const source = [...successfulReadFileEvidencePaths(state.messages || [])]
+    .reverse()
+    .find(
+      (item) =>
+        item.complete === true &&
+        /^(?:TASK|BRIEF|INSTRUCTIONS?)(?:\.[^/]*)?$/iu.test(
+          path.posix.basename(String(item.path || "").replace(/\\/gu, "/"))
+        )
+    );
+  const persisted = state.meta?.groundedProjectTaskInstruction;
+  const currentGoalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  const sourcePath = source?.path || (
+    Number(persisted?.version || 0) === 1 &&
+    Number(persisted?.goalRevision || 0) === currentGoalRevision
+      ? String(persisted.path || "")
+      : ""
+  );
+  if (!sourcePath) return "";
+  try {
+    const target = resolveWorkspacePath(config, sourcePath, {
+      allowReadOnlyRoots: true,
+    });
+    const stat = fsSync.statSync(target.absolutePath);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > 32 * 1024) return "";
+    const content = fsSync.readFileSync(target.absolutePath, "utf8");
+    if (!content.trim() || content.includes("\u0000")) return "";
+    if (
+      !source &&
+      persisted?.sha256 &&
+      hashForLog(content) !== String(persisted.sha256)
+    ) {
+      return "";
+    }
+    return redactSensitiveText(content);
+  } catch {
+    return "";
+  }
+}
+
 export function completionTaskContract(config = {}, state = {}) {
   const taskProfile = config.taskProfile || state.meta?.taskProfile || "auto";
+  const contractGoal = completionContractGoal(config, state);
+  const directContract = deriveScsTaskContract({
+    goal: contractGoal,
+    taskProfile,
+  });
+  const groundedTaskInstructions = groundedProjectTaskInstructionText(
+    state,
+    config,
+    directContract
+  );
   let contract = augmentScsTaskContractWithProjectVerification(
     deriveScsTaskContract({
-      goal: completionContractGoal(config, state),
+      goal: [
+        contractGoal,
+        groundedTaskInstructions
+          ? `Authoritative project task instructions already read from the workspace:\n${groundedTaskInstructions}`
+          : "",
+      ].filter(Boolean).join("\n\n"),
       taskProfile,
       acceptanceCriteria: state.meta?.scs?.acceptanceCriteria || [],
     }),
@@ -14139,22 +14806,106 @@ const CONVERGENCE_SUPPRESSIBLE_BLOCK_CATEGORIES = new Set([
   "unchanged-failed-test-rerun",
 ]);
 
-export function convergenceSuppressedToolNames(state = {}) {
-  const recent = Array.isArray(state.meta?.toolLoop?.recent)
-    ? state.meta.toolLoop.recent
+const BOUNDED_LOCAL_SYNTHESIS_WEB_TOOLS = Object.freeze([
+  "web_search",
+  "read_web_page",
+  "web_research",
+  "deep_research",
+  "open_url",
+]);
+
+function taskExplicitlyRequiresExternalResearch(state = {}, config = {}) {
+  const taskProfile = String(
+    config.taskProfile || state.meta?.taskProfile || ""
+  ).toLocaleLowerCase("en-US");
+  if (["research", "paper", "grant"].includes(taskProfile)) return true;
+  const contractGoal = completionContractGoal(config, state);
+  const directContract = deriveScsTaskContract({
+    goal: contractGoal,
+    taskProfile,
+  });
+  const groundedTaskInstructions = groundedProjectTaskInstructionText(
+    state,
+    config,
+    directContract
+  );
+  const corpus = `${contractGoal}\n${groundedTaskInstructions}`;
+  return /\b(?:arxiv|authoritative sources?|citation|cite|current information|deep research|doi|evidence review|internet|latest|literature|news|online|papers?|primary sources?|references?|research|search the web|source-grounded|sources|web search)\b|(?:检索|搜尋|搜索|查找|调研|調研|研究|文献|文獻|论文|論文|引用|来源|來源|最新|网页|網頁|网上|網上)/iu.test(
+    corpus
+  );
+}
+
+function boundedLocalSynthesisWebToolNames(state = {}, config = {}) {
+  if (taskExplicitlyRequiresExternalResearch(state, config)) return [];
+  const completeReads = successfulReadFileEvidencePaths(state.messages || [])
+    .filter((item) => item.complete === true);
+  const hasTaskInstructions = completeReads.some((item) =>
+    /^(?:TASK|BRIEF|INSTRUCTIONS?)(?:\.[^/]*)?$/iu.test(
+      path.posix.basename(String(item.path || "").replace(/\\/gu, "/"))
+    )
+  );
+  const hasTaskSource = completeReads.some((item) =>
+    !/^(?:TASK|BRIEF|INSTRUCTIONS?)(?:\.[^/]*)?$/iu.test(
+      path.posix.basename(String(item.path || "").replace(/\\/gu, "/"))
+    )
+  );
+  if (!hasTaskInstructions || !hasTaskSource) return [];
+  const goalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  const mutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  const currentExternalReads = (
+    Array.isArray(state.meta?.toolLoop?.recent)
+      ? state.meta.toolLoop.recent
+      : []
+  ).filter(
+    (entry) =>
+      BOUNDED_LOCAL_SYNTHESIS_WEB_TOOLS.includes(
+        String(entry?.toolName || "")
+      ) &&
+      entry?.ok === true &&
+      entry?.blocked !== true &&
+      Number(entry?.goalRevision || 0) === goalRevision &&
+      Number(entry?.mutationRevision || 0) === mutationRevision
+  );
+  return currentExternalReads.length >= 2
+    ? [...BOUNDED_LOCAL_SYNTHESIS_WEB_TOOLS]
     : [];
-  const latest = recent.at(-1);
-  if (
-    !latest ||
-    latest.ok !== false ||
-    latest.blocked !== true ||
-    !CONVERGENCE_SUPPRESSIBLE_BLOCK_CATEGORIES.has(String(latest.category || ""))
-  ) {
-    return [];
-  }
-  const toolName = String(latest.toolName || "").trim();
-  if (!toolName || toolName === "finish") return [];
-  return [toolName];
+}
+
+export function convergenceSuppressedToolNames(state = {}, config = {}) {
+  const toolLoop = state.meta?.toolLoop || {};
+  const recent = Array.isArray(toolLoop.recent)
+    ? toolLoop.recent
+    : [];
+  const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
+  return [
+    ...new Set(
+      [
+        ...recent
+        .filter((entry) => {
+          const entryEpoch = Object.hasOwn(entry || {}, "stagnationEpoch")
+            ? Math.max(0, Number(entry.stagnationEpoch || 0))
+            : stagnationEpoch;
+          return (
+            entryEpoch === stagnationEpoch &&
+            entry?.ok === false &&
+            entry?.blocked === true &&
+            CONVERGENCE_SUPPRESSIBLE_BLOCK_CATEGORIES.has(
+              String(entry.category || "")
+            )
+          );
+        })
+        .map((entry) => String(entry.toolName || "").trim())
+        .filter((toolName) => toolName && toolName !== "finish"),
+        ...boundedLocalSynthesisWebToolNames(state, config),
+      ]
+    ),
+  ];
 }
 
 function currentWorkHasCompletedDeepResearch(state = {}, config = {}) {
@@ -14212,7 +14963,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       ? { deepResearchCompletedForCurrentWork: true }
       : {}),
   };
-  const suppressedToolNames = convergenceSuppressedToolNames(state);
+  const suppressedToolNames = convergenceSuppressedToolNames(state, config);
   if (suppressedToolNames.length) {
     runtimeConfig.convergenceSuppressedToolNames = suppressedToolNames;
   }
@@ -14239,6 +14990,14 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         id: String(item?.id || ""),
         description: String(item?.description || item?.id || ""),
       }));
+    const directlyWritableArtifactExtensions = new Set([".tex", ".svg"]);
+    runtimeConfig.requestedArtifactCreationExtensions = [
+      ...new Set(
+        requestedArtifactEvaluation.missing
+          .map((item) => String(item?.extension || "").toLowerCase())
+          .filter((extension) => directlyWritableArtifactExtensions.has(extension))
+      ),
+    ];
   }
   const groundingMutationRevision = Math.max(
     0,
@@ -14313,6 +15072,12 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       runtimeConfig.patchContextRepairAnchorIdentity = patchContextRepair.anchorIdentity;
       runtimeConfig.patchContextRepairLineStart = patchContextRepair.lineStart;
       runtimeConfig.patchContextRepairLineEnd = patchContextRepair.lineEnd;
+      runtimeConfig.patchContextRepairTriggerCategory =
+        patchContextRepair.triggerCategory;
+      runtimeConfig.patchContextRepairDiagnosticHint =
+        patchContextRepair.repairHint;
+      runtimeConfig.patchContextRepairEvidenceReplacement =
+        patchContextRepair.evidenceReplacement;
       runtimeConfig.patchContextRepairReadCount = Math.max(
         0,
         Number(patchContextRepair.repairReadCount || 0)
@@ -14452,6 +15217,64 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       }
     }
   }
+  const producerFailure = state.meta?.generatedArtifactProducerFailure || {};
+  const activeGeneratedArtifactProducerFailure = Boolean(
+    Number(producerFailure.version || 0) === 1 &&
+      Number(producerFailure.goalRevision || -1) === groundingGoalRevision &&
+      Number(producerFailure.mutationRevision || -1) === mutationRevision &&
+      String(producerFailure.command || "").trim()
+  );
+  if (activeGeneratedArtifactProducerFailure) {
+    const sourcePaths = (Array.isArray(producerFailure.sourcePaths)
+      ? producerFailure.sourcePaths
+      : []
+    )
+      .map(safeTaskOwnedCommitPath)
+      .filter((candidate) => {
+        if (!candidate || isPrivateVerificationEvidencePath(candidate)) return false;
+        try {
+          return fsSync.statSync(path.resolve(commandCwd, candidate)).isFile();
+        } catch {
+          return false;
+        }
+      })
+      .slice(0, 12);
+    const failureAt = Date.parse(String(producerFailure.at || ""));
+    const groundedAfterFailure = (state.meta?.toolLoop?.recent || []).some(
+      (entry) => {
+        if (
+          entry?.toolName !== "read_file" ||
+          entry?.ok === false ||
+          entry?.blocked === true
+        ) {
+          return false;
+        }
+        const candidate = completionFreshMutationPath(
+          retainedReadFilePath(entry),
+          state,
+          config
+        );
+        if (!candidate || !sourcePaths.includes(candidate)) return false;
+        const entryAt = Date.parse(String(entry?.at || ""));
+        return !Number.isFinite(failureAt) ||
+          (Number.isFinite(entryAt) && entryAt > failureAt);
+      }
+    );
+    if (sourcePaths.length) {
+      runtimeConfig.completionFreshMutationRequired = true;
+      runtimeConfig.completionFreshMutationRevision = mutationRevision + 1;
+      runtimeConfig.completionFreshMutationPaths = sourcePaths;
+      runtimeConfig.completionFreshMutationNeedsSourceRead =
+        !groundedAfterFailure;
+      runtimeConfig.generatedArtifactProducerRepairActive = true;
+      runtimeConfig.generatedArtifactProducerFailureCommand = String(
+        producerFailure.command || ""
+      );
+      runtimeConfig.generatedArtifactProducerFailureSummary = String(
+        producerFailure.failureSummary || ""
+      );
+    }
+  }
   const testRuns = (Array.isArray(verification.testRuns) ? verification.testRuns : [])
     .filter((run) => !testRunRepresentsInvalidInvocation(run));
   const latestCurrentTest = [...testRuns]
@@ -14467,8 +15290,49 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         run?.ok === true &&
         String(run?.generatedArtifactProducer || "").trim() &&
         Number(run?.mutationRevision || 0) === mutationRevision &&
-        Number(run?.privateMutationRevision || 0) === privateMutationRevision
+      Number(run?.privateMutationRevision || 0) === privateMutationRevision
     );
+  const completionRepairArtifactProducer =
+    !activeGeneratedArtifactProducerFailure &&
+    completionRepair.artifactQualityRepairRequired === true &&
+    Number(completionRepair.requiredFreshMutationRevision || 0) > 0 &&
+    mutationRevision >= Number(completionRepair.requiredFreshMutationRevision || 0) &&
+    !freshGeneratedArtifactProducer
+      ? (() => {
+          for (const run of [...(verification.commandRuns || [])].reverse()) {
+            if (
+              run?.ok !== true ||
+              Number(run?.mutationRevision || 0) >= mutationRevision
+            ) {
+              continue;
+            }
+            const producer = String(
+              run?.generatedArtifactProducer ||
+                safeProjectProducerSegment(run?.command || "", config)
+            ).trim();
+            if (producer) return producer;
+          }
+          return "";
+        })()
+      : "";
+  const missingDocumentArtifactProducer =
+    !activeGeneratedArtifactProducerFailure &&
+    completionRepair.documentArtifactGenerationRequired === true &&
+    !freshGeneratedArtifactProducer
+      ? String(completionRepair.documentArtifactProducerCommand || "").trim()
+      : "";
+  const missingRequestedLatexProducer = Boolean(
+    !activeGeneratedArtifactProducerFailure &&
+      runtimeConfig.requestedArtifactRequirementsPending === true &&
+      runtimeConfig.missingRequestedArtifactRequirements?.some(
+        (item) => String(item?.id || "").toLowerCase() === "format:.pdf"
+      ) &&
+      !runtimeConfig.missingRequestedArtifactRequirements?.some(
+        (item) => String(item?.id || "").toLowerCase() === "format:.tex"
+      )
+  )
+    ? inferredLatexArtifactProducerCommand(state, config)
+    : "";
   const retainedRepairPacket = state.meta?.failedTestRecoveryPacket;
   const repairedRetainedFailure = Boolean(
     latestRecordedTest?.passed !== true &&
@@ -14534,12 +15398,16 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       ? latestRecordedTest
       : null
   );
-  const pendingArtifactProducerCommand = pendingGeneratedArtifactProducerCommand(
-    state,
-    config,
-    verification,
-    artifactProducerFailure
-  );
+  const pendingArtifactProducerCommand =
+    missingDocumentArtifactProducer ||
+    missingRequestedLatexProducer ||
+    completionRepairArtifactProducer ||
+    pendingGeneratedArtifactProducerCommand(
+      state,
+      config,
+      verification,
+      artifactProducerFailure
+    );
   if (pendingArtifactProducerCommand) {
     runtimeConfig.generatedArtifactProducerPending = true;
     runtimeConfig.generatedArtifactProducerCommand = pendingArtifactProducerCommand;
@@ -14812,6 +15680,9 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         "patchContextRepairAnchorIdentity",
         "patchContextRepairLineStart",
         "patchContextRepairLineEnd",
+        "patchContextRepairTriggerCategory",
+        "patchContextRepairDiagnosticHint",
+        "patchContextRepairEvidenceReplacement",
         "patchContextRepairReadCount",
         "testFailureStalemateRevalidation",
         "testFailureStalemateCommand",
@@ -15345,6 +16216,24 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     runtimeConfig.requiredProjectCommandPending = true;
     runtimeConfig.requiredProjectCommand = pendingRequiredProjectCommands[0];
     runtimeConfig.pendingRequiredProjectCommands = pendingRequiredProjectCommands;
+  }
+  const taskOwnedCompletionCommit = verification.taskOwnedCompletionCommit || {};
+  const completionRepairAt = Date.parse(String(completionRepair.at || ""));
+  const completionCommitAt = Date.parse(String(taskOwnedCompletionCommit.at || ""));
+  const completionCommitRejectedLater = Boolean(
+    Number.isFinite(completionRepairAt) &&
+      (!Number.isFinite(completionCommitAt) || completionRepairAt >= completionCommitAt)
+  );
+  const taskOwnedCompletionCommitIsCurrent = Boolean(
+      Number(taskOwnedCompletionCommit.version || 0) === 1 &&
+      Number(taskOwnedCompletionCommit.goalRevision || 0) === groundingGoalRevision &&
+      Number(taskOwnedCompletionCommit.mutationRevision ?? -1) === mutationRevision &&
+      Number(taskOwnedCompletionCommit.privateMutationRevision ?? -1) === privateMutationRevision &&
+      !completionCommitRejectedLater
+  );
+  if (taskOwnedCompletionCommitIsCurrent) {
+    runtimeConfig.verifiedCompletionPending = true;
+    runtimeConfig.taskOwnedCommitCompletionPending = true;
   }
   const authoritativeRoutineObservation =
     currentAuthoritativeRoutineObservation(state, runtimeConfig);
@@ -16033,6 +16922,14 @@ function sourceIndentWidth(line = "") {
 
 function sourceDeclarationIdentity(line = "") {
   const text = String(line || "").trim();
+  const latexSection = text.match(
+    /^\\(part|chapter|section|subsection|subsubsection)\*?\s*\{([^{}]{1,240})\}/
+  );
+  if (latexSection) {
+    return `latex:${latexSection[1]}:${latexSection[2]
+      .replace(/\s+/g, " ")
+      .trim()}`;
+  }
   for (const expression of [
     /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\b/,
     /^class\s+([A-Za-z_][A-Za-z0-9_]*)\b/,
@@ -16282,6 +17179,159 @@ export function derivePatchContextAnchor(currentContent = "", failedSearchPrevie
   };
 }
 
+function regexLiteral(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function generatedArtifactProducerDiagnosticLineNumber(
+  failureSummary = "",
+  targetPath = "",
+  sourcePathCount = 0
+) {
+  const summary = String(failureSummary || "");
+  const normalizedTarget = safeRecoveryEvidencePath(targetPath);
+  const targetBasename = path.posix.basename(
+    String(normalizedTarget || "").replace(/\\/g, "/")
+  );
+  if (!summary || !targetBasename) return 0;
+
+  const pathExpressions = [normalizedTarget, targetBasename]
+    .filter(Boolean)
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .map(regexLiteral);
+  for (const targetExpression of pathExpressions) {
+    for (const pattern of [
+      new RegExp(`${targetExpression}:(\\d+)(?::\\d+)?(?:\\b|:)`, "i"),
+      new RegExp(`${targetExpression}\\((\\d+)(?:,\\d+)?\\)`, "i"),
+      new RegExp(`${targetExpression}[^\\r\\n]{0,80}?\\bline\\s+(\\d+)\\b`, "i"),
+    ]) {
+      const match = summary.match(pattern);
+      const lineNumber = Math.max(0, Number(match?.[1] || 0));
+      if (lineNumber > 0) return lineNumber;
+    }
+  }
+
+  // TeX reports the active input location as `l.<number>`. Unqualified line
+  // diagnostics are safe only when the producer has one canonical source.
+  if (sourcePathCount === 1) {
+    for (const pattern of [
+      /(?:^|[\r\n|])\s*l\.(\d+)\b/i,
+      /\bline\s+(\d+)\b/i,
+    ]) {
+      const match = summary.match(pattern);
+      const lineNumber = Math.max(0, Number(match?.[1] || 0));
+      if (lineNumber > 0) return lineNumber;
+    }
+  }
+  return 0;
+}
+
+function uniqueDiagnosticLineAnchor(currentContent = "", lineNumber = 0) {
+  const content = String(currentContent || "");
+  const records = sourceLineRecords(content);
+  const anchorIndex = Math.max(0, Number(lineNumber || 0) - 1);
+  if (!content || anchorIndex >= records.length) return null;
+
+  for (let radius = 0; radius <= 1; radius += 1) {
+    const startIndex = Math.max(0, anchorIndex - radius);
+    const endIndex = Math.min(records.length, anchorIndex + radius + 1);
+    const startOffset = records[startIndex].start;
+    const endOffset = records[endIndex - 1].end;
+    const search = content.slice(startOffset, endOffset);
+    if (!search.trim()) continue;
+    const first = content.indexOf(search);
+    if (first < 0 || content.indexOf(search, first + search.length) >= 0) continue;
+    return {
+      search,
+      searchHash: hashForLog(search),
+      sourceHash: hashForLog(content),
+      anchorKind: "producer-diagnostic-line",
+      anchorIdentity: "",
+      lineStart: startIndex + 1,
+      lineEnd: endIndex,
+      diagnosticLine: anchorIndex + 1,
+      byteLength: Buffer.byteLength(search, "utf8"),
+    };
+  }
+  return null;
+}
+
+function generatedArtifactProducerEvidenceReplacement(
+  targetPath = "",
+  failureSummary = "",
+  diagnosticSource = ""
+) {
+  const extension = path.posix.extname(
+    String(targetPath || "").replace(/\\/g, "/")
+  ).toLowerCase();
+  const summary = String(failureSummary || "");
+  const source = String(diagnosticSource || "");
+  if (
+    extension === ".tex" &&
+    /missing\s+\$\s+inserted/i.test(summary) &&
+    /(^|[^\\])_/.test(source)
+  ) {
+    return source.replace(/(^|[^\\])_/g, "$1\\_");
+  }
+  return "";
+}
+
+function generatedArtifactProducerRepairHint(
+  targetPath = "",
+  failureSummary = "",
+  diagnosticSource = ""
+) {
+  const evidenceReplacement = generatedArtifactProducerEvidenceReplacement(
+    targetPath,
+    failureSummary,
+    diagnosticSource
+  );
+  if (evidenceReplacement) {
+    return [
+      "LaTeX diagnostic evidence: `Missing $ inserted` on this prose line is caused by at least one literal underscore that is not escaped for LaTeX.",
+      "Escape each literal underscore as `\\_`; Markdown backticks and `\\texttt{...}` do not make an underscore safe by themselves.",
+      `Evidence-derived corrected anchor:\n<suggested_replacement>\n${evidenceReplacement.slice(0, 1600)}\n</suggested_replacement>`,
+    ].join(" ");
+  }
+  return "";
+}
+
+export function generatedArtifactProducerDiagnosticLineAnchor(
+  state = {},
+  targetPath = "",
+  currentContent = ""
+) {
+  const failure = state.meta?.generatedArtifactProducerFailure || {};
+  const normalizedTarget = safeRecoveryEvidencePath(targetPath);
+  const sourcePaths = (Array.isArray(failure.sourcePaths) ? failure.sourcePaths : [])
+    .map(safeRecoveryEvidencePath)
+    .filter(Boolean);
+  const currentGoalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  const currentMutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  if (
+    Number(failure.version || 0) !== 1 ||
+    !normalizedTarget ||
+    !sourcePaths.includes(normalizedTarget) ||
+    Number(failure.goalRevision || -1) !== currentGoalRevision ||
+    Number(failure.mutationRevision || -1) !== currentMutationRevision
+  ) {
+    return null;
+  }
+  const lineNumber = generatedArtifactProducerDiagnosticLineNumber(
+    failure.failureSummary,
+    normalizedTarget,
+    sourcePaths.length
+  );
+  if (!lineNumber) return null;
+  return uniqueDiagnosticLineAnchor(currentContent, lineNumber);
+}
+
 function boundedPatchContextCompleteSource(currentContent = "") {
   const source = String(currentContent || "");
   const byteLength = Buffer.byteLength(source, "utf8");
@@ -16464,6 +17514,19 @@ function patchContextDeclarationCounts(content = "") {
   return counts;
 }
 
+function latexEnvironmentBalance(content = "") {
+  const balances = new Map();
+  for (const match of String(content || "").matchAll(
+    /\\(begin|end)\s*\{([A-Za-z*]+)\}/g
+  )) {
+    const environment = String(match[2] || "");
+    if (!environment) continue;
+    const delta = match[1] === "begin" ? 1 : -1;
+    balances.set(environment, Number(balances.get(environment) || 0) + delta);
+  }
+  return balances;
+}
+
 function hasTopLevelFilePreamble(content = "") {
   const source = String(content || "").replace(/^\uFEFF/, "");
   return (
@@ -16481,8 +17544,42 @@ export function patchContextReplacementScopeIssue(marker = {}, replace = "") {
   const replacement = String(replace || "");
   if (!search || !replacement) return null;
 
+  if (
+    String(marker.anchorKind || "") === "producer-diagnostic-line" &&
+    comparablePatchContextText(replacement).includes(
+      comparablePatchContextText(search)
+    )
+  ) {
+    return {
+      reason:
+        "The proposed producer repair retains the complete compiler-reported source anchor unchanged and only adds material around it. Replace the failing line itself so the concrete compiler diagnostic is addressed.",
+      diagnosticLine: Math.max(0, Number(marker.diagnosticLine || 0)),
+      retainedFailedAnchor: true,
+    };
+  }
+
   const anchorDeclarations = patchContextDeclarationCounts(search);
   const replacementDeclarations = patchContextDeclarationCounts(replacement);
+  const anchorLatexBalance = latexEnvironmentBalance(search);
+  const replacementLatexBalance = latexEnvironmentBalance(replacement);
+  const changedLatexEnvironments = [
+    ...new Set([
+      ...anchorLatexBalance.keys(),
+      ...replacementLatexBalance.keys(),
+    ]),
+  ].filter(
+    (environment) =>
+      Number(anchorLatexBalance.get(environment) || 0) !==
+      Number(replacementLatexBalance.get(environment) || 0)
+  );
+  if (changedLatexEnvironments.length) {
+    return {
+      reason:
+        "The proposed replacement changes the revision-bound LaTeX environment balance " +
+        `(${changedLatexEnvironments.slice(0, 8).join(", ")}). Preserve the same external \\begin/\\end boundary while repairing content inside it.`,
+      changedLatexEnvironments: changedLatexEnvironments.slice(0, 8),
+    };
+  }
   if (String(marker.anchorKind || "") === "complete-file") {
     const sourceIdentities = [...anchorDeclarations.keys()];
     const retainedDeclarations = sourceIdentities.filter((identity) =>
@@ -16531,6 +17628,42 @@ export function patchContextReplacementScopeIssue(marker = {}, replace = "") {
       preambleDropped,
       severeSizeCollapse,
     };
+  }
+
+  const completeSource = validatedPatchContextCompleteSource(marker);
+  const anchorOffset = completeSource ? completeSource.indexOf(search) : -1;
+  if (
+    anchorOffset >= 0 &&
+    completeSource.indexOf(search, anchorOffset + search.length) < 0
+  ) {
+    const retainedOutsideSegments = [
+      {
+        side: "prefix",
+        text: completeSource.slice(0, anchorOffset),
+      },
+      {
+        side: "suffix",
+        text: completeSource.slice(anchorOffset + search.length),
+      },
+    ];
+    const duplicatedOutsideSegment = retainedOutsideSegments.find(({ text }) => {
+      const comparable = comparablePatchContextText(text);
+      const nonEmptyLines = comparable.split("\n").filter((line) => line.trim()).length;
+      return (
+        Buffer.byteLength(comparable, "utf8") >= 96 &&
+        nonEmptyLines >= 3 &&
+        comparablePatchContextText(replacement).includes(comparable)
+      );
+    });
+    if (duplicatedOutsideSegment) {
+      return {
+        reason:
+          `The proposed replacement repeats a substantial retained ${duplicatedOutsideSegment.side} outside the revision-bound anchor. ` +
+          "Return only the revised anchor; otherwise applying it would duplicate existing file content.",
+        duplicatedRetainedSide: duplicatedOutsideSegment.side,
+        anchorIdentity: String(marker.anchorIdentity || ""),
+      };
+    }
   }
 
   const unexpectedDeclarations = [...replacementDeclarations.entries()]
@@ -16912,7 +18045,16 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
   const tracebackAnchor = currentFailure
     ? failedTestTracebackLineAnchor(state, targetPath)
     : "";
+  const currentPatchRepair = activePatchContextRepair(state);
+  const producerDiagnosticRepair = Boolean(
+    currentPatchRepair &&
+      currentPatchRepair.path === targetPath &&
+      currentPatchRepair.triggerCategory ===
+        "generated-artifact-producer-diagnostic" &&
+      Number(currentPatchRepair.diagnosticLine || 0) > 0
+  );
   const failedSearchPreview = tracebackAnchor ||
+    (producerDiagnosticRepair ? String(currentPatchRepair.search || "") : "") ||
     (scopeMismatch ? "" : String(toolResult.args?.search || "").slice(0, 4000));
   return {
     version: PATCH_CONTEXT_REFRESH_VERSION,
@@ -16942,7 +18084,12 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
     failedSearchPreview,
     failedSearchHash: String(toolResult.args?.searchHash || ""),
     tracebackAnchorUsed: Boolean(tracebackAnchor),
-    completeFileFallback: scopeMismatch && !tracebackAnchor,
+    producerDiagnosticRepair,
+    diagnosticLine: producerDiagnosticRepair
+      ? Math.max(0, Number(currentPatchRepair.diagnosticLine || 0))
+      : 0,
+    completeFileFallback:
+      scopeMismatch && !tracebackAnchor && !producerDiagnosticRepair,
     at: new Date().toISOString(),
   };
 }
@@ -16972,11 +18119,29 @@ export function consumePatchContextRefreshRead(state = {}, toolResult = {}) {
   }
   const content = String(toolResult.content || toolResult.result?.content || "");
   const completeSource = boundedPatchContextCompleteSource(content);
-  const anchor = derivePatchContextAnchor(
+  const diagnosticAnchor = marker.producerDiagnosticRepair === true
+    ? uniqueDiagnosticLineAnchor(content, marker.diagnosticLine)
+    : null;
+  const anchor = diagnosticAnchor || derivePatchContextAnchor(
     content,
     String(marker.failedSearchPreview || "")
   );
   if (anchor) {
+    const producerFailure = state.meta?.generatedArtifactProducerFailure || {};
+    const repairHint = marker.producerDiagnosticRepair === true
+      ? generatedArtifactProducerRepairHint(
+          marker.path,
+          producerFailure.failureSummary,
+          anchor.search
+        )
+      : "";
+    const evidenceReplacement = marker.producerDiagnosticRepair === true
+      ? generatedArtifactProducerEvidenceReplacement(
+          marker.path,
+          producerFailure.failureSummary,
+          anchor.search
+        )
+      : "";
     state.meta.toolLoop.patchContextRepair = {
       version: PATCH_CONTEXT_REPAIR_VERSION,
       path: marker.path,
@@ -16987,7 +18152,11 @@ export function consumePatchContextRefreshRead(state = {}, toolResult = {}) {
         Number(marker.privateMutationRevision || 0)
       ),
       failureSignature: String(marker.failureSignature || ""),
-      triggerCategory: String(marker.triggerCategory || "stale-patch-search"),
+      triggerCategory: marker.producerDiagnosticRepair === true
+        ? "generated-artifact-producer-diagnostic"
+        : String(marker.triggerCategory || "stale-patch-search"),
+      repairHint,
+      evidenceReplacement,
       refreshedAt: new Date().toISOString(),
       ...(completeSource || {}),
       ...anchor,
@@ -17004,6 +18173,73 @@ export function consumePatchContextRefreshRead(state = {}, toolResult = {}) {
     repairAnchorHash: String(anchor?.searchHash || ""),
     repairAnchorLineStart: Math.max(0, Number(anchor?.lineStart || 0)),
     repairAnchorLineEnd: Math.max(0, Number(anchor?.lineEnd || 0)),
+  };
+}
+
+export function consumeGeneratedArtifactProducerDiagnosticRead(
+  state = {},
+  toolResult = {}
+) {
+  if (
+    activePatchContextRefresh(state) ||
+    activePatchContextRepair(state) ||
+    String(toolResult.toolName || "") !== "read_file" ||
+    toolResult.ok === false ||
+    toolResult.blocked === true
+  ) {
+    return null;
+  }
+  const targetPath = toolResultWorkspacePath(toolResult);
+  const content = String(toolResult.content || toolResult.result?.content || "");
+  const anchor = generatedArtifactProducerDiagnosticLineAnchor(
+    state,
+    targetPath,
+    content
+  );
+  if (!anchor) return null;
+  const completeSource = boundedPatchContextCompleteSource(content);
+  const failure = state.meta?.generatedArtifactProducerFailure || {};
+  const repairHint = generatedArtifactProducerRepairHint(
+    targetPath,
+    failure.failureSummary,
+    anchor.search
+  );
+  const evidenceReplacement = generatedArtifactProducerEvidenceReplacement(
+    targetPath,
+    failure.failureSummary,
+    anchor.search
+  );
+  state.meta = state.meta || {};
+  state.meta.toolLoop = state.meta.toolLoop || {};
+  state.meta.toolLoop.patchContextRepair = {
+    version: PATCH_CONTEXT_REPAIR_VERSION,
+    path: targetPath,
+    goalRevision: Math.max(0, Number(failure.goalRevision || 0)),
+    mutationRevision: Math.max(0, Number(failure.mutationRevision || 0)),
+    privateMutationRevision: verificationPrivateMutationRevision(
+      state.meta?.projectVerification || {}
+    ),
+    failureSignature: hashForLog(
+      `${String(failure.command || "")}\n${String(failure.failureSummary || "")}`
+    ),
+    triggerCategory: "generated-artifact-producer-diagnostic",
+    repairHint,
+    evidenceReplacement,
+    refreshedAt: new Date().toISOString(),
+    ...(completeSource || {}),
+    ...anchor,
+  };
+  return {
+    path: targetPath,
+    command: String(failure.command || ""),
+    failureSummary: String(failure.failureSummary || ""),
+    repairAnchorCreated: true,
+    repairAnchorKind: anchor.anchorKind,
+    repairAnchorHash: anchor.searchHash,
+    repairAnchorLineStart: anchor.lineStart,
+    repairAnchorLineEnd: anchor.lineEnd,
+    diagnosticLine: anchor.diagnosticLine,
+    repairHint,
   };
 }
 
@@ -17027,13 +18263,41 @@ export function consumePatchContextRepairRead(state = {}, toolResult = {}) {
   if (!content) return null;
   const completeSource = boundedPatchContextCompleteSource(content);
   const tracebackAnchor = failedTestTracebackLineAnchor(state, marker.path);
-  const anchor = derivePatchContextAnchor(content, tracebackAnchor || marker.search);
+  const producerDiagnosticAnchor =
+    marker.triggerCategory === "generated-artifact-producer-diagnostic"
+      ? generatedArtifactProducerDiagnosticLineAnchor(
+          state,
+          marker.path,
+          content
+        )
+      : null;
+  const anchor = producerDiagnosticAnchor ||
+    derivePatchContextAnchor(content, tracebackAnchor || marker.search);
   if (!anchor) return null;
+  const producerFailure = state.meta?.generatedArtifactProducerFailure || {};
+  const repairHint = producerDiagnosticAnchor
+    ? generatedArtifactProducerRepairHint(
+        marker.path,
+        producerFailure.failureSummary,
+        anchor.search
+      )
+    : String(marker.repairHint || "");
+  const evidenceReplacement = producerDiagnosticAnchor
+    ? generatedArtifactProducerEvidenceReplacement(
+        marker.path,
+        producerFailure.failureSummary,
+        anchor.search
+      )
+    : String(marker.evidenceReplacement || "");
   state.meta.toolLoop.patchContextRepair = {
     ...marker,
-    triggerCategory: tracebackAnchor
-      ? "patch-context-traceback-reread"
-      : String(marker.triggerCategory || "patch-context-reread"),
+    triggerCategory: producerDiagnosticAnchor
+      ? "generated-artifact-producer-diagnostic"
+      : tracebackAnchor
+        ? "patch-context-traceback-reread"
+        : String(marker.triggerCategory || "patch-context-reread"),
+    repairHint,
+    evidenceReplacement,
     refreshedAt: new Date().toISOString(),
     repairReadCount: Number(marker.repairReadCount || 0) + 1,
     ...(completeSource || {}),
@@ -17311,6 +18575,32 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
       repairAnchorIdentity: consumedPatchContext.repairAnchorIdentity,
     });
   }
+  const consumedProducerDiagnostic =
+    consumeGeneratedArtifactProducerDiagnosticRead(state, toolResult);
+  if (consumedProducerDiagnostic) {
+    const instruction = [
+      `The exact compiler-reported source location was read from ${consumedProducerDiagnostic.path}.`,
+      `The next mutation is bound to lines ${consumedProducerDiagnostic.repairAnchorLineStart}-${consumedProducerDiagnostic.repairAnchorLineEnd}, including diagnostic line ${consumedProducerDiagnostic.diagnosticLine}.`,
+      `Repair the concrete producer failure: ${compactSingleLine(consumedProducerDiagnostic.failureSummary || "local artifact producer failed", 900)}`,
+      consumedProducerDiagnostic.repairHint || "",
+      "Change the failing source itself. Do not append status claims, preserve the failed line unchanged, edit unrelated prose, or claim verification before the retained producer succeeds.",
+    ].filter(Boolean).join(" ");
+    state.messages.push({ role: "user", content: instruction });
+    await store.appendEvent("artifact.producer_diagnostic_anchored", {
+      path: consumedProducerDiagnostic.path,
+      command: consumedProducerDiagnostic.command,
+      repairAnchorKind: consumedProducerDiagnostic.repairAnchorKind,
+      repairAnchorHash: consumedProducerDiagnostic.repairAnchorHash,
+      repairAnchorLineStart: consumedProducerDiagnostic.repairAnchorLineStart,
+      repairAnchorLineEnd: consumedProducerDiagnostic.repairAnchorLineEnd,
+      diagnosticLine: consumedProducerDiagnostic.diagnosticLine,
+      instruction,
+    });
+    observers.event(
+      "artifact.producer_diagnostic_anchored",
+      consumedProducerDiagnostic
+    );
+  }
   const noChangePatchFailure =
     String(toolResult.toolName || "") === "apply_patch" &&
     toolResult.ok === false &&
@@ -17438,6 +18728,15 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
     staticDiscovery: isStaticDiscoveryToolResult(toolResult),
     successfulMutation: successfulToolStateProgress(toolResult),
     noProgressProbe: Boolean(outcomeFingerprint),
+    generatedArtifactProducerAttempt: Boolean(
+      toolResult.toolName === "run_command" &&
+        config.generatedArtifactProducerPending === true &&
+        projectCommandsEquivalent(
+          toolResult.args?.command || "",
+          config.generatedArtifactProducerCommand || "",
+          config
+        )
+    ),
     outcomeFingerprint,
     stagnationEpoch: Math.max(0, Number(state.meta.toolLoop.stagnationEpoch || 0)),
     goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
@@ -17613,7 +18912,7 @@ async function captureSyntheticSnapshot(store, step, config) {
         : "",
       isRetainedWorkspaceProfile(config)
         ? "Writing specialists are disabled in this retained workspace profile."
-        : "writing_specialist is available for isolated novel/book/script/paper drafting. It receives only writing context and returns prose plus formatter handoff notes.",
+        : "writing_specialist is available for isolated novel/book/script/paper drafting. It receives only writing context and returns prose plus formatter handoff notes. For source-grounded work, read the source first and supply the relevant actual source text, not only its path.",
       config.allowWebSearch
         ? "Use web_search for quick lookup and read_web_page for one exact source. For explicit deep research or a multi-source evidence report, call deep_research first; use manual search only for a concrete recovery need returned by that workflow. deep_research owns planning, primary evidence, coverage checks, claim-level citations, and resumable artifacts."
         : "",
@@ -17904,6 +19203,19 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       reason: "revision-bound-patch-context",
     };
   }
+  if (toolName === "writing_specialist") {
+    const grounded = await groundWritingSpecialistArgsFromReadEvidence(args, state, config);
+    args = grounded.args;
+    if (grounded.groundedPaths.length) {
+      const detail = {
+        paths: grounded.groundedPaths,
+        sourceCount: grounded.groundedPaths.length,
+        bytes: grounded.groundedBytes,
+      };
+      await store.appendEvent("writing.context_grounded", detail);
+      observers.event("writing.context_grounded", detail);
+    }
+  }
   const safeArgs = isRetainedVisionWorkspaceProfile(config) && toolName === "read_image"
     ? args
     : sanitizeToolArgs(toolName, args);
@@ -18066,6 +19378,66 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     };
   }
 
+  const prematureArtifactCommit = prematureRequestedArtifactCommitBlock(
+    state,
+    toolName,
+    safeArgs,
+    config
+  );
+  if (prematureArtifactCommit) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      ...prematureArtifactCommit,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
+  const precommitDocumentAssessment = await documentQualityCommitAssessment(
+    state,
+    toolName,
+    safeArgs,
+    config
+  );
+  if (precommitDocumentAssessment?.checked === true) {
+    const qualityEvent = {
+      mode: "pre-commit",
+      ok: precommitDocumentAssessment.ok === true,
+      reason:
+        precommitDocumentAssessment.documentQuality?.reason || "",
+      artifacts:
+        precommitDocumentAssessment.documentQuality?.artifacts || [],
+      defects:
+        precommitDocumentAssessment.documentQuality?.defects || [],
+      sourcePaths:
+        precommitDocumentAssessment.documentQuality?.sourcePaths || [],
+    };
+    await store.appendEvent("document.quality_assessed", qualityEvent);
+    observers.event("document.quality_assessed", qualityEvent);
+  }
+  if (precommitDocumentAssessment?.ok === false) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      reason: precommitDocumentAssessment.reason,
+      category: precommitDocumentAssessment.category,
+      permissionAdvice: precommitDocumentAssessment.permissionAdvice,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
   // Validation inspects raw patch paths before event/log redaction. The guard
   // does not persist argument contents.
   const testSpecificationMutationBlock = failedTestSpecificationMutationBlock(
@@ -18083,6 +19455,27 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       toolName,
       args: safeArgs,
       ...testSpecificationMutationBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
+  const documentSourceMutationBlock = documentSourceMaterialMutationBlock(
+    state,
+    toolName,
+    args,
+    config
+  );
+  if (documentSourceMutationBlock) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      ...documentSourceMutationBlock,
     };
     await store.appendEvent("tool.blocked", result);
     observers.event("tool.blocked", result);
@@ -19821,6 +21214,7 @@ export function completionRepairMutationRequirement({
   documentQuality = null,
   spreadsheetQuality = null,
   projectMutationRevision = 0,
+  documentArtifactProducerAvailable = false,
 } = {}) {
   const sourceQualityRepairRequired = Boolean(
     sourceQuality?.checked === true &&
@@ -19835,12 +21229,31 @@ export function completionRepairMutationRequirement({
       (Array.isArray(evaluation?.missing) ? evaluation.missing : [])
         .some((item) => item?.category === "file")
   );
+  const documentDefects = Array.isArray(documentQuality?.defects)
+    ? documentQuality.defects
+    : [];
+  const missingDocumentArtifact = documentDefects.some(
+    (defect) => defect?.code === "missing-document-artifact"
+  );
+  const documentArtifactGenerationRequired =
+    missingDocumentArtifact && documentArtifactProducerAvailable === true;
+  const nonMutatingDocumentDefectCodes = new Set([
+    "document-artifact-not-versioned",
+    "missing-document-artifact",
+  ]);
   const artifactQualityRepairRequired = [documentQuality, spreadsheetQuality]
     .some((quality) => Boolean(
       quality?.checked === true &&
       quality?.ok === false &&
       Array.isArray(quality?.defects) &&
-      quality.defects.length > 0
+      quality.defects.some((defect) =>
+        quality !== documentQuality ||
+        !nonMutatingDocumentDefectCodes.has(String(defect?.code || "")) ||
+        (
+          defect?.code === "missing-document-artifact" &&
+          documentArtifactProducerAvailable !== true
+        )
+      )
     ));
   const revision = Math.max(0, Number(projectMutationRevision || 0));
   return {
@@ -19857,7 +21270,32 @@ export function completionRepairMutationRequirement({
     ),
     sourceQualityRepairRequired,
     artifactQualityRepairRequired,
+    documentArtifactGenerationRequired,
   };
+}
+
+function inferredLatexArtifactProducerCommand(state = {}, config = {}) {
+  const verification = state.meta?.projectVerification || {};
+  const sourcePath = [...(verification.mutationHistory || [])]
+    .reverse()
+    .flatMap((mutation) => Array.isArray(mutation?.paths) ? mutation.paths : [])
+    .map(safeTaskOwnedCommitPath)
+    .find((candidate) => /\.tex$/iu.test(candidate));
+  if (!sourcePath) return "";
+  let engine = "pdflatex";
+  try {
+    const target = resolveWorkspacePath(config, sourcePath);
+    const source = fsSync.readFileSync(target.absolutePath, "utf8");
+    if (/\\(?:usepackage\s*\{fontspec\}|setmainfont\b|setCJKmainfont\b)/u.test(source)) {
+      engine = "xelatex";
+    }
+  } catch {
+    // The bounded producer will report a concrete source/path failure.
+  }
+  const quotedPath = shellQuoteArgument(sourcePath);
+  return quotedPath
+    ? `${engine} -interaction=nonstopmode -halt-on-error ${quotedPath}`
+    : "";
 }
 
 async function completionEvidenceDecision({ config, state, store, observers, step, mode, candidateResult = "" }) {
@@ -19916,16 +21354,34 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     };
   }
   let documentQuality = null;
-  if (String(config.taskProfile || state.meta?.taskProfile || "").toLowerCase() === "word") {
+  const documentProfile = String(
+    config.taskProfile || state.meta?.taskProfile || ""
+  ).toLowerCase();
+  const documentExactOutputPaths = [
+    ...(assessment.contract?.exactOutputPaths || []),
+    ...exactOutputPathsForState(state),
+  ];
+  const documentContractText = `${completionContractGoal(config, state)}\n${candidateResult}`;
+  const documentDeliverableRequested =
+    documentProfile === "word" ||
+    documentExactOutputPaths.some((item) => /\.(?:docx|pdf)$/iu.test(String(item || ""))) ||
+    (["book", "latex", "paper", "writing"].includes(documentProfile) &&
+      /(?:\b(?:docx|pdf|word document)\b|可编辑.*(?:文档|文件)|(?:文档|文件).*可编辑)/iu.test(
+        documentContractText
+      ));
+  if (documentDeliverableRequested) {
     try {
       documentQuality = await validateWordDocumentArtifacts({
         commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
         candidateResult,
         goal: completionContractGoal(config, state),
-        exactOutputPaths: [
-          ...(assessment.contract?.exactOutputPaths || []),
-          ...exactOutputPathsForState(state),
+        exactOutputPaths: documentExactOutputPaths,
+        exactInputPaths: [
+          ...(assessment.contract?.exactInputPaths || []),
+          ...exactInputPathsForState(state),
+          ...successfulReadFileEvidencePaths(state.messages || []).map((item) => item.path),
         ],
+        requireVersioned: (assessment.contract?.requiredGitActions || []).includes("commit"),
       });
     } catch (error) {
       documentQuality = {
@@ -20116,6 +21572,10 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   const semanticFailureReason = assessment.semantic.checked && !assessment.semantic.ok
     ? String(assessment.semantic.reason || "")
     : "";
+  const documentArtifactProducerCommand = inferredLatexArtifactProducerCommand(
+    state,
+    config
+  );
   const freshMutationRequirement = completionRepairMutationRequirement({
     contract: assessment.contract,
     evaluation: assessment.evaluation,
@@ -20123,6 +21583,9 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     documentQuality,
     spreadsheetQuality,
     projectMutationRevision: verificationDeficits.revision,
+    documentArtifactProducerAvailable: Boolean(
+      documentArtifactProducerCommand
+    ),
   });
   const baseDetail = {
     step,
@@ -20142,6 +21605,12 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     sourceQualityRepairRequired: freshMutationRequirement.sourceQualityRepairRequired,
     artifactQualityRepairRequired:
       freshMutationRequirement.artifactQualityRepairRequired,
+    documentArtifactGenerationRequired:
+      freshMutationRequirement.documentArtifactGenerationRequired,
+    documentArtifactProducerCommand:
+      freshMutationRequirement.documentArtifactGenerationRequired
+        ? documentArtifactProducerCommand
+        : "",
     missingToolCalls: assessment.evaluation.missingToolCalls || [],
     pendingProjectCommands: verificationDeficits.pendingCommands,
     pendingProjectTests:
@@ -20211,6 +21680,12 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       mutationRevision: detail.projectMutationRevision,
       requiresFreshFileMutation: detail.requiresFreshFileMutation,
       requiredFreshMutationRevision: detail.requiredFreshMutationRevision,
+      sourceQualityRepairRequired: detail.sourceQualityRepairRequired,
+      artifactQualityRepairRequired: detail.artifactQualityRepairRequired,
+      documentArtifactGenerationRequired:
+        detail.documentArtifactGenerationRequired,
+      documentArtifactProducerCommand:
+        detail.documentArtifactProducerCommand,
       missingEvidence: detail.missingEvidence,
     };
     const instruction = [
@@ -21055,6 +22530,233 @@ export async function recoverFocusedWholeFileWriteAsExactPatch(
     };
   }
   return null;
+}
+
+export function recoverProducerDiagnosticEvidencePatch(
+  config = {},
+  state = {},
+  reportedToolCalls = [],
+  contract = null,
+  validation = {}
+) {
+  const calls = Array.isArray(reportedToolCalls) ? reportedToolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  if (
+    validation?.ok === true ||
+    config.patchContextRepairRequired !== true ||
+    String(config.patchContextRepairTriggerCategory || "") !==
+      "generated-artifact-producer-diagnostic" ||
+    calls.length !== 1 ||
+    String(calls[0]?.function?.name || "") !== "apply_patch" ||
+    errors.length === 0 ||
+    errors.some(
+      (error) =>
+        !new Set([
+          "TOOL_ARGUMENTS_SCHEMA_INVALID",
+          "ARGUMENT_STRING_TOO_LONG",
+          "ARGUMENT_ENUM_MISMATCH",
+          "ARGUMENT_ADDITIONAL_PROPERTY",
+          "ARGUMENT_REQUIRED_PROPERTY_MISSING",
+          "ARGUMENT_TYPE_MISMATCH",
+        ]).has(String(error?.code || ""))
+    )
+  ) {
+    return null;
+  }
+
+  const marker = activePatchContextRepair(state);
+  const targetPath = safeRecoveryEvidencePath(
+    config.patchContextRepairPath
+  );
+  const exactSearch = String(config.patchContextRepairSearch || "");
+  const evidenceReplacement = String(
+    config.patchContextRepairEvidenceReplacement || ""
+  );
+  const producerFailure = state.meta?.generatedArtifactProducerFailure || {};
+  const expectedReplacement = generatedArtifactProducerEvidenceReplacement(
+    targetPath,
+    producerFailure.failureSummary,
+    exactSearch
+  );
+  if (
+    !marker ||
+    marker.path !== targetPath ||
+    marker.search !== exactSearch ||
+    !exactSearch ||
+    !evidenceReplacement ||
+    evidenceReplacement !== expectedReplacement ||
+    evidenceReplacement === exactSearch ||
+    evidenceReplacement.includes("\0") ||
+    Buffer.byteLength(evidenceReplacement, "utf8") > 3000
+  ) {
+    return null;
+  }
+
+  const descriptors = (Array.isArray(contract?.tools) ? contract.tools : [])
+    .filter(
+      (descriptor) =>
+        descriptor?.type === "function" &&
+        descriptor.function?.name !== "finish"
+    );
+  if (
+    descriptors.length !== 1 ||
+    descriptors[0].function?.name !== "apply_patch"
+  ) {
+    return null;
+  }
+  const properties = descriptors[0].function?.parameters?.properties || {};
+  if (
+    !Array.isArray(properties.path?.enum) ||
+    !properties.path.enum.includes(targetPath) ||
+    !Array.isArray(properties.replace?.enum) ||
+    !properties.replace.enum.includes(evidenceReplacement)
+  ) {
+    return null;
+  }
+
+  const recoveredCall = {
+    id: `call_aginti_producer_evidence_${crypto.randomUUID()}`,
+    type: "function",
+    function: {
+      name: "apply_patch",
+      arguments: JSON.stringify({ replace: evidenceReplacement }),
+    },
+  };
+  const recovered = resolveDispatchableToolCallBatch(
+    [recoveredCall],
+    contract
+  );
+  if (!recovered.ok) return null;
+  return {
+    ...recovered,
+    recoveredProducerDiagnosticEvidencePatch: true,
+    originalToolName: "apply_patch",
+    translatedToolName: "apply_patch",
+    translatedPath: targetPath,
+    evidenceKind: "compiler-diagnostic-source-rewrite",
+  };
+}
+
+export async function recoverUnanchoredCompletePatchAsWholeFileWrite(
+  config = {},
+  state = {},
+  reportedToolCalls = [],
+  contract = null,
+  validation = {}
+) {
+  const calls = Array.isArray(reportedToolCalls) ? reportedToolCalls : [];
+  const errors = Array.isArray(validation?.errors) ? validation.errors : [];
+  if (
+    validation?.ok === true ||
+    calls.length !== 1 ||
+    errors.length === 0 ||
+    errors.some(
+      (error) =>
+        !new Set([
+          "TOOL_ARGUMENTS_SCHEMA_INVALID",
+          "ARGUMENT_REQUIRED_PROPERTY_MISSING",
+        ]).has(String(error?.code || ""))
+    )
+  ) {
+    return null;
+  }
+  const originalCall = calls[0];
+  if (String(originalCall?.function?.name || "") !== "apply_patch") return null;
+  const args = safeParseToolContent(originalCall?.function?.arguments) || {};
+  if (
+    typeof args.path !== "string" ||
+    typeof args.replace !== "string" ||
+    typeof args.search === "string" ||
+    Object.hasOwn(args, "patch") ||
+    !args.replace ||
+    args.replace.includes("\0") ||
+    Buffer.byteLength(args.replace, "utf8") > 220_000
+  ) {
+    return null;
+  }
+  const currentRequest = String(
+    state.meta?.goalContract?.currentRequest || config.goal || state.goal || ""
+  );
+  if (!goalClearlyAllowsOverwrite(currentRequest)) return null;
+
+  const descriptors = Array.isArray(contract?.tools) ? contract.tools : [];
+  const writeDescriptor = descriptors.find(
+    (descriptor) =>
+      descriptor?.type === "function" &&
+      descriptor.function?.name === "write_file"
+  );
+  if (!writeDescriptor) return null;
+  const writeProperties = writeDescriptor.function?.parameters?.properties || {};
+  const targetPath = safeRecoveryEvidencePath(args.path);
+  const allowedPaths = Array.isArray(writeProperties.path?.enum)
+    ? writeProperties.path.enum
+    : [];
+  if (!targetPath || (allowedPaths.length && !allowedPaths.includes(targetPath))) {
+    return null;
+  }
+
+  let target;
+  try {
+    target = resolveWorkspacePath(config, targetPath);
+  } catch {
+    return null;
+  }
+  const current = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  const replacement = String(args.replace);
+  if (!current || current === replacement || current.includes("\0")) return null;
+  const currentBytes = Buffer.byteLength(current, "utf8");
+  const replacementBytes = Buffer.byteLength(replacement, "utf8");
+  if (
+    replacementBytes < Math.ceil(currentBytes * 0.5) ||
+    patchContextReplacementScopeIssue(
+      {
+        path: targetPath,
+        search: current,
+        anchorKind: "complete-file",
+        anchorIdentity: "complete-file",
+      },
+      replacement
+    )
+  ) {
+    return null;
+  }
+  if (
+    current.includes("\\begin{document}") &&
+    (!replacement.includes("\\begin{document}") ||
+      !replacement.includes("\\end{document}"))
+  ) {
+    return null;
+  }
+
+  const writeArgs = {
+    path: targetPath,
+    content: replacement,
+    ...(writeProperties.mode
+      ? {
+          mode: Array.isArray(writeProperties.mode.enum) &&
+            !writeProperties.mode.enum.includes("overwrite")
+            ? writeProperties.mode.enum[0]
+            : "overwrite",
+        }
+      : {}),
+  };
+  const recoveredCall = {
+    ...originalCall,
+    function: {
+      ...originalCall.function,
+      name: "write_file",
+      arguments: JSON.stringify(writeArgs),
+    },
+  };
+  const recovered = resolveDispatchableToolCallBatch([recoveredCall], contract);
+  if (!recovered.ok) return null;
+  return {
+    ...recovered,
+    recoveredUnanchoredCompletePatch: true,
+    originalToolName: "apply_patch",
+    translatedToolName: "write_file",
+    translatedPath: targetPath,
+  };
 }
 
 export async function recoverFocusedPatchTrailingWhitespaceAsExactPatch(
@@ -24487,6 +26189,32 @@ async function runAgentOnceUnlocked(config) {
         }
       }
       if (!toolBatchValidation.ok) {
+        const recoveredProducerDiagnosticEvidencePatch =
+          recoverProducerDiagnosticEvidencePatch(
+            stepRuntimeConfig,
+            state,
+            rawToolCalls,
+            responseToolContract,
+            toolBatchValidation
+          );
+        if (recoveredProducerDiagnosticEvidencePatch) {
+          toolBatchValidation = recoveredProducerDiagnosticEvidencePatch;
+        }
+      }
+      if (!toolBatchValidation.ok) {
+        const recoveredCompletePatch =
+          await recoverUnanchoredCompletePatchAsWholeFileWrite(
+            stepRuntimeConfig,
+            state,
+            rawToolCalls,
+            responseToolContract,
+            toolBatchValidation
+          );
+        if (recoveredCompletePatch) {
+          toolBatchValidation = recoveredCompletePatch;
+        }
+      }
+      if (!toolBatchValidation.ok) {
         const recoveredExactPendingCommand = recoverExactPendingCommandIntent(
           stepRuntimeConfig,
           rawToolCalls,
@@ -24702,6 +26430,32 @@ async function runAgentOnceUnlocked(config) {
         observers.event("tool.mutation_intent_translated", detail);
       }
 
+      if (toolBatchValidation.recoveredUnanchoredCompletePatch) {
+        const detail = {
+          step,
+          originalToolName: "apply_patch",
+          translatedToolName: "write_file",
+          path: String(toolBatchValidation.translatedPath || ""),
+          source: "complete-file-replacement-without-search-anchor",
+        };
+        await store.appendEvent("tool.mutation_intent_translated", detail);
+        observers.event("tool.mutation_intent_translated", detail);
+      }
+
+      if (toolBatchValidation.recoveredProducerDiagnosticEvidencePatch) {
+        const detail = {
+          step,
+          toolName: "apply_patch",
+          path: String(toolBatchValidation.translatedPath || ""),
+          source: String(toolBatchValidation.evidenceKind || ""),
+        };
+        await store.appendEvent(
+          "tool.compiler_evidence_repair_recovered",
+          detail
+        );
+        observers.event("tool.compiler_evidence_repair_recovered", detail);
+      }
+
       if (
         toolBatchValidation.recoveredFocusedPatchTrailingWhitespace ||
         toolBatchValidation.recoveredFocusedPatchAlreadyApplied ||
@@ -24842,6 +26596,8 @@ async function runAgentOnceUnlocked(config) {
           toolBatchValidation.recoveredRequiredPatchContextRead ||
           toolBatchValidation.recoveredRequiredRepositoryGrounding ||
           toolBatchValidation.recoveredUnavailableVerificationRerun ||
+          toolBatchValidation.recoveredProducerDiagnosticEvidencePatch ||
+          toolBatchValidation.recoveredUnanchoredCompletePatch ||
           toolBatchValidation.recoveredFocusedWholeFileWrite ||
           toolBatchValidation.recoveredFocusedPatchTrailingWhitespace ||
           toolBatchValidation.recoveredFocusedPatchAlreadyApplied ||

@@ -1609,7 +1609,7 @@ export async function requestNextStep(client, config, messages) {
       function: {
         name: "writing_specialist",
         description:
-          "Call an isolated writing-only LLM context for novels, books, scenes, scripts, essays, research-paper prose, LaTeX manuscript text, or substantial revision. Pass only writing-relevant context: brief, canon, style guide, prior draft, target, constraints, audience, and intended downstream format. Do not pass agent runtime, shell, browser, safety, tool, or file-management instructions. The tool returns draft prose plus continuity/revision notes and a format_handoff for a separate formatter/file step.",
+          "Call an isolated writing-only LLM context for novels, books, scenes, scripts, essays, research-paper prose, LaTeX manuscript text, or substantial revision. Pass only writing-relevant context: brief, canon, style guide, prior draft, target, constraints, audience, and intended downstream format. For source-grounded work, first read the exact source files and include their relevant actual text, not merely filenames or a claim that a file is the source of truth. Do not pass agent runtime, shell, browser, safety, tool, or file-management instructions. The tool returns draft prose plus continuity/revision notes and a format_handoff for a separate formatter/file step.",
         parameters: {
           type: "object",
           properties: {

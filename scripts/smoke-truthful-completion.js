@@ -791,6 +791,28 @@ try {
     "missing Word artifacts did not produce an actionable completion repair"
   );
 
+  const writingPdfCompletionWithoutArtifact = await runCase({
+    id: "writing-pdf-completion-without-artifact",
+    goal: "Read chat_history.md and produce an editable source plus a mobile-readable PDF.",
+    taskProfile: "writing",
+    allowFileTools: true,
+    executionTier: "focused",
+    responses: [
+      assistant("", [toolCall("writing-pdf-finish-without-file-1", "finish", { result: "The PDF report is complete." })]),
+      assistant("", [toolCall("writing-pdf-finish-without-file-2", "finish", { result: "The PDF report is complete." })]),
+    ],
+  });
+  assert.equal(writingPdfCompletionWithoutArtifact.result.stopped, true);
+  assert(
+    writingPdfCompletionWithoutArtifact.events.some(
+      (event) =>
+        event.type === "document.quality_assessed" &&
+        event.data?.ok === false &&
+        /no readable DOCX or PDF/i.test(String(event.data?.reason || ""))
+    ),
+    "a writing-profile PDF task bypassed the independent document quality gate"
+  );
+
   const verifiedAction = await runCase({
     id: "verified-action",
     goal: "Execute the shell command pwd and report the output.",

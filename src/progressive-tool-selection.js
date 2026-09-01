@@ -1155,17 +1155,30 @@ function constrainPatchContextRepair(tool, config = {}) {
       ? `through ${Number(config.patchContextRepairLineEnd)}`
       : "",
   ].filter(Boolean).join(" ");
+  const producerDiagnosticRepair =
+    String(config.patchContextRepairTriggerCategory || "") ===
+    "generated-artifact-producer-diagnostic";
+  const evidenceReplacement = producerDiagnosticRepair
+    ? String(config.patchContextRepairEvidenceReplacement || "")
+    : "";
   return {
     ...tool,
     function: {
       ...tool.function,
       description: [
-        "Repair one revision-bound exact current-source anchor after a stale patch search failed.",
+        producerDiagnosticRepair
+          ? "Repair the revision-bound exact source location reported by the failed local artifact producer."
+          : "Repair one revision-bound exact current-source anchor after a stale patch search failed.",
         `Target: ${targetPath}${location ? ` ${location}` : ""}.`,
         config.patchContextRepairAnchorIdentity
           ? `Current anchor: ${String(config.patchContextRepairAnchorIdentity)}.`
           : "",
-        "When a current failed-test traceback selected this anchor, that traceback location is authoritative; do not reuse an older patch search or reconstruct a different region.",
+        producerDiagnosticRepair
+          ? "The compiler location is authoritative. Change the failing source itself; an append-only status claim or a replacement that retains the complete failed anchor unchanged is rejected."
+          : "When a current failed-test traceback selected this anchor, that traceback location is authoritative; do not reuse an older patch search or reconstruct a different region.",
+        producerDiagnosticRepair && config.patchContextRepairDiagnosticHint
+          ? String(config.patchContextRepairDiagnosticHint)
+          : "",
         "Return only the complete revised anchor as replace, beginning with the same declaration when this is a function or class. Do not include file headers, imports, or declarations outside the shown anchor. Preserve unrelated current behavior while making a real change that addresses the retained failure.",
         "The runtime injects the revision-bound path and exact current search anchor. Optional path/search fields are compatibility hints only and cannot redirect the mutation.",
         `Current exact anchor (read-only context; do not echo it as search):\n<current_source_anchor>\n${exactSearch}\n</current_source_anchor>`,
@@ -1187,7 +1200,22 @@ function constrainPatchContextRepair(tool, config = {}) {
           replace: {
             ...(properties.replace || { type: "string" }),
             minLength: 1,
-            description: "Complete revised anchor. Preserve unrelated source and materially address the retained failure.",
+            ...(evidenceReplacement
+              ? { enum: [evidenceReplacement] }
+              : {}),
+            ...(producerDiagnosticRepair
+              ? {
+                  maxLength: Math.min(
+                    3000,
+                    Math.max(256, exactSearch.length * 3)
+                  ),
+                }
+              : {}),
+            description: producerDiagnosticRepair
+              ? evidenceReplacement
+                ? "Use the exact compiler-evidence replacement supplied by this schema. The runtime will safely recover this exact bounded repair if a local model emits broader arguments."
+                : "Complete revised diagnostic anchor. Directly fix the compiler-reported source and do not retain the failed anchor unchanged with appended text."
+              : "Complete revised anchor. Preserve unrelated source and materially address the retained failure.",
           },
           expectedReplacements: {
             ...(properties.expectedReplacements || { type: "integer" }),
@@ -1227,6 +1255,64 @@ function constrainWriteFilePaths(tool, paths = []) {
             description: "Only creation is permitted for this missing required instruction file.",
           },
         },
+      },
+    },
+  };
+}
+
+function constrainWriteFileExtensions(tool, extensions = []) {
+  const normalizedExtensions = [...new Set(
+    (Array.isArray(extensions) ? extensions : [])
+      .map((item) => String(item || "").trim().toLowerCase())
+      .filter((item) => /^\.[a-z0-9]{1,12}$/u.test(item))
+  )];
+  if (!tool || normalizedExtensions.length === 0) return null;
+  const pathSchema = tool.function?.parameters?.properties?.path || { type: "string" };
+  const contentSchema = tool.function?.parameters?.properties?.content || { type: "string" };
+  const modeSchema = tool.function?.parameters?.properties?.mode || { type: "string" };
+  const extensionPattern = normalizedExtensions
+    .map((item) => item.slice(1).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+    .join("|");
+  return {
+    ...tool,
+    function: {
+      ...tool.function,
+      description: [
+        "Create one canonical editable source required by the authoritative task contract.",
+        `The workspace-relative path must end in: ${normalizedExtensions.join(", ")}.`,
+        "Choose a concise descriptive filename, use the already-read task/source evidence, and do not create a substitute format or overwrite an existing file.",
+      ].join(" "),
+      parameters: {
+        ...tool.function.parameters,
+        properties: {
+          ...tool.function.parameters.properties,
+          path: {
+            ...pathSchema,
+            pattern: `^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000\\r\\n]+(?:\\.(?:${extensionPattern}))$`,
+            description: `New workspace-relative canonical source path ending in ${normalizedExtensions.join(" or ")}.`,
+          },
+          content: {
+            ...contentSchema,
+            minLength: 1,
+            description: "Complete editable source grounded in the retained task instructions and source evidence.",
+          },
+          mode: {
+            ...modeSchema,
+            enum: ["create"],
+            description: "Only creation is permitted while this requested source is missing.",
+          },
+        },
+        required: [
+          ...new Set([
+            ...(Array.isArray(tool.function.parameters?.required)
+              ? tool.function.parameters.required
+              : []),
+            "path",
+            "content",
+            "mode",
+          ]),
+        ],
+        additionalProperties: false,
       },
     },
   };
@@ -2302,6 +2388,32 @@ export function selectProgressiveTools(
   }
 
   if (
+    config.requestedArtifactRequirementsPending === true &&
+    config.generatedArtifactProducerPending !== true &&
+    Array.isArray(config.requestedArtifactCreationExtensions) &&
+    config.requestedArtifactCreationExtensions.length > 0
+  ) {
+    const available = new Map(baselineEnabled.map(({ name, tool }) => [name, tool]));
+    const createRequestedSource = constrainWriteFileExtensions(
+      available.get("write_file"),
+      config.requestedArtifactCreationExtensions
+    );
+    return [createRequestedSource].filter(Boolean);
+  }
+
+  if (config.generatedArtifactProducerPending === true) {
+    // A required derived artifact must be rebuilt before any intermediate
+    // task-owned mutation can become eligible for Git completion.
+    const available = new Map(baselineEnabled.map(({ name, tool }) => [name, tool]));
+    const producerCommand = constrainRunCommand(
+      available.get("run_command"),
+      config.generatedArtifactProducerCommand,
+      "Run this exact retained local producer command once. Canonical source changed after its last run, so generated artifacts must be rebuilt before the retained validator can provide fresh evidence. Do not substitute another command or rerun the stale validator first."
+    );
+    return [producerCommand, finish].filter(Boolean);
+  }
+
+  if (
     config.taskOwnedCommitPending === true &&
     config.testFailureRepairActive !== true &&
     config.testVerificationPending !== true &&
@@ -2363,19 +2475,6 @@ export function selectProgressiveTools(
       if (commitProjectChanges) return [commitProjectChanges, finish].filter(Boolean);
     }
     return artifactValidationToolNames(config).map((name) => available.get(name)).filter(Boolean);
-  }
-
-  if (config.generatedArtifactProducerPending === true) {
-    // An authoritative producer phase supersedes a stale convergence marker.
-    // Keep explicit capability disables effective by selecting from the real
-    // enabled baseline rather than from the convergence-pruned surface.
-    const available = new Map(baselineEnabled.map(({ name, tool }) => [name, tool]));
-    const producerCommand = constrainRunCommand(
-      available.get("run_command"),
-      config.generatedArtifactProducerCommand,
-      "Run this exact previously successful local producer command once. Canonical source changed after its last run, so generated artifacts must be rebuilt before the retained validator can provide fresh evidence. Do not substitute another command or rerun the stale validator first."
-    );
-    return [producerCommand, finish].filter(Boolean);
   }
 
   if (config.testFailureRepairActive === true) {
