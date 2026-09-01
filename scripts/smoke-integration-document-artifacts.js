@@ -126,6 +126,7 @@ assert.equal(revision.required, true);
 assert.equal(revision.requirements.minimumFigureCount, 1, "explicit revision retains the figure requirement");
 assert.equal(isIntegrationDocumentArtifactRevision("revise it and recompile", priorConversation), true);
 assert.equal(isIntegrationPriorArtifactDocumentConversion("Compile it to PDF"), true);
+assert.equal(isIntegrationPriorArtifactDocumentConversion("Provide tex and compile"), true);
 assert.equal(isIntegrationPriorArtifactDocumentConversion("Explain how to compile it to PDF"), false);
 const immediatePlotConversionContext = Object.freeze({
   active: true,

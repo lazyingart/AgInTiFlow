@@ -249,6 +249,7 @@ export function isIntegrationPriorArtifactDocumentConversion(prompt = "") {
   return clauses.some((clause) =>
     /^(?:compile|convert|typeset|render|export|turn)\b[^.!?\r\n]{0,80}\b(?:it|this|that|these|those|the\s+(?:result|results|analysis|calculation|plot|figure|table|text|markdown|content|paper|report|document))\b[^.!?\r\n]{0,100}\b(?:to|into|as)?\s*(?:a\s+)?pdf\b/iu.test(clause) ||
     /^make\b[^.!?\r\n]{0,40}\b(?:it|this|that|the\s+(?:result|analysis|plot|figure|table|text|markdown|content|paper|report|document))\b[^.!?\r\n]{0,80}\b(?:into|as)\s+(?:a\s+)?pdf\b/iu.test(clause) ||
+    /^(?:provide|return|output|give)\b[^.!?\r\n]{0,80}\b(?:latex|tex)(?:\s+source)?\b[^.!?\r\n]{0,60}\b(?:and\s+)?compile\b/iu.test(clause) ||
     /^(?:把|将|將)(?:它|这个|這個|上述结果|上述結果|以上结果|以上結果|该结果|該結果|分析|图表|圖表|文本|内容|內容|报告|報告)(?:转换|轉換|编译|編譯|导出|導出|制作|製作)(?:为|為|成)?pdf/u.test(clause)
   );
 }

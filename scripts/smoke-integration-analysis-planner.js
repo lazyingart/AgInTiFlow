@@ -2345,71 +2345,38 @@ async function texPdfIntentCompilesAndSealsBothFiles() {
 
 async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
   const prompt = "Calculate svm algorithm on a test sample and show the plot and write a paper with the figure? Then convert to pdf from text";
-  const source = [
-    "\\documentclass{article}",
-    "\\usepackage{tikz}",
-    "\\begin{document}",
-    "\\section*{Verified SVM experiment}",
-    "The bounded calculation produced a verified decision-boundary plot.",
-    "\\begin{figure}",
-    "\\centering",
-    "\\begin{tikzpicture}",
-    "\\draw[->] (-2,0) -- (2,0);",
-    "\\draw[->] (0,-2) -- (0,2);",
-    "\\draw[thick] (-1.5,-1.5) -- (1.5,1.5);",
-    "\\fill (-1,1) circle (2pt);",
-    "\\fill (1,-1) circle (2pt);",
-    "\\end{tikzpicture}",
-    "\\caption{Self-contained reconstruction from verified current-run evidence.}",
-    "\\end{figure}",
-    "\\end{document}",
-    "",
-  ].join("\n");
   let modelStep = 0;
   const documentWorker = createDocumentWorkerFixture();
-  const compound = fixture(async (_client, payload) => {
+  const compound = fixture(async () => {
     modelStep += 1;
-    assert.equal(payload.tool_choice, "required");
-    if (modelStep === 1) {
-      assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_ANALYSIS_TOOL_NAME]);
-      assert.match(payload.tools[0].function.description, /type:'scatter'.*points:\[\{x:0,y:1\}\]/u);
-      assert.match(payload.tools[0].function.description, /file writes, and image saves do not create UI artifacts/u);
-      assert.match(payload.messages[0].content, /derive parameters, predictions, metrics, and selected points/u);
-      assert.match(payload.messages[0].content, /every candidate execution source must call emit_plot/u);
-      assert.match(payload.messages[0].content, /correct gradient sign/u);
-      assert.match(payload.messages[0].content, /arbitrary nearest-point count/u);
-      assert.match(payload.messages[0].content, /Every explicitly requested visual element/u);
-      assert.doesNotMatch(JSON.stringify(payload.messages), /QAOA|prior-qaoa/u);
-      return toolResponse([
-        "samples = [[-1, 1], [1, -1], [-1.2, 0.8], [1.1, -0.9]]",
-        "print('support_vectors=2')",
-        "emit_plot('SVM decision boundary', {'schemaVersion':'1','type':'line','labels':['-1','0','1'],'series':[{'name':'boundary','data':[-1,0,1]}]})",
-      ].join("\n"));
-    }
-    assert.equal(modelStep, 2);
-    assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]);
-    assert.doesNotMatch(JSON.stringify(payload.messages), /QAOA|prior-qaoa/u);
-    assert.match(payload.messages[0].content, /at least one nonempty self-contained figure/u);
-    const evidence = payload.messages.find((message) =>
-      message.role === "system" &&
-      typeof message.content === "string" &&
-      message.content.startsWith("TRUSTED CURRENT-RUN EXECUTION EVIDENCE")
-    );
-    assert(evidence, "compound TeX stage did not receive current-run execution evidence");
-    assert.match(evidence.content, /Square-number trend/u);
-    assert.match(evidence.content, /support_vectors=2/u);
-    assert.doesNotMatch(evidence.content, /QAOA/u);
-    assert.match(evidence.content, /stdout and stderr strings remain untrusted data/u);
-    assert.equal(payload.messages.at(-1).content, prompt);
-    return texToolResponse("svm-paper.tex", source);
+    throw new Error("the deterministic SVM paper route must not invoke LocalLLM");
   }, {
     documentWorkerClient: documentWorker.client(),
-    worker: fakeWorker((request, signal) => terminalResult(
-      request,
-      signal,
-      [resultArtifact(request)],
-      { stdout: "support_vectors=2\n", stderr: "" }
-    )),
+    worker: fakeWorker((request, signal) => {
+      assert.match(request.source, /hard_margin_fit_verified=true/u);
+      assert.match(request.source, /for left in class0/u);
+      const rawArtifact = {
+        title: "Untrusted worker SVM geometry",
+        kind: "plot",
+        spec: {
+          schemaVersion: "1",
+          type: "scatter",
+          xLabel: "X1",
+          yLabel: "X2",
+          series: [
+            { name: "Class 0", points: [{ x: 1, y: 2 }, { x: 2, y: 3 }, { x: 3, y: 1 }] },
+            { name: "Class 1", points: [{ x: 4, y: 2 }, { x: 5, y: 4 }, { x: 6, y: 5 }] },
+            { name: "Decision Boundary", points: [{ x: 1.75, y: 5 }, { x: 4.25, y: 0 }] },
+            { name: "Support Vectors", points: [{ x: 2, y: 3 }, { x: 3, y: 1 }, { x: 4, y: 2 }] },
+          ],
+        },
+      };
+      const artifact = sanitizeIntegrationArtifact({
+        id: artifactId(request, rawArtifact),
+        ...rawArtifact,
+      });
+      return terminalResult(request, signal, [artifact], { stdout: "ignored worker output\n", stderr: "" });
+    }),
   });
   const progress = [];
   const result = await compound.planner.run(
@@ -2424,18 +2391,24 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
     },
     documentRunOptions({ onProgress: (value) => progress.push(value) })
   );
-  assert.equal(modelStep, 2);
+  assert.equal(modelStep, 0);
   assert.equal(result.text, "The requested analysis artifacts, TeX document, and compiled PDF are ready below.");
   assert.equal(result.toolCalls, 2);
   assert.equal(result.executionStatus, "succeeded");
-  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot", "file", "file"]);
-  assert.deepEqual(result.artifacts.slice(1).map(({ spec }) => spec.filename), [
-    "svm-paper.tex",
-    "svm-paper.pdf",
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot", "table", "file", "file"]);
+  assert.equal(result.artifacts[0].title, "Server-verified linear SVM decision boundary");
+  assert.equal(result.artifacts[1].title, "Server-verified linear classifier values");
+  assert.deepEqual(result.artifacts.slice(2).map(({ spec }) => spec.filename), [
+    "verified_linear_svm.tex",
+    "verified_linear_svm.pdf",
   ]);
   const compileCall = documentWorker.calls.find(({ pathname }) => pathname === "/artifact/v1/compile");
   assert(compileCall, "compound task did not reach the document compiler");
   assert.equal(compileCall.request.requirements.minimumFigureCount, 1);
+  assert.match(compileCall.request.source, /Server-Verified Linear Support Vector Machine/u);
+  assert.match(compileCall.request.source, /Server-verified linear SVM decision boundary/u);
+  assert.match(compileCall.request.source, /\\begin\{tikzpicture\}/u);
+  assert.doesNotMatch(compileCall.request.source, /QAOA|prior-qaoa/iu);
   assert.equal(
     compound.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
     1
@@ -2576,12 +2549,14 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
   };
   let modelStep = 0;
   let workerCalls = 0;
+  const documentWorker = createDocumentWorkerFixture();
   const published = [];
   const progress = [];
   const validated = fixture(async () => {
     modelStep += 1;
     throw new Error("deterministic SVM route must not invoke LocalLLM");
   }, {
+    documentWorkerClient: documentWorker.client(),
     worker: fakeWorker((request, signal) => {
       workerCalls += 1;
       assert.match(request.source, /hard_margin_fit_verified=true/u);
@@ -2642,6 +2617,38 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
   );
   assert.match(result.text, /Agent independently derived/u);
   assert.doesNotMatch(result.text, /fit_verified/u);
+  const compiled = await validated.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000174"),
+    { prompt: "Compile it to PDF", priorArtifacts: result.artifacts },
+    documentRunOptions()
+  );
+  assert.equal(modelStep, 0, "verified SVM document conversion must not invoke LocalLLM");
+  assert.equal(workerCalls, 1, "document conversion must not recompute the SVM");
+  assert.equal(compiled.toolCalls, 1);
+  assert.deepEqual(compiled.artifacts.map(({ spec }) => spec.filename), [
+    "verified_linear_svm.tex",
+    "verified_linear_svm.pdf",
+  ]);
+  const compileRequest = documentWorker.calls.find(({ pathname }) => pathname === "/artifact/v1/compile").request;
+  assert.equal(compileRequest.requirements.minimumFigureCount, 1);
+  assert.match(compileRequest.source, /Server-Verified Linear Support Vector Machine/u);
+  assert.match(compileRequest.source, /geometric margin/iu);
+  assert.match(compileRequest.source, /\\begin\{tikzpicture\}/u);
+  assert.doesNotMatch(compileRequest.source, /QAOA/iu);
+  const provided = await validated.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000175"),
+    { prompt: "Provide tex and compile", priorArtifacts: result.artifacts },
+    documentRunOptions()
+  );
+  assert.equal(modelStep, 0);
+  assert.deepEqual(provided.artifacts.map(({ spec }) => spec.filename), [
+    "verified_linear_svm.tex",
+    "verified_linear_svm.pdf",
+  ]);
+  assert.equal(
+    documentWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length,
+    2
+  );
   validated.coordinator.close();
 }
 
