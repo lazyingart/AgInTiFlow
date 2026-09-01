@@ -547,6 +547,7 @@ async function verifyPackagedBinAndScriptClosure() {
     "scripts/eval-provider-attribution.js",
     "scripts/smoke-context-budget-recovery.js",
     "scripts/smoke-integration-production-mount.js",
+    "scripts/smoke-integration-production-runtime-bundle.js",
   ]) {
     assert.equal(packageJson.files.includes(requiredFile), true);
   }
@@ -1086,6 +1087,38 @@ async function main() {
         }),
       "INTEGRATION_CREDENTIAL_SOURCE_FORBIDDEN"
     );
+
+    let cliCheckOutput = "";
+    await withCanonicalCredentialFixture(async () => {
+      const summary = await integrationCliMain(["check", "--config", configPath], {
+        env: { CREDENTIALS_DIRECTORY: INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY },
+        stdout: { write(chunk) { cliCheckOutput += String(chunk); } },
+      });
+      assert.equal(summary.status, "checked-disabled");
+      assert.equal(summary.capability?.enabled, false);
+      assert.equal(summary.implementationReady, false);
+      assert.equal(typeof summary.runtimeBundle?.healthy, "boolean");
+      assert.equal(summary.runtimeBundle?.implementationReady, false);
+      assert.equal(summary.runtimeBundle?.capabilityEnabled, false);
+      assert.equal(summary.runtimeBundle?.httpServingEnabled, false);
+      if (summary.runtimeBundle.healthy) {
+        assert.equal(summary.runtimeBundle.firstBlocker?.component, "idempotencyStore");
+        assert.equal(
+          summary.runtimeBundle.firstBlocker?.code,
+          "INTEGRATION_IDEMPOTENCY_TRUSTED_RECOVERY_RECEIPT_AUTHORITY_UNAVAILABLE"
+        );
+      } else {
+        assert.equal(summary.runtimeBundle.firstBlocker?.component, "storageAuthority");
+        assert.match(
+          summary.runtimeBundle.firstBlocker?.code || "",
+          /^INTEGRATION_STORAGE_/u
+        );
+      }
+      assert.deepEqual(
+        JSON.parse(cliCheckOutput.trim()),
+        JSON.parse(JSON.stringify(summary))
+      );
+    });
 
     const cliServePort = await unusedLoopbackPort();
     const cliServeConfigPath = path.join(tempRoot, "integration-serve.json");

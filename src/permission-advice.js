@@ -23,6 +23,168 @@ const DOCKER_WORKSPACE_PATH_FAILURE_PATTERNS = [
   /cannot statx? ['"][^'"]+['"]:\s+No such file or directory/i,
 ];
 
+function unquoteShellToken(value = "") {
+  const text = String(value || "").trim();
+  if (
+    text.length >= 2 &&
+    ((text.startsWith("'") && text.endsWith("'")) ||
+      (text.startsWith('"') && text.endsWith('"')))
+  ) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+function isGeneratedVerificationPreviewPath(value = "") {
+  const target = unquoteShellToken(value).replace(/\\/g, "/");
+  if (
+    !target ||
+    target.startsWith("/") ||
+    target.includes("..") ||
+    /[*?\[\]{}$`]/.test(target)
+  ) {
+    return false;
+  }
+  return (
+    /^(?:build|artifacts)\/verification\/[A-Za-z0-9._/-]+\.(?:png|jpe?g|webp)$/i.test(target) ||
+    /^output\/preview[-_][A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$/i.test(target)
+  );
+}
+
+export function isOptionalGeneratedPreviewCleanup(toolName = "", args = {}) {
+  if (toolName !== "run_command") return false;
+  const firstSegment = String(args.command || args.text || "")
+    .trim()
+    .split(/(?:&&|;|\n)/, 1)[0]
+    .trim();
+  const match = firstSegment.match(/^rm\s+-f\s+(.+)$/);
+  if (!match) return false;
+  const targets = match[1].trim().split(/\s+/).filter(Boolean);
+  return (
+    targets.length > 0 &&
+    targets.length <= 20 &&
+    targets.every((target) => isGeneratedVerificationPreviewPath(target))
+  );
+}
+
+export function isRecoverableDynamicEvidenceWrite(toolName = "", args = {}, guard = {}) {
+  if (toolName !== "run_command" || guard?.category !== "destructive") return false;
+  const command = String(args.command || args.text || "");
+  if (!/\btee\s+/i.test(command)) return false;
+  if (
+    /(?:^|[;&|\n]\s*)(?:command\s+)?(?:rm|rmdir|mv|chmod|chown)\b/i.test(command) ||
+    /\bgit\s+(?:checkout|switch|reset|clean)\b/i.test(command) ||
+    /(?:^|\s)-delete(?:\s|$)/i.test(command)
+  ) {
+    return false;
+  }
+  const dynamicWorkspaceEvidenceTarget = new RegExp(
+    String.raw`\btee\s+(?:--?append\s+|-a\s+)?["']?(?:\.aginti|artifacts|build/verification|output/verification)/[^\n;|]*\$\{?[A-Z_][A-Z0-9_]*\}?`,
+    "i"
+  );
+  return dynamicWorkspaceEvidenceTarget.test(command);
+}
+
+export function recoverableMixedToolchainAudit(toolName = "", args = {}, guard = {}) {
+  if (toolName !== "run_command" || guard?.category !== "general-shell") return null;
+  const command = String(args.command || args.text || "").trim();
+  const auditStart = command.search(
+    /\s+&&\s+(?:python3?|node|ruby)\s+-\s*<<\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?/i
+  );
+  if (auditStart <= 0) return null;
+
+  const buildCommand = command.slice(0, auditStart).trim();
+  const safePath = String.raw`[A-Za-z0-9._/-]+`;
+  const safeBuild = new RegExp(
+    String.raw`^(?:cd\s+['"]?(${safePath})['"]?\s*&&\s*)?(?:python3?|python)\s+['"]?(${safePath}\.py)['"]?(?:\s+2>&1)?$`,
+    "i"
+  );
+  const match = buildCommand.match(safeBuild);
+  if (!match) return null;
+  const paths = [match[1], match[2]].filter(Boolean);
+  if (
+    paths.some(
+      (value) =>
+        value.startsWith("/") ||
+        value.split("/").includes("..") ||
+        /[*?\[\]{}$`]/.test(value)
+    )
+  ) {
+    return null;
+  }
+  return { buildCommand };
+}
+
+export function recoverableInlineReadOnlyArtifactAudit(toolName = "", args = {}, guard = {}) {
+  if (toolName !== "run_command" || guard?.category !== "general-shell") return null;
+  const command = String(args.command || args.text || "").trim();
+  const cdMatch = command.match(
+    /^cd\s+(['"]?)([A-Za-z0-9._/-]+)\1\s*&&\s*([\s\S]+)$/i
+  );
+  const relativeCwd = cdMatch?.[2] || "";
+  if (
+    relativeCwd &&
+    (relativeCwd.startsWith("/") ||
+      relativeCwd.split("/").includes("..") ||
+      /[*?\[\]{}$`]/.test(relativeCwd))
+  ) {
+    return null;
+  }
+  const auditCommand = String(cdMatch?.[3] || command).trim();
+  if (!/^(?:python3?|python)\s+-c\s+(?:"[\s\S]*"|'[\s\S]*')(?:\s+2>&1)?$/i.test(auditCommand)) {
+    return null;
+  }
+  if (
+    !/(?:\bopen\s*\(|\.read(?:_bytes|_text)?\s*\(|\.stat\s*\(|hashlib\b|PdfReader\b|fitz\.open\s*\()/i.test(
+      auditCommand
+    )
+  ) {
+    return null;
+  }
+  const writeCapable = [
+    /\bopen\s*\([^)]*,\s*['"][^'"]*[wax+][^'"]*['"]/i,
+    /\.(?:write|write_bytes|write_text|touch|mkdir|unlink|rename|replace|rmdir|chmod|chown)\s*\(/i,
+    /\b(?:subprocess|os\.system|shutil|socket|requests|urllib|http\.client|eval|exec|__import__)\b/i,
+  ];
+  if (writeCapable.some((pattern) => pattern.test(auditCommand))) return null;
+  return { relativeCwd };
+}
+
+function goalRequestsDeletion(config = {}, state = {}) {
+  const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "");
+  const deletionIntent = /\b(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)\b|删除|刪除|移除|清理|清除|删掉|刪掉|削除|消去/i;
+  if (!deletionIntent.test(goal)) return false;
+
+  // A safety constraint such as "do not delete" is the opposite of
+  // authorization. Strip bounded negated phrases before looking for a genuine
+  // deletion request elsewhere in the goal.
+  const withoutNegatedDeletion = goal
+    .replace(
+      /\b(?:do\s+not|don't|dont|never|must\s+not|should\s+not|shouldn't|without)\s+(?:retry(?:ing)?\s+or\s+)?(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)(?:\s+any)?\b/gi,
+      " "
+    )
+    .replace(/(?:不要|不可|禁止|无需|無需|不需要)(?:再)?(?:删除|刪除|移除|清理|清除|删掉|刪掉)/g, " ")
+    .replace(/(?:削除|消去)(?:しない|するな|不要)/g, " ");
+  return deletionIntent.test(withoutNegatedDeletion);
+}
+
+export function isUnrequestedCleanupCommand(toolName = "", args = {}, config = {}, state = {}) {
+  const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "").trim();
+  if (!goal || toolName !== "run_command" || goalRequestsDeletion(config, state)) return false;
+  const command = String(args.command || args.text || "");
+  return command
+    .split(/(?:&&|;|\n)/)
+    .map((segment) => segment.trim())
+    .some(
+      (segment) =>
+        /^(?:command\s+)?rm\s+(?:-[A-Za-z]*[fr][A-Za-z]*\s+|--force\s+)/.test(segment) ||
+        /^find\s+\.\s+-type\s+d\s+-name\s+['"]?__pycache__['"]?\s+-prune\s+-exec\s+rm\s+-rf\s+\{\}\s+\+$/.test(
+          segment
+        ) ||
+        /^find\s+\.\s+-type\s+f\s+-name\s+(['"]?)\*\.pyc\1\s+-delete$/.test(segment)
+    );
+}
+
 function quoteShell(value = "") {
   const text = String(value || "");
   return `'${text.replace(/'/g, `'\\''`)}'`;
@@ -83,6 +245,22 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
       "Stop and present this blocker to the user instead of repeatedly trying variants. Continue only after the user approves a safer mode, changes the workspace, or gives a replacement instruction.",
   };
 
+  if (category === "opaque-external-validator-inspection") {
+    return {
+      ...base,
+      autoRecover: true,
+      summary:
+        "The exact external validator was combined with another command or treated as inspectable source. This is a recoverable command-shape error, not a permission blocker.",
+      instruction:
+        "Continue automatically. Run any producer, build, or repair command separately first. Then run the exact declared external validator command unchanged in its own tool call. Do not inspect, wrap, prefix, suffix, pipe, redirect, or combine the validator, and do not ask for stronger permissions.",
+      options: [
+        "Run the required producer or build as one standalone command.",
+        "Run the exact declared external validator unchanged as the next standalone command.",
+        "Use only the validator's returned diagnostics as repair evidence.",
+      ],
+    };
+  }
+
   if (category === "workspace-path") {
     if (READ_ONLY_FILE_TOOLS.has(toolName)) {
       return {
@@ -132,6 +310,22 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
         "Use `search_files` with a precise path and bounded result count.",
         "Use `rg -n --max-count <N> <pattern> <exact-file-or-directory>` with relevant `-g` filters.",
         "Inspect README, manifests, documented entry points, or `--help` output before searching implementation details.",
+      ],
+    };
+  }
+
+  if (category === "document-page-visual-batch") {
+    return {
+      ...base,
+      autoRecover: true,
+      summary:
+        "The document review batched multiple rendered pages, so page-specific visual defects could be missed.",
+      instruction:
+        "Continue automatically by calling read_image once for each rendered page. Evaluate clipping, overflow, orphaned headings, sparse spill pages, table splits, margins, and hierarchy on that page before moving to the next one.",
+      options: [
+        "Review page 1 alone, repair any defect, and rebuild before reviewing later pages.",
+        "Review each remaining page in a separate read_image call.",
+        "Finish only after every page has its own accepted visual evidence.",
       ],
     };
   }
@@ -214,6 +408,39 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
   }
 
   if (category === "destructive") {
+    if (isRecoverableDynamicEvidenceWrite(toolName, args, { category, reason })) {
+      return {
+        ...base,
+        autoRecover: true,
+        summary:
+          "A generated-evidence command used a shell-expanded output filename that the workspace guard could not prove safe. The command stayed blocked, but no destructive permission is needed.",
+        instruction:
+          "Do not retry the same command and do not request destructive approval. Reissue the check with fresh literal workspace-relative evidence paths under `.aginti/verification/`; avoid variables, globs, and `/tmp` in tee/redirection targets, then continue the substantive validation.",
+        options: [
+          "Use a literal timestamp or nonce already written into the command text.",
+          "Keep every log, hash file, and render under `.aginti/verification/`.",
+          "Split the build and evidence checks into smaller commands if that makes each output path explicit.",
+        ],
+      };
+    }
+    if (
+      isOptionalGeneratedPreviewCleanup(toolName, args) ||
+      isUnrequestedCleanupCommand(toolName, args, config, state)
+    ) {
+      return {
+        ...base,
+        autoRecover: true,
+        summary:
+          "Unrequested cleanup was blocked safely; generated or verification files can remain ignored and the substantive task should continue.",
+        instruction:
+          "Do not retry, rename, or seek approval for this cleanup. Leave every candidate file in place, run any remaining read-only checks in a separate call, and finish the requested task when its substantive evidence passes.",
+        options: [
+          "Retain the generated previews as private verification evidence.",
+          "Run source hashes, artifact checks, and git status separately without a delete command.",
+          "Continue to a real content or layout repair if validation still reports a defect.",
+        ],
+      };
+    }
     return {
       ...base,
       summary:
@@ -247,6 +474,47 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
   }
 
   if (category === "permission-change" || category === "general-shell") {
+    const mixedToolchainAudit = recoverableMixedToolchainAudit(
+      toolName,
+      args,
+      { category, reason }
+    );
+    if (mixedToolchainAudit) {
+      return {
+        ...base,
+        autoRecover: true,
+        summary:
+          "A safe project-local build was bundled with a broad inline audit. The combined command stayed blocked, but the build itself does not need stronger permission.",
+        instruction:
+          "Continue automatically by running only the supplied recoveryCommand as one toolchain call. Then inspect the artifact with built-in file tools or separate bounded read-only commands. Do not use a heredoc, shell-generated audit program, or request destructive permission.",
+        options: [
+          "Run the project-local builder by itself.",
+          "Use read_file/list_files and separate checksum or document-metadata commands for evidence.",
+          "Leave final reader-quality enforcement to the caller's deterministic artifact gate when one exists.",
+        ],
+        recoveryCommand: mixedToolchainAudit.buildCommand,
+      };
+    }
+    const inlineReadOnlyAudit = recoverableInlineReadOnlyArtifactAudit(
+      toolName,
+      args,
+      { category, reason }
+    );
+    if (inlineReadOnlyAudit) {
+      return {
+        ...base,
+        autoRecover: true,
+        summary:
+          "A read-only artifact audit was expressed as an inline interpreter program. It remained blocked because arbitrary inline code is broad, but the task does not need stronger permission.",
+        instruction:
+          "Do not retry the inline program and do not request destructive permission. Continue from the retained build evidence, inspect the exact artifact with built-in file tools or bounded read-only metadata commands, and accept the caller's deterministic artifact gate when it is available.",
+        options: [
+          "Use read_file, list_files, or read_image for the exact artifact.",
+          "Use an allowlisted bounded metadata command such as file, pdfinfo, sha256sum, or a short header read.",
+          "Return the already-built artifact when the caller owns the final quality gate.",
+        ],
+      };
+    }
     return {
       ...base,
       summary:
@@ -286,13 +554,44 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
 }
 
 export function buildPermissionAdvice({ toolName = "", args = {}, guard = {}, config = {}, state = {}, reason = "" } = {}) {
+  if (guard.permissionAdvice && typeof guard.permissionAdvice === "object") {
+    return guard.permissionAdvice;
+  }
+  const guardReason = String(reason || guard.reason || "");
+  if (
+    toolName === "run_command" &&
+    /^(?:cd|mkdir) target must be a safe workspace-relative directory:/i.test(guardReason)
+  ) {
+    const command = compactLine(args.command || args.text || "");
+    const blockedCommand = /^mkdir target/i.test(guardReason) ? "mkdir" : "cd";
+    return {
+      category: "workspace-command-correction",
+      reason: compactLine(guardReason),
+      currentMode: currentMode(config),
+      blockedOperation: command ? `${toolName}: ${command}` : toolName,
+      autoRecover: true,
+      summary:
+        blockedCommand === "mkdir"
+          ? "The command selected an outside-workspace scratch directory. This is a recoverable command-shape error, not a request for stronger permissions."
+          : "The command added an unnecessary or out-of-scope cd prefix. The configured project is already the command working directory, so this is a recoverable command-shape error rather than a permission request.",
+      instruction:
+        blockedCommand === "mkdir"
+          ? "Continue automatically with an ignored workspace-relative scratch directory such as .aginti/verification/<purpose>. Run the intended check from that subdirectory when an unrelated working directory is required. Do not ask for stronger permissions."
+          : "Continue automatically from the configured project root. Remove the cd prefix, correct any paths that were relative to the wrong directory, and retry only the intended workspace-bounded command. Do not ask for stronger permissions.",
+      options: [
+        "Run the intended command directly from the configured project root.",
+        "Use an ignored workspace-relative scratch subdirectory when the check requires another working directory.",
+        "Keep external absolute paths read-only and keep all mutations inside the configured project.",
+      ],
+    };
+  }
   const category = guard.category || "permission";
   return adviceForCategory(category, {
     toolName,
     args,
     config,
     state,
-    reason: reason || guard.reason || "",
+    reason: guardReason,
   });
 }
 
@@ -314,7 +613,102 @@ export function looksLikeDockerLocalhostFailure(args = {}, result = {}, config =
   return looksLikeNetworkFailure(result);
 }
 
+export function goalRevisionCoversActiveTask(state = {}, evidenceRevision = 0) {
+  const goalContract = state.meta?.goalContract || {};
+  const currentRevision = Math.max(0, Number(goalContract.revision || 0));
+  const candidateRevision = Math.max(0, Number(evidenceRevision || 0));
+  if (currentRevision <= 0 || candidateRevision <= 0) return false;
+  if (candidateRevision >= currentRevision) return true;
+
+  const history = Array.isArray(goalContract.history) ? goalContract.history : [];
+  const activeEntry = [...history]
+    .reverse()
+    .find(
+      (item) =>
+        Number(item?.revision || 0) <= currentRevision &&
+        String(item?.taskHash || "").trim()
+    );
+  const activeTaskHash = String(activeEntry?.taskHash || "").trim();
+  if (!activeTaskHash) return false;
+  const activeTaskStartRevision = history
+    .filter((item) => String(item?.taskHash || "").trim() === activeTaskHash)
+    .map((item) => Math.max(0, Number(item?.revision || 0)))
+    .filter(Boolean)
+    .reduce((lowest, revision) => Math.min(lowest, revision), currentRevision);
+  return candidateRevision >= activeTaskStartRevision;
+}
+
+function hasDurableCommitEvidence(state = {}, { requireCurrentMutation = true } = {}) {
+  const mutationRevision = Math.max(
+    0,
+    Number(state.meta?.projectVerification?.mutationRevision || 0)
+  );
+  return (Array.isArray(state.meta?.durableGitEvidence) ? state.meta.durableGitEvidence : []).some(
+    (item) =>
+      String(item?.action || "").toLowerCase() === "commit" &&
+      goalRevisionCoversActiveTask(state, item?.goalRevision) &&
+      (
+        !requireCurrentMutation ||
+        Number(item?.mutationRevision || 0) >= mutationRevision
+      )
+  );
+}
+
+export function isCleanGitStatusAfterCurrentCommit(args = {}, result = {}, state = {}) {
+  const command = String(args.command || args.text || "").trim();
+  const cleanStatusCommand =
+    /^git(?:\s+-C\s+(?:"[^"]*"|'[^']*'|\S+))?\s+status\s+(?:--short|--porcelain(?:=[^\s]+)?)(?:\s+--untracked-files=(?:all|normal))?$/i.test(
+      command
+    );
+  if (
+    !cleanStatusCommand ||
+    result.ok === false ||
+    Number(result.exitCode ?? 0) !== 0 ||
+    String(result.stdout || "").trim() ||
+    String(result.stderr || "").trim()
+  ) {
+    return false;
+  }
+  // An exact clean status proves that the current files match HEAD. Permit a
+  // same-task commit from an earlier mutation revision so interrupted work
+  // that was externally restored to HEAD can return to its verifier. The
+  // verifier, not this marker, still decides task completion.
+  return hasDurableCommitEvidence(state, { requireCurrentMutation: false });
+}
+
+export function isAlreadyCommittedCleanGitNoop(args = {}, result = {}, state = {}) {
+  const command = String(args.command || args.text || "");
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  if (
+    !/(?:^|[;&|]\s*)git(?:\s+-C\s+(?:"[^"]*"|'[^']*'|\S+))?\s+commit\b/i.test(command) ||
+    !/nothing to commit/i.test(output) ||
+    !/working tree clean/i.test(output)
+  ) {
+    return false;
+  }
+  return hasDurableCommitEvidence(state);
+}
+
 export function buildFailedCommandAdvice({ args = {}, commandPolicy = {}, commandResult = {}, config = {}, state = {} } = {}) {
+  if (isAlreadyCommittedCleanGitNoop(args, commandResult, state)) {
+    return {
+      category: "repository-already-committed",
+      reason:
+        "Git reported that the current worktree is clean, and durable evidence already contains a commit covering this goal and mutation revision.",
+      currentMode: currentMode(config),
+      blockedOperation: compactLine(args.command || args.text || "git commit"),
+      autoRecover: true,
+      summary:
+        "The requested commit is already satisfied. This no-op is not a permission problem and should not be retried.",
+      instruction:
+        "Do not stage or commit again. Run any still-pending exact verifier once, then call finish from the retained commit and verification evidence.",
+      options: [
+        "Run the pending exact verifier named in the current task contract.",
+        "Call finish when all retained verification is current.",
+      ],
+      failureKind: "repository-already-committed",
+    };
+  }
   if (looksLikeDockerLocalhostFailure(args, commandResult, config)) {
     return {
       ...adviceForCategory("host-local-service", {

@@ -16,21 +16,26 @@ const READ_ONLY_PATTERNS = [
   /^which\s+[-\w.]+(?:\s+[-\w.]+)*$/,
   /^command\s+-v\s+[-\w.]+$/,
   /^uname(?:\s+-a)?$/,
-  /^ls(?:\s+[-\w./~*]+)*$/,
+  /^ls(?:\s+(?:"[^"\n]*"|'[^'\n]*'|[-\w./~*]+))*$/,
   /^find(?:\s+[./~\w-]+)*(?:\s+-maxdepth\s+\d+)?(?:\s+-type\s+[fd])?$/,
   /^rg(?:\s+.+)?$/,
   /^grep(?:\s+.+)?$/,
+  /^pgrep(?:\s+.+)?$/,
   /^cat(?:\s+[-\w./~*]+)+$/,
   /^head(?:\s+.+)?$/,
   /^tail(?:\s+.+)?$/,
+  // Plain xxd is a bounded stdin-to-stdout inspection filter. Keep reverse
+  // mode and path operands outside this allowlist because they can write.
+  /^xxd$/,
   /^sort(?:\s+[-\w./~*]+)*$/,
   /^wc(?:\s+.+)?$/,
   /^file(?:\s+[-\w./~*]+)+$/,
   /^stat(?:\s+[-\w./~*]+)+$/,
   /^sha256sum(?:\s+[-\w./~*]+)+$/,
+  /^pdfinfo\s+(?:"[^"\n]+"|'[^'\n]+'|[-\w./~]+)$/,
   /^sed\s+-n\s+['"0-9,:p\s-]+(?:\s+[-\w./~*]+)?$/,
   /^git\s+(status|branch|log|show|diff(?:\s+--stat)?|remote\s+-v)(?:\s+.+)?$/,
-  /^git\s+rev-parse(?:\s+(?:--show-toplevel|--git-dir|--is-inside-work-tree|--show-prefix|--show-cdup|--verify|--short(?:=\d+)?|[-\w./@^{}~:]+))+$/,
+  /^git\s+rev-parse(?:\s+(?:--show-toplevel|--git-dir|--is-inside-work-tree|--show-prefix|--show-cdup|--abbrev-ref|--verify|--short(?:=\d+)?|[-\w./@^{}~:]+))+$/,
   /^git\s+ls-files(?:\s+(?:--(?:cached|deleted|modified|others|ignored|stage|unmerged|exclude-standard)|[-\w./*]+))*$/,
   /^node\s+(?:-v|--version)$/,
   /^node\s+[-\w./]+\.(?:c?js|mjs)\s+(?:--help|help|doctor|status|health)(?:\s+[-\w./:=]+)*$/,
@@ -47,7 +52,7 @@ const READ_ONLY_PATTERNS = [
   /^(?:[-/\w.]+\/)?adb\s+devices(?:\s+-l)?$/,
   /^(?:[-/\w.]+\/)?emulator\s+-list-avds$/,
   /^(?:[-/\w.]+\/)?sdkmanager\s+--list(?:\s+[-\w./:=]+)*$/,
-  /^(?:pdflatex|latexmk)\s+--version$/,
+  /^(?:latexmk|lualatex|pdflatex|xelatex)\s+--version$/,
   /^(?:(?:[-/\w.]+\/)?python(?:3)?\s+)?[-\w./]*xyq_cdp_browser\.py\s+--cdp-url\s+(?:"[^"\n]+"|'[^'\n]+'|[-\w./:@]+)\s+list-pages$/,
   /^test\s+-[efdx]\s+[-\w./~]+$/,
   /^true$/,
@@ -76,6 +81,61 @@ function stripBenignRedirections(command = "") {
     .replace(/\s+1>\/dev\/null\b/g, "")
     .replace(/\s+>\/dev\/null\b/g, "")
     .trim();
+}
+
+function isReadOnlyPrintfCommand(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (!/^printf(?:\s|$)/.test(normalized) || hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (!tokens.length || tokens[0] !== "printf") return false;
+  // Bash's `printf -v name ...` mutates shell state and can influence a later
+  // command. Ordinary printf writes only to stdout and is safe once expansion
+  // and redirection checks have passed.
+  return !tokens.slice(1).some((token) => token === "-v" || /^-v[A-Za-z_]/.test(token));
+}
+
+function isReadOnlyTrDeleteFilter(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  return tokens.length === 3 && tokens[0] === "tr" && tokens[1] === "-d";
+}
+
+function isReadOnlyUniqFilter(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (!tokens.length || tokens[0] !== "uniq") return false;
+  // Restrict uniq to stdin-only display/count options. Positional operands are
+  // intentionally rejected because a second operand is an output file.
+  return tokens.slice(1).every((token) =>
+    /^(?:-[cdui]+|--(?:count|repeated|unique|ignore-case))$/.test(token)
+  );
+}
+
+function isReadOnlyDigestCommand(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (!["md5sum", "sha256sum"].includes(tokens[0]) || tokens.length < 2) return false;
+  let index = 1;
+  if (["-c", "--check"].includes(tokens[index])) index += 1;
+  if (tokens[index] === "--") index += 1;
+  const paths = tokens.slice(index);
+  return paths.length > 0 && paths.every((token) =>
+    !token.startsWith("-") && READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(token)
+  );
+}
+
+function isReadOnlyDiffCommand(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "diff" || tokens.length < 3) return false;
+  const operands = tokens.slice(1).filter((token) => token !== "--" && !token.startsWith("-"));
+  return operands.length === 2 && operands.every((token) =>
+    READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(token)
+  );
 }
 
 function isReadOnlyFindCommand(command = "") {
@@ -234,8 +294,9 @@ function delegatedValidationPlanClassification(tokens = []) {
   const args = tokens.slice(1).map((token) => String(token || ""));
   const executablePath = validationExecutablePathMetadata(tokens[0]);
   const basenameCommand = [executable, ...args].join(" ");
+  const structuredValidation = structuredValidationCommand(basenameCommand);
   const validationLike = Boolean(
-    structuredValidationCommand(basenameCommand) || matchAny(TEST_PATTERNS, basenameCommand)
+    structuredValidation || matchAny(TEST_PATTERNS, basenameCommand)
   );
   if (executablePath.outsideWorkspace && validationLike) {
     return {
@@ -243,6 +304,12 @@ function delegatedValidationPlanClassification(tokens = []) {
       needsNetwork: true,
       writesWorkspace: true,
       mayMutateProject: true,
+      // Requiring trusted-shell authorization for an external executable does
+      // not prove that its bounded validation invocation mutates the project.
+      // Preserve that semantic distinction for post-command evidence tracking.
+      semanticMayMutateProject:
+        structuredValidation?.mayMutateProject ??
+        validationCommandMayMutateProject(basenameCommand),
       substantiveTest: false,
       reason:
         "The validation executable is outside the current workspace and requires trusted shell policy.",
@@ -666,6 +733,115 @@ function structuredValidationCommand(command = "") {
   return null;
 }
 
+const EXTERNAL_VALIDATOR_BASENAME_PATTERN =
+  /(?:^|[._-])(?:acceptance|audit|check|contract|spec|test|validat(?:e|ion)?|validator|verif(?:y|ication))(?:[._-]|$)/i;
+
+function commandScriptOperand(tokens = []) {
+  const executable = path.basename(String(tokens[0] || "")).toLowerCase();
+  if (/^python(?:3(?:\.\d+)*)?$/.test(executable)) {
+    let index = 1;
+    while (index < tokens.length && String(tokens[index] || "").startsWith("-")) {
+      const option = String(tokens[index] || "");
+      if (/^-(?:B|E|I|O|OO|P|q|s|S|u|v|x)$/.test(option)) {
+        index += 1;
+        continue;
+      }
+      if (/^-(?:W|X)$/.test(option) && tokens[index + 1]) {
+        index += 2;
+        continue;
+      }
+      if (/^-(?:W|X).+/.test(option)) {
+        index += 1;
+        continue;
+      }
+      return "";
+    }
+    return String(tokens[index] || "");
+  }
+  if (["bash", "sh", "node"].includes(executable)) {
+    return String(tokens[1] || "");
+  }
+  return "";
+}
+
+export function externalValidatorCommandContract(command = "", config = {}) {
+  const normalized = String(command || "").trim();
+  const sequence = parseTopLevelShellSequence(normalized);
+  if (
+    !normalized ||
+    sequence.commands.length !== 1 ||
+    sequence.separators.length > 0 ||
+    sequence.trailingSeparator ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    hasActiveShellExpansion(normalized)
+  ) {
+    return null;
+  }
+  const tokens = tokenizeShellWords(normalized);
+  const operand = commandScriptOperand(tokens);
+  if (!operand || !/\.(?:c?js|mjs|py|sh)$/i.test(operand)) return null;
+  const basename = path.basename(operand, path.extname(operand));
+  if (!EXTERNAL_VALIDATOR_BASENAME_PATTERN.test(basename)) return null;
+
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  const absolutePath = path.resolve(commandCwd, operand);
+  const relativePath = path.relative(commandCwd, absolutePath);
+  if (
+    !relativePath ||
+    (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))
+  ) {
+    return null;
+  }
+  return {
+    command: normalized,
+    path: absolutePath,
+  };
+}
+
+function commandReferencesOpaqueValidator(command = "", config = {}) {
+  const paths = (Array.isArray(config.opaqueExternalValidatorPaths)
+    ? config.opaqueExternalValidatorPaths
+    : [])
+    .map((item) => path.resolve(String(item || "")))
+    .filter(Boolean);
+  if (!paths.length) return "";
+  const normalized = String(command || "");
+  const commandCwd = path.resolve(config.commandCwd || process.cwd());
+  return paths.find((candidate) => {
+    if (normalized.includes(candidate)) return true;
+    const relative = path.relative(commandCwd, candidate);
+    return Boolean(relative && normalized.includes(relative));
+  }) || "";
+}
+
+function exactOpaqueValidatorExecution(command = "", config = {}) {
+  const requestedTokens = tokenizeShellWords(String(command || "").trim());
+  if (!requestedTokens.length) return false;
+  return (Array.isArray(config.opaqueExternalValidatorCommands)
+    ? config.opaqueExternalValidatorCommands
+    : []).some((candidate) => {
+      const candidateTokens = tokenizeShellWords(String(candidate || "").trim());
+      return candidateTokens.length > 0 &&
+        JSON.stringify(candidateTokens) === JSON.stringify(requestedTokens);
+    });
+}
+
+function opaqueExternalValidatorInspectionBlock(command = "", config = {}) {
+  const referencedPath = commandReferencesOpaqueValidator(command, config);
+  if (!referencedPath || exactOpaqueValidatorExecution(command, config)) return null;
+  return {
+    allowed: false,
+    category: "opaque-external-validator-inspection",
+    recoverable: true,
+    needsApproval: false,
+    writesWorkspace: false,
+    mayMutateProject: false,
+    reason:
+      "The exact external acceptance script is opaque verification evidence. Run its declared command unchanged before inspecting implementation details. If that run fails and its diagnostics are insufficient, the runtime will expose one bounded read-only source view.",
+  };
+}
+
 function classifyBackgroundShell(normalized = "") {
   const sequence = parseTopLevelShellSequence(normalized);
   if (!sequence.separators.includes("&") && sequence.trailingSeparator !== "&") return null;
@@ -691,8 +867,16 @@ function classifyBackgroundShell(normalized = "") {
 }
 
 const SAFE_WORKSPACE_WRITE_PATTERNS = [/^mkdir\s+-p\s+[-\w./]+$/];
-const PERMISSION_CHANGE_PATTERNS = [/^(?:sudo\s+)?chmod\s+[-+=,rwxugoXst0-7]+\s+[-\w./]+$/];
-const SAFE_ENV_ASSIGNMENT_NAMES = new Set(["ANDROID_HOME", "ANDROID_SDK_ROOT", "JAVA_HOME", "GRADLE_USER_HOME", "PATH"]);
+const SAFE_CHMOD_MODE_PATTERN = /^[-+=,rwxugoXst0-7]+$/;
+const SAFE_WORKSPACE_TARGET_LIMIT = 64;
+const SAFE_ENV_ASSIGNMENT_NAMES = new Set([
+  "ANDROID_HOME",
+  "ANDROID_SDK_ROOT",
+  "GRADLE_USER_HOME",
+  "JAVA_HOME",
+  "PATH",
+  "PYTHONDONTWRITEBYTECODE",
+]);
 const SAFE_ENV_VALUE_PATTERN = /^[-\w./:@+,%]+$/;
 
 const NETWORK_FETCH_PATTERNS = [
@@ -768,9 +952,7 @@ const GIT_WORKFLOW_PATTERNS = [
   /^git\s+init(?:\s+(?:\.|[-\w./]+))?$/,
   /^git\s+config(?:\s+--local)?\s+user\.(?:name|email)\s+(['"])[^'"\n]{1,160}\1$/,
   /^git\s+config(?:\s+--local)?\s+init\.defaultBranch\s+(?:main|master|trunk|develop)$/,
-  /^git\s+add(?:\s+[-\w./*]+)+$/,
-  /^git\s+add\s+-A$/,
-  /^git\s+commit\s+(?:(?:-a|--allow-empty)\s+)*-m\s+(['"])[^'"\n]{1,220}\1$/,
+  /^git\s+commit\s+(?:--allow-empty\s+)*-m\s+(['"])[^'"\n]{1,220}\1$/,
   /^git\s+branch\s+-M\s+[A-Za-z0-9][-\w./]*$/,
   /^git\s+branch\s+[A-Za-z0-9][-\w./]*$/,
   /^git\s+switch\s+(?:-c\s+)?[A-Za-z0-9][-\w./]*$/,
@@ -798,8 +980,8 @@ const TOOLCHAIN_PATTERNS = [
   /^(?:[-/\w.]+\/)?python(?:3(?:\.\d+)*)?\s+[-\w./]+\.py(?:\s+[-\w./:=]+)*$/,
   /^Rscript\s+[-\w./]+\.R(?:\s+[-\w./:=]+)*$/,
   /^(?:\.\/gradlew|[-\w./]+\/gradlew)\s+(?:-p\s+[-\w./]+\s+)?(?:(?::[-\w]+:)?(?:assembleDebug|assembleRelease|bundleDebug|bundleRelease|compileDebugKotlin|compileReleaseKotlin|testDebugUnitTest|lintDebug|lint|check|build))(?:\s+[-\w./:=]+)*$/,
-  /^latexmk\s+(?=[-\w./=\s]*-pdf\b)(?:(?:-cd|-pdf|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+[-\w./]+\.tex$/,
-  /^pdflatex\s+(?:(?:-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+|-jobname\s+[-\w./]+)\s+)*[-\w./]+\.tex$/,
+  /^latexmk\s+(?:(?:-cd|-pdf|-synctex(?:=1)?|-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+)\s+)+(?:"[-\w./]+\.tex"|'[-\w./]+\.tex'|[-\w./]+\.tex)$/,
+  /^(?:lualatex|pdflatex|xelatex)\s+(?:(?:-interaction=nonstopmode|-halt-on-error|-output-directory=[-\w./]+|-jobname\s+[-\w./]+)\s+)*(?:"[-\w./]+\.tex"|'[-\w./]+\.tex'|[-\w./]+\.tex)$/,
 ];
 
 const PACKAGE_INSTALL_PATTERNS = [
@@ -942,6 +1124,79 @@ function isSafeWorkspacePath(value) {
   return isSafeRelativeDir(value) || isSafeVirtualWorkspacePath(value);
 }
 
+function isSafeWorkspaceChmodTarget(value = "") {
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized.startsWith("-") || normalized.startsWith("~")) return false;
+  const relative = normalized.startsWith("/workspace/")
+    ? normalized.replace(/^\/workspace\//, "")
+    : normalized;
+  if (!relative || relative.startsWith("/") || !/^[A-Za-z0-9_@%+=,:.*\/-]+$/.test(relative)) {
+    return false;
+  }
+  const parts = relative.split("/");
+  if (parts.some((part) => !part || part === "." || part === "..")) return false;
+  const globParts = parts.filter((part) => part.includes("*"));
+  if (!globParts.length) return isSafeWorkspacePath(normalized);
+  if (globParts.length !== 1 || !parts.at(-1)?.includes("*")) return false;
+  const leaf = parts.at(-1) || "";
+  return !leaf.includes("**") && /^[A-Za-z0-9_.-]*\*[A-Za-z0-9_.-]*$/.test(leaf);
+}
+
+function classifyWorkspacePermissionChange(normalized = "") {
+  if (hasActiveShellExpansion(normalized)) return null;
+  const tokens = tokenizeShellWords(normalized);
+  let index = 0;
+  if (tokens[index] === "sudo") index += 1;
+  if (tokens[index] !== "chmod") return null;
+  const mode = String(tokens[index + 1] || "");
+  const targets = tokens.slice(index + 2);
+  if (!SAFE_CHMOD_MODE_PATTERN.test(mode) || !targets.length || targets.length > SAFE_WORKSPACE_TARGET_LIMIT) {
+    return null;
+  }
+  const unsafeTarget = targets.find((target) => !isSafeWorkspaceChmodTarget(target));
+  if (unsafeTarget) {
+    return {
+      category: "blocked",
+      reason: `chmod target must be a bounded workspace-relative path: ${unsafeTarget}`,
+    };
+  }
+  return {
+    category: "permission-change",
+    needsNetwork: false,
+    writesWorkspace: true,
+    virtualWorkspacePath: targets.some((target) => target.startsWith("/workspace/")),
+    permissionTargetsContainGlob: targets.some((target) => target.includes("*")),
+    reason: `Command changes workspace file mode for ${targets.length} bounded target${targets.length === 1 ? "" : "s"}.`,
+  };
+}
+
+function classifyWorkspaceTee(normalized = "") {
+  if (hasActiveShellExpansion(normalized)) return null;
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "tee") return null;
+  let index = 1;
+  if (["-a", "--append"].includes(tokens[index])) index += 1;
+  if (tokens[index] === "--") index += 1;
+  const targets = tokens.slice(index);
+  if (!targets.length || targets.length > SAFE_WORKSPACE_TARGET_LIMIT) return null;
+  const unsafeTarget = targets.find(
+    (target) => target.includes("*") || !isSafeWorkspaceChmodTarget(target)
+  );
+  if (unsafeTarget) {
+    return {
+      category: "blocked",
+      reason: `tee target must be a bounded literal workspace-relative path: ${unsafeTarget}`,
+    };
+  }
+  return {
+    category: "workspace-write",
+    needsNetwork: false,
+    writesWorkspace: true,
+    virtualWorkspacePath: targets.some((target) => target.startsWith("/workspace/")),
+    reason: `Command writes standard input to ${targets.length} bounded workspace target${targets.length === 1 ? "" : "s"}.`,
+  };
+}
+
 function isInsideDirectory(root, candidate) {
   const relative = path.relative(root, candidate);
   return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
@@ -1010,6 +1265,167 @@ function classifySafeEchoRedirect(normalized = "") {
   };
 }
 
+function extractBoundedCommandSubstitutions(value = "") {
+  const text = String(value || "");
+  if (!text.includes("$(") || text.length > 16 * 1024 || text.includes("`")) return null;
+  const commands = [];
+  let template = "";
+  let quote = "";
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote === "'") {
+      template += char;
+      if (char === "'") quote = "";
+      continue;
+    }
+    if (escaped) {
+      template += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      template += char;
+      escaped = true;
+      continue;
+    }
+    if (quote === '"' && char === '"') {
+      template += char;
+      quote = "";
+      continue;
+    }
+    if (!quote && char === "'") {
+      template += char;
+      quote = char;
+      continue;
+    }
+    if (!quote && char === '"') {
+      template += char;
+      quote = '"';
+      continue;
+    }
+    if (char !== "$" || text[index + 1] !== "(") {
+      template += char;
+      continue;
+    }
+    if (text[index + 2] === "(" || commands.length >= 4) return null;
+
+    let inner = "";
+    let innerQuote = "";
+    let innerEscaped = false;
+    let closed = false;
+    index += 2;
+    for (; index < text.length; index += 1) {
+      const innerChar = text[index];
+      if (innerQuote === "'") {
+        inner += innerChar;
+        if (innerChar === "'") innerQuote = "";
+        continue;
+      }
+      if (innerEscaped) {
+        inner += innerChar;
+        innerEscaped = false;
+        continue;
+      }
+      if (innerChar === "\\") {
+        inner += innerChar;
+        innerEscaped = true;
+        continue;
+      }
+      if (innerQuote === '"') {
+        inner += innerChar;
+        if (innerChar === '"') innerQuote = "";
+        else if (innerChar === "$" && text[index + 1] === "(") return null;
+        continue;
+      }
+      if (innerChar === "'" || innerChar === '"') {
+        inner += innerChar;
+        innerQuote = innerChar;
+        continue;
+      }
+      if (innerChar === "$" && text[index + 1] === "(") return null;
+      if (innerChar === "(" || innerChar === "{") return null;
+      if (innerChar === ")") {
+        closed = true;
+        break;
+      }
+      inner += innerChar;
+    }
+    if (!closed || innerQuote || innerEscaped || !inner.trim()) return null;
+    commands.push(inner.trim());
+    template += `AGINTI_READ_VALUE_${commands.length}`;
+  }
+  if (!commands.length || quote || escaped || hasActiveShellExpansion(template)) return null;
+  return { commands, template };
+}
+
+function classifySafeEchoCommandSubstitution(normalized = "") {
+  if (!/^echo\s+/.test(String(normalized || ""))) return null;
+  const extracted = extractBoundedCommandSubstitutions(normalized);
+  if (!extracted) return null;
+  const classifications = extracted.commands.map(
+    (command) => classifyShellSequence(command) || classifyPipelineSequence(command) || classifySimpleCommand(command)
+  );
+  const blocked = classifications.find(
+    (classification) => classification.category === "blocked" || classification.category === "destructive"
+  );
+  if (blocked) return blocked;
+  if (classifications.some(
+    (classification) => classification.category !== "read-only" || classification.writesWorkspace || classification.needsNetwork
+  )) {
+    return null;
+  }
+  const templateClassification = classifySimpleCommand(extracted.template);
+  if (templateClassification.category !== "read-only" || templateClassification.writesWorkspace) return null;
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    gitOnly: false,
+    boundedCommandSubstitution: true,
+    reason: `Echo uses ${extracted.commands.length} bounded read-only command substitution${extracted.commands.length === 1 ? "" : "s"}.`,
+  };
+}
+
+function classifyScopedReadOnlyGitProbe(normalized = "") {
+  const command = stripBenignRedirections(normalized);
+  if (!/^git\s+-C\s+/.test(command) || hasActiveShellExpansion(command)) return null;
+
+  const tokens = tokenizeShellWords(command);
+  if (tokens.length < 5 || tokens[0] !== "git" || tokens[1] !== "-C") return null;
+  const repository = tokens[2] || "";
+  if (
+    !repository ||
+    repository.startsWith("-") ||
+    !/^[A-Za-z0-9_@%+=:,./~+-]+$/.test(repository) ||
+    /[*?\[\]{}]/.test(repository)
+  ) {
+    return null;
+  }
+
+  const operation = tokens[3] || "";
+  const args = tokens.slice(4);
+  const safeStatus = operation === "status" && args.every((arg) =>
+    ["--short", "-s", "--porcelain", "--porcelain=v1", "--porcelain=v2", "--branch", "-b"].includes(arg)
+  );
+  const safeIdentityConfig = operation === "config" && (
+    (args.length === 1 && ["user.name", "user.email"].includes(args[0])) ||
+    (args.length === 2 && args[0] === "--get" && ["user.name", "user.email"].includes(args[1]))
+  );
+  const safeRemoteList = operation === "remote" && args.length === 1 && args[0] === "-v";
+  if (!safeStatus && !safeIdentityConfig && !safeRemoteList) return null;
+
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    gitOnly: true,
+    scopedGitProbe: true,
+    reason: `Git ${operation} reads bounded repository metadata through -C.`,
+  };
+}
+
 function classifyGitCleanDryRun(normalized) {
   const match = normalized.match(/^git\s+clean\b([\s\S]*)$/);
   if (!match) return null;
@@ -1021,6 +1437,48 @@ function classifyGitCleanDryRun(normalized) {
     needsNetwork: false,
     writesWorkspace: false,
     reason: "Git clean dry-run is read-only inspection evidence.",
+  };
+}
+
+function classifyGitRmCached(normalized) {
+  if (!/^git\s+rm\b/.test(normalized) || hasActiveShellExpansion(normalized)) return null;
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "git" || tokens[1] !== "rm") return null;
+
+  let cached = false;
+  const paths = [];
+  let afterOptions = false;
+  for (const token of tokens.slice(2)) {
+    if (!afterOptions && token === "--") {
+      afterOptions = true;
+      continue;
+    }
+    if (!afterOptions && ["--cached"].includes(token)) {
+      cached = true;
+      continue;
+    }
+    if (!afterOptions && ["-q", "--quiet"].includes(token)) continue;
+    if (!afterOptions && token.startsWith("-")) return null;
+    paths.push(token);
+  }
+  if (!cached || !paths.length || paths.length > 20) return null;
+  if (
+    paths.some(
+      (target) =>
+        target === "." ||
+        /[*?\[\]{}]/.test(target) ||
+        !isSafeRelativeDir(target)
+    )
+  ) {
+    return null;
+  }
+  return {
+    category: "git-workflow",
+    needsNetwork: false,
+    writesWorkspace: true,
+    gitOnly: true,
+    reason:
+      "Git rm --cached removes only bounded literal workspace paths from the index; working-tree files are preserved.",
   };
 }
 
@@ -1047,11 +1505,156 @@ function classifyGitClone(normalized) {
   };
 }
 
+function classifyGitCommit(normalized) {
+  if (!/^git\s+commit\b/.test(normalized) || hasActiveShellExpansion(normalized)) {
+    return null;
+  }
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "git" || tokens[1] !== "commit") return null;
+
+  let messageCount = 0;
+  for (let index = 2; index < tokens.length; index += 1) {
+    const token = String(tokens[index] || "");
+    if (token === "--allow-empty") continue;
+    if (["-a", "--all"].includes(token)) {
+      return {
+        category: "blocked",
+        hardBlocked: true,
+        reason: "Git commit must not stage the whole tracked worktree; stage bounded task-owned paths first.",
+        permissionAdvice: {
+          category: "bounded-git-recovery",
+          autoRecover: true,
+          summary: "The Git command used whole-worktree staging, but this task can continue with bounded task-owned paths.",
+          instruction: "Continue automatically: inspect `git status --short`, stage only exact task-owned files, and commit those files. If a private runtime path is already tracked, use bounded `git rm --cached -- <exact-path>` so the local file remains private. Do not ask for stronger permissions.",
+          options: [
+            "Use the task-owned commit tool when it is offered.",
+            "Use `git add -- <exact-task-owned-paths>` followed by a bounded commit.",
+            "Use `git rm --cached -- <exact-private-paths>` only to remove accidentally tracked runtime files.",
+          ],
+        },
+      };
+    }
+    if (!["-m", "--message"].includes(token)) return null;
+    const message = String(tokens[index + 1] || "");
+    if (!message || message.length > 1200 || /[\r\n]/.test(message)) return null;
+    messageCount += 1;
+    index += 1;
+  }
+  if (!messageCount) return null;
+  return {
+    category: "git-workflow",
+    needsNetwork: false,
+    writesWorkspace: true,
+    gitOnly: true,
+    reason:
+      "Local git commit command with bounded literal message text. Agent should inspect status/diff first and stop on unrelated dirty work.",
+  };
+}
+
+function isProtectedRuntimeGitPath(value = "") {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/+$/, "");
+  return /(?:^|\/)\.(?:aginti|aginti-sessions|agintiflow)(?:\/|$)/i.test(normalized);
+}
+
+function classifyGitAdd(normalized) {
+  if (!/^git\s+add\b/.test(normalized) || hasActiveShellExpansion(normalized)) {
+    return null;
+  }
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "git" || tokens[1] !== "add") return null;
+
+  let index = 2;
+  if (tokens[index] === "--") index += 1;
+  const paths = tokens.slice(index);
+  if (!paths.length || paths.length > 32) return null;
+  if (paths.some(isProtectedRuntimeGitPath)) {
+    return {
+      category: "blocked",
+      hardBlocked: true,
+      reason: "Private AgInTi runtime and verification state must never be staged or committed.",
+      permissionAdvice: {
+        category: "private-runtime-git-recovery",
+        autoRecover: true,
+        summary: "Private runtime state cannot be staged, but repository cleanup can continue without user approval.",
+        instruction: "Do not stage the private path. If it is accidentally tracked, remove it from the index with bounded `git rm --cached -- <exact-path>` while preserving the local file and ignore rule. Stage only exact task-owned source/tests, then continue. Do not ask for stronger permissions.",
+        options: [
+          "Use `git rm --cached -- <exact-private-path>` for an accidentally tracked runtime file.",
+          "Stage exact task-owned source/test paths only.",
+          "Use the task-owned commit tool when offered.",
+        ],
+      },
+    };
+  }
+  if (
+    paths.some(
+      (target) =>
+        target === "." ||
+        target.startsWith("-") ||
+        /[*?\[\]{}]/.test(target) ||
+        !isSafeRelativeDir(target)
+    )
+  ) {
+    return null;
+  }
+  return {
+    category: "git-workflow",
+    needsNetwork: false,
+    writesWorkspace: true,
+    mayMutateProject: false,
+    gitOnly: true,
+    reason: "Git add stages only bounded literal workspace paths.",
+  };
+}
+
 function classifyGitWorkflow(normalized) {
   // Git arguments accepted here are executed through a shell. Keep expansion
   // syntax out of this narrow allowlist while preserving literal commit/tag
   // text protected by single quotes.
   if (hasActiveShellExpansion(normalized)) return null;
+  const add = classifyGitAdd(normalized);
+  if (add) return add;
+  if (/^git\s+add\b/.test(normalized)) {
+    return {
+      category: "blocked",
+      hardBlocked: true,
+      reason: "Git add must stage only bounded literal task-owned paths; broad staging is not allowed.",
+      permissionAdvice: {
+        category: "bounded-git-recovery",
+        autoRecover: true,
+        summary: "Broad staging was rejected, but the task can continue by staging exact task-owned paths.",
+        instruction: "Continue automatically: inspect `git status --short`, stage only exact task-owned source/test paths with `git add -- <paths>`, and use bounded `git rm --cached -- <paths>` for accidentally tracked private runtime files. Do not ask for stronger permissions.",
+        options: [
+          "Use the task-owned commit tool when it is offered.",
+          "Stage exact task-owned files only.",
+          "Remove exact tracked private paths from the index without deleting local files.",
+        ],
+      },
+    };
+  }
+  const commit = classifyGitCommit(normalized);
+  if (commit) return commit;
+  if (/^git\s+commit\b/.test(normalized)) {
+    return {
+      category: "blocked",
+      hardBlocked: true,
+      reason: "Git commit must use bounded message arguments and must not stage the whole worktree.",
+      permissionAdvice: {
+        category: "bounded-git-recovery",
+        autoRecover: true,
+        summary: "The commit shape was rejected, but a bounded task-owned commit remains available.",
+        instruction: "Continue automatically with a bounded literal commit message after staging only exact task-owned paths. Do not ask for stronger permissions.",
+        options: [
+          "Use the task-owned commit tool when offered.",
+          "Use a literal `git commit -m <message>` after bounded staging.",
+        ],
+      },
+    };
+  }
   if (!matchAny(GIT_WORKFLOW_PATTERNS, normalized)) return null;
   const remote = /^git\s+(fetch|pull|push)\b/.test(normalized);
   const writesWorkspace = !/^git\s+fetch\b/.test(normalized);
@@ -1103,6 +1706,10 @@ function classifySimpleCommand(normalized) {
   }
   const gitCleanDryRun = classifyGitCleanDryRun(normalized);
   if (gitCleanDryRun) return gitCleanDryRun;
+  const gitRmCached = classifyGitRmCached(normalized);
+  if (gitRmCached) return gitRmCached;
+  const scopedReadOnlyGitProbe = classifyScopedReadOnlyGitProbe(normalized);
+  if (scopedReadOnlyGitProbe) return scopedReadOnlyGitProbe;
   const gitWorkflowClassification = classifyGitWorkflow(normalized);
   if (gitWorkflowClassification) return gitWorkflowClassification;
   const condaRunClassification = classifyCondaRun(normalized);
@@ -1130,26 +1737,18 @@ function classifySimpleCommand(normalized) {
     }
     return { category: "workspace-write", needsNetwork: false, writesWorkspace: true, virtualWorkspacePath };
   }
-  if (matchAny(PERMISSION_CHANGE_PATTERNS, normalized)) {
-    const target = normalized.split(/\s+/).at(-1) || "";
-    const virtualWorkspacePath = isSafeVirtualWorkspacePath(target);
-    if (!isSafeWorkspacePath(target)) {
-      return { category: "blocked", reason: `chmod target must be a safe workspace-relative path: ${target}` };
-    }
-    return {
-      category: "permission-change",
-      needsNetwork: false,
-      writesWorkspace: true,
-      virtualWorkspacePath,
-      reason: `Command changes workspace file mode: ${normalized}`,
-    };
-  }
+  const permissionChangeClassification = classifyWorkspacePermissionChange(normalized);
+  if (permissionChangeClassification) return permissionChangeClassification;
+  const teeClassification = classifyWorkspaceTee(normalized);
+  if (teeClassification) return teeClassification;
   const gitCloneClassification = classifyGitClone(normalized);
   if (gitCloneClassification) return gitCloneClassification;
   const envExportClassification = classifySafeEnvExport(normalized);
   if (envExportClassification) return envExportClassification;
   const echoRedirectClassification = classifySafeEchoRedirect(normalized);
   if (echoRedirectClassification) return echoRedirectClassification;
+  const echoCommandSubstitutionClassification = classifySafeEchoCommandSubstitution(normalized);
+  if (echoCommandSubstitutionClassification) return echoCommandSubstitutionClassification;
 
   if (isUnboundedRecursiveGrep(normalized)) {
     return {
@@ -1192,12 +1791,22 @@ function classifySimpleCommand(normalized) {
     };
   }
 
-  if (matchAny(READ_ONLY_PATTERNS, commandForPatternMatching) || isReadOnlyFindCommand(normalized)) {
+  if (
+    matchAny(READ_ONLY_PATTERNS, commandForPatternMatching) ||
+    isReadOnlyPrintfCommand(commandForPatternMatching) ||
+    isReadOnlyTrDeleteFilter(commandForPatternMatching) ||
+    isReadOnlyUniqFilter(commandForPatternMatching) ||
+    isReadOnlyDigestCommand(commandForPatternMatching) ||
+    isReadOnlyDiffCommand(commandForPatternMatching) ||
+    isReadOnlyFindCommand(normalized) ||
+    (!hasActiveShellExpansion(benignRedirectCommand) && isReadOnlyShellCondition(benignRedirectCommand))
+  ) {
     return {
       category: "read-only",
       needsNetwork: false,
       writesWorkspace: false,
       gitOnly: /^git\s+/.test(commandForPatternMatching),
+      noMatchExitIsSuccess: /^pgrep\b/.test(commandForPatternMatching),
     };
   }
   const packageScript = packageManagerScriptName(validationTokens);
@@ -1372,6 +1981,637 @@ function classifyShellSequence(normalized) {
   };
 }
 
+const READ_ONLY_FOR_LOOP_MAX_ITEMS = 64;
+const READ_ONLY_FOR_LOOP_MAX_COMMANDS = 16;
+const READ_ONLY_FOR_LOOP_LITERAL_PATTERN = /^[A-Za-z0-9_@%+=:,./~+ -]+$/;
+
+function shellIdentifierPattern(value = "") {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function broadForLoopClassification(normalized, reason) {
+  return {
+    category: "general-shell",
+    needsNetwork: false,
+    writesWorkspace: true,
+    reason: `Shell for-loop is outside the bounded read-only form (${reason}): ${normalized}`,
+  };
+}
+
+function findUnquotedShellWord(value = "", expectedWord = "", startIndex = 0) {
+  const text = String(value || "");
+  const word = String(expectedWord || "");
+  let quote = "";
+  let escaped = false;
+
+  for (let index = 0; index <= text.length - word.length; index += 1) {
+    const char = text[index];
+    if (quote === "'") {
+      if (char === "'") quote = "";
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') quote = "";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (index < Math.max(0, startIndex) || text.slice(index, index + word.length) !== word) continue;
+    const before = index > 0 ? text[index - 1] : "";
+    const after = text[index + word.length] || "";
+    if ((!before || !/[A-Za-z0-9_]/.test(before)) && (!after || !/[A-Za-z0-9_]/.test(after))) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function trimShellListBoundary(value = "") {
+  return String(value || "")
+    .replace(/^[\s;]+/, "")
+    .replace(/[\s;]+$/, "")
+    .trim();
+}
+
+function classifyReadOnlyCommandList(value = "") {
+  const text = trimShellListBoundary(value);
+  if (!text) {
+    return {
+      category: "read-only",
+      needsNetwork: false,
+      writesWorkspace: false,
+      emptyCommandList: true,
+    };
+  }
+  const sequence = splitTopLevelShellSequence(text);
+  if (sequence && sequence.parts.length > READ_ONLY_FOR_LOOP_MAX_COMMANDS) {
+    return broadForLoopClassification(text, "the command list is too large");
+  }
+  return classifyShellSequence(text) || classifyPipelineSequence(text) || classifySimpleCommand(text);
+}
+
+function isReadOnlyShellCondition(value = "") {
+  const tokens = tokenizeShellWords(trimShellListBoundary(value));
+  let option = "";
+  let candidate = "";
+  if (tokens.length === 4 && tokens[0] === "[" && tokens[3] === "]") {
+    [, option, candidate] = tokens;
+  } else if (tokens.length === 3 && tokens[0] === "test") {
+    [, option, candidate] = tokens;
+  } else {
+    return false;
+  }
+  return /^-[efdx]$/.test(option) &&
+    !candidate.startsWith("-") &&
+    READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(candidate);
+}
+
+function classifyReadOnlyLoopBody(bodySource = "") {
+  const text = String(bodySource || "").trim();
+  const controlWords = ["if", "then", "else", "elif", "fi", "for", "do", "done", "while", "until", "case", "esac"];
+  const presentControls = controlWords.filter((word) => findUnquotedShellWord(text, word) >= 0);
+  if (!presentControls.length) return classifyReadOnlyCommandList(text);
+
+  if (presentControls.some((word) => !["if", "then", "else", "fi"].includes(word))) {
+    return broadForLoopClassification(text, "the body contains nested or unsupported control flow");
+  }
+
+  const ifIndex = findUnquotedShellWord(text, "if");
+  const thenIndex = findUnquotedShellWord(text, "then", ifIndex + 2);
+  const elseIndex = findUnquotedShellWord(text, "else", thenIndex + 4);
+  const fiIndex = findUnquotedShellWord(text, "fi", elseIndex + 4);
+  if (ifIndex < 0 || thenIndex < 0 || elseIndex < 0 || fiIndex < 0 ||
+      findUnquotedShellWord(text, "if", ifIndex + 2) >= 0 ||
+      findUnquotedShellWord(text, "then", thenIndex + 4) >= 0 ||
+      findUnquotedShellWord(text, "else", elseIndex + 4) >= 0 ||
+      findUnquotedShellWord(text, "fi", fiIndex + 2) >= 0) {
+    return broadForLoopClassification(text, "the conditional is not a single bounded if/else block");
+  }
+
+  const prefix = trimShellListBoundary(text.slice(0, ifIndex));
+  const condition = trimShellListBoundary(text.slice(ifIndex + 2, thenIndex));
+  const thenBranch = trimShellListBoundary(text.slice(thenIndex + 4, elseIndex));
+  const elseBranch = trimShellListBoundary(text.slice(elseIndex + 4, fiIndex));
+  const suffix = trimShellListBoundary(text.slice(fiIndex + 2));
+  if (!isReadOnlyShellCondition(condition) || !thenBranch || !elseBranch) {
+    return broadForLoopClassification(text, "the conditional test or branch is not bounded read-only syntax");
+  }
+
+  const classifications = [prefix, thenBranch, elseBranch, suffix]
+    .filter(Boolean)
+    .map((part) => classifyReadOnlyCommandList(part));
+  const blocked = classifications.find(
+    (classification) => classification.category === "blocked" || classification.category === "destructive"
+  );
+  if (blocked) return { ...blocked, gitOnly: false };
+  if (classifications.some(
+    (classification) => classification.category !== "read-only" || classification.writesWorkspace
+  )) {
+    return broadForLoopClassification(text, "a conditional branch is not read-only");
+  }
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    boundedConditional: true,
+  };
+}
+
+function loopBodyHasOnlyBoundedReadOnlyExpansions(bodySource = "") {
+  const text = String(bodySource || "").trim();
+  if (!hasActiveShellExpansion(text)) return true;
+  const sequence = parseTopLevelShellSequence(text);
+  if (
+    !sequence.commands.length ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return false;
+  }
+  return sequence.commands.every((command) => {
+    if (!hasActiveShellExpansion(command)) return true;
+    const classification = classifySafeEchoCommandSubstitution(command);
+    return classification?.category === "read-only" &&
+      classification.writesWorkspace === false &&
+      classification.needsNetwork === false;
+  });
+}
+
+function isBoundedReadOnlyScalarCommand(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (!normalized || hasActiveShellExpansion(normalized)) return false;
+  const pipeline = splitTopLevelPipeline(normalized);
+  if (pipeline) {
+    if (pipeline.length > 4) return false;
+    const classifications = pipeline.map((part) => classifySimpleCommand(part));
+    if (classifications.some(
+      (classification) => classification.category !== "read-only" || classification.writesWorkspace
+    )) {
+      return false;
+    }
+    const producers = [...pipeline];
+    if (isReadOnlyTrDeleteFilter(producers.at(-1))) producers.pop();
+    const finalProducer = stripBenignRedirections(producers.at(-1) || "");
+    const finalTokens = tokenizeShellWords(finalProducer);
+    return finalTokens[0] === "wc" &&
+      finalTokens.length === 2 &&
+      ["-l", "--lines"].includes(finalTokens[1]);
+  }
+  const tokens = tokenizeShellWords(normalized);
+  if (!tokens.length) return false;
+  if (["grep", "rg"].includes(tokens[0])) {
+    return tokens.slice(1).some((token) =>
+      token === "--count" || /^-[A-Za-z]*c[A-Za-z]*$/.test(token)
+    );
+  }
+  return tokens[0] === "wc" && tokens.slice(1).includes("-l");
+}
+
+function parseReadOnlyLoopBodySequence(value = "") {
+  const text = String(value || "");
+  const commands = [];
+  const separators = [];
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  let substitutionDepth = 0;
+
+  const push = (separator) => {
+    const command = current.trim();
+    if (!command) return false;
+    commands.push(command);
+    separators.push(separator);
+    current = "";
+    return true;
+  };
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote === "'") {
+      current += char;
+      if (char === "'") quote = "";
+      continue;
+    }
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      current += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      quote = quote === '"' ? "" : '"';
+      current += char;
+      continue;
+    }
+    if (!quote && char === "'") {
+      quote = "'";
+      current += char;
+      continue;
+    }
+    if (char === "$" && text[index + 1] === "(") {
+      substitutionDepth += 1;
+      current += "$(";
+      index += 1;
+      continue;
+    }
+    if (!quote && char === ")" && substitutionDepth > 0) {
+      substitutionDepth -= 1;
+      current += char;
+      continue;
+    }
+    if (!quote && substitutionDepth === 0) {
+      const pair = text.slice(index, index + 2);
+      if (pair === "&&" || pair === "||") {
+        if (!push(pair)) return null;
+        index += 1;
+        continue;
+      }
+      if (char === ";" || char === "\n") {
+        if (current.trim() && !push(char === "\n" ? "newline" : char)) return null;
+        continue;
+      }
+    }
+    current += char;
+  }
+  if (quote || escaped || substitutionDepth !== 0) return null;
+  if (current.trim()) commands.push(current.trim());
+  if (!commands.length || separators.length >= commands.length) return null;
+  return { commands, separators };
+}
+
+function commandHasUnbalancedSubstitution(value = "") {
+  const text = String(value || "");
+  let depth = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "$" && text[index + 1] === "(") {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (text[index] === ")" && depth > 0) depth -= 1;
+  }
+  return depth !== 0;
+}
+
+function sanitizeReadOnlyLoopAssignments(bodySource = "") {
+  const text = String(bodySource || "").trim();
+  const standardSequence = parseTopLevelShellSequence(text);
+  const standardIsUsable =
+    standardSequence.commands.length > 0 &&
+    !standardSequence.openQuote &&
+    !standardSequence.trailingEscape &&
+    !standardSequence.trailingSeparator &&
+    !standardSequence.commands.some(commandHasUnbalancedSubstitution);
+  const sequence = standardIsUsable
+    ? standardSequence
+    : parseReadOnlyLoopBodySequence(text);
+  if (!sequence) return null;
+
+  const assigned = new Map();
+  const commands = [];
+  for (const sourceCommand of sequence.commands) {
+    let command = sourceCommand;
+    for (const [name, state] of assigned.entries()) {
+      const escapedName = shellIdentifierPattern(name);
+      const reference = new RegExp(`\\$(?:\\{${escapedName}\\}|${escapedName}(?![A-Za-z0-9_]))`, "g");
+      if (!reference.test(command)) continue;
+      if (!/^(?:echo|printf)\s+/.test(command)) return null;
+      command = command.replace(reference, `AGINTI_READ_VALUE_${name}`);
+      state.used = true;
+    }
+
+    const assignment = command.match(/^([A-Za-z_][A-Za-z0-9_]*)=(\$\([\s\S]+\))$/);
+    if (!assignment) {
+      commands.push(command);
+      continue;
+    }
+    const [, name, expression] = assignment;
+    if (assigned.has(name) || assigned.size >= 4) return null;
+    const extracted = extractBoundedCommandSubstitutions(`echo ${expression}`);
+    if (
+      !extracted ||
+      extracted.commands.length !== 1 ||
+      extracted.template !== "echo AGINTI_READ_VALUE_1"
+    ) {
+      return null;
+    }
+    const inner = extracted.commands[0];
+    const classification = classifyShellSequence(inner) ||
+      classifyPipelineSequence(inner) ||
+      classifySimpleCommand(inner);
+    if (
+      classification.category !== "read-only" ||
+      classification.writesWorkspace ||
+      classification.needsNetwork ||
+      !isBoundedReadOnlyScalarCommand(inner)
+    ) {
+      return null;
+    }
+    assigned.set(name, { used: false });
+    commands.push("true");
+  }
+  if ([...assigned.values()].some((state) => !state.used)) return null;
+
+  let sanitized = commands[0];
+  for (let index = 1; index < commands.length; index += 1) {
+    const separator = sequence.separators[index - 1] === "newline"
+      ? "\n"
+      : sequence.separators[index - 1] || ";";
+    sanitized += separator === "\n"
+      ? `\n${commands[index]}`
+      : ` ${separator} ${commands[index]}`;
+  }
+  return sanitized;
+}
+
+const READ_ONLY_LITERAL_ASSIGNMENT_MAX = 8;
+
+function boundedLiteralAssignment(command = "") {
+  const source = String(command || "").trim();
+  if (!source || hasActiveShellExpansion(source)) return null;
+  const tokens = tokenizeShellWords(source);
+  if (tokens.length !== 1) return null;
+  const match = tokens[0].match(/^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]+)$/);
+  if (!match) return null;
+  const [, name, value] = match;
+  if (
+    value.startsWith("-") ||
+    !READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(value) ||
+    /[\r\n]/.test(value)
+  ) {
+    return null;
+  }
+  return { name, value };
+}
+
+function replaceBoundedLiteralReferences(source = "", name = "", value = "") {
+  const text = String(source || "");
+  let result = "";
+  let quote = "";
+  let escaped = false;
+  let replacements = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote === "'") {
+      result += char;
+      if (char === "'") quote = "";
+      continue;
+    }
+    if (escaped) {
+      result += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      result += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      quote = quote === '"' ? "" : '"';
+      result += char;
+      continue;
+    }
+    if (!quote && char === "'") {
+      quote = "'";
+      result += char;
+      continue;
+    }
+    if (char !== "$") {
+      result += char;
+      continue;
+    }
+    const braced = text.startsWith(`\${${name}}`, index);
+    const bare = text.startsWith(`$${name}`, index) &&
+      !/[A-Za-z0-9_]/.test(text[index + name.length + 1] || "");
+    if (!braced && !bare) {
+      result += char;
+      continue;
+    }
+    result += quote === '"' || !/\s/.test(value) ? value : `'${value}'`;
+    replacements += 1;
+    index += braced ? name.length + 2 : name.length;
+  }
+  return { text: result, replacements };
+}
+
+function joinParsedShellSequence(commands = [], separators = []) {
+  let result = commands[0] || "";
+  for (let index = 1; index < commands.length; index += 1) {
+    const separator = separators[index - 1] === "newline"
+      ? "\n"
+      : separators[index - 1] || ";";
+    result += separator === "\n"
+      ? `\n${commands[index]}`
+      : ` ${separator} ${commands[index]}`;
+  }
+  return result;
+}
+
+function sanitizeReadOnlyCompoundLiteralAssignments({
+  prefixSource = "",
+  loopSource = "",
+  suffixSource = "",
+  loopVariable = "",
+} = {}) {
+  const parsed = parseTopLevelShellSequence(prefixSource);
+  if (
+    !parsed.commands.length ||
+    parsed.openQuote ||
+    parsed.trailingEscape ||
+    parsed.trailingSeparator
+  ) {
+    return null;
+  }
+
+  const assignments = new Map();
+  const commands = [];
+  for (const sourceCommand of parsed.commands) {
+    const assignment = boundedLiteralAssignment(sourceCommand);
+    if (assignment) {
+      if (
+        assignments.has(assignment.name) ||
+        assignment.name === loopVariable ||
+        assignments.size >= READ_ONLY_LITERAL_ASSIGNMENT_MAX
+      ) {
+        return null;
+      }
+      assignments.set(assignment.name, { value: assignment.value, used: false });
+      commands.push("true");
+      continue;
+    }
+    let command = sourceCommand;
+    for (const [name, state] of assignments.entries()) {
+      const replaced = replaceBoundedLiteralReferences(command, name, state.value);
+      command = replaced.text;
+      state.used ||= replaced.replacements > 0;
+    }
+    commands.push(command);
+  }
+  if (!assignments.size) {
+    return { prefixSource, loopSource, suffixSource };
+  }
+
+  let sanitizedLoop = loopSource;
+  let sanitizedSuffix = suffixSource;
+  for (const [name, state] of assignments.entries()) {
+    const loopReplacement = replaceBoundedLiteralReferences(sanitizedLoop, name, state.value);
+    sanitizedLoop = loopReplacement.text;
+    const suffixReplacement = replaceBoundedLiteralReferences(sanitizedSuffix, name, state.value);
+    sanitizedSuffix = suffixReplacement.text;
+    state.used ||= loopReplacement.replacements > 0 || suffixReplacement.replacements > 0;
+  }
+  if ([...assignments.values()].some((state) => !state.used)) return null;
+  return {
+    prefixSource: joinParsedShellSequence(commands, parsed.separators),
+    loopSource: sanitizedLoop,
+    suffixSource: sanitizedSuffix,
+  };
+}
+
+function classifyReadOnlyForLoop(normalized) {
+  const text = String(normalized || "").trim();
+  if (!/^for\s+/.test(text)) return null;
+  if (text.length > 64 * 1024) {
+    return broadForLoopClassification(text, "command is too large");
+  }
+
+  const match = text.match(
+    /^for[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+in[ \t]+([\s\S]*?)(?:;|\n)[ \t]*do\s+([\s\S]*?)(?:;|\n)[ \t]*done[ \t]*$/
+  );
+  if (!match) return broadForLoopClassification(text, "unsupported loop syntax");
+
+  const [, variableName, itemSource, bodySource] = match;
+  if (hasActiveShellExpansion(itemSource) || hasActiveShellCommandSubstitution(itemSource)) {
+    return broadForLoopClassification(text, "the item list is dynamic");
+  }
+  // A model commonly formats a finite literal list with shell line
+  // continuations. Removing only the exact backslash-newline token preserves
+  // the same static list without admitting arbitrary escapes or expansion.
+  const normalizedItemSource = itemSource.replace(/\\\r?\n/g, " ");
+  const items = tokenizeShellWords(normalizedItemSource);
+  if (!items.length || items.length > READ_ONLY_FOR_LOOP_MAX_ITEMS) {
+    return broadForLoopClassification(text, "the item list is empty or unbounded");
+  }
+  if (items.some((item) => item.startsWith("-") || !READ_ONLY_FOR_LOOP_LITERAL_PATTERN.test(item))) {
+    return broadForLoopClassification(
+      text,
+      "items must be finite literal words or paths without option prefixes or globs"
+    );
+  }
+
+  const escapedVariable = shellIdentifierPattern(variableName);
+  const variableReference = new RegExp(
+    `\\$(?:\\{${escapedVariable}\\}|${escapedVariable}(?![A-Za-z0-9_]))`,
+    "g"
+  );
+  const referenceCount = [...bodySource.matchAll(variableReference)].length;
+  if (!referenceCount) {
+    return broadForLoopClassification(text, "the body does not consume the loop item");
+  }
+
+  for (const item of items) {
+    const expandedBody = bodySource.replace(variableReference, item);
+    const sanitizedBody = sanitizeReadOnlyLoopAssignments(expandedBody);
+    if (!sanitizedBody || !loopBodyHasOnlyBoundedReadOnlyExpansions(sanitizedBody)) {
+      return broadForLoopClassification(text, "the body contains expansion beyond the loop variable");
+    }
+    const classification = classifyReadOnlyLoopBody(sanitizedBody);
+    if (classification.category === "blocked" || classification.category === "destructive") {
+      return { ...classification, gitOnly: false };
+    }
+    if (classification.category !== "read-only" || classification.writesWorkspace) {
+      return broadForLoopClassification(text, `body is ${classification.category}`);
+    }
+  }
+
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    gitOnly: false,
+    boundedForLoop: true,
+    reason: `Finite read-only shell loop over ${items.length} literal item${items.length === 1 ? "" : "s"}.`,
+  };
+}
+
+function classifyReadOnlyCompoundSequence(normalized) {
+  const text = String(normalized || "").trim();
+  if (!text) return null;
+
+  let forIndex = findUnquotedShellWord(text, "for");
+  const startsAtCommandBoundary = (index) => {
+    let boundary = index - 1;
+    while (boundary >= 0 && /[ \t]/.test(text[boundary])) boundary -= 1;
+    return boundary >= 0 && /[;\n\r]/.test(text[boundary]);
+  };
+  while (forIndex > 0 && !startsAtCommandBoundary(forIndex)) {
+    forIndex = findUnquotedShellWord(text, "for", forIndex + 3);
+  }
+  if (forIndex < 0) return null;
+
+  let prefixSource = trimShellListBoundary(text.slice(0, forIndex));
+  const doneIndex = findUnquotedShellWord(text, "done", forIndex + 3);
+  if (doneIndex < 0) return null;
+  let loopSource = text.slice(forIndex, doneIndex + 4).trim();
+  let suffixSource = trimShellListBoundary(text.slice(doneIndex + 4));
+  if (!prefixSource && !suffixSource) return null;
+
+  const loopVariable = loopSource.match(/^for[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+in\b/)?.[1] || "";
+  if (prefixSource) {
+    const sanitized = sanitizeReadOnlyCompoundLiteralAssignments({
+      prefixSource,
+      loopSource,
+      suffixSource,
+      loopVariable,
+    });
+    if (!sanitized) {
+      return broadForLoopClassification(text, "the prelude contains an unsafe or unused shell assignment");
+    }
+    ({ prefixSource, loopSource, suffixSource } = sanitized);
+  }
+
+  for (const [label, source] of [["prelude", prefixSource], ["suffix", suffixSource]]) {
+    if (!source) continue;
+    const classification = classifyReadOnlyCommandList(source);
+    if (classification.category === "blocked" || classification.category === "destructive") {
+      return { ...classification, gitOnly: false };
+    }
+    if (classification.category !== "read-only" || classification.writesWorkspace) {
+      return broadForLoopClassification(text, `the command ${label} is not read-only`);
+    }
+  }
+  const loopClassification = classifyReadOnlyForLoop(loopSource);
+  if (!loopClassification) return null;
+  if (loopClassification.category !== "read-only" || loopClassification.writesWorkspace) {
+    return loopClassification;
+  }
+  return {
+    category: "read-only",
+    needsNetwork: false,
+    writesWorkspace: false,
+    gitOnly: false,
+    boundedForLoop: true,
+    boundedCompoundSequence: true,
+    reason: "A bounded read-only shell loop has only finite read-only command context.",
+  };
+}
+
 function splitTopLevelPipeline(command = "") {
   const parts = [];
   let current = "";
@@ -1447,6 +2687,23 @@ function classifyPipelineSequence(normalized) {
       reason: `Benign read/network shell pipeline: ${normalized}`,
     };
   }
+  const boundedToolchainPipelineCategories = new Set(["read-only", "test", "toolchain"]);
+  if (
+    classifications.some((classification) => classification.category === "toolchain") &&
+    classifications.every(
+      (classification, index) =>
+        boundedToolchainPipelineCategories.has(classification.category) &&
+        (index === 0 || classification.writesWorkspace !== true)
+    )
+  ) {
+    return {
+      category: "toolchain",
+      needsNetwork: false,
+      writesWorkspace: classifications[0].writesWorkspace === true,
+      mayMutateProject: classifications[0].mayMutateProject === true,
+      reason: `Bounded toolchain output pipeline with read-only filters: ${normalized}`,
+    };
+  }
   return {
     category: "general-shell",
     needsNetwork: classifications.some((classification) => classification.needsNetwork),
@@ -1463,7 +2720,11 @@ function classifyCdCommand(normalized) {
   if (!isSafeRelativeDir(dir) && !virtualWorkspacePath) {
     return { category: "blocked", reason: `cd target must be a safe workspace-relative directory: ${dir}` };
   }
-  const innerClassification = classifyShellSequence(inner.trim()) || classifyPipelineSequence(inner.trim()) || classifySimpleCommand(inner.trim());
+  const innerClassification = classifyReadOnlyCompoundSequence(inner.trim()) ||
+    classifyReadOnlyForLoop(inner.trim()) ||
+    classifyShellSequence(inner.trim()) ||
+    classifyPipelineSequence(inner.trim()) ||
+    classifySimpleCommand(inner.trim());
   if (innerClassification.category === "blocked") return innerClassification;
   return { ...innerClassification, cdDir: dir, virtualWorkspacePath };
 }
@@ -1484,7 +2745,9 @@ function classifyReadOnlyRootCd(normalized, config = {}) {
   const readOnlyRoot = configuredReadOnlyRoot(config, dir);
   if (!readOnlyRoot) return null;
 
-  const innerClassification = classifyShellSequence(inner.trim()) ||
+  const innerClassification = classifyReadOnlyCompoundSequence(inner.trim()) ||
+    classifyReadOnlyForLoop(inner.trim()) ||
+    classifyShellSequence(inner.trim()) ||
     classifyPipelineSequence(inner.trim()) ||
     classifySimpleCommand(inner.trim());
   const safeCategory = ["read-only", "network-fetch"].includes(innerClassification.category);
@@ -1536,11 +2799,24 @@ export function classifyCommand(command) {
   const normalized = String(command || "").trim();
   if (!normalized) return { category: "blocked", reason: "Command is empty." };
 
-  return classifyBackgroundShell(normalized) || classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifyPipelineSequence(normalized) || classifySimpleCommand(normalized);
+  return classifyBackgroundShell(normalized) || classifyReadOnlyCompoundSequence(normalized) || classifyReadOnlyForLoop(normalized) || classifyCdCommand(normalized) || classifyShellSequence(normalized) || classifyPipelineSequence(normalized) || classifySimpleCommand(normalized);
 }
 
 export function evaluateCommandPolicy(command, config = {}) {
   const normalizedForPolicy = normalizeCommandForPolicy(command, config);
+  const opaqueValidatorBlock = opaqueExternalValidatorInspectionBlock(
+    normalizedForPolicy,
+    config
+  );
+  if (opaqueValidatorBlock) {
+    return {
+      ...opaqueValidatorBlock,
+      sandboxMode: normalizeSandboxMode(config.sandboxMode),
+      packageInstallPolicy: normalizePackageInstallPolicy(
+        config.packageInstallPolicy
+      ),
+    };
+  }
   const classification = classifyBackgroundShell(normalizedForPolicy) ||
     classifyReadOnlyRootCd(normalizedForPolicy, config) ||
     classifyReadOnlyRootSequence(normalizedForPolicy, config) ||
@@ -1551,6 +2827,7 @@ export function evaluateCommandPolicy(command, config = {}) {
   const dockerWorkspace = sandboxMode === "docker-workspace";
   const packageInstallsAllowed = packageInstallPolicy === "allow";
   const trustedDockerShell = dockerWorkspace && packageInstallsAllowed;
+  const trustedDockerWorkspaceShell = dockerWorkspace;
   const trustedHostShell = sandboxMode === "host" && Boolean(config.allowDestructive);
   const trustedDangerHost = sandboxMode === "host" && Boolean(config.allowDestructive) && Boolean(config.allowPasswords);
 
@@ -1644,7 +2921,7 @@ export function evaluateCommandPolicy(command, config = {}) {
     }
   }
 
-  if (classification.category === "general-shell" && !trustedDockerShell && !trustedHostShell) {
+  if (classification.category === "general-shell" && !trustedDockerWorkspaceShell && !trustedHostShell) {
     return {
       allowed: false,
       ...classification,
@@ -1652,13 +2929,17 @@ export function evaluateCommandPolicy(command, config = {}) {
       reason:
         sandboxMode === "host"
           ? "General shell commands on the host require Allow destructive actions. Prefer Docker workspace mode for broad shell access."
-          : "General Docker shell commands require Package installs = allow in docker-workspace mode.",
+          : "General shell commands require docker-workspace mode or trusted host access.",
       sandboxMode,
       packageInstallPolicy,
     };
   }
 
-  if (classification.category === "permission-change" && sandboxMode !== "host" && !trustedDockerShell && !trustedHostShell) {
+  if (
+    classification.category === "permission-change" &&
+    ((sandboxMode !== "host" && !trustedDockerShell && !trustedHostShell) ||
+      (sandboxMode === "host" && classification.permissionTargetsContainGlob && !trustedHostShell))
+  ) {
     return {
       allowed: false,
       ...classification,

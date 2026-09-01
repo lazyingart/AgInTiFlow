@@ -38,7 +38,7 @@ export const TASK_PROFILES = {
     id: "writing",
     label: "Book/script writing",
     prompt:
-      "Bias toward long-form writing quality without refusing adjacent research, code, or formatting tasks. For substantial prose, scenes, chapters, scripts, essays, or manuscript sections, call writing_specialist with only the writing brief/canon/style/prior draft context, then save or format the returned draft with file/canvas tools. Create structured drafts with outlines, sections, revision notes, and durable files. Use web search when current sources matter and canvas for important drafts.",
+      "Bias toward long-form writing quality without refusing adjacent research, code, or formatting tasks. For substantial prose, scenes, chapters, scripts, essays, or manuscript sections, call writing_specialist with only the writing brief/canon/style/prior draft context, then save or format the returned draft with file/canvas tools. For source-grounded current-state briefs, reports, and memos, read every declared source, apply later corrections as authoritative, and build a small internal state table before drafting: completed only when the source verifies completion; requested, received, waiting, blocked, pending, and unverified are not completed. Preserve those states and never upgrade them to completed. Treat instruction/history/reference inputs as immutable unless the user explicitly asks to edit that exact source. Review the final prose for contradictions, duplicated fragments, raw-source narration, and unsupported certainty before formatting. Create structured drafts with outlines, sections, revision notes, and durable files. Use web search when current sources matter and canvas for important drafts.",
     tools: ["writing_specialist", "files", "canvas"],
   },
   research: {
@@ -76,6 +76,13 @@ export const TASK_PROFILES = {
       "Bias toward clear product/engineering design while remaining able to implement or test when asked. Produce concise design documents with goals, constraints, options, tradeoffs, implementation steps, verification criteria, and decision records.",
     tools: ["files", "canvas"],
   },
+  cad: {
+    id: "cad",
+    label: "Parametric CAD and 3D printing",
+    prompt:
+      "Bias toward reproducible parametric CAD, mechanical fixtures, and print-ready artifact production while remaining able to research dimensions, write build notes, or use project tools. Read project instructions, measured inputs, and reference geometry before modeling. Keep one maintainable parametric source of truth, explicit coordinate and centering conventions, and separate clean editable geometry from sacrificial print aids or arranged print layouts. Rebuild derived artifacts from source instead of hand-editing exports. Validate each requested format with format-native evidence in one canonical machine-readable validation section. Prefer a conventional top-level `validation` object whose records use direct literal field names such as `solid_count`, `bbox_mm`, `volume_mm3`, `watertight`, `component_count`, `min_z_mm`, `zip_valid`, `object_count`, and `build_item_count`; keep the actual 3MF identity visible in that section. STEP/B-rep evidence needs solid count, bounding box or extents, and volume; STL evidence needs watertightness, connected components, bounds, minimum Z, and volume; 3MF evidence needs package validity plus object and build-item counts; render evidence needs dimensions plus nonblank visual inspection. Do not create redundant alias sections in response to a validation failure. If the exact same validator message survives a manifest-shape edit, preserve one canonical section and enrich its missing direct evidence fields instead of renaming the section or toggling aliases. Render and inspect the actual final assembly and direct-print layout, preserve tolerances and thread boundaries, run exact project validators unchanged, inspect git status, and finish only after the reproducible source and requested artifacts agree.",
+    tools: ["inspect_project", "files", "shell", "sandbox", "canvas"],
+  },
   docs: {
     id: "docs",
     label: "Documentation",
@@ -87,7 +94,7 @@ export const TASK_PROFILES = {
     id: "data",
     label: "Data analysis",
     prompt:
-      "Bias toward reproducible data analysis, cleanup, ETL, visualization, and report generation while staying able to write scripts or docs. Before touching data, inspect the project and read its AGINTI/AGENTS/README instructions plus relevant existing analysis code, configuration, and tests. Local mutation and command tools intentionally remain unavailable until this bounded discovery is complete. Treat raw/source/input exports as immutable evidence unless the user explicitly authorizes an in-place source change; implement normalization in reproducible code and write generated results under the project's declared output paths. Inspect data shape, schema, units, missing values, duplicates, aliases, and audit requirements before drawing conclusions. Run the existing analyzer and focused tests, save plots/reports as durable artifacts, verify requested paths and statistics externally, and explain assumptions, limitations, and data quality issues.",
+      "Bias toward reproducible data analysis, cleanup, ETL, visualization, spreadsheets, and report generation while staying able to write scripts or docs. Before touching data, inspect the project and read its AGINTI/AGENTS/README instructions plus relevant existing analysis code, configuration, and tests. Local mutation and command tools intentionally remain unavailable until this bounded discovery is complete. Treat raw/source/input exports as immutable evidence unless the user explicitly authorizes an in-place source change; implement normalization in reproducible code and write generated results under the project's declared output paths. Inspect data shape, schema, units, missing values, duplicates, aliases, and audit requirements before drawing conclusions. For editable XLSX workbooks, preserve purposeful raw and calculated sheets, use formulas where the workbook is meant to remain live, remove empty default Sheet/Sheet1 placeholders, and inspect the actual sheet names, formulas, charts, and rendered user-facing views. Do not invent extra deliverables during a bounded correction. Run the existing analyzer and focused tests, save plots/reports as durable artifacts, verify requested paths and statistics externally, and explain assumptions, limitations, and data quality issues.",
     tools: ["inspect_project", "files", "shell", "canvas", "sandbox"],
   },
   qa: {
@@ -122,7 +129,7 @@ export const TASK_PROFILES = {
     id: "slides",
     label: "Slides and presentations",
     prompt:
-      "Bias toward presentation, pitch deck, poster, lecture, and slide-style communication. Clarify audience and purpose from available context, create a durable outline and slide files or markdown deck, keep each slide visually focused, include speaker notes when useful, and export/preview when local tools support it.",
+      "Bias toward presentation, pitch deck, poster, lecture, and slide-style communication. Infer audience and purpose from available context, create a durable outline and source-grounded editable slide source, keep each slide visually focused, and include useful speaker notes. Preserve editable text, charts, tables, and shapes instead of flattening complete slides into images. Produce the requested deck/export formats and a reproducible build path when practical. Render every slide to a preview and inspect the actual pixels for clipping, collisions, wrapped-title decoration overlap, unreadable text, and inconsistent framing; rebuild after repairs. Verify source claims and calculations, artifact existence and package readability, slide/page counts across PPTX/PDF/previews, and any exact acceptance command supplied by the user. In a Git repository, when the task asks for a commit, commit intentional source and deliverables, narrowly ignore only transient build/perception evidence, and run a fresh git status --short before claiming completion.",
     tools: ["files", "shell", "canvas", "web_search"],
   },
   education: {
@@ -276,7 +283,7 @@ export const TASK_PROFILES = {
     id: "word",
     label: "Word documents",
     prompt:
-      "Bias toward Word/docx/document workflows while still using writing, conversion, LaTeX, or scripts when useful. Preserve originals, create clear output filenames, use available local tools such as pandoc/libreoffice/python packages when present, and verify generated documents exist before reporting success.",
+      "Bias toward Word/docx/document workflows while still using writing, conversion, LaTeX, or scripts when useful. Preserve source material byte-for-byte and synthesize a reader-facing document from the authoritative current facts instead of concatenating notes, logs, schemas, task IDs, private paths, or delivery instructions. Reconcile conflicting or superseded source facts before drafting: values labeled corrected, replaced, earlier, old, prior, cancelled, or no longer selected identify what to discard, and those discarded literals must not appear in the final document unless the user explicitly requests history or the history is necessary to explain a live decision. Keep the reconciliation history private: a current-state handoff should say who owns the work, which value is approved, and which option is selected, not narrate who was replaced or which preliminary value is no longer used. Before finishing, extract the final text and search for every superseded literal found in the sources. Cross-check every quantitative statement against the detailed section it summarizes: counts of open actions, risks, decisions, line items, totals, dates, and owners must agree everywhere. Prefer mature editable-document tooling already available in the workspace, such as python-docx, pandoc, or LibreOffice, over hand-written OOXML; when direct OOXML is genuinely necessary, validate its package parts and openability. Keep one maintainable source of truth and a reproducible project-local build command. When reproducibility is requested, declare dependencies in project files and make the exact documented command work from a clean project shell; do not rely on inherited packages or claim that dependencies are already installed merely because the current agent container has them. Run that exact documented command, not only its inner generator. Verify the DOCX is structurally editable, compile the PDF, run pdftotext or an equivalent extraction check that rejects replacement characters and unexpected control glyphs, and verify PDF text bounding boxes remain inside a readable page margin. Render every PDF page to a separate image under an ignored build/verification directory. Inspect one rendered page per read_image call, never batch pages into one vision call, and repair orphaned headings, near-empty spill pages, awkward table or paragraph breaks, overlaps, clipping, excessive whitespace, weak hierarchy, and inconsistent number formatting before finishing. Keep normal readable body type, line spacing, and margins; never shrink typography merely to force the document onto one page. When content spans pages, move or redistribute coherent sections so each page is useful instead of leaving a short spill page. Preserve an intentionally sparse appendix, approval, signature, reference, or back-matter page when it serves a real purpose. Retain ignored verification renders as evidence; optional cleanup must never block completion. Use clear descriptive filenames, exclude caches and generated debris from commits, inspect git status/diff before committing, and honor any project instruction that requires an intentional clean commit even when the chat did not repeat it. Report success only after the editable source, reader-facing current-state content, internal consistency, visual layout, searchable text, exact documented build command, and requested artifacts all pass.",
     tools: ["files", "shell", "canvas", "sandbox"],
   },
   latex: {
@@ -306,6 +313,12 @@ const PROFILE_ALIASES = {
   engineer: "large-codebase",
   application: "app",
   apps: "app",
+  cad: "cad",
+  mechanical: "cad",
+  openscad: "cad",
+  cadquery: "cad",
+  "3d-printing": "cad",
+  "3d-print": "cad",
   mobile: "android",
   apk: "android",
   gradle: "android",
@@ -453,6 +466,7 @@ export function defaultMaxStepsForProfile(value = "auto") {
   if (profile === "large-codebase") return 36;
   if (profile === "qa") return 40;
   if (profile === "app") return 40;
+  if (profile === "cad") return 44;
   if (profile === "android") return 60;
   if (profile === "latex") return 30;
   if (profile === "supervision") return 40;

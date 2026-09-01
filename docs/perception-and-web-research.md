@@ -6,7 +6,7 @@ AgInTiFlow separates visual understanding, web search, and wrapper advice so eac
 
 | Tool | Purpose | Evidence |
 | --- | --- | --- |
-| `read_image` | Read workspace screenshots, plots, scanned text, diagrams, or allowed remote image URLs. | Saves JSON and Markdown reports under `artifacts/perception/`, records image hashes, and sends the Markdown report to the canvas when used by an agent run. |
+| `read_image` | Read workspace screenshots, plots, scanned text, diagrams, or allowed remote image URLs. | Saves canonical JSON/Markdown evidence in the session artifact store, keeps the workspace-relative canvas copy under ignored `.aginti/artifacts/perception/`, and records image hashes. |
 | `web_search` | Cheap raw search snippets or a bounded multi-provider ensemble. | Returns compact titles, canonical URLs, snippets, provider attempts, and per-provider discovery evidence. |
 | `read_web_page` | Read one exact public source instead of relying on a snippet. | Returns bounded article/PDF text, metadata, canonical URL, relevant passages, retrieval time, and content hash. |
 | `web_research` | Sourced research unit for current or external information. | Saves `artifacts/research/*-web-research.json` with query, mode, source list, and answer. |
@@ -18,6 +18,7 @@ AgInTiFlow separates visual understanding, web search, and wrapper advice so eac
 - In a LocalLLM session, `read_image provider=auto` sends bounded image data to the loopback LocalLLM Chat Completions endpoint with `AGINTI_LOCALLLM_VISION_MODEL` or `localllm-vision-xl`. It does not try OpenAI or a wrapper after a local failure.
 - In an OpenAI session, `read_image provider=auto` uses OpenAI Responses vision. A non-OpenAI session must set `allowHostedImagePerception=true` before `provider=openai` is accepted. `OPENAI_API_KEY` by itself grants no permission.
 - Codex image reading requires both `provider=codex` and explicitly enabled wrapper tools. It is not an automatic fallback.
+- Visual verification never creates a task-owned `artifacts/perception/` tree. Its workspace-relative Markdown copy stays under ignored `.aginti/` storage so a successful review cannot dirty an otherwise clean repository.
 - OpenAI image reading defaults to `AGINTI_PERCEPTION_MODEL=gpt-5.4-mini` and `AGINTI_PERCEPTION_REASONING=medium`, with fallback models remaining inside the same explicitly selected OpenAI provider.
 - `web_research` defaults to lightweight snippet mode. The active LocalLLM can synthesize those returned snippets and sources during the next agent step without a second provider call.
 - `web_search provider=auto` falls back from DuckDuckGo HTML to Bing RSS. `provider=multi` merges both indexes and adds Brave only when explicitly configured. Standard/deep research defaults to this ensemble; quick research stays on auto.

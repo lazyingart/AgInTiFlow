@@ -30,9 +30,17 @@ export function selectExecutionPolicy({
   taskProfile = "auto",
   complexityScore = 0,
   scsActive = false,
+  responseOnly = false,
 } = {}) {
   const profile = normalizeTaskProfile(taskProfile);
   const score = Number(complexityScore || 0);
+  if (responseOnly) {
+    return {
+      tier: "focused",
+      requiresPlan: false,
+      reason: "The explicit response-only scope requires one direct model turn without execution planning.",
+    };
+  }
   if (scsActive) {
     return {
       tier: "thorough",

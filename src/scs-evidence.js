@@ -166,13 +166,44 @@ function requestedGitActionAtHead(value = "", { continuation = false } = {}) {
   return null;
 }
 
+function gitActionIsConditionalOnPendingChanges(segment = "", previousSegment = "", request = {}) {
+  const candidate = String(request?.candidate || segment || "").trim();
+  const context = `${String(previousSegment || "").trim()}, ${candidate}`;
+  const changeSubject = "(?:changes?|edits?|modifications?|fix(?:es)?|files?|work)";
+  const pendingState =
+    "(?:remain(?:s|ing)?|exist(?:s)?|are\\s+(?:left|pending|uncommitted|staged|modified)|were\\s+made|have\\s+been\\s+made)";
+  const explicitExistenceCondition = new RegExp(
+    `\\b(?:only\\s+)?(?:if|when)\\s+(?:there\\s+(?:is|are)\\s+)?(?:any\\s+)?${changeSubject}(?:\\s+${pendingState})?\\b`,
+    "i"
+  );
+  const anaphoricRemainderCondition =
+    /\b(?:only\s+)?(?:if|when)\s+(?:any|some|one|ones|they|them|those)\s+(?:of\s+(?:them|those)\s+)?(?:remain(?:s|ing)?|are\s+(?:left|pending|uncommitted|staged|modified))\b/i;
+  const dirtyWorktreeCondition =
+    /\b(?:only\s+)?(?:if|when)\s+(?:the\s+)?(?:worktree|working\s+tree|repository|repo)\s+is\s+(?:dirty|not\s+clean)\b/i;
+  const chinesePendingCondition =
+    /(?:如果|若|如)(?:仍然|仍|还|還)?(?:有|存在)(?:任何)?(?:更改|改动|改動|变更|變更|修改|待提交内容|待提交內容)/u;
+  if (
+    explicitExistenceCondition.test(context) ||
+    dirtyWorktreeCondition.test(context) ||
+    chinesePendingCondition.test(context)
+  ) {
+    return true;
+  }
+  return anaphoricRemainderCondition.test(context) && new RegExp(`\\b${changeSubject}\\b`, "i").test(candidate);
+}
+
 function gitActionsRequestedBySentence(sentence = "") {
   const segments = gitActionRequestSegments(sentence);
   const requested = [];
   let actionSequenceActive = false;
-  for (const segment of segments) {
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index];
     const request = requestedGitActionAtHead(segment, { continuation: actionSequenceActive });
     if (!request) continue;
+    // A no-op-safe instruction such as "commit task-owned changes if any
+    // remain" scopes what to do when a dirty tree exists; it does not require
+    // manufacturing a fresh commit after an already-complete clean run.
+    if (gitActionIsConditionalOnPendingChanges(segment, segments[index - 1], request)) continue;
     requested.push(request.action);
     actionSequenceActive = true;
   }
@@ -204,7 +235,20 @@ function missingRequiredGitActionSequence(required = [], observed = []) {
   let cursor = 0;
   for (let index = 0; index < expected.length; index += 1) {
     const observedIndex = actual.indexOf(expected[index], cursor);
-    if (observedIndex < 0) return expected.slice(index);
+    if (observedIndex < 0) {
+      // A successful commit proves that an index was staged, even when the
+      // preceding `git add` happened in an earlier partially successful shell
+      // chain or the commit used `-a`. Preserve the requested add -> commit
+      // order without forcing the model to repeat a completed commit.
+      if (expected[index] === "add" && expected[index + 1] === "commit") {
+        const commitIndex = actual.indexOf("commit", cursor);
+        if (commitIndex >= 0) {
+          cursor = commitIndex;
+          continue;
+        }
+      }
+      return expected.slice(index);
+    }
     cursor = observedIndex + 1;
   }
   if (expected.at(-1) === "push") {
@@ -222,7 +266,11 @@ export function gitActionsSatisfyContract(contract = {}, actions = []) {
     ? contract.requiredGitActions.map((item) => String(item || "").toLowerCase()).filter(Boolean)
     : [];
   if (required.length) return missingRequiredGitActionSequence(required, observed).length === 0;
-  return observed.some((action) => !isObservationalGitAction(action));
+  // A Git evidence requirement can be purely observational, for example when
+  // a continuation asks to verify an existing commit while explicitly
+  // forbidding another commit. Consequential actions remain governed by the
+  // ordered requiredGitActions contract above.
+  return observed.length > 0;
 }
 
 const PROJECT_TEST_PROFILES = new Set([
@@ -231,6 +279,7 @@ const PROJECT_TEST_PROFILES = new Set([
   "codebase",
   "data",
   "database",
+  "devops",
   "large-codebase",
   "maintenance",
   "pipeline",
@@ -259,7 +308,7 @@ const PROFILE_REQUIREMENTS = {
   design: ["artifact", "visual"],
   image: ["artifact", "visual"],
   slides: ["artifact"],
-  word: ["artifact"],
+  word: ["file", "command", "artifact", "visual"],
   data: ["file", "command", "artifact"],
   qa: ["command"],
   review: ["command"],
@@ -312,6 +361,56 @@ function quotedTerms(text = "") {
   return terms;
 }
 
+function looksLikeShellCommandLiteral(value = "") {
+  const text = String(value || "").trim();
+  if (!text || /[\r\n]/.test(text)) return false;
+  const command = text.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)+/, "");
+  const tokens = tokenizeShellWords(command);
+  if (!tokens.length) return false;
+  const executable = path.basename(String(tokens[0] || "")).toLowerCase();
+  return new Set([
+    "aginti",
+    "bash",
+    "bun",
+    "cargo",
+    "cmake",
+    "curl",
+    "dotnet",
+    "ffmpeg",
+    "git",
+    "gh",
+    "go",
+    "java",
+    "javac",
+    "latexmk",
+    "make",
+    "node",
+    "npm",
+    "npx",
+    "perl",
+    "php",
+    "pnpm",
+    "pytest",
+    "python",
+    "python3",
+    "ruby",
+    "sh",
+    "wget",
+    "xelatex",
+    "yarn",
+    "zsh",
+  ]).has(executable);
+}
+
+function indexFallsInsideInlineCommand(source = "", index = 0) {
+  for (const match of String(source || "").matchAll(/`([^`\r\n]+)`/g)) {
+    const start = Number(match.index || 0);
+    const end = start + String(match[0] || "").length;
+    if (index >= start && index < end && looksLikeShellCommandLiteral(match[1])) return true;
+  }
+  return false;
+}
+
 function splitInlineTerms(text = "") {
   return String(text || "")
     .split(/[、,，;；]/)
@@ -348,6 +447,20 @@ function forbiddenTails(text = "") {
   return tails;
 }
 
+function normalizeWrappedNegativePrefixes(goal = "") {
+  return String(goal || "").replace(
+    /\b(do|must|should)\s*\r?\n\s*not\b/giu,
+    "$1 not"
+  );
+}
+
+function normalizeSoftLineWraps(goal = "") {
+  return normalizeWrappedNegativePrefixes(goal).replace(
+    /([A-Za-z0-9,])[ \t]*\r?\n[ \t]*(?=[a-z])/g,
+    "$1 "
+  );
+}
+
 function inferExactOutputPaths(goal = "") {
   const paths = [];
   const lines = String(goal || "").split(/\n/);
@@ -360,9 +473,9 @@ function inferExactOutputPaths(goal = "") {
     "gi"
   );
   const directOutputAction =
-    /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i;
+    /\b(?:sav(?:e|es|ing)|writ(?:e|es|ing)|rewrit(?:e|es|ing)|output(?:s|ting)?|creat(?:e|es|ing)|rebuild(?:s|ing)?|replac(?:e|es|ing)|regenerat(?:e|es|ing)|generat(?:e|es|ing)|stor(?:e|es|ing)|updat(?:e|es|ing)|modif(?:y|ies|ying)|edit(?:s|ing)?)\b|保存|写入|寫入|重写|重寫|输出|輸出|创建|建立|重建|替换|替換|重新生成|生成|更新|修改|编辑|編輯/i;
   const directOutputActionGlobal =
-    /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/gi;
+    /\b(?:sav(?:e|es|ing)|writ(?:e|es|ing)|rewrit(?:e|es|ing)|output(?:s|ting)?|creat(?:e|es|ing)|rebuild(?:s|ing)?|replac(?:e|es|ing)|regenerat(?:e|es|ing)|generat(?:e|es|ing)|stor(?:e|es|ing)|updat(?:e|es|ing)|modif(?:y|ies|ying)|edit(?:s|ing)?)\b|保存|写入|寫入|重写|重寫|输出|輸出|创建|建立|重建|替换|替換|重新生成|生成|更新|修改|编辑|編輯/gi;
   const outputListHeader =
     /^(?:#+\s*)?(?:(?:required|final|expected|declared|target|pilot|deliverable)\s+)*(?:create|created files?|files? to create|outputs?|output structure|required outputs?|artifacts?|deliverables?|generated files?|writer requirements|renderer requirements|生成文件|输出结构|輸出結構|输出文件|輸出文件|创建文件|建立文件)(?:\s+(?:outputs?|artifacts?|deliverables?))?\s*[：:]?\s*$/i;
   const nonOutputToolLine =
@@ -397,8 +510,15 @@ function inferExactOutputPaths(goal = "") {
     }
     return matches[0]?.index ?? -1;
   };
-  for (const rawLine of lines) {
-    const line = String(rawLine || "").trim();
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const rawLine = lines[lineIndex];
+    const currentLine = String(rawLine || "").trim();
+    const previousLine = String(lines[lineIndex - 1] || "").trim();
+    const wrappedOutputInstruction =
+      previousLine &&
+      !/[.!?。！？;；]$/.test(previousLine) &&
+      directOutputAction.test(previousLine);
+    const line = wrappedOutputInstruction ? `${previousLine} ${currentLine}`.trim() : currentLine;
     if (!line) {
       if (inOutputList) inOutputList = false;
       continue;
@@ -425,12 +545,28 @@ function inferExactOutputPaths(goal = "") {
     if (!isOutputListItem && !hasDirectOutputAction) continue;
     const sourceLine = !isOutputListItem && hasDirectOutputAction ? line.slice(directOutputIndex) : line;
     if (!isOutputListItem && negatedOutputLine.test(sourceLine)) continue;
-    if (!isOutputListItem && nonOutputToolLine.test(sourceLine)) continue;
+    const verifierIndex = line.search(/\b(?:validate|verify|check|compile|run|execute)\b/i);
+    if (!isOutputListItem && nonOutputToolLine.test(line) && verifierIndex >= 0 && verifierIndex < directOutputIndex) {
+      continue;
+    }
     if (!isOutputListItem && /\boutput\s+(?:subfolders?|directories|folders?|paths?)\b/i.test(sourceLine)) continue;
     const outputDirMatch = sourceLine.match(/(?:to|at|in|under|到|至|在)\s*([^\s，,、；;。]+\/)/i);
     activeOutputDir = outputDirMatch?.[1] || "";
     quotedPathPattern.lastIndex = 0;
     for (const match of sourceLine.matchAll(quotedPathPattern)) {
+      const prefix = sourceLine.slice(
+        Math.max(0, Number(match.index || 0) - 180),
+        Number(match.index || 0)
+      );
+      if (
+        (looksLikeShellCommandLiteral(match[1]) ||
+          Boolean(canonicalBareVerifierCommand(match[1]))) &&
+        /\b(?:run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)\b[^.!?;。！？；\n]{0,160}$/i.test(
+          prefix
+        )
+      ) {
+        continue;
+      }
       pushPath(match[1]);
     }
     const unquotedLine = sourceLine.replace(quotedPathPattern, (match) => " ".repeat(match.length));
@@ -441,6 +577,250 @@ function inferExactOutputPaths(goal = "") {
     activeOutputDir = "";
   }
   return uniqueLimited(filterShadowedBasenames(paths), 16);
+}
+
+const REQUESTED_ARTIFACT_FORMATS = [
+  { extension: ".pptx", pattern: /\b(?:pptx|powerpoint)\b/i, description: "editable PowerPoint deck" },
+  { extension: ".odp", pattern: /\b(?:odp|open(?:office|document) presentation)\b/i, description: "editable ODP deck" },
+  { extension: ".pdf", pattern: /\bpdf\b/i, description: "PDF document" },
+  {
+    extension: ".tex",
+    pattern: /(?:\b(?:editable\s+)?(?:latex|tex)\s+source\b|\.tex\b)/i,
+    description: "editable LaTeX source",
+  },
+  { extension: ".docx", pattern: /\b(?:docx|word document)\b/i, description: "editable Word document" },
+  { extension: ".xlsx", pattern: /\b(?:xlsx|excel workbook)\b/i, description: "editable spreadsheet" },
+  { extension: ".png", pattern: /\bpng\b/i, description: "PNG image" },
+  { extension: ".svg", pattern: /\bsvg\b/i, description: "editable SVG image" },
+];
+
+function artifactRequestHasOutputIntent(goal = "", taskProfile = "") {
+  const source = stripForbiddenLanguage(String(goal || ""));
+  return Boolean(
+    goalRequestsFileMutation(source, taskProfile) ||
+      /\b(?:create|deliver|export|generate|leave|make|output|prepare|produce|save|write)\b/i.test(
+        source
+      ) ||
+      /\b(?:i|we)\s+(?:also\s+)?(?:need|want|would like)\b[^.\n;]{0,100}\b(?:answer|artifact|deck|document|handout|material|pdf|presentation|preview|report|sheet|slides?|workbook|worksheet)\b/i.test(
+        source
+      ) ||
+      /\b(?:give|provide|return|send)\b[^.\n;]{0,80}\b(?:answer|artifact|deck|document|handout|material|pdf|presentation|preview|report|sheet|slides?|workbook|worksheet)\b/i.test(
+        source
+      ) ||
+      /(?:创建|生成|输出|导出|保存|提供|需要|交付)/u.test(source)
+  );
+}
+
+export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") {
+  const source = stripForbiddenLanguage(String(goal || ""));
+  if (!artifactRequestHasOutputIntent(source, taskProfile)) return [];
+
+  const requirements = [];
+  const add = (requirement) => {
+    if (!requirement?.id || requirements.some((item) => item.id === requirement.id)) return;
+    requirements.push(requirement);
+  };
+
+  for (const format of REQUESTED_ARTIFACT_FORMATS) {
+    if (!format.pattern.test(source)) continue;
+    add({
+      id: `format:${format.extension}`,
+      kind: "format",
+      extension: format.extension,
+      description: format.description,
+    });
+  }
+
+  const deckRequested = /\b(?:deck|presentation|slides?|slide deck|lecture deck)\b/i.test(source);
+  const editableRequested = /\b(?:editable|edit-friendly|native(?:ly)? editable)\b/i.test(source);
+  if (deckRequested && editableRequested) {
+    add({
+      id: "editable-presentation",
+      kind: "editable-presentation",
+      extensions: [".pptx", ".odp", ".key"],
+      description: "editable presentation deck",
+    });
+  }
+
+  if (
+    /\bprintable\b/i.test(source) &&
+    /\b(?:answer|deck|document|handout|material|practice|sheet|slides?|worksheet)\b/i.test(source)
+  ) {
+    add({
+      id: "printable-document",
+      kind: "printable-document",
+      extensions: [".pdf"],
+      description: "printable PDF material",
+    });
+  }
+
+  if (
+    /\b(?:helpful|high[- ]resolution|useful|visual)\s+preview\b|\b(?:image|png|rendered|screenshot)\s+preview\b|\bpreview\s+(?:image|png|render|screenshot)\b/i.test(
+      source
+    )
+  ) {
+    add({
+      id: "visual-preview",
+      kind: "visual-preview",
+      extensions: [".png", ".jpg", ".jpeg", ".webp"],
+      description: "visual preview image",
+    });
+  }
+
+  if (/\b(?:practice sheet|worksheet|exercise sheet|learner handout)\b/i.test(source)) {
+    add({
+      id: "practice-material",
+      kind: "practice-material",
+      description: "separate practice or worksheet material",
+    });
+  }
+
+  if (
+    /\b(?:answer\s+key|worked\s+solutions?|solutions?\s+(?:key|sheet|document|file|material)|answers?\s+(?:key|sheet|document|file|material))\b/i.test(
+      source
+    )
+  ) {
+    add({
+      id: "answer-material",
+      kind: "answer-material",
+      description: "separate answer or solution material",
+    });
+  }
+
+  if (
+    /\b(?:reproducible|repeatable)\b[^.\n;]{0,80}\b(?:build|generation|export|render)\b|\b(?:build|generation|export|render)\s+(?:entrypoint|script|command)\b/i.test(
+      source
+    )
+  ) {
+    add({
+      id: "reproducible-build-entrypoint",
+      kind: "reproducible-build-entrypoint",
+      description: "reproducible build or export entrypoint",
+    });
+  }
+
+  return requirements.slice(0, 16);
+}
+
+function normalizedContractPath(value = "") {
+  return String(value || "")
+    .trim()
+    .replace(/^['"`]|['"`]$/g, "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/^\/workspace\//, "")
+    .replace(/\/+$/, "");
+}
+
+function contractPathMatchesExclusion(value = "", exclusion = "") {
+  const candidate = normalizedContractPath(value).toLocaleLowerCase("en-US");
+  const excluded = normalizedContractPath(exclusion).toLocaleLowerCase("en-US");
+  if (!candidate || !excluded) return false;
+  if (candidate === excluded || candidate.endsWith(`/${excluded}`)) return true;
+  if (!excluded.includes("/")) return path.posix.basename(candidate) === excluded;
+  if (!candidate.includes("/")) return path.posix.basename(excluded) === candidate;
+  return false;
+}
+
+export function filterExplicitlyExcludedOutputPaths(paths = [], exclusions = []) {
+  const blocked = unique((Array.isArray(exclusions) ? exclusions : []).map(normalizedContractPath));
+  return unique((Array.isArray(paths) ? paths : []).filter((candidate) =>
+    !blocked.some((exclusion) => contractPathMatchesExclusion(candidate, exclusion))
+  ));
+}
+
+export function inferExplicitlyExcludedOutputPaths(goal = "") {
+  const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
+  // Preserve coordinated path lists that wrap after a comma. Prompt and task
+  // files commonly format "do not modify a, b,\nc, or d" across lines; splitting
+  // that text first drops the governing negative action from the continuation.
+  const negativePrefix = "(?:do\\s+not|don't|dont|must\\s+not|should\\s+not|never)";
+  const negativeAction = "(?:run|rerun|re-run|execut(?:e|ed|ing)|creat(?:e|ed|ing)|recreat(?:e|ed|ing)|writ(?:e|ten|ing)|generat(?:e|ed|ing)|sav(?:e|ed|ing)|output|touch|modif(?:y|ied|ying)|edit(?:ed|ing)?|stage|commit)";
+  const wrappedNegativeAction = new RegExp(
+    `(\\b${negativePrefix}\\b)\\s*\\r?\\n\\s*(?=${negativeAction}\\b)`,
+    "giu"
+  );
+  const wrappedNegativePath = new RegExp(
+    `(\\b${negativePrefix}\\b[^.!?。！？;；\\n]{0,180}\\b${negativeAction}\\b)\\s*\\r?\\n\\s*` +
+      `(?=\\S{1,260}\\.(?:${extensionPattern})\\b)`,
+    "giu"
+  );
+  const source = normalizeWrappedNegativePrefixes(goal)
+    .replace(/([,，、])\s*\r?\n\s*/gu, "$1 ")
+    .replace(wrappedNegativeAction, "$1 ")
+    .replace(wrappedNegativePath, "$1 ");
+  if (!source.trim()) return [];
+  const pathPattern = new RegExp(
+    '((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,260}\\.(?:' +
+      extensionPattern +
+      '))',
+    "gi"
+  );
+  const negativeActionBefore =
+    /\b(?:do\s+not|don't|dont|must\s+not|should\s+not|never)\b[^.!?。！？;；\n]{0,180}\b(?:run|rerun|re-run|execut(?:e|ed|ing)|creat(?:e|ed|ing)|recreat(?:e|ed|ing)|writ(?:e|ten|ing)|generat(?:e|ed|ing)|sav(?:e|ed|ing)|output|touch|modif(?:y|ied|ying)|edit(?:ed|ing)?|stage|commit)(?:\b|\s)/i;
+  // Post-path restrictions must describe the path that came immediately
+  // before them. Imperative forms such as "and do not create" take the next
+  // path as their object, so treating them as postfix restrictions leaks a
+  // later exclusion backwards across coordinated clauses.
+  const negativeActionAfter =
+    /^\s*(?:(?:does\s+not|doesn't|is\s+not|isn't)\s+exist\b\s*(?:and\s+)?)?(?:must\s+not|should\s+not|never)\s+(?:be\s+)?(?:run|rerun|re-run|execut(?:e|ed)|creat(?:e|ed)|recreat(?:e|ed)|writ(?:e|ten)|generat(?:e|ed)|sav(?:e|ed)|output|touch(?:ed)?|modif(?:y|ied)|edit(?:ed)?|stag(?:e|ed)|commit(?:ted)?)(?:\b|\s)/i;
+  const keepAbsent =
+    /\b(?:keep|leave)\b[^.!?。！？;；\n]{0,80}\b(?:absent|missing|nonexistent|uncreated|untouched)\b/i;
+  const cjkNegativeActionBefore =
+    /(?:不要|不得|禁止|无需|不需要)[^。！？；\n]{0,140}(?:运行|执行|重跑|创建|建立|写入|生成|保存|输出|修改|编辑|提交|暂存)/u;
+  const cjkNegativeActionAfter =
+    /^(?:(?:不得|禁止|不要)(?:被)?(?:运行|执行|重跑|创建|建立|写入|生成|保存|输出|修改|编辑|提交|暂存)|(?:を)?(?:作成|生成|実行|再実行|保存|編集|変更|コミット)[^。！？；\n]{0,40}(?:しない|しなくてよい|してはいけない))/u;
+  const directRemovalBefore =
+    /\b(?:remove|delete|unlink|discard)\s+(?:(?:the|an?|this|that)\s+)?(?:(?:accidental|stale|temporary|untracked|generated|obsolete|old|private|empty)\s+)*(?:file\s+)?$/i;
+  const cjkDirectRemovalBefore =
+    /(?:删除|刪除|移除|清除)(?:(?:这个|這個|该|該|意外的|暂存的|暫存的|临时的|臨時的|未跟踪的|未追蹤的|旧的|舊的|私有的)\s*)*(?:文件)?\s*$/u;
+  const excluded = [];
+  for (const clause of source.split(/[;；\n]|(?<=[.!?。！？])\s+/u)) {
+    pathPattern.lastIndex = 0;
+    const matches = [...clause.matchAll(pathPattern)];
+    const immutablePathClause = Boolean(
+      /\b(?:treat|consider|regard)\b[^!?。！？;；\n]{0,260}\b(?:as\s+)?(?:immutable|read[ -]?only)\b/i.test(
+        clause
+      )
+    );
+    let previousExcluded = false;
+    for (let matchIndex = 0; matchIndex < matches.length; matchIndex += 1) {
+      const match = matches[matchIndex];
+      const rawPath = String(match[1] || "");
+      const index = Number(match.index || 0);
+      const previous = matches[matchIndex - 1];
+      const next = matches[matchIndex + 1];
+      const previousEnd = previous
+        ? Number(previous.index || 0) + String(previous[1] || "").length
+        : Math.max(0, index - 220);
+      const nextStart = next
+        ? Number(next.index || clause.length)
+        : Math.min(clause.length, index + rawPath.length + 220);
+      const before = clause.slice(previousEnd, index);
+      const after = clause.slice(index + rawPath.length, nextStart);
+      const coordinatedWithExcludedPrevious = Boolean(
+        previousExcluded &&
+          /^\s*(?:(?:,|、|，)\s*)?(?:and|or|和|及|以及|或|又は|および)?\s*$/iu.test(
+            before
+          )
+      );
+      const directExclusion = Boolean(
+        immutablePathClause ||
+        negativeActionBefore.test(before) ||
+        negativeActionAfter.test(after) ||
+        keepAbsent.test(`${before}${after}`) ||
+        cjkNegativeActionBefore.test(before) ||
+        cjkNegativeActionAfter.test(after) ||
+        directRemovalBefore.test(before) ||
+        cjkDirectRemovalBefore.test(before)
+      );
+      previousExcluded = directExclusion || coordinatedWithExcludedPrevious;
+      if (previousExcluded) {
+        excluded.push(rawPath);
+      }
+    }
+  }
+  return uniqueLimited(excluded.map(normalizedContractPath), 24);
 }
 
 function inferExactInputPaths(goal = "") {
@@ -455,16 +835,23 @@ function inferExactInputPaths(goal = "") {
     "gi"
   );
   const inputAction =
-    /\b(use|using|read|load|fill|upload|attach|import|select|choose|reference|input|from|fix|repair|patch|correct)\b|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|修复|修正|更正|从|從/i;
+    /\b(?:use|using|read|load|fill|upload|attach|import|select|choose|reference|input|from|retain(?:ed|ing)?|fix|repair|patch|correct)\b|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|保留|修复|修正|更正|从|從/i;
   const directOutputAction =
-    /\b(save|saved|write|written|output|create|store|update|modify|edit)\b|保存|写入|寫入|输出|輸出|创建|建立|更新|修改|编辑|編輯/i;
+    /\b(?:sav(?:e|es|ing)|writ(?:e|es|ing)|rewrit(?:e|es|ing)|output(?:s|ting)?|creat(?:e|es|ing)|rebuild(?:s|ing)?|replac(?:e|es|ing)|regenerat(?:e|es|ing)|generat(?:e|es|ing)|stor(?:e|es|ing)|updat(?:e|es|ing)|modif(?:y|ies|ying)|edit(?:s|ing)?)\b|保存|写入|寫入|重写|重寫|输出|輸出|创建|建立|重建|替换|替換|重新生成|生成|更新|修改|编辑|編輯/i;
   const pushPath = (raw = "") => {
     const cleaned = String(raw || "").trim();
     if (!cleaned || /[{}]/.test(cleaned)) return;
     paths.push(cleaned);
   };
-  for (const rawLine of lines) {
-    const fullLine = String(rawLine || "").trim();
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const rawLine = lines[lineIndex];
+    const currentLine = String(rawLine || "").trim();
+    const previousLine = String(lines[lineIndex - 1] || "").trim();
+    const wrappedInputInstruction =
+      previousLine &&
+      !/[.!?。！？;；]$/.test(previousLine) &&
+      inputAction.test(previousLine);
+    const fullLine = wrappedInputInstruction ? `${previousLine} ${currentLine}`.trim() : currentLine;
     const outputIndex = fullLine.search(directOutputAction);
     const line = outputIndex > 0 ? fullLine.slice(0, outputIndex).trim() : fullLine;
     if (!line || !inputAction.test(line)) continue;
@@ -473,6 +860,7 @@ function inferExactInputPaths(goal = "") {
     }
     quotedPathPattern.lastIndex = 0;
     for (const match of line.matchAll(quotedPathPattern)) {
+      if (looksLikeShellCommandLiteral(match[1])) continue;
       pushPath(match[1]);
     }
     const unquotedLine = line.replace(quotedPathPattern, (match) => " ".repeat(match.length));
@@ -535,7 +923,210 @@ function inferRequiredTextTerms(goal = "") {
   }
   // A quoted filename in "save as `report.md`" is an output location, not
   // required prose inside that report. Path existence is validated separately.
-  return uniqueLimited(terms.filter((term) => !outputPathTerms.has(String(term).trim())), 24);
+  return uniqueLimited(
+    terms.filter((term) => {
+      const cleaned = String(term).trim();
+      return !outputPathTerms.has(cleaned) && !looksLikeShellCommandLiteral(cleaned);
+    }),
+    24
+  );
+}
+
+const EXECUTABLE_SOURCE_EXTENSIONS = new Set([
+  ".c",
+  ".cc",
+  ".cpp",
+  ".cs",
+  ".go",
+  ".java",
+  ".js",
+  ".jsx",
+  ".kt",
+  ".kts",
+  ".mjs",
+  ".php",
+  ".py",
+  ".rb",
+  ".rs",
+  ".sh",
+  ".swift",
+  ".ts",
+  ".tsx",
+]);
+
+function sourcePathCanSatisfyExecutableRequirement(value = "") {
+  const normalized = String(value || "").replace(/\\/g, "/");
+  const basename = path.posix.basename(normalized);
+  if (!EXECUTABLE_SOURCE_EXTENSIONS.has(path.extname(basename).toLowerCase())) return false;
+  if (/(?:^|\/)(?:tests?|specs?|fixtures?|__tests__)(?:\/|$)/i.test(normalized)) return false;
+  if (/^(?:test_|spec_)|(?:\.(?:test|spec))\.[^.]+$/i.test(basename)) return false;
+  return !/(?:^|\/)(?:\.git|\.aginti|\.aginti-sessions|\.agintiflow)(?:\/|$)/i.test(normalized);
+}
+
+function executableRequirementIsNegated(source = "", index = 0) {
+  const prefix = String(source || "").slice(Math.max(0, index - 100), index);
+  return /(?:\b(?:do not|don't|dont|must not|never|avoid|remove|omit|forbid)\b|不要|不得|禁止|避免|移除|削除|使わない)[^.!?。！？;；\n]{0,60}$/iu.test(prefix);
+}
+
+export function inferRequiredExecutableTerms(goal = "") {
+  const source = String(goal || "");
+  const terms = [];
+  const assignmentPattern = /\b([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(True|False|None|null|true|false|[+-]?\d+(?:\.\d+)?)\b/g;
+  for (const match of source.matchAll(assignmentPattern)) {
+    const index = Number(match.index || 0);
+    if (executableRequirementIsNegated(source, index)) continue;
+    if (indexFallsInsideInlineCommand(source, index)) continue;
+    const window = source.slice(Math.max(0, index - 180), Math.min(source.length, index + match[0].length + 220));
+    const structuredDataLiteral =
+      /\b(?:csv|json|toml|ya?ml)\b/i.test(window) &&
+      !/\b(?:actual|canonical|executable|implementation|source\s+code|function|call|argument|parameter|repair|fix|replace)\b/i.test(
+        window
+      );
+    if (structuredDataLiteral) continue;
+    const implementationRequirement =
+      /\b(?:actual|canonical|executable|implementation|source|code|call|argument|keyword|parameter|repair|fix|correct|replace|add|set|pass|use|must|required)\b/iu.test(window) ||
+      /实际|實際|实现|實現|源码|源碼|代码|代碼|调用|調用|参数|參數|修复|修復|改正|替换|替換|添加|设置|設定|使用|必须|必須|実装|ソース|コード|呼び出し|引数|修正|置換|追加|設定|使用/.test(window);
+    if (!implementationRequirement) continue;
+    terms.push(`${match[1]}=${match[2]}`);
+  }
+  return uniqueLimited(terms, 16);
+}
+
+export function stripNonExecutableSourceText(content = "", extension = "") {
+  const source = String(content || "");
+  const suffix = String(extension || "").toLowerCase();
+  const hashComments = new Set([".py", ".rb", ".sh"]);
+  const slashComments = new Set([
+    ".c", ".cc", ".cpp", ".cs", ".go", ".java", ".js", ".jsx", ".kt", ".kts",
+    ".mjs", ".php", ".rs", ".swift", ".ts", ".tsx",
+  ]);
+  const output = [...source];
+  const blank = (index) => {
+    if (output[index] !== "\n" && output[index] !== "\r") output[index] = " ";
+  };
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    const pair = source.slice(index, index + 2);
+    const triple = source.slice(index, index + 3);
+    if (hashComments.has(suffix) && char === "#") {
+      while (index < source.length && source[index] !== "\n") blank(index++);
+      continue;
+    }
+    if (slashComments.has(suffix) && pair === "//") {
+      while (index < source.length && source[index] !== "\n") blank(index++);
+      continue;
+    }
+    if (slashComments.has(suffix) && pair === "/*") {
+      blank(index++);
+      blank(index++);
+      while (index < source.length && source.slice(index, index + 2) !== "*/") blank(index++);
+      if (index < source.length) {
+        blank(index++);
+        blank(index++);
+      }
+      continue;
+    }
+    const isPythonTriple = suffix === ".py" && (triple === "'''" || triple === '\"\"\"');
+    if (isPythonTriple) {
+      const delimiter = triple;
+      for (let offset = 0; offset < 3; offset += 1) blank(index++);
+      while (index < source.length && source.slice(index, index + 3) !== delimiter) blank(index++);
+      for (let offset = 0; offset < 3 && index < source.length; offset += 1) blank(index++);
+      continue;
+    }
+    if (char === "'" || char === '\"' || char === "`") {
+      const delimiter = char;
+      blank(index++);
+      while (index < source.length) {
+        const current = source[index];
+        blank(index++);
+        if (current === "\\" && index < source.length) {
+          blank(index++);
+          continue;
+        }
+        if (current === delimiter) break;
+      }
+      continue;
+    }
+    index += 1;
+  }
+  return output.join("");
+}
+
+function requiredExecutableTermPattern(term = "") {
+  const match = String(term || "").match(/^([A-Za-z_][A-Za-z0-9_.]*)=(True|False|None|null|true|false|[+-]?\d+(?:\.\d+)?)$/);
+  if (!match) return null;
+  const escapedName = match[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedValue = match[2].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^A-Za-z0-9_])${escapedName}\\s*=\\s*${escapedValue}(?![A-Za-z0-9_])`, "m");
+}
+
+function executableSourcePaths(contract = {}, { commandCwd = process.cwd(), events = [], state = {} } = {}) {
+  const paths = [];
+  const append = (value = "") => {
+    const normalized = normalizedContractPath(value);
+    if (!normalized || !sourcePathCanSatisfyExecutableRequirement(normalized) || paths.includes(normalized)) return;
+    const absolute = resolveContractPath(commandCwd, normalized);
+    const relative = path.relative(path.resolve(commandCwd), absolute);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return;
+    paths.push(normalized);
+  };
+  for (const value of contract.exactOutputPaths || []) append(value);
+  for (const mutation of state.meta?.projectVerification?.mutationHistory || []) {
+    for (const value of mutation?.paths || []) append(value);
+  }
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type === "file.changed") append(event.data?.path || event.data?.file);
+    if (event?.type !== "tool.completed") continue;
+    append(event.data?.path || event.data?.args?.path);
+    for (const change of event.data?.changes || []) append(change?.path || change?.file);
+  }
+  return paths.slice(0, 32);
+}
+
+function evaluateRequiredExecutableTerms(contract = {}, options = {}) {
+  const requiredExecutableTerms = Array.isArray(contract.requiredExecutableTerms)
+    ? contract.requiredExecutableTerms.filter(Boolean)
+    : [];
+  if (!requiredExecutableTerms.length) {
+    return {
+      ok: true,
+      checked: false,
+      requiredExecutableTerms: [],
+      missingExecutableTerms: [],
+      executableSourcePaths: [],
+      reason: "No executable-source term was inferred.",
+    };
+  }
+  const commandCwd = options.commandCwd || process.cwd();
+  const sourcePaths = executableSourcePaths(contract, options);
+  const sources = sourcePaths.flatMap((rawPath) => {
+    const absolutePath = resolveContractPath(commandCwd, rawPath);
+    try {
+      const content = fs.readFileSync(absolutePath, "utf8");
+      return [{
+        rawPath,
+        executableContent: stripNonExecutableSourceText(content, path.extname(rawPath)),
+      }];
+    } catch {
+      return [];
+    }
+  });
+  const missingExecutableTerms = requiredExecutableTerms.filter((term) => {
+    const pattern = requiredExecutableTermPattern(term);
+    return !pattern || !sources.some((source) => pattern.test(source.executableContent));
+  });
+  return {
+    ok: missingExecutableTerms.length === 0,
+    checked: true,
+    requiredExecutableTerms,
+    missingExecutableTerms,
+    executableSourcePaths: sources.map((source) => source.rawPath),
+    reason: missingExecutableTerms.length
+      ? `Required executable source expression(s) were absent from task-mutated production source (comments, strings, help text, and tests do not count): ${missingExecutableTerms.join(", ")}.`
+      : "Required executable source expressions are present in task-mutated production source.",
+  };
 }
 
 function inferForbiddenTextTerms(goal = "") {
@@ -600,6 +1191,33 @@ function messageToBlocker(message = {}) {
   }
 }
 
+function blockerPayloadIdentity(payload = {}) {
+  if (!payload || typeof payload !== "object") return "";
+  const advice =
+    payload.permissionAdvice && typeof payload.permissionAdvice === "object"
+      ? payload.permissionAdvice
+      : {};
+  const toolName = String(payload.toolName || payload.name || "").trim().toLowerCase();
+  const reason = String(payload.reason || payload.error || advice.reason || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+  return toolName && reason ? `${toolName}\u0000${reason}` : "";
+}
+
+function currentBlockersFromEntries(entries = [], source = "tool") {
+  const blockers = new Map();
+  let anonymousIndex = 0;
+  for (const entry of entries) {
+    const payload = entry && typeof entry === "object" ? entry : {};
+    const identity = blockerPayloadIdentity(payload) || `anonymous-${anonymousIndex++}`;
+    const blocker = blockerFromPayload(payload, source);
+    if (blocker) blockers.set(identity, blocker);
+    else blockers.delete(identity);
+  }
+  return [...blockers.values()];
+}
+
 function textHas(text, regex) {
   return regex.test(String(text || ""));
 }
@@ -632,17 +1250,66 @@ function codeProfileRequiresCommand(goal = "") {
     /\b(?:note|notes?|markdown|readme|documentation|text file)\b/.test(text) ||
     /\bnotes?\/[^\s]+\.(?:md|txt)\b/.test(text) ||
     /\.(?:md|txt)\b/.test(text);
+  const structuredDataProse = text.replace(
+    /(?:^|[\s`'"(])[^\s`'"()]+\.(?:csv|json|toml|ya?ml)\b/g,
+    " "
+  );
+  const simpleStructuredDataWrite =
+    /\.(?:csv|json|toml|ya?ml)\b/.test(text) &&
+    /\b(?:create|emit|generate|save|write)\b/.test(text) &&
+    !/\b(?:app|application|build|cli|code|codebase|compile|execute|function|implement|library|lint|package|refactor|run|script|server|source|test|typecheck)\b/.test(
+      structuredDataProse
+    );
   const substantiveCodeWork =
     /\b(?:fix|repair|bug|implement|feature|refactor|test|run|build|compile|lint|typecheck|verify|validate|package|library|cli|api server|app|application|script|codebase|src\/|source code)\b/.test(
       text
     ) ||
     /\.(?:js|jsx|ts|tsx|mjs|cjs|py|rs|go|java|kt|swift|rb|php|cs|cpp|c|h|hpp|sh)\b/.test(text);
-  return substantiveCodeWork && !simpleDocumentWrite;
+  return substantiveCodeWork && !simpleDocumentWrite && !simpleStructuredDataWrite;
 }
 
-function goalRequestsWorkspaceMutation(goal = "") {
-  const text = normalizedText(goal);
+function goalRequestsExplicitTestMutation(text = "") {
   return (
+    /\b(?:add|create|implement|write)\b(?:\s+(?:a|an|the|focused|new|additional|specific|security|unit|integration|regression))*\s+(?:regression\s+)?(?:tests?|test cases?)\b/.test(
+      text
+    ) ||
+    /\b(?:edit|fix|modify|patch|repair|update)\b(?:\s+(?:a|an|the|focused|new|existing|current|failing|specific|security|unit|integration|regression))*\s+(?:regression\s+)?(?:tests?|test cases?)\b/.test(
+      text
+    ) ||
+    /(?:添加|新增|创建|编写|编辑|修复|修改|更新)(?:一个|新的|现有的|失败的|专门的|回归|单元|集成)*测试(?:用例)?/.test(
+      text
+    )
+  );
+}
+
+function stripHostManagedResponseNarration(goal = "") {
+  return String(goal || "").replace(
+    /\b(?:and\s+)?(?:write|return|provide)\s+(?:(?:a|the)\s+)?(?:(?:concise|final|normal|structured)\s+)?(?:(?:agent|task)\s+)?(?:answer|response|result)\b(?!\s+(?:as|at|file|in|into|json|markdown|pdf|text|to|under)\b)/gi,
+    ""
+  );
+}
+
+function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
+  const text = normalizedText(
+    stripHostManagedResponseNarration(
+      stripCompletedWorkNarration(stripForbiddenLanguage(goal))
+    )
+  );
+  const explicitAddMutation =
+    goalRequestsExplicitTestMutation(text) ||
+    /\badd\b(?:\s+(?:a|an|the|new|additional|specific))*\s+(?:code|documents?|files?|notes?|readme|scripts?|source|workspace)\b/.test(
+      text
+    ) || /(?:添加|新增)(?:一个|新的|额外的|特定的)*(?:文件|文档|代码|脚本|源码)/.test(text);
+  if (String(taskProfile || "").trim().toLowerCase() === "review") {
+    return (
+      explicitAddMutation ||
+      /\b(?:append|copy|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
+        text
+      )
+    );
+  }
+  return (
+    explicitAddMutation ||
     /\b(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
       text
     ) ||
@@ -650,11 +1317,13 @@ function goalRequestsWorkspaceMutation(goal = "") {
   );
 }
 
-function goalRequestsFileMutation(goal = "") {
-  const text = normalizedText(goal);
-  if (!goalRequestsWorkspaceMutation(text)) return false;
+function goalRequestsFileMutation(goal = "", taskProfile = "") {
+  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
+  if (!goalRequestsWorkspaceMutation(text, taskProfile)) return false;
+  const explicitTestMutation = goalRequestsExplicitTestMutation(text);
   return (
-    /\b(?:code|codebase|document(?:ation)?|file|notes?|path|readme|repo(?:sitory)?|script|source|workspace)\b/.test(
+    explicitTestMutation ||
+    /\b(?:code|codebase|document(?:ation)?|files?|notes?|path|readme|repo(?:sitory)?|script|source|workspace)\b/.test(
       text
     ) ||
     /(?:^|[\s`'"(])(?:\.{0,2}\/|\/)?[a-z0-9_.-]+(?:\/[a-z0-9_.{}-]+)+/i.test(text) ||
@@ -662,6 +1331,45 @@ function goalRequestsFileMutation(goal = "") {
       text
     ) ||
     /文件|文档|代码|代码库|仓库|脚本|源码|路径|工作区|说明书|笔记/.test(text)
+  );
+}
+
+function goalRequestsScopedArtifactDeliverable(goal = "") {
+  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
+  const deliverable =
+    /\b(?:build|compile|create|draft|export|generate|make|prepare|produce|render|save|write)\b[^.\n;]{0,180}\b(?:artifact|brief|cad|diagram|document|figure|image|markdown|memo|model|note|paper|pcb|pdf|presentation|prompt|report|research note|slide deck|slides?|spreadsheet|story|summary|transcript|video)\b/.test(text) ||
+    /\b(?:artifact|brief|cad|diagram|document|figure|image|markdown|memo|model|note|paper|pcb|pdf|presentation|prompt|report|research note|slide deck|slides?|spreadsheet|story|summary|transcript|video)\b[^.\n;]{0,120}\b(?:build|compile|create|draft|export|generate|make|prepare|produce|render|save|write)\b/.test(text) ||
+    /(?:创建|生成|保存|编写|撰写|制作|导出|准备)[^。；\n]{0,100}(?:报告|笔记|摘要|文档|论文|图表|图片|模型|演示文稿|幻灯片|表格|故事|提示词|转录|视频)/.test(text);
+  if (!deliverable) return false;
+  const projectSourceMutation =
+    /\b(?:change|debug|edit|fix|implement|improve|modify|patch|refactor|repair|replace|rewrite|update)\b[^.\n;]{0,140}\b(?:app|application|code|codebase|implementation|library|package|repo|repository|runtime|source|src\/)\b/.test(text) ||
+    /\b(?:app|application|code|codebase|implementation|library|package|repo|repository|runtime|source|src\/)\b[^.\n;]{0,140}\b(?:change|debug|edit|fix|implement|improve|modify|patch|refactor|repair|replace|rewrite|update)\b/.test(text) ||
+    /(?:修改|修复|实现|改进|重构|调试|替换|更新)[^。；\n]{0,100}(?:代码|代码库|实现|运行时|应用|仓库|源码)/.test(text);
+  return !projectSourceMutation;
+}
+
+function goalRequestsScopedArtifactOperation(goal = "") {
+  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
+  const artifactOperation =
+    /\b(?:build|compile|create|draft|edit|export|generate|make|prepare|produce|render|repair|revise|save|update|write)\b[^.\n;]{0,180}\b(?:artifact|brief|cad|diagram|document|figure|image|markdown|memo|model|note|paper|pcb|pdf|presentation|prompt|report|research note|slide deck|slides?|spreadsheet|story|summary|transcript|video)\b/.test(text) ||
+    /\b(?:artifact|brief|cad|diagram|document|figure|image|markdown|memo|model|note|paper|pcb|pdf|presentation|prompt|report|research note|slide deck|slides?|spreadsheet|story|summary|transcript|video)\b[^.\n;]{0,120}\b(?:build|compile|create|draft|edit|export|generate|make|prepare|produce|render|repair|revise|save|update|write)\b/.test(text) ||
+    /(?:创建|生成|保存|编写|撰写|制作|导出|准备|修改|修订|修复|更新)[^。；\n]{0,100}(?:报告|笔记|摘要|文档|论文|图表|图片|模型|演示文稿|幻灯片|表格|故事|提示词|转录|视频)/.test(text);
+  if (!artifactOperation) return false;
+  const projectSourceMutation =
+    /\b(?:change|debug|edit|fix|implement|improve|modify|patch|refactor|repair|replace|rewrite|update)\b[^.\n;]{0,140}\b(?:app|application|code|codebase|implementation|library|package|repo|repository|runtime|source\s+code|src\/)\b/.test(text) ||
+    /\b(?:app|application|code|codebase|implementation|library|package|repo|repository|runtime|source\s+code|src\/)\b[^.\n;]{0,140}\b(?:change|debug|edit|fix|implement|improve|modify|patch|refactor|repair|replace|rewrite|update)\b/.test(text) ||
+    /(?:修改|修复|实现|改进|重构|调试|替换|更新)[^。；\n]{0,100}(?:代码|代码库|实现|运行时|应用|仓库|源码)/.test(text);
+  return !projectSourceMutation;
+}
+
+function goalRequestsTestExecution(goal = "") {
+  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
+  return (
+    /\b(?:run|rerun|re-run|execute|invoke)\b[^.\n;]{0,140}\b(?:tests?|test suite)\b/.test(text) ||
+    /\b(?:tests?|test suite)\b[^.\n;]{0,120}\b(?:pass|passing|green|run|rerun|re-run|execute)\b/.test(text) ||
+    /(?:运行|执行|重跑|重新运行)[^。；\n]{0,100}(?:测试|测试套件)|(?:测试|测试套件)[^。；\n]{0,80}(?:通过|运行|执行)/.test(
+      text
+    )
   );
 }
 
@@ -689,7 +1397,7 @@ function profileRequirementsForGoal(taskProfile = "", goal = "") {
   ]);
   if (!codeLikeProfiles.has(profile)) return defaults;
   let requirements = [...defaults];
-  if (!goalRequestsWorkspaceMutation(goal)) {
+  if (!goalRequestsFileMutation(goal)) {
     requirements = requirements.filter((category) => category !== "file");
   }
   if (!codeProfileRequiresCommand(goal)) {
@@ -705,23 +1413,46 @@ function isReadOnlyReadinessTask(goal = "") {
     /\b(?:readiness|capability)\s+(?:audit|check|report|assessment)\b/i.test(text) ||
     /\bwhether\s+(?:i|we|the\s+(?:agent|system))\s+can\b/i.test(text) ||
     /只读检查|只讀檢查|就绪检查|就緒檢查|能力检查|能力檢查|检查是否|檢查是否/.test(text);
+  const contractAuditSignal =
+    /\b(?:audit|inspect|review|assess|document|report\s+on)\s+(?:the\s+)?(?:current\s+)?[^.\n;]{0,140}\b(?:contract|policy|behavio(?:u)?r|workflow|implementation|routine|routing|readiness|capabilit(?:y|ies))\b/i.test(
+      text
+    ) ||
+    /(?:审计|審計|检查|檢查|审查|審查|评估|評估|记录|記錄)[^。；\n]{0,120}(?:契约|契約|策略|行为|行為|流程|实现|實現|例程|路由|就绪|就緒|能力)/.test(
+      text
+    );
   const noActionSignal =
-    /\b(?:do not|don't|dont|never|without)\b[^.\n;]{0,260}\b(?:generate|submit|upload|publish|deploy|log in|login|restart|edit|modify|delete|purchase|pay)\b/i.test(text) ||
+    /\b(?:do not|don't|dont|never|without)\b[^.\n;]{0,260}\b(?:send|generate|submit|upload|publish|deploy|open|browse|focus|restart|alter|change|edit|modify|write|mutate|delete|purchase|pay|log in|login)\b/i.test(text) ||
     /(?:不要|禁止)[^。\n；]{0,260}(?:生成|提交|上传|上傳|发布|發布|部署|登录|登入|重启|重啟|编辑|編輯|修改|删除|刪除|购买|購買|支付)/.test(text);
-  return readinessSignal && noActionSignal;
+  return (readinessSignal || contractAuditSignal) && noActionSignal;
 }
 
 function requiresSourceGrounding(goal = "") {
   const text = String(goal || "");
+  const positiveText = stripForbiddenLanguage(text);
+  const inferredOutputs = new Set(inferExactOutputPaths(positiveText));
+  const explicitSourceInputs = inferExactInputPaths(positiveText).filter(
+    (item) => !inferredOutputs.has(item)
+  );
+  const explicitlyRequestedInputRead = Boolean(
+    /\b(?:read|inspect|review|audit|consult|examine)\b/iu.test(positiveText) &&
+      explicitSourceInputs.length > 0
+  );
   return (
+    explicitlyRequestedInputRead ||
     isReadOnlyReadinessTask(text) ||
+    /\b(?:re-?read|read|inspect|review|audit)\b[^.\n;]{0,120}\b(?:repository|project|workspace)\b[^.\n;]{0,120}\b(?:requirements?|instructions?|implementation|source|tests?)\b/i.test(
+      text
+    ) ||
     /\b(?:exact|current|mature|proven|verified|source[- ]grounded|documented)\b[^.\n;]{0,120}\b(?:commands?|interfaces?|workflows?|routines?|readiness|capabilit(?:y|ies))\b/i.test(
       text
     ) ||
     /\b(?:verify|inspect|audit|check)\b[^.\n;]{0,120}\b(?:rather than guess|without guessing|from (?:the )?(?:source|docs?|help))\b/i.test(
       text
     ) ||
-    (/准确|精确|当前|成熟|已验证|有依据|不要猜|避免猜测/.test(text) && /命令|接口|流程|例程|就绪|能力/.test(text))
+    (/准确|精确|当前|成熟|已验证|有依据|不要猜|避免猜测/.test(text) && /命令|接口|流程|例程|就绪|能力/.test(text)) ||
+    (/(?:重新)?(?:阅读|讀取|检查|檢查|审查|審查)/.test(text) &&
+      /(?:仓库|倉庫|项目|項目|工作区|工作區)/.test(text) &&
+      /(?:要求|说明|說明|实现|實現|源码|源碼|测试|測試)/.test(text))
   );
 }
 
@@ -730,7 +1461,7 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   const text = normalizedText(positiveGoal);
   const artifactSignalText = text
     .replace(
-      /\b(?:clean(?:\s+up)?|remove|delete|clear|purge)\b[^.\n;]{0,120}\b(?:generated|temporary|stale|test)?\s*(?:test\s+)?(?:debris|caches?|byproducts?)\b/gi,
+      /\b(?:clean(?:\s+up)?|remove|delete|clear|purge)\b[^.\n;]{0,120}\b(?:(?:disposable|generated|temporary|stale|test|build)\s+){0,4}(?:debris|caches?|byproducts?|outputs?|artifacts?|files?|directories?|folders?)\b/gi,
       ""
     )
     .replace(
@@ -763,16 +1494,54 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   if (directCommandSignal || (validationSignal && codeProfileRequiresCommand(positiveGoal))) {
     categories.add("command");
   }
-  if (textHas(mandatoryEvidenceText, /\b(artifact|canvas|pdf|image|video|screenshot|cover|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b/) || /输出|产物|图片|视频|截图|封面|生成/.test(mandatoryEvidenceText)) {
+  if (goalRequestsTestExecution(positiveGoal)) {
+    categories.add("test");
+  }
+  if (
+    textHas(
+      mandatoryEvidenceText,
+      /\b(artifact|canvas|pdf|image|video|screenshot|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b|\b(?:album|book|paper|report|video)\s+cover\b|\bcover\s+(?:art|design|image)\b/
+    ) || /输出|产物|图片|视频|截图|封面|生成/.test(mandatoryEvidenceText)
+  ) {
     categories.add("artifact");
   }
-  if (textHas(mandatoryEvidenceText, /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?ui|website|page|tab|composer|click|type|upload|attach|submit|form)\b/) || /浏览器|网页|页面|上传|提交|附件|资产库/.test(mandatoryEvidenceText)) {
+  if (
+    textHas(
+      mandatoryEvidenceText,
+      /\b(browser|chrome|chromium|cdp|devtools|playwright|selenium|web[- ]?(?:ui|page)|website|tab|composer|click|upload|attach|submit|form)\b/
+    ) ||
+    textHas(
+      mandatoryEvidenceText,
+      /\b(?:browse|navigate|open|refresh|visit)\b[^.\n;]{0,60}\b(?:page|site)\b|\b(?:page|site)\b[^.\n;]{0,60}\b(?:click|open|submit|upload)\b/
+    ) ||
+    textHas(
+      mandatoryEvidenceText,
+      /\btype\b[^.\n;]{0,80}\b(?:into|in)\b[^.\n;]{0,80}\b(?:field|input|box|form|page|site|browser|tab|composer)\b|\btype\s+(?:the\s+)?(?:text|value|password|query)\b[^.\n;]{0,80}\b(?:field|input|box|form|page|site|browser|tab|composer)\b/
+    ) ||
+    /浏览器|网页|页面|上传|提交|附件|资产库/.test(mandatoryEvidenceText)
+  ) {
     categories.add("browser");
   }
-  if (textHas(mandatoryEvidenceText, /\b(screenshot|visible|visual|see|inspect image|open image|read_image|thumbnail)\b/) || /截图|可见|缩略图/.test(mandatoryEvidenceText)) {
+  if (
+    textHas(
+      mandatoryEvidenceText,
+      /\b(?:screenshot|visual|inspect image|open image|read_image|thumbnails?)\b|\bvisible\s+(?:browser|page|ui|window|image|artifact|result|output|render|preview|screen|thumbnails?)\b|\bsee\s+(?:the\s+)?(?:image|render|preview|page|screen|visual\s+result)\b/
+    ) ||
+    /截图|(?:可见|查看|目视)[^。；\n]{0,40}(?:图像|图片|页面|界面|窗口|渲染|预览|屏幕)|缩略图/.test(mandatoryEvidenceText)
+  ) {
     categories.add("visual");
   }
-  if (textHas(text, /\b(publish|deploy|submit|upload to|generate video|external service|npm publish|release)\b/) || /发布|部署|提交|生成视频|外部服务/.test(text)) {
+  const explicitPublishAction =
+    textHas(
+      text,
+      /\b(?:publish|deploy|submit|upload to|generate video|external service|npm publish)\b/
+    ) ||
+    textHas(
+      text,
+      /\b(?:release|ship)\s+(?:(?:the|this|that|a|an)\s+)?(?:package|version|build|app|application|software|library|plugin|extension|product)\b|\b(?:release|ship)\s+(?:to|on|via|through)\b|\bcut\s+(?:a\s+)?release\b/
+    ) ||
+    /发布|部署|提交|生成视频|外部服务/.test(text);
+  if (explicitPublishAction) {
     categories.add("publish");
   }
 
@@ -795,17 +1564,17 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
 }
 
 function inferForbiddenActions(goal = "") {
-  const text = String(goal || "");
+  const text = normalizeSoftLineWraps(goal);
   const forbidden = [];
   const isAction = (value = "") =>
-    /\b(use|open|click|browse|browser|upload|attach|submit|publish|deploy|run|execute|install|delete|remove|commit|push|call|api)\b/i.test(
+    /\b(use|open|click|browse|browser|upload|attach|submit|publish|deploy|run|execute|install|delete|remove|commit|push|call|api|alter|chang(?:e|ing)|edit(?:ing)?|fix(?:ing)?|modif(?:y|ying)|patch(?:ing)?|repair(?:ing)?|rewrit(?:e|ing)|send(?:ing)?|touch(?:ing)?|writ(?:e|ing))\b/i.test(
       value
-    ) || /浏览器|网页|打开|点击|上传|提交|发布|部署|运行|执行|安装|删除|复制|移动|提交代码|推送|调用|API/.test(value);
+    ) || /浏览器|网页|打开|点击|上传|提交|发布|部署|运行|执行|安装|删除|复制|移动|修改|编辑|修复|改写|写入|提交代码|推送|调用|API/.test(value);
   const patterns = [
     { re: /\b(do not|don't|dont|never|no need to)\s+([^.\n;]+)/gi, prefix: "User forbids" },
     // A sentence such as "without changing X, run tests and commit" starts a
     // positive instruction after the comma. Keep only the local without-clause.
-    { re: /\bwithout\s+([^.,\n;]+)/gi, prefix: "User forbids" },
+    { re: /\bwithout\s+([^.,:\uFF1A\n;]+)/gi, prefix: "User forbids" },
     { re: /不要([^。\n；]+)/g, prefix: "User forbids" },
     { re: /禁止([^。\n；]+)/g, prefix: "User forbids" },
   ];
@@ -846,29 +1615,86 @@ function inferRequiredToolCalls(goal = "") {
 }
 
 function stripForbiddenLanguage(goal = "") {
-  return String(goal || "")
-    .replace(/\b(do not|don't|dont|never|no need to)\s+([^.\n;]+)/gi, "")
-    .replace(/\bwithout\s+([^.,\n;]+)/gi, "")
+  return normalizeSoftLineWraps(goal)
+    .replace(/\b(do not|don't|dont|must not|should not|never|no need to)\s+([^.\n;]+)/gi, "")
+    .replace(/\bwithout\s+([^.,:\uFF1A\n;]+)/gi, "")
     .replace(/不要([^。\n；]+)/g, "")
     .replace(/禁止([^。\n；]+)/g, "");
 }
 
-function parseAgintiEvidenceScope(goal = "") {
+function stripCompletedWorkNarration(goal = "") {
+  const completedAction =
+    "(?:completed?|finished|performed|applied|committed|repaired|fixed|rebuilt|rewrote|generated|created|updated|modified|patched|moved|relocated)";
+  const priorActor =
+    "(?:(?:the\\s+)?(?:prior|previous|earlier|last)\\s+(?:run|turn|attempt|session|agent|worker)|(?:it|this|that)\\s+(?:was|has\\s+been))";
+  return String(goal || "")
+    .replace(
+      /\b(?:continue|resume)\s+(?:the\s+)?(?:same\s+)?(?:already\s+)?(?:completed|finished|verified|committed)\b[^.!?;；。！？\n]*/gi,
+      (clause) =>
+        /\b(?:and|but|then)\s+(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/i.test(
+          clause
+        )
+          ? clause
+          : ""
+    )
+    .replace(
+      /\b(?:clean(?:\s+up)?|remove|delete|clear|purge)\b[^.!?;；。！？\n]{0,120}\b(?:disposable|generated|temporary|stale)\b[^.!?;；。！？\n]{0,100}\b(?:build\s+)?(?:outputs?|artifacts?|files?|directories?|folders?|caches?)\b/gi,
+      ""
+    )
+    .replace(
+      new RegExp(
+        `\\b${priorActor}\\b[^.!?;；。！？\\n]{0,300}\\b${completedAction}\\b[^.!?;；。！？\\n]*`,
+        "gi"
+      ),
+      ""
+    )
+    .replace(
+      new RegExp(
+        `\\b(?:already|previously|earlier)\\b[^.!?;；。！？\\n]{0,180}\\b${completedAction}\\b[^.!?;；。！？\\n]*`,
+        "gi"
+      ),
+      ""
+    );
+}
+
+function parseAgintiEvidenceScopeMatch(goal = "") {
   const matches = [
     ...String(goal || "").matchAll(/^AGINTI_EVIDENCE_SCOPE_JSON:\s*(\{[^\n]+\})\s*$/gm),
   ];
-  const match = matches.at(-1);
-  if (!match) return null;
-  try {
-    const payload = JSON.parse(match[1]);
-    return payload && typeof payload === "object" ? payload : null;
-  } catch {
-    return null;
+  for (const match of matches.reverse()) {
+    try {
+      const payload = JSON.parse(match[1]);
+      if (payload && typeof payload === "object") {
+        return {
+          line: String(match[0] || "").trim(),
+          payload,
+        };
+      }
+    } catch {
+      // A compacted or malformed older scope line must not hide a later valid
+      // host-owned scope record.
+    }
   }
+  return null;
+}
+
+function parseAgintiEvidenceScope(goal = "") {
+  return parseAgintiEvidenceScopeMatch(goal)?.payload || null;
+}
+
+export function agintiEvidenceScopeLine(goal = "") {
+  return parseAgintiEvidenceScopeMatch(goal)?.line || "";
 }
 
 export function hasAgintiEvidenceScope(goal = "") {
   return Boolean(parseAgintiEvidenceScope(goal));
+}
+
+export function isResponseOnlyEvidenceScope(goal = "") {
+  const payload = parseAgintiEvidenceScope(goal);
+  if (!payload) return false;
+  const mode = String(payload.mode || "").trim().toLowerCase();
+  return ["chat-response", "host-managed-response", "plan-response", "read-only-answer"].includes(mode);
 }
 
 export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
@@ -892,14 +1718,14 @@ export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
     return text;
   }
   const mode = String(payload.mode || "").trim().toLowerCase();
-  if (["chat-response", "host-managed-response", "plan-response", "read-only-answer"].includes(mode)) {
+  if (isResponseOnlyEvidenceScope(goal)) {
     return "Answer the current chat turn directly without external execution.";
   }
   const request = String(payload.request || "").trim();
   return request || String(goal || "");
 }
 
-function scopedArtifactRoot(goal = "") {
+export function scopedArtifactRoot(goal = "") {
   const payload = parseAgintiEvidenceScope(goal);
   if (!payload || String(payload.mode || "").trim().toLowerCase() !== "task") return "";
   return String(payload.artifact_root || "").trim();
@@ -925,16 +1751,135 @@ function prefixRequestsInlineCommandExecution(prefix = "") {
   const preamble = /^(?:(?:please|kindly|now)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:want|need|would\s+like)\s+you\s+to\s+|you\s+(?:must|should|need\s+to|have\s+to)\s+|(?:help|assist)\s+me(?:\s+to)?\s+|(?:请你|請你|麻烦|麻煩|帮我|幫我|需要|必须|必須|请|請)\s*)/i;
   while (preamble.test(clause)) clause = clause.replace(preamble, "").trim();
   clause = clause.replace(/(?:[:：]|--?)\s*$/, "").trim();
+  clause = clause
+    .replace(
+      /\b(commands?)\s+(?:without|while|before|after)\b[\s\S]*$/i,
+      "$1"
+    )
+    .trim();
   return (
-    /^(?:run|execute|invoke|launch)(?:\s+(?:(?:the|this|that)\s+)?(?:following\s+)?command(?:\s+named)?)?\s*$/i.test(
+    /^(?:followed\s+by|run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)(?:\s+(?:exactly|again|once))?(?:\s+(?:(?:the|this|that)\s+)?(?:(?:canonical|exact|required|following|declared|requested|specified|validator|validation|verification|acceptance|test|project)\s+)*(?:commands?|verifier|validator|verification|tests?|test\s+suite|suite)(?:\s+named)?)?\s*$/i.test(
       clause
-    ) || /^(?:运行|運行|执行|執行|调用|調用)\s*$/.test(clause)
+    ) || /^(?:随后运行|隨後運行|接着运行|接著運行|运行|運行|执行|執行|调用|調用|验证|驗證|检查|檢查|确认|確認)\s*$/.test(clause)
   );
+}
+
+function sentenceContinuesRequestedCommandList(source = "", sentenceStart = -1, commandIndex = -1) {
+  const prefix = String(source || "").slice(sentenceStart + 1, commandIndex).trim();
+  if (!/^(?:these|those|the\s+following)\s+(?:commands?\s+)?(?:include|are)\b/i.test(prefix)) {
+    return false;
+  }
+
+  const preceding = String(source || "").slice(0, Math.max(0, sentenceStart)).trimEnd();
+  const previousStart = Math.max(
+    preceding.lastIndexOf("\n"),
+    preceding.lastIndexOf("."),
+    preceding.lastIndexOf("!"),
+    preceding.lastIndexOf("?"),
+    preceding.lastIndexOf("。"),
+    preceding.lastIndexOf("！"),
+    preceding.lastIndexOf("？")
+  );
+  const previousSentence = preceding.slice(previousStart + 1).trim();
+  return (
+    /\b(?:run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm|follow)\b/i.test(previousSentence) &&
+    /\b(?:exact|required|following|verification|validation|test|check)\b/i.test(previousSentence) &&
+    /\bcommands?\b/i.test(previousSentence)
+  );
+}
+
+function precedingLineRequestsInlineCommandExecution(source = "", commandIndex = -1) {
+  const precedingSource = String(source || "").slice(
+    0,
+    Math.max(0, Number(commandIndex || 0))
+  );
+  const lastLineBreak = precedingSource.lastIndexOf("\n");
+  const currentLinePrefix = precedingSource.slice(lastLineBreak + 1).trim();
+  if (
+    currentLinePrefix &&
+    !/^(?:[-*+]|\d+[.)])$/u.test(currentLinePrefix)
+  ) {
+    return false;
+  }
+  const priorLinesSource =
+    lastLineBreak >= 0 ? precedingSource.slice(0, lastLineBreak) : "";
+  const lines = priorLinesSource.split(/\r?\n/);
+  while (lines.length && !String(lines.at(-1) || "").trim()) lines.pop();
+  const precedingLine = String(lines.at(-1) || "").trim();
+  if (precedingLine && prefixRequestsInlineCommandExecution(precedingLine)) {
+    return true;
+  }
+
+  const blockLines = [];
+  while (lines.length && blockLines.length < 4) {
+    const line = String(lines.pop() || "").trim();
+    if (!line) break;
+    blockLines.unshift(line);
+  }
+  const precedingBlock = blockLines.join(" ").trim();
+  return Boolean(
+    precedingBlock &&
+      /(?:^|[.!?;:,。！？；：，])\s*(?:(?:then|next)\s+)?(?:please\s+|kindly\s+|now\s+)?(?:run|rerun|re-run|execute|invoke|launch|verify|validate|check|confirm)\b/i.test(
+        precedingBlock
+      ) &&
+      /\b(?:exact|required|following|declared|requested|specified|validator|validation|verification|acceptance|test|project|command)\b/i.test(
+        precedingBlock
+      )
+  );
+}
+
+function canonicalBareVerifierCommand(rawPath = "") {
+  const candidate = String(rawPath || "").trim();
+  if (
+    !candidate ||
+    candidate.length > 1000 ||
+    /[\u0000-\u001f\u007f\s"'`$&|;<>()[\]{}*?!]/u.test(candidate) ||
+    hasActiveShellExpansion(candidate)
+  ) {
+    return "";
+  }
+  const basename = path.basename(candidate).toLowerCase();
+  if (!/(?:test|verify|check|contract|acceptance|audit|smoke|doctor|lint)/i.test(basename)) {
+    return "";
+  }
+  if (/\.py$/i.test(candidate)) return `python3 ${candidate}`;
+  if (/\.sh$/i.test(candidate)) return `bash ${candidate}`;
+  if (/\.(?:cjs|mjs|js)$/i.test(candidate)) return `node ${candidate}`;
+  return "";
+}
+
+function inferBareRequestedVerifierCommands(goal = "") {
+  const commands = [];
+  const source = stripForbiddenLanguage(goal);
+  const sentencePattern = /(?:^|[!?。！？\n]|\.(?=\s))\s*(?:please\s+|kindly\s+|now\s+)?(?:run|execute|invoke|launch)\b([^!?。！？\n]{0,1200})/gi;
+  const pathPattern = /(?:^|[\s,:，：])((?:(?:~|\.{1,2})?\/|[A-Za-z0-9_-]+\/)[A-Za-z0-9_./~-]*\.(?:py|sh|cjs|mjs|js))(?=$|[.\s,;，；])/gi;
+  for (const sentence of source.matchAll(sentencePattern)) {
+    const sentenceSource = String(sentence[0] || "");
+    const sentenceBody = String(sentence[1] || "");
+    const sentenceBodyOffset = Math.max(0, sentenceSource.indexOf(sentenceBody));
+    const clause = String(sentence[1] || "").split(
+      /[,;，；]\s*(?=(?:then\s+)?(?:commit|stage|push|publish|deploy|save|write|edit|patch|create|remove|delete|verify\s+(?:a|the)\s+(?:clean|final)|提交|暂存|推送|发布|保存|写入|编辑|修改|创建|删除|验证工作区)\b)/i,
+      1
+    )[0];
+    for (const match of clause.matchAll(pathPattern)) {
+      const pathOffset = String(match[0] || "").indexOf(String(match[1] || ""));
+      const absolutePathIndex =
+        Number(sentence.index || 0) +
+        sentenceBodyOffset +
+        Number(match.index || 0) +
+        Math.max(0, pathOffset);
+      if (indexFallsInsideInlineCommand(source, absolutePathIndex)) continue;
+      const command = canonicalBareVerifierCommand(match[1]);
+      if (command) commands.push(normalizeProjectCommand(command));
+    }
+  }
+  return unique(commands).slice(0, 8);
 }
 
 function inferExplicitRequestedCommands(goal = "") {
   const source = stripForbiddenLanguage(goal);
-  const commands = [];
+  const inferredBareCommands = inferBareRequestedVerifierCommands(source);
+  const explicitCommands = [];
   const inlineCode = /(?<!`)`([^`\r\n]+)`(?!`)/g;
   for (const match of source.matchAll(inlineCode)) {
     const index = Number(match.index || 0);
@@ -948,12 +1893,20 @@ function inferExplicitRequestedCommands(goal = "") {
       source.lastIndexOf("？", index - 1)
     );
     const prefix = source.slice(sentenceStart + 1, index).trimEnd();
-    if (!prefixRequestsInlineCommandExecution(prefix)) continue;
+    if (
+      !prefixRequestsInlineCommandExecution(prefix) &&
+      !sentenceContinuesRequestedCommandList(source, sentenceStart, index) &&
+      !precedingLineRequestsInlineCommandExecution(source, index)
+    ) {
+      continue;
+    }
 
     const command = normalizeProjectCommand(match[1]);
     if (
       !command ||
       command.length > 1000 ||
+      /^\.[A-Za-z0-9_-]+$/u.test(command) ||
+      /(?:^|\s)(?:\.{3}|…)(?:\s|$)/u.test(command) ||
       /[<>](?:PATH|FILE|COMMAND|VALUE)[<>]?/i.test(command) ||
       hasActiveShellExpansion(command)
     ) {
@@ -973,13 +1926,146 @@ function inferExplicitRequestedCommands(goal = "") {
       const tokens = tokenizeShellWords(segment);
       return Boolean(tokens.length && !String(tokens[0] || "").startsWith("-"));
     });
-    if (executableSegments) commands.push(command);
+    if (executableSegments) explicitCommands.push(command);
   }
-  return unique(commands).slice(0, 8);
+  const explicitTokenSets = explicitCommands.map((command) => tokenizeShellWords(command));
+  const nonShadowedBareCommands = inferredBareCommands.filter((command) => {
+    const bareTokens = tokenizeShellWords(command);
+    return !explicitTokenSets.some(
+      (tokens) =>
+        tokens.length > bareTokens.length &&
+        bareTokens.every((token, index) => tokens[index] === token)
+    );
+  });
+  return unique([...nonShadowedBareCommands, ...explicitCommands]).slice(0, 8);
+}
+
+function routineCommandLooksReadOnly(command = "") {
+  const normalized = normalizeProjectCommand(command);
+  if (
+    !normalized ||
+    normalized.length > 1000 ||
+    hasActiveShellExpansion(normalized)
+  ) {
+    return false;
+  }
+  const sequence = parseTopLevelShellSequence(normalized);
+  if (
+    !sequence.commands.length ||
+    sequence.commands.length > 1 ||
+    sequence.trailingSeparator ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.separators.length
+  ) {
+    return false;
+  }
+  const unquoted = normalized.replace(/"[^"\n]*"|'[^'\n]*'/g, "");
+  if (/[;&|<>`]/.test(unquoted)) return false;
+  return /\b(?:status|health|doctor|inspect|check|show|list)\b|--json\b/i.test(
+    normalized
+  );
+}
+
+function parseRoutineCommandArray(line = "") {
+  const start = String(line || "").indexOf("commands=");
+  if (start < 0) return [];
+  const source = String(line).slice(start + "commands=".length).trimStart();
+  if (!source.startsWith("[")) return [];
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (char === "]" && !inString) {
+      try {
+        const parsed = JSON.parse(source.slice(0, index + 1));
+        return Array.isArray(parsed) ? parsed.map(normalizeProjectCommand).filter(Boolean) : [];
+      } catch {
+        return [];
+      }
+    }
+  }
+  return [];
+}
+
+function matchedRoutineLines(goal = "") {
+  const lines = String(goal || "").split(/\r?\n/);
+  const selected = [];
+  let active = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (/^Matched established routines\b/i.test(line)) {
+      active = true;
+      continue;
+    }
+    if (!active) continue;
+    if (/^(?:Operating contract|Runtime|Repository evidence)\b/i.test(line)) break;
+    if (!line) continue;
+    if (/^-\s+/.test(line)) selected.push(line);
+  }
+  return selected;
+}
+
+export function inferAuthoritativeReadOnlyRoutine(goal = "") {
+  const scope = parseAgintiEvidenceScope(goal);
+  const request = String(scope?.request || scopedChatopsEvidenceGoal(goal) || "");
+  const requestReadOnly = /\b(?:read[- ]only|inspect|checking|check|status|tell me|answer|report)\b/i.test(request) &&
+    /\b(?:do not|don't|dont|never|without|no)\b[^.\n;]{0,180}\b(?:send|change|modify|edit|write|mutate|delete|publish|deploy)\b/i.test(request);
+  for (const line of matchedRoutineLines(goal)) {
+    if (!/\bready\s*=\s*true\b/i.test(line)) continue;
+    const commands = parseRoutineCommandArray(line)
+      .filter(routineCommandLooksReadOnly)
+      .slice(0, 4);
+    if (!commands.length) continue;
+    const guidance = line.includes("guidance=")
+      ? line.slice(line.indexOf("guidance=") + "guidance=".length)
+      : line;
+    const lowerGuidance = guidance.toLowerCase();
+    const readOnlyRoutine =
+      requestReadOnly ||
+      /\bread[- ]only\b/.test(lowerGuidance) ||
+      /\bdo not\b[^.\n;]{0,180}\b(?:send|change|modify|edit|write|mutate)\b/i.test(guidance);
+    const authoritative =
+      /\b(?:canonical|authoritative|run\b[^.\n;]{0,160}\bfirst|invoke\b[^.\n;]{0,160}\bfirst)\b/i.test(
+        guidance
+      );
+    if (!readOnlyRoutine || !authoritative) continue;
+    const forbiddenEvidenceScopes = [];
+    if (/\bprivate\b/i.test(guidance)) forbiddenEvidenceScopes.push("private");
+    if (/\braw\b/i.test(guidance)) forbiddenEvidenceScopes.push("raw");
+    const routineId =
+      line.match(/^-\s+`([^`]+)`/)?.[1] ||
+      line.match(/^-\s+([A-Za-z0-9._:-]+)/)?.[1] ||
+      "authoritative-routine";
+    return {
+      schemaVersion: 1,
+      routineId: String(routineId).slice(0, 120),
+      primaryCommand: commands[0],
+      commands,
+      readOnly: true,
+      stopAfterPrimary: true,
+      forbiddenEvidenceScopes: unique(forbiddenEvidenceScopes).slice(0, 4),
+    };
+  }
+  return null;
 }
 
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
   const evidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
+  const positiveEvidenceGoal = stripForbiddenLanguage(evidenceGoal);
+  const authoritativeRoutine = inferAuthoritativeReadOnlyRoutine(goal);
   const artifactRoot = scopedArtifactRoot(goal);
   const requirementCategories = inferRequirementCategories(evidenceGoal, taskProfile, acceptanceCriteria);
   const requiredToolCalls = inferRequiredToolCalls(evidenceGoal);
@@ -987,18 +2073,37 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   if (requiredGitActions.length && !requirementCategories.includes("git")) {
     requirementCategories.push("git");
   }
-  const requiresExternalEvidence = requirementCategories.length > 0 || requiredToolCalls.length > 0 || goalRequiresEvidence(evidenceGoal, taskProfile);
+  const requiresExternalEvidence =
+    requirementCategories.length > 0 || requiredToolCalls.length > 0 || goalRequiresEvidence(positiveEvidenceGoal, taskProfile);
   const requiredEvidence = requirementCategories.map((category) => ({
     id: category,
     category,
     description: CATEGORY_LABELS[category] || category,
   }));
-  const inferredOutputPaths = inferExactOutputPaths(evidenceGoal);
-  const exactOutputPaths = applyScopedArtifactRoot(inferredOutputPaths, artifactRoot);
-  const exactInputPaths = inferExactInputPaths(evidenceGoal).filter(
-    (item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item)
+  const excludedOutputPaths = inferExplicitlyExcludedOutputPaths(evidenceGoal);
+  const inferredOutputPaths = filterExplicitlyExcludedOutputPaths(
+    inferExactOutputPaths(positiveEvidenceGoal),
+    excludedOutputPaths
   );
+  const exactOutputPaths = filterExplicitlyExcludedOutputPaths(
+    applyScopedArtifactRoot(inferredOutputPaths, artifactRoot),
+    excludedOutputPaths
+  );
+  const exactInputPaths = filterExplicitlyExcludedOutputPaths(
+    inferExactInputPaths(positiveEvidenceGoal),
+    excludedOutputPaths
+  ).filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
+  const requiredArtifactKinds = inferRequestedArtifactRequirements(
+    positiveEvidenceGoal,
+    taskProfile
+  );
+  const scopedArtifactDeliverable = Boolean(
+    artifactRoot && goalRequestsScopedArtifactDeliverable(evidenceGoal)
+  );
+  const scopedArtifactOperation = Boolean(
+    artifactRoot && goalRequestsScopedArtifactOperation(evidenceGoal)
+  );
   return {
     version: 1,
     outcome: compact(evidenceGoal || "Complete the requested task.", 500),
@@ -1007,6 +2112,10 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiredEvidence,
     forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
+    requiredArtifactKinds,
+    scopedArtifactDeliverable,
+    scopedArtifactOperation,
+    excludedOutputPaths,
     artifactRoot,
     exactInputPaths,
     declaredSourceRoots,
@@ -1014,9 +2123,16 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiresPerSourceChecks: requiresPerSourceChecks(evidenceGoal),
     requiredToolCalls,
     requiredGitActions,
-    requiredProjectCommands: inferExplicitRequestedCommands(evidenceGoal),
+    requiredProjectCommands: unique([
+      ...inferExplicitRequestedCommands(positiveEvidenceGoal),
+      ...(authoritativeRoutine?.primaryCommand ? [authoritativeRoutine.primaryCommand] : []),
+    ]).slice(0, 8),
+    authoritativeRoutine,
+    requiresWorkspaceMutation: goalRequestsWorkspaceMutation(evidenceGoal, taskProfile),
+    requiresFileMutation: goalRequestsFileMutation(evidenceGoal, taskProfile),
     requiresSourceGrounding: requiresSourceGrounding(evidenceGoal),
-    requiredTextTerms: inferRequiredTextTerms(evidenceGoal),
+    requiredTextTerms: inferRequiredTextTerms(positiveEvidenceGoal),
+    requiredExecutableTerms: inferRequiredExecutableTerms(positiveEvidenceGoal),
     forbiddenTextTerms: inferForbiddenTextTerms(evidenceGoal),
     successCriteria: unique(acceptanceCriteria).slice(0, 10),
   };
@@ -1070,7 +2186,171 @@ export function inferSuccessfulGitActionsFromCommandResult(payload = {}) {
     return inferGitActionsFromCommand(exitWrapper.command);
   }
   if (payload.ok === false || Number(payload.exitCode ?? 0) !== 0) return [];
-  return inferGitActionsFromCommand(command);
+  const inferred = inferGitActionsFromCommand(command);
+  if (inferred.length) return inferred;
+
+  // Shell expansion or a setup prefix can make the full command ambiguous to
+  // the static parser. A canonical successful commit line plus an explicit
+  // top-level `git commit` still provides concrete commit evidence.
+  const output = String(payload.stdout || payload.result || "");
+  if (
+    /(?:^|[;&|]\s*)git\s+commit\b/i.test(command) &&
+    /^\[[^\]\n]+\s+[0-9a-f]{7,}\]\s+\S+/mi.test(output)
+  ) {
+    return ["commit"];
+  }
+  return [];
+}
+
+export function buildTmuxGitIntent(command = "") {
+  const text = String(command || "");
+  // `$?` is expected in the explicit tmux exit marker. Remove only that
+  // non-command expansion before parsing; all other shell expansion remains
+  // subject to the normal ambiguity guard.
+  const parseable = text.replace(/\$\?/g, "0");
+  const actions = inferGitActionsFromCommand(parseable, {
+    requireFailurePropagation: false,
+  }).filter((action) => !isObservationalGitAction(action));
+  const markers = [
+    ...text.matchAll(/={3,}([A-Z0-9][A-Z0-9_-]{3,96}(?:START|BEGIN))={3,}/g),
+  ].map((match) => String(match[0] || ""));
+  if (!actions.length || !markers.length) return null;
+  return {
+    actions: unique(actions),
+    markers: unique(markers).slice(0, 4),
+  };
+}
+
+export function inferSuccessfulGitActionsFromTmuxCapture(intent = {}, payload = {}) {
+  if (
+    !intent ||
+    !payload ||
+    payload.ok === false ||
+    payload.blocked ||
+    String(payload.toolName || "") !== "tmux_capture_pane"
+  ) {
+    return [];
+  }
+  const content = [payload.content, payload.contentPreview, payload.contentTail]
+    .map((item) => String(item || ""))
+    .filter(Boolean)
+    .join("\n");
+  const markers = Array.isArray(intent.markers)
+    ? intent.markers.map(String).filter(Boolean)
+    : [];
+  if (!content || !markers.length || !markers.some((marker) => content.includes(marker))) {
+    return [];
+  }
+  const requested = Array.isArray(intent.actions)
+    ? intent.actions.map((item) => String(item || "").toLowerCase()).filter(Boolean)
+    : [];
+  const verified = [];
+  if (
+    requested.includes("commit") &&
+    /={3,}(?:GIT_)?COMMIT_EXIT\s*[:=]\s*0={3,}/i.test(content) &&
+    /^\[[^\]\n]+\s+[0-9a-f]{7,}\]\s+\S+/mi.test(content)
+  ) {
+    verified.push("commit");
+  }
+  return verified;
+}
+
+export function reconcileTmuxGitEvidenceEvents(events = []) {
+  const source = Array.isArray(events) ? events : [];
+  const pendingStarts = new Map();
+  const activeIntents = new Map();
+  let goalRevision = 0;
+  let mutationRevision = 0;
+
+  return source.map((event) => {
+    const type = String(event?.type || "");
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    goalRevision = Math.max(
+      goalRevision,
+      Number(
+        data.goalRevision ??
+          (type === "goal.updated" ? data.revision : 0) ??
+          0
+      ) || 0
+    );
+    mutationRevision = Math.max(
+      mutationRevision,
+      Number(data.projectMutationRevision ?? data.mutationRevision ?? 0) || 0
+    );
+
+    const toolName = String(data.toolName || "");
+    const target = String(data.target || data.args?.target || "");
+    if (type === "tool.started" && toolName === "tmux_send_keys" && target) {
+      const intent = buildTmuxGitIntent(data.args?.text || "");
+      if (intent) {
+        pendingStarts.set(target, {
+          ...intent,
+          target,
+          goalRevision,
+          mutationRevision,
+        });
+      } else {
+        pendingStarts.delete(target);
+        activeIntents.delete(target);
+      }
+      return event;
+    }
+
+    if (["tool.completed", "tool.failed"].includes(type) && toolName === "tmux_send_keys" && target) {
+      const pending = pendingStarts.get(target);
+      pendingStarts.delete(target);
+      if (type === "tool.completed" && data.ok !== false && pending) {
+        activeIntents.set(target, {
+          ...pending,
+          sentTextSha256: String(data.sentTextSha256 || ""),
+        });
+      } else {
+        activeIntents.delete(target);
+      }
+      return event;
+    }
+
+    if (type === "tool.completed" && toolName === "tmux_capture_pane" && target) {
+      const pending = activeIntents.get(target);
+      const verifiedGitActions = inferSuccessfulGitActionsFromTmuxCapture(
+        pending,
+        data
+      );
+      if (verifiedGitActions.length) {
+        activeIntents.delete(target);
+        return {
+          ...event,
+          data: {
+            ...data,
+            verifiedGitActions,
+            verifiedGitSource: "tmux_capture_pane",
+            verifiedGitGoalRevision: Math.max(
+              0,
+              Number(pending.goalRevision || 0)
+            ),
+            verifiedGitMutationRevision: Math.max(
+              0,
+              Number(pending.mutationRevision || 0)
+            ),
+            verifiedGitCommandSha256: String(
+              pending.sentTextSha256 || ""
+            ),
+          },
+        };
+      }
+    }
+    return event;
+  });
+}
+
+export function successfulGitCommitProvesFileMutation(payload = {}) {
+  if (!inferSuccessfulGitActionsFromCommandResult(payload).includes("commit")) return false;
+  const output = String(payload.stdout || payload.result || "");
+  return (
+    /^\[[^\]\n]+\s+[0-9a-f]{7,}\]\s+\S+/mi.test(output) &&
+    (/(?:^|\n)\s*\d+\s+files?\s+changed\b/mi.test(output) ||
+      /(?:^|\n)\s*(?:create|delete|rename)\s+mode\s+\d+\s+/mi.test(output))
+  );
 }
 
 function observedProjectCommandSatisfies(requiredCommand = "", item = {}) {
@@ -1107,12 +2387,20 @@ export function augmentScsTaskContractWithProjectVerification(contract = {}, sta
       .map((item) => String(item?.path || item || "").trim())
       .filter(Boolean)
   ).slice(0, 80);
-  const requiredOutputs = unique(applyScopedArtifactRoot(
-    (Array.isArray(verification.requiredOutputs) ? verification.requiredOutputs : [])
-      .map((item) => String(item || "").trim())
-      .filter(Boolean),
-    String(contract.artifactRoot || "")
-  )).slice(0, 64);
+  const excludedOutputPaths = unique(
+    (Array.isArray(contract.excludedOutputPaths) ? contract.excludedOutputPaths : [])
+      .map(normalizedContractPath)
+      .filter(Boolean)
+  ).slice(0, 24);
+  const requiredOutputs = filterExplicitlyExcludedOutputPaths(
+    applyScopedArtifactRoot(
+      (Array.isArray(verification.requiredOutputs) ? verification.requiredOutputs : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+      String(contract.artifactRoot || "")
+    ),
+    excludedOutputPaths
+  ).slice(0, 64);
   const verificationRequiredProjectCommands = unique([
     ...(Array.isArray(verification.contractRequiredCommands)
       ? verification.contractRequiredCommands
@@ -1124,9 +2412,19 @@ export function augmentScsTaskContractWithProjectVerification(contract = {}, sta
     ...verificationRequiredProjectCommands,
   ].map(normalizeProjectCommand).filter(Boolean)).slice(0, 24);
   const requiredCommandBatch = verification.requiredCommandBatch;
+  const batchRequiredCommands = unique(
+    (Array.isArray(requiredCommandBatch?.requiredCommands)
+      ? requiredCommandBatch.requiredCommands
+      : requiredCommandBatch?.key === JSON.stringify(requiredProjectCommands)
+        ? requiredProjectCommands
+        : [])
+      .map(normalizeProjectCommand)
+      .filter((command) => command && requiredProjectCommands.includes(command))
+  );
   const requiredProjectCommandBatchId =
     requiredCommandBatch &&
-    requiredCommandBatch.key === JSON.stringify(requiredProjectCommands) &&
+    batchRequiredCommands.length > 0 &&
+    requiredCommandBatch.key === JSON.stringify(batchRequiredCommands) &&
     requiredCommandBatch.id
       ? String(requiredCommandBatch.id)
       : "";
@@ -1153,10 +2451,10 @@ export function augmentScsTaskContractWithProjectVerification(contract = {}, sta
     addEvidence("visual", CATEGORY_LABELS.visual);
   }
 
-  const exactOutputPaths = unique([
+  const exactOutputPaths = filterExplicitlyExcludedOutputPaths([
     ...(Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : []),
     ...requiredOutputs,
-  ]).slice(0, 80);
+  ], excludedOutputPaths).slice(0, 80);
   const requiresExternalEvidence = Boolean(
     contract.requiresExternalEvidence ||
     requiredEvidence.length ||
@@ -1168,10 +2466,11 @@ export function augmentScsTaskContractWithProjectVerification(contract = {}, sta
     requiresExternalEvidence,
     requiredEvidence,
     exactOutputPaths,
+    excludedOutputPaths,
     requiredProjectCommands,
     requiredProjectCommandBatchId,
     requiredProjectCommandBatchCommands: requiredProjectCommandBatchId
-      ? requiredProjectCommands
+      ? batchRequiredCommands
       : [],
     requiredProjectCommandRuns,
     projectMutationRevision: mutationRevision,
@@ -1187,6 +2486,190 @@ function resolveContractPath(commandCwd = process.cwd(), rawPath = "") {
   if (text.startsWith("/workspace/")) return path.resolve(commandCwd || process.cwd(), text.slice("/workspace/".length));
   if (path.isAbsolute(text)) return text;
   return path.resolve(commandCwd || process.cwd(), text);
+}
+
+const ARTIFACT_SCAN_IGNORED_DIRECTORIES = new Set([
+  ".aginti",
+  ".aginti-sessions",
+  ".git",
+  ".hg",
+  ".svn",
+  "__pycache__",
+  "node_modules",
+  "vendor",
+]);
+
+function taskArtifactFreshnessBoundary(state = {}) {
+  const lifecycle = Array.isArray(state.meta?.goalContract?.lifecycle)
+    ? state.meta.goalContract.lifecycle
+    : [];
+  const lifecycleTimes = lifecycle
+    .map((item) => Date.parse(String(item?.at || "")))
+    .filter(Number.isFinite);
+  if (lifecycleTimes.length) return Math.min(...lifecycleTimes) - 2000;
+  const mutationTimes = (Array.isArray(state.meta?.projectVerification?.mutationHistory)
+    ? state.meta.projectVerification.mutationHistory
+    : [])
+    .map((item) => Date.parse(String(item?.at || "")))
+    .filter(Number.isFinite);
+  return mutationTimes.length ? Math.min(...mutationTimes) - 2000 : 0;
+}
+
+function taskArtifactMutationPaths(state = {}) {
+  const paths = new Set();
+  for (const mutation of Array.isArray(state.meta?.projectVerification?.mutationHistory)
+    ? state.meta.projectVerification.mutationHistory
+    : []) {
+    for (const candidate of Array.isArray(mutation?.paths) ? mutation.paths : []) {
+      const normalized = normalizedContractPath(candidate);
+      if (normalized) paths.add(normalized.toLocaleLowerCase("en-US"));
+    }
+  }
+  return paths;
+}
+
+function collectRequestedArtifactCandidates(commandCwd = process.cwd(), state = {}) {
+  const root = path.resolve(commandCwd || process.cwd());
+  const freshnessBoundary = taskArtifactFreshnessBoundary(state);
+  const mutationPaths = taskArtifactMutationPaths(state);
+  const candidates = [];
+  const queue = [{ absolutePath: root, depth: 0 }];
+  let visited = 0;
+  while (queue.length && candidates.length < 3000 && visited < 6000) {
+    const current = queue.shift();
+    visited += 1;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current.absolutePath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const absolutePath = path.join(current.absolutePath, entry.name);
+      if (entry.isDirectory()) {
+        if (
+          current.depth < 7 &&
+          !ARTIFACT_SCAN_IGNORED_DIRECTORIES.has(entry.name) &&
+          !entry.name.startsWith(".cache")
+        ) {
+          queue.push({ absolutePath, depth: current.depth + 1 });
+        }
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      let stat;
+      try {
+        stat = fs.statSync(absolutePath);
+      } catch {
+        continue;
+      }
+      if (!stat.size) continue;
+      const relativePath = path.relative(root, absolutePath).replace(/\\/g, "/");
+      const normalized = normalizedContractPath(relativePath).toLocaleLowerCase("en-US");
+      const fresh = Boolean(
+        mutationPaths.has(normalized) ||
+          freshnessBoundary === 0 ||
+          Number(stat.mtimeMs || 0) >= freshnessBoundary
+      );
+      candidates.push({
+        path: relativePath,
+        extension: path.extname(entry.name).toLocaleLowerCase("en-US"),
+        basename: entry.name.toLocaleLowerCase("en-US"),
+        bytes: stat.size,
+        mtimeMs: Number(stat.mtimeMs || 0),
+        fresh,
+      });
+    }
+  }
+  return candidates;
+}
+
+function requestedArtifactRequirementMatches(requirement = {}, candidate = {}) {
+  const extension = String(candidate.extension || "").toLocaleLowerCase("en-US");
+  const basename = String(candidate.basename || "").toLocaleLowerCase("en-US");
+  if (requirement.kind === "format") {
+    return extension === String(requirement.extension || "").toLocaleLowerCase("en-US");
+  }
+  if (["editable-presentation", "printable-document", "visual-preview"].includes(requirement.kind)) {
+    const extensions = new Set(
+      (Array.isArray(requirement.extensions) ? requirement.extensions : [])
+        .map((item) => String(item || "").toLocaleLowerCase("en-US"))
+    );
+    if (!extensions.has(extension)) return false;
+    if (requirement.kind === "visual-preview") {
+      return /(?:preview|contact[-_ ]?sheet|overview|thumbnail|render)/i.test(basename);
+    }
+    return true;
+  }
+  if (requirement.kind === "practice-material") {
+    return /(?:practice|worksheet|exercise|handout|activity)/i.test(basename) &&
+      /\.(?:docx|html?|md|odt|pdf|tex|txt)$/i.test(extension);
+  }
+  if (requirement.kind === "answer-material") {
+    return /(?:answer|solution|worked[-_ ]?answers?)/i.test(basename) &&
+      /\.(?:docx|html?|md|odt|pdf|tex|txt)$/i.test(extension);
+  }
+  if (requirement.kind === "reproducible-build-entrypoint") {
+    return (
+      /^(?:makefile|justfile)$/i.test(basename) ||
+      /(?:^|[-_])(?:build|compile|export|generate|render)(?:[-_.]|$)/i.test(basename)
+    ) && /(?:^makefile$|^justfile$|\.(?:cjs|js|mjs|py|sh|ts)$)/i.test(basename);
+  }
+  return false;
+}
+
+export function evaluateRequestedArtifactRequirements(
+  contract = {},
+  { commandCwd = process.cwd(), state = {} } = {}
+) {
+  const requirements = Array.isArray(contract.requiredArtifactKinds)
+    ? contract.requiredArtifactKinds
+    : [];
+  if (!requirements.length) {
+    return {
+      ok: true,
+      checked: false,
+      requirements: [],
+      satisfied: [],
+      missing: [],
+      candidates: [],
+      reason: "No semantic artifact-set contract was inferred.",
+    };
+  }
+  const candidates = collectRequestedArtifactCandidates(commandCwd, state);
+  const requireFresh = contract.requiresFileMutation === true;
+  const usableCandidates = requireFresh
+    ? candidates.filter((candidate) => candidate.fresh)
+    : candidates;
+  const satisfied = [];
+  const missing = [];
+  for (const requirement of requirements) {
+    const matches = usableCandidates.filter((candidate) =>
+      requestedArtifactRequirementMatches(requirement, candidate)
+    );
+    if (matches.length) {
+      satisfied.push({
+        ...requirement,
+        paths: matches.map((candidate) => candidate.path).slice(0, 12),
+      });
+    } else {
+      missing.push(requirement);
+    }
+  }
+  return {
+    ok: missing.length === 0,
+    checked: true,
+    requirements,
+    satisfied,
+    missing,
+    candidates: usableCandidates.slice(0, 120),
+    reason: missing.length
+      ? `Missing requested artifact deliverables: ${missing
+          .map((item) => item.description || item.id)
+          .join(", ")}.`
+      : "Every requested artifact format and role has a fresh workspace deliverable.",
+  };
 }
 
 const PROJECT_SOURCE_PATH_PATTERN =
@@ -1252,14 +2735,26 @@ function evaluateProjectTestVerification(events = []) {
     const event = eventList[index];
     const data = event?.data && typeof event.data === "object" ? event.data : {};
     const command = String(data.args?.command || "").trim();
+    const recordedProjectTest =
+      data.projectTest && typeof data.projectTest === "object"
+        ? data.projectTest
+        : null;
     if (
       event?.type !== "tool.completed" ||
       data.toolName !== "run_command" ||
-      !projectTestCommand(command)
+      (!projectTestCommand(command) && !recordedProjectTest)
     ) {
       continue;
     }
-    testRuns.push({ command, exitCode: Number.isInteger(data.exitCode) ? data.exitCode : null });
+    const exitCode = Number.isInteger(data.exitCode) ? data.exitCode : null;
+    testRuns.push({
+      command,
+      exitCode,
+      passed: recordedProjectTest
+        ? recordedProjectTest.passed === true
+        : exitCode === 0,
+      source: recordedProjectTest ? "project-verification-ledger" : "command-pattern",
+    });
   }
 
   if (testRuns.length === 0) {
@@ -1274,7 +2769,7 @@ function evaluateProjectTestVerification(events = []) {
   }
 
   const lastRun = testRuns.at(-1);
-  const ok = lastRun.exitCode === 0;
+  const ok = lastRun.passed === true;
   return {
     ok,
     checked: true,
@@ -1993,11 +3488,11 @@ function sourceEvidencePaths({ events = [], state = {}, contract = {}, commandCw
     commandCwd,
   });
   const paths = new Map();
-  const addPath = (value = "", source = "") => {
+  const addPath = (value = "", source = "", { allowExcludedDirect = false } = {}) => {
     const cleaned = cleanPathToken(value);
     if (!cleaned) return;
     const keys = pathComparisonKeys(cleaned, commandCwd);
-    if (keys.some((key) => excluded.has(key))) return;
+    if (!allowExcludedDirect && keys.some((key) => excluded.has(key))) return;
     const canonical = keys[keys.length - 1] || cleaned;
     if (!paths.has(canonical)) paths.set(canonical, { path: cleaned, source: String(source || "") });
     for (const key of keys) {
@@ -2042,8 +3537,12 @@ function sourceEvidencePaths({ events = [], state = {}, contract = {}, commandCw
     const payloadPath = payload.path || payload.args?.path || "";
     const payloadPathKeys = pathComparisonKeys(payloadPath, commandCwd);
     const sourceIsExcluded = payloadPathKeys.some((key) => excluded.has(key));
-    if (toolName === "read_file" && sourceIsExcluded) return;
-    if (["read_file", "list_files", "search_files", "inspect_project"].includes(toolName)) {
+    if (toolName === "read_file") {
+      // Reading a generated or previously mutated file proves that exact path
+      // exists. Its contents still cannot ground additional claims.
+      addPath(payloadPath, `${toolName} result`, { allowExcludedDirect: true });
+      if (sourceIsExcluded) return;
+    } else if (["list_files", "search_files", "inspect_project"].includes(toolName)) {
       addPath(payloadPath, `${toolName} result`);
     }
     if (toolName === "read_file") {
@@ -2106,7 +3605,10 @@ function sourceEvidencePaths({ events = [], state = {}, contract = {}, commandCw
 }
 
 function sourceScopeCoverage(contract = {}, { events = [], state = {}, commandCwd = process.cwd() } = {}) {
-  const roots = (contract.declaredSourceRoots || []).map((rawPath) => ({
+  const roots = unique([
+    ...(contract.declaredSourceRoots || []),
+    ...(contract.exactInputPaths || []),
+  ]).map((rawPath) => ({
     rawPath,
     absolutePath: resolveContractPath(commandCwd, rawPath).replace(/\/+$/, ""),
   }));
@@ -2355,9 +3857,23 @@ export function evaluateScsSemanticContract(
 ) {
   const exactOutputPaths = Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : [];
   const requiredTextTerms = Array.isArray(contract.requiredTextTerms) ? contract.requiredTextTerms : [];
+  const requiredExecutableTerms = Array.isArray(contract.requiredExecutableTerms)
+    ? contract.requiredExecutableTerms
+    : [];
   const forbiddenTextTerms = Array.isArray(contract.forbiddenTextTerms) ? contract.forbiddenTextTerms : [];
   const projectTestVerification = evaluateProjectTestVerification(events);
-  if (!exactOutputPaths.length && !requiredTextTerms.length && !forbiddenTextTerms.length) {
+  const executable = evaluateRequiredExecutableTerms(contract, { commandCwd, events, state });
+  const requestedArtifacts = evaluateRequestedArtifactRequirements(contract, {
+    commandCwd,
+    state,
+  });
+  if (
+    !exactOutputPaths.length &&
+    !requiredTextTerms.length &&
+    !requiredExecutableTerms.length &&
+    !forbiddenTextTerms.length &&
+    !requestedArtifacts.checked
+  ) {
     return projectTestVerification.checked
       ? {
           ok: projectTestVerification.ok,
@@ -2368,14 +3884,26 @@ export function evaluateScsSemanticContract(
       : { ok: true, checked: false, projectTestVerification, reason: "No semantic file contract was inferred." };
   }
   if (!exactOutputPaths.length) {
+    const ok = executable.ok && projectTestVerification.ok && requestedArtifacts.ok;
     return {
-      ok: projectTestVerification.ok,
-      checked: projectTestVerification.checked,
-      reason: projectTestVerification.ok
-        ? "Semantic text terms were inferred, but no exact output path was inferred for deterministic file inspection."
-        : projectTestVerification.reason,
+      ok,
+      checked: executable.checked || projectTestVerification.checked || requestedArtifacts.checked,
+      reason: !requestedArtifacts.ok
+        ? requestedArtifacts.reason
+        : !executable.ok
+        ? executable.reason
+        : !projectTestVerification.ok
+          ? projectTestVerification.reason
+          : requestedArtifacts.checked
+            ? requestedArtifacts.reason
+            : "Semantic text terms were inferred, but no exact output path was inferred for deterministic file inspection.",
       requiredTextTerms,
+      requiredExecutableTerms,
       forbiddenTextTerms,
+      requestedArtifacts,
+      missingExecutableTerms: executable.missingExecutableTerms,
+      executableSourcePaths: executable.executableSourcePaths,
+      executable,
       projectTestVerification,
     };
   }
@@ -2398,17 +3926,24 @@ export function evaluateScsSemanticContract(
     missingFiles.length === 0 &&
     missingRequiredText.length === 0 &&
     presentForbiddenText.length === 0 &&
+    executable.ok &&
     sourceGrounding.ok &&
-    projectTestVerification.ok;
+    projectTestVerification.ok &&
+    requestedArtifacts.ok;
   return {
     ok,
     checked: true,
     exactOutputPaths,
     requiredTextTerms,
+    requiredExecutableTerms,
     forbiddenTextTerms,
+    requestedArtifacts,
     missingFiles,
     missingRequiredText,
+    missingExecutableTerms: executable.missingExecutableTerms,
+    executableSourcePaths: executable.executableSourcePaths,
     presentForbiddenText,
+    executable,
     sourceGrounding,
     projectTestVerification,
     unsupportedCommandClaims: sourceGrounding.unsupportedCommandClaims || [],
@@ -2428,9 +3963,11 @@ export function evaluateScsSemanticContract(
       : [
           missingFiles.length ? `Missing exact output files: ${missingFiles.join(", ")}` : "",
           missingRequiredText.length ? `Missing required text terms: ${missingRequiredText.join(", ")}` : "",
+          !executable.ok ? executable.reason : "",
           presentForbiddenText.length ? `Forbidden text terms present: ${presentForbiddenText.join(", ")}` : "",
           !sourceGrounding.ok ? sourceGrounding.reason : "",
           !projectTestVerification.ok ? projectTestVerification.reason : "",
+          !requestedArtifacts.ok ? requestedArtifacts.reason : "",
         ]
           .filter(Boolean)
           .join("; "),
@@ -2476,7 +4013,18 @@ function eventToEvidence(event = {}) {
 }
 
 function toolPayloadToEvidence(payload = {}, source = "tool") {
-  if (!payload || typeof payload !== "object" || payload.ok === false || payload.blocked) return [];
+  const authoritativeRoutineObserved = Boolean(
+    payload?.authoritativeReadOnlyRoutine === true &&
+      payload?.authoritativeRoutineObserved === true
+  );
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    payload.blocked ||
+    (payload.ok === false && !authoritativeRoutineObserved)
+  ) {
+    return [];
+  }
   const toolName = String(payload.toolName || payload.name || "");
   const args = payload.args && typeof payload.args === "object" ? payload.args : {};
   const text = normalizedText(
@@ -2498,7 +4046,9 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
       toolName,
       target: compact(target || payload.path || payload.outputPath || payload.artifactPath || args.path || args.command || payload.url || "", 260),
       proof: compact(proof, 500),
-      verified: payload.ok !== false,
+      verified: payload.ok !== false || authoritativeRoutineObserved,
+      goalRevision: Math.max(0, Number(payload.goalRevision || 0)),
+      mutationRevision: Math.max(0, Number(payload.projectMutationRevision || 0)),
       ...details,
     });
   };
@@ -2509,6 +4059,23 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
       `${toolName || "tool"} produced file/workspace evidence`,
       payload.path || payload.reportPath || args.path || ""
     );
+  }
+  if (
+    toolName === "run_command" &&
+    payload.explicitHeadRestore === true &&
+    Array.isArray(payload.explicitHeadRestorePaths)
+  ) {
+    for (const restoredPath of payload.explicitHeadRestorePaths
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .slice(0, 24)) {
+      push(
+        "file",
+        "runtime-verified exact task-owned HEAD restore",
+        restoredPath,
+        { explicitHeadRestore: true }
+      );
+    }
   }
   if (toolName === "run_command" || payload.stdout || Number.isInteger(payload.exitCode)) {
     const command = normalizeProjectCommand(args.command || "");
@@ -2528,6 +4095,13 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
           : {}),
         ...(payload.requiredProjectCommand
           ? { requiredProjectCommand: normalizeProjectCommand(payload.requiredProjectCommand) }
+          : {}),
+        ...(authoritativeRoutineObserved
+          ? {
+              authoritativeReadOnlyRoutine: true,
+              authoritativeRoutineId: String(payload.authoritativeRoutineId || ""),
+              authoritativeRoutineOutcome: String(payload.authoritativeRoutineOutcome || "status"),
+            }
           : {}),
         ...(exitWrapper ? { explicitExitStatus } : {}),
       }
@@ -2607,7 +4181,9 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
   if (["read_image", "generate_image"].includes(toolName) || /\b(screenshot|visible|thumbnail|preview|image)\b/.test(text)) {
     push("visual", `${toolName || "tool"} supplied visual evidence`, payload.path || payload.outputPath || args.path || "");
   }
-  const gitActions = inferSuccessfulGitActionsFromCommandResult(payload);
+  const gitActions = Array.isArray(payload.verifiedGitActions)
+    ? payload.verifiedGitActions
+    : inferSuccessfulGitActionsFromCommandResult(payload);
   if (gitActions.length) {
     push(
       "git",
@@ -2616,8 +4192,18 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
       {
         gitAction: gitActions.at(-1),
         gitActions,
-        goalRevision: Math.max(0, Number(payload.goalRevision || 0)),
-        mutationRevision: Math.max(0, Number(payload.projectMutationRevision || 0)),
+        goalRevision: Math.max(
+          0,
+          Number(payload.verifiedGitGoalRevision ?? payload.goalRevision ?? 0)
+        ),
+        mutationRevision: Math.max(
+          0,
+          Number(
+            payload.verifiedGitMutationRevision ??
+              payload.projectMutationRevision ??
+              0
+          )
+        ),
       }
     );
   }
@@ -2690,7 +4276,9 @@ function messageToEvidence(message = {}) {
 }
 
 export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
-  const events = Array.isArray(context.events) ? context.events : [];
+  const events = reconcileTmuxGitEvidenceEvents(
+    Array.isArray(context.events) ? context.events : []
+  );
   const messages = Array.isArray(state.messages) ? state.messages : [];
   const eventEvidence = events.flatMap(eventToEvidence);
   // Completed tools are mirrored into both the append-only event stream and
@@ -2703,10 +4291,40 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
     .slice(-80)
     .map((item) => revalidateArtifactEvidence(item, state, context));
   const verifiedItems = items.filter((item) => item?.verified !== false);
-  const categories = unique(verifiedItems.map((item) => item.category));
+  const durableGitEvidence = (
+    Array.isArray(state.meta?.durableGitEvidence) ? state.meta.durableGitEvidence : []
+  )
+    .map((item) => ({
+      action: String(item?.action || "").toLowerCase(),
+      goalRevision: Math.max(0, Number(item?.goalRevision || 0)),
+      mutationRevision: Math.max(0, Number(item?.mutationRevision || 0)),
+    }))
+    .filter((item) => item.action)
+    .slice(-80);
+  const categories = unique([
+    ...verifiedItems.map((item) => item.category),
+    ...(durableGitEvidence.length ? ["git"] : []),
+  ]);
   const toolNames = unique(verifiedItems.map((item) => item.toolName).filter(Boolean));
-  const blockers = [...events.map(eventToBlocker), ...messages.map(messageToBlocker)]
-    .filter(Boolean)
+  const blockerEvents = events
+    .filter((event) => ["tool.blocked", "tool.failed"].includes(String(event?.type || "")))
+    .map((event) => event?.data || {});
+  const blockerMessages = messages
+    .filter((message) => message?.role === "tool")
+    .map((message) => {
+      try {
+        return JSON.parse(message.content || "{}");
+      } catch {
+        return {};
+      }
+    });
+  // A newer recoverable classification for the same tool/reason supersedes
+  // an older generic denial. Prefer the append-only event stream when it is
+  // available so mirrored tool messages cannot resurrect stale blockers.
+  const blockers = currentBlockersFromEntries(
+    blockerEvents.length ? blockerEvents : blockerMessages,
+    blockerEvents.length ? "tool-event" : "tool-message"
+  )
     .slice(-20)
     .map((item, index) => ({
       id: `b${String(index + 1).padStart(3, "0")}`,
@@ -2719,6 +4337,7 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
     toolNames,
     blockerCount: blockers.length,
     blockers,
+    durableGitEvidence,
     items: items.map((item, index) => ({
       id: `e${String(index + 1).padStart(3, "0")}`,
       ...item,
@@ -2737,8 +4356,26 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
     0,
     Number(contract.requiredGitMutationRevision || 0)
   );
+  const durableGitEvidence = (
+    Array.isArray(ledger.durableGitEvidence) ? ledger.durableGitEvidence : []
+  ).filter(
+    (item) =>
+      item?.action &&
+      (requiredGitRevision === 0 || Number(item?.goalRevision || 0) >= requiredGitRevision) &&
+      (requiredGitMutationRevision === 0 ||
+        Number(item?.mutationRevision || 0) >= requiredGitMutationRevision)
+  );
+  const observedGitEvidence = durableGitEvidence.length
+    ? durableGitEvidence.map((item) => ({
+        category: "git",
+        verified: true,
+        gitAction: item.action,
+        goalRevision: item.goalRevision,
+        mutationRevision: item.mutationRevision,
+      }))
+    : ledgerItems;
   const observedGitActionSequence =
-    ledgerItems
+    observedGitEvidence
       .filter(
         (item) =>
           item?.category === "git" &&
@@ -2767,16 +4404,17 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
   const satisfied = [];
   const missing = [];
   for (const requirement of required) {
+    const minimumGoalRevision = Math.max(0, Number(requirement.minimumGoalRevision || 0));
     const minimumMutationRevision = Math.max(0, Number(requirement.minimumMutationRevision || 0));
+    const matchingEvidence = (item) =>
+      item?.category === requirement.category &&
+      item?.verified !== false &&
+      (minimumGoalRevision === 0 || Number(item?.goalRevision || 0) >= minimumGoalRevision) &&
+      (minimumMutationRevision === 0 || Number(item?.mutationRevision || 0) >= minimumMutationRevision);
     const categorySatisfied = requirement.category === "git"
       ? gitActionsSatisfyContract(contract, observedGitActionSequence)
-      : requirement.category === "test" && minimumMutationRevision > 0
-        ? ledgerItems.some(
-            (item) =>
-              item?.category === "test" &&
-              item?.verified !== false &&
-              Number(item?.mutationRevision || 0) >= minimumMutationRevision
-          )
+      : minimumGoalRevision > 0 || minimumMutationRevision > 0
+        ? ledgerItems.some(matchingEvidence)
         : ledgerCategories.has(requirement.category);
     if (categorySatisfied) {
       satisfied.push(requirement);
@@ -2834,6 +4472,29 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
     }
   );
   const hasAnyEvidence = Number(ledger.itemCount || 0) > 0;
+  const missingNonGitEvidence = missing
+    .filter((item) => item?.category !== "git")
+    .sort((left, right) => {
+      const order = new Map([
+        ["file", 0],
+        ["test", 1],
+        ["command", 2],
+        ["artifact", 3],
+        ["visual", 4],
+        ["browser", 5],
+        ["publish", 6],
+      ]);
+      return (order.get(left?.category) ?? 99) - (order.get(right?.category) ?? 99);
+    });
+  const freshMissingEvidence = missingNonGitEvidence.filter(
+    (item) =>
+      Number(item?.minimumGoalRevision || 0) > 0 ||
+      Number(item?.minimumMutationRevision || 0) > 0
+  );
+  const minimumMissingMutationRevision = Math.max(
+    0,
+    ...freshMissingEvidence.map((item) => Number(item?.minimumMutationRevision || 0))
+  );
   const evidenceOk = !contract.requiresExternalEvidence || (missing.length === 0 && hasAnyEvidence);
   const ok =
     evidenceOk &&
@@ -2861,6 +4522,10 @@ export function evaluateScsEvidence(contract = {}, ledger = {}) {
       ? "Evidence satisfies the deterministic task contract."
       : missingProjectCommands.length
         ? `Missing successful required project command(s) after the latest change: ${missingProjectCommands.join(", ")}.`
+        : missingNonGitEvidence.length
+          ? freshMissingEvidence.length
+            ? `Missing fresh post-correction evidence${minimumMissingMutationRevision > 0 ? ` after project mutation revision ${minimumMissingMutationRevision}` : ""}: ${missingNonGitEvidence.map((item) => item.category).join(", ")}. Apply the requested source/file correction before validation or Git completion.`
+            : `Missing evidence categories: ${missingNonGitEvidence.map((item) => item.category).join(", ")}. Perform the requested work before Git completion.`
         : missingGitActions.length
           ? `Missing required git action(s): ${missingGitActions.join(", ")}.`
         : missingToolCalls.length
@@ -2881,14 +4546,19 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
         id: item.id,
         category: item.category,
         description: item.description,
+        minimumGoalRevision: Number(item.minimumGoalRevision || 0),
+        minimumMutationRevision: Number(item.minimumMutationRevision || 0),
       })),
       forbiddenActions: contract.forbiddenActions || [],
       exactOutputPaths: contract.exactOutputPaths || [],
+      requiredArtifactKinds: contract.requiredArtifactKinds || [],
       exactInputPaths: contract.exactInputPaths || [],
       requiredToolCalls: contract.requiredToolCalls || [],
       requiredGitActions: contract.requiredGitActions || [],
       requiredGitRevision: Number(contract.requiredGitRevision || 0),
       requiredGitMutationRevision: Number(contract.requiredGitMutationRevision || 0),
+      requiresWorkspaceMutation: Boolean(contract.requiresWorkspaceMutation),
+      requiresFileMutation: Boolean(contract.requiresFileMutation),
       requiredProjectCommands: contract.requiredProjectCommands || [],
       requiredProjectCommandBatchId: contract.requiredProjectCommandBatchId || "",
       requiredProjectCommandRuns: contract.requiredProjectCommandRuns || [],
@@ -2896,6 +4566,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       projectTestFiles: contract.projectTestFiles || [],
       requiresSourceGrounding: Boolean(contract.requiresSourceGrounding),
       requiredTextTerms: contract.requiredTextTerms || [],
+      requiredExecutableTerms: contract.requiredExecutableTerms || [],
       forbiddenTextTerms: contract.forbiddenTextTerms || [],
       successCriteria: contract.successCriteria || [],
     },
@@ -2945,17 +4616,55 @@ export function finishResultClaimsBlocker(result = "") {
       ""
     )
     .replace(/\b(?:does not|doesn't|do not|don't)\s+require\b[^.\n;]*/gi, "");
-  return /\b(?:blocked|denied|forbidden|cannot|can't|unable|captcha|quota exhausted|usage limit|rate limit|missing (?:credential|api key)|external blocker)\b|\b(?:requires?|needs?)\s+(?:human\s+)?(?:approval|permission|login|credentials?|an? api key|captcha)\b/i.test(
-    text
+  const explicitTaskBlocker =
+    /\b(?:the\s+)?(?:task|request|operation|execution|run|workflow|work)\s+(?:is|remains|was)\s+(?:currently\s+)?(?:blocked|denied|forbidden)\b/i.test(
+      text
+    );
+  const firstPersonInability =
+    /\b(?:i|we)\s+(?:(?:am|are)\s+)?(?:currently\s+)?(?:unable\s+to|cannot|can't)\s+(?:continue|complete|finish|proceed|execute|run|access|submit|publish|upload|download|authenticate|log\s*in)\b/i.test(
+      text
+    );
+  const sentenceInitialInability =
+    /(?:^|[.!?\n]\s*)unable\s+to\s+(?:continue|complete|finish|proceed|execute|run|access|submit|publish|upload|download|authenticate|log\s*in)\b/i.test(
+      text
+    );
+  const explicitExternalCondition =
+    /\b(?:quota exhausted|usage limit|rate limit|missing (?:credential|api key)|external blocker)\b|\b(?:access|permission)\s+(?:is\s+)?(?:denied|forbidden)\b|\b(?:login|authentication|credentials?)\s+(?:is|are)\s+required\b|\b(?:requires?|needs?|waiting for|blocked by|encountered)\s+(?:a\s+)?(?:human\s+)?(?:approval|permission|login|credentials?|an? api key|captcha)\b/i.test(
+      text
+    );
+  return (
+    explicitTaskBlocker ||
+    firstPersonInability ||
+    sentenceInitialInability ||
+    explicitExternalCondition
   );
 }
 
 export function finishResultClaimsIncompleteWork(result = "") {
   const text = String(result || "")
+    .replace(
+      /\b(?:earlier|previous|prior|former)\s+(?:step|attempt|run|verification|check|phase|command|process|audit)\s+(?:was|were|had\s+been)\s+(?:paused|pending|incomplete|unfinished)\b/gi,
+      ""
+    )
+    .replace(
+      /\b(?:(?:was|were|had\s+been)\s+)?(?:previously|formerly|earlier|already)[\s-]+(?:paused|pending|incomplete|unfinished)(?:[\s-]+(?:step|attempt|run|verification|check|phase|command|process|audit))?\b/gi,
+      ""
+    )
     .replace(/\b(?:not|never)\s+(?:paused|pending|incomplete|unfinished)\b/gi, "")
-    .replace(/\b(?:no|without)\s+(?:remaining|pending|unfinished)\s+(?:work|steps?|tasks?|actions?)\b/gi, "");
+    .replace(
+      /\b(?:no|without)\s+(?:remaining|pending|unfinished)\s+(?:work|steps?|tasks?|actions?|changes?)\b/gi,
+      ""
+    )
+    .replace(/\bno\s+(?:further|additional)\s+(?:work|steps?|tasks?|actions?|changes?)\s+(?:is|are\s+)?(?:needed|required)\b/gi, "")
+    .replace(/\bno\s+need\s+for\s+(?:further|additional)\s+(?:work|steps?|tasks?|actions?|changes?)\b/gi, "");
   const explicitIncompleteState =
-    /\b(?:paused|pending|unfinished|incomplete|not\s+(?:yet\s+)?(?:complete|completed|done)|still\s+(?:needs?|requires?)\s+(?:work|implementation|repair|validation|testing|verification))\b/i.test(
+    /\b(?:paused|unfinished|incomplete|not\s+(?:yet\s+)?(?:complete|completed|done)|still\s+(?:needs?|requires?)\s+(?:work|implementation|repair|validation|testing|verification))\b/i.test(
+      text
+    ) ||
+    /\b(?:the\s+)?(?:task|request|agent\s+work|work|implementation|repair|validation|verification|testing|test\s+run|commit|patch|edit|artifact|report|deliverable|submission|upload|download)\s+(?:is|are|remains?|stays?|was|were)?\s*(?:currently\s+)?pending\b/i.test(
+      text
+    ) ||
+    /\bpending\s+(?:agent\s+)?(?:work|steps?|tasks?|actions?|changes?|implementation|repair|validation|verification|testing|tests?|commits?|patches?|edits?|artifacts?|reports?|deliverables?|submissions?|uploads?|downloads?)\b/i.test(
       text
     );
   const promisedFutureAction =

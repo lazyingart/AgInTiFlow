@@ -277,6 +277,15 @@ export function shouldActivateScs(mode = "off", context = {}) {
   const profile = String(context.taskProfile || "").toLowerCase();
   const goal = String(context.goal || "");
   if (SCS_AUTO_PROFILES.has(profile)) return true;
+  const staticDataPaths = goal.match(/(?:^|[\s`'"(])[^\s`'"()]+\.(?:csv|json|toml|ya?ml)\b/gi) || [];
+  const simpleStaticDataWrite =
+    staticDataPaths.length === 1 &&
+    /\b(?:create|emit|generate|save|write)\b/i.test(goal) &&
+    !/\b(?:app|application|build|cli|code|codebase|compile|database|dataset|deploy|implement|library|migrate|package|publish|refactor|release|repository|script|server|source|test|upload)\b/i.test(
+      goal
+    ) &&
+    Number(context.complexityScore || 0) < 3;
+  if (simpleStaticDataWrite) return false;
   if (SCS_AUTO_HINTS.some((hint) => hint.test(goal))) return true;
   return Number(context.complexityScore || 0) >= 5;
 }
@@ -338,6 +347,7 @@ function fallbackHardContractPlan(goal = "", contract = {}, studentReason = "", 
   const exactOutputPaths = normalizeStringList(contract.exactOutputPaths, []);
   const exactInputPaths = normalizeStringList(contract.exactInputPaths, []);
   const requiredTextTerms = normalizeStringList(contract.requiredTextTerms, []);
+  const requiredExecutableTerms = normalizeStringList(contract.requiredExecutableTerms, []);
   const forbiddenTextTerms = normalizeStringList(contract.forbiddenTextTerms, []);
   const requiredToolCalls = normalizeStringList(contract.requiredToolCalls, []);
   const readOnlyRoots = normalizeStringList(routineContext.readOnlyRoots, []);
@@ -351,10 +361,13 @@ function fallbackHardContractPlan(goal = "", contract = {}, studentReason = "", 
       : "2. Create or update the requested output artifact at the user-specified location.",
     exactInputPaths.length ? `3. Use these exact user-specified input/reference path(s): ${exactInputPaths.join(", ")}.` : "",
     requiredTextTerms.length ? `4. Ensure the output contains these required term(s): ${requiredTextTerms.join(", ")}.` : "",
+    requiredExecutableTerms.length
+      ? `4a. Implement these expression(s) in executable production source; comments, strings, help text, and tests do not count: ${requiredExecutableTerms.join(", ")}.`
+      : "",
     forbiddenTextTerms.length ? `5. Ensure the output does not contain these forbidden term(s): ${forbiddenTextTerms.join(", ")}.` : "",
     requiredToolCalls.length ? `6. Call these explicitly required tool(s) before finish: ${requiredToolCalls.join(", ")}.` : "",
     selectedSkillPaths.length
-      ? `7. Read the selected Markdown guidance at these exact paths before choosing an interface: ${selectedSkillPaths.join(", ")}. Skill IDs are not commands.`
+      ? `7. Read the selected Markdown guidance once before choosing an interface: ${selectedSkillPaths.join(", ")}. If retained source evidence records the path as already inspected, use that evidence and do not reread it solely after compaction. Skill IDs are not commands.`
       : "",
     readOnlyRoots.length
       ? `8. Inspect only the exact active read-only roots or their children with structured read tools: ${readOnlyRoots.join(", ")}. Do not pass --read-root to an in-task command.`
@@ -501,13 +514,25 @@ function formatHardContractForPrompt(contract = {}) {
   const exactOutputPaths = normalizeStringList(contract.exactOutputPaths, []);
   const exactInputPaths = normalizeStringList(contract.exactInputPaths, []);
   const requiredTextTerms = normalizeStringList(contract.requiredTextTerms, []);
+  const requiredExecutableTerms = normalizeStringList(contract.requiredExecutableTerms, []);
   const forbiddenTextTerms = normalizeStringList(contract.forbiddenTextTerms, []);
   const forbiddenActions = normalizeStringList(contract.forbiddenActions, []);
+  const requiredArtifactKinds = (Array.isArray(contract.requiredArtifactKinds)
+    ? contract.requiredArtifactKinds
+    : [])
+    .map((item) => compact(item?.description || item?.id || "", 160))
+    .filter(Boolean);
   if (exactOutputPaths.length) lines.push(`Exact output path(s): ${exactOutputPaths.join(", ")}`);
   if (exactInputPaths.length) lines.push(`Exact input/reference path(s) to use: ${exactInputPaths.join(", ")}`);
   if (requiredTextTerms.length) lines.push(`Required text term(s) in the output: ${requiredTextTerms.join(", ")}`);
+  if (requiredExecutableTerms.length) {
+    lines.push(`Required executable production-source expression(s): ${requiredExecutableTerms.join(", ")}`);
+  }
   if (forbiddenTextTerms.length) lines.push(`Forbidden text term(s) in the output: ${forbiddenTextTerms.join(", ")}`);
   if (forbiddenActions.length) lines.push(`Forbidden action(s): ${forbiddenActions.join("; ")}`);
+  if (requiredArtifactKinds.length) {
+    lines.push(`Required artifact deliverable(s): ${requiredArtifactKinds.join(", ")}`);
+  }
   return lines.length
     ? [
         "Inferred hard task contract. Preserve these literally; do not replace them with weaker or contradictory criteria:",
@@ -521,9 +546,21 @@ function deterministicPlanContractIssue(committee = {}, contract = {}) {
   const missingPath = normalizeStringList(contract.exactOutputPaths, []).filter((item) => !planText.includes(item));
   const missingInputPath = normalizeStringList(contract.exactInputPaths, []).filter((item) => !planText.includes(item));
   const missingRequiredTerms = normalizeStringList(contract.requiredTextTerms, []).filter((item) => !planText.includes(item));
+  const missingExecutableTerms = normalizeStringList(contract.requiredExecutableTerms, []).filter((item) => !planText.includes(item));
   const forbiddenTermsInPlan = normalizeStringList(contract.forbiddenTextTerms, []).filter((item) => planText.includes(item));
+  const missingArtifactKinds = (Array.isArray(contract.requiredArtifactKinds)
+    ? contract.requiredArtifactKinds
+    : []).filter((item) => {
+      const id = String(item?.id || "").replace(/^format:/, "");
+      const description = String(item?.description || "");
+      const terms = [id, description]
+        .flatMap((value) => value.toLocaleLowerCase("en-US").split(/[^a-z0-9.]+/))
+        .filter((value) => value.length >= 3);
+      const normalizedPlan = planText.toLocaleLowerCase("en-US");
+      return terms.length > 0 && !terms.some((term) => normalizedPlan.includes(term));
+    });
   const actionContradiction = deterministicPlanActionContradiction(planText, contract);
-  if (missingPath.length || missingInputPath.length || missingRequiredTerms.length || forbiddenTermsInPlan.length || actionContradiction) {
+  if (missingPath.length || missingInputPath.length || missingRequiredTerms.length || missingExecutableTerms.length || forbiddenTermsInPlan.length || missingArtifactKinds.length || actionContradiction) {
     return {
       decision: "veto_plan",
       confidence: 0.94,
@@ -531,7 +568,13 @@ function deterministicPlanContractIssue(committee = {}, contract = {}) {
         missingPath.length ? `Plan omitted exact output path(s): ${missingPath.join(", ")}` : "",
         missingInputPath.length ? `Plan omitted exact input/reference path(s): ${missingInputPath.join(", ")}` : "",
         missingRequiredTerms.length ? `Plan omitted required text term(s): ${missingRequiredTerms.join(", ")}` : "",
+        missingExecutableTerms.length ? `Plan omitted required executable source expression(s): ${missingExecutableTerms.join(", ")}` : "",
         forbiddenTermsInPlan.length ? `Plan includes forbidden text term(s): ${forbiddenTermsInPlan.join(", ")}` : "",
+        missingArtifactKinds.length
+          ? `Plan omitted requested artifact deliverable(s): ${missingArtifactKinds
+              .map((item) => item.description || item.id)
+              .join(", ")}`
+          : "",
         actionContradiction || "",
       ].filter(Boolean),
       reason:
@@ -543,12 +586,53 @@ function deterministicPlanContractIssue(committee = {}, contract = {}) {
   return null;
 }
 
+function planCorpus(committee = {}) {
+  return `${committee.phaseGoal || ""}\n${committee.plan || ""}\n${(committee.acceptanceCriteria || []).join("\n")}`;
+}
+
+export function deterministicPlanTestIntegrityIssue(committee = {}, goal = "") {
+  const planText = planCorpus(committee);
+  const goalText = String(goal || "");
+  const protectsTests =
+    /\bpreserve\s+(?:the\s+)?(?:existing\s+)?tests?\b/i.test(goalText) ||
+    /\b(?:do not|don't|dont|never)\b[^.\n;]{0,140}\b(?:edit|change|modify|rewrite|replace|remove|delete|weaken|relax)\b[^.\n;]{0,80}\btests?\b/i.test(goalText) ||
+    /\btests?\s+(?:are|remain)\s+(?:the\s+)?(?:authoritative|unchanged)\b/i.test(goalText) ||
+    /保留[^。\n；]{0,40}测试|不要[^。\n；]{0,80}(?:修改|改动|削弱|放宽|删除)[^。\n；]{0,40}测试/.test(goalText);
+  const createsTestStubs =
+    /\b(?:add|create|write|generate)\b[^.\n;]{0,120}\btests?\b[^.\n;]{0,80}\bstubs?\b/i.test(planText) ||
+    /(?:添加|创建|编写|生成)[^。\n；]{0,80}测试[^。\n；]{0,40}(?:桩|占位)/.test(planText);
+  const rebasesExpectationToFailure =
+    /\bif\b[^.\n;]{0,140}\b(?:fails?|returns?|exits?)\b[^.\n;]{0,100}\b(?:ensure|make|change|update|adjust|edit)\b[^.\n;]{0,100}\btests?\b[^.\n;]{0,100}\b(?:checks?|expects?|accepts?|asserts?)\b/i.test(planText) ||
+    /\b(?:change|update|adjust|edit|rewrite)\b[^.\n;]{0,100}\b(?:tests?|assertions?|expectations?)\b[^.\n;]{0,120}\b(?:match|accept|expect)\b[^.\n;]{0,80}\b(?:current|actual|failing|observed)\b/i.test(planText) ||
+    /(?:如果|若)[^。\n；]{0,100}(?:失败|返回|退出)[^。\n；]{0,100}(?:修改|调整|更新)[^。\n；]{0,60}测试/.test(planText);
+  const mutatesProtectedTests = protectsTests && (
+    /\b(?:edit|change|modify|rewrite|replace|remove|delete|weaken|relax|adjust|fix)\b[^.\n;]{0,100}\b(?:existing\s+)?(?:tests?|assertions?|expectations?|test\s+cases?)\b/i.test(planText) ||
+    /\b(?:tests?|assertions?|expectations?|test\s+cases?)\b[^.\n;]{0,100}\b(?:edit|change|modify|rewrite|replace|remove|delete|weaken|relax|adjust|fix)\b/i.test(planText) ||
+    /(?:修改|调整|更新|削弱|放宽|删除)[^。\n；]{0,60}(?:测试|断言|预期)|(?:测试|断言|预期)[^。\n；]{0,60}(?:修改|调整|更新|削弱|放宽|删除)/.test(planText)
+  );
+  if (!createsTestStubs && !rebasesExpectationToFailure && !mutatesProtectedTests) return null;
+  const evidence = [
+    createsTestStubs ? "Plan proposes test stubs instead of verified production behavior." : "",
+    rebasesExpectationToFailure ? "Plan proposes changing a test expectation to accept the observed failure." : "",
+    mutatesProtectedTests ? "Plan proposes mutating tests even though the current request says to preserve them." : "",
+  ].filter(Boolean);
+  return {
+    decision: "veto_plan",
+    confidence: 0.99,
+    evidence,
+    reason:
+      "The plan weakens or redirects authoritative tests instead of repairing the production implementation that the current failure evidence identifies.",
+    next_required_action:
+      "Replan around bounded production-source repairs, preserve existing tests and expectations, then run the exact retained verification command unchanged.",
+  };
+}
+
 function escapeRegExp(value = "") {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function deterministicPlanRoutineIssue(committee = {}, context = {}, goal = "") {
-  const planText = `${committee.phaseGoal || ""}\n${committee.plan || ""}\n${(committee.acceptanceCriteria || []).join("\n")}`;
+  const planText = planCorpus(committee);
   const selectedSkills = Array.isArray(context.selectedSkills) ? context.selectedSkills : [];
   const inventedSkillCommands = selectedSkills
     .map((skill) => String(skill?.id || "").trim())
@@ -697,6 +781,7 @@ function finishRequiresExternalEvidence(goal = "", taskProfile = "") {
 function contractForState(state = {}, context = {}) {
   const scs = state.meta?.scs || {};
   const contract = (
+    context.taskContract ||
     scs.taskContract ||
     deriveScsTaskContract({
       goal: state.goal || context.goal || "",
@@ -826,6 +911,7 @@ function studentPlanGatePrompt() {
     "For browser tasks, reject plans that stop merely because a state field is unknown when the user requested a target state and a bounded set-then-verify path is available.",
     "Reject any plan whose phase goal, steps, or acceptance criteria omit exact input/reference paths, exact output paths, required output phrases, or forbidden output phrases from the hard task contract. Also reject plans that add contradictory constraints not requested by the user.",
     "Reject plans that execute a selected skill ID, invent an undocumented command/interface, or append the AgInTi launcher option --read-root to an in-task command. Require structured reads of exact active roots and evidence from SKILL.md, README, manifests, source, or genuine help output.",
+    "Reject plans that add test stubs, weaken or rewrite authoritative test expectations, or make tests accept an observed implementation failure. When the request says to preserve tests, require production-source repair and run the retained tests unchanged.",
     "For a read-only readiness/audit task, reject unnecessary browser/service interaction when source, help, doctor, or status evidence can satisfy the request.",
     formatBehaviorContractForPrompt({ mode: "plan" }),
     "Return strict JSON with keys: role, decision, confidence, evidence, reason, next_required_action.",
@@ -946,6 +1032,7 @@ async function createScsPhase(client, config, state, context = {}, options = {})
     committee = normalizeCommitteePlan(rawCommittee, state.goal);
     const deterministicIssue =
       deterministicPlanContractIssue(committee, taskContract) ||
+      deterministicPlanTestIntegrityIssue(committee, state.goal) ||
       deterministicPlanRoutineIssue(committee, context, state.goal);
     if (deterministicIssue) {
       student = normalizeDecision(deterministicIssue, "veto_plan");
@@ -1009,6 +1096,7 @@ async function createScsPhase(client, config, state, context = {}, options = {})
       ...normalizeStringList(taskContract.exactOutputPaths, []).map((item) => `Exact output path is used: ${item}`),
       ...normalizeStringList(taskContract.exactInputPaths, []).map((item) => `Exact input/reference path is used: ${item}`),
       ...normalizeStringList(taskContract.requiredTextTerms, []).map((item) => `Output contains required text: ${item}`),
+      ...normalizeStringList(taskContract.requiredExecutableTerms, []).map((item) => `Executable production source contains: ${item}`),
       ...normalizeStringList(taskContract.forbiddenTextTerms, []).map((item) => `Output omits forbidden text: ${item}`),
       "Concrete file/content validation evidence is collected before finish.",
     ];
@@ -1101,10 +1189,28 @@ export function shouldRequestScsReplan(decision = {}) {
   return ["rethink_plan", "reject_phase", "finish_rejected"].includes(String(decision?.decision || ""));
 }
 
+export function isRecoverablePatchCorrectionResult(toolResult = {}) {
+  if (
+    String(toolResult?.toolName || "") !== "apply_patch" ||
+    toolResult?.ok !== false ||
+    toolResult?.recoverable !== true ||
+    toolResult?.stopRun === true
+  ) {
+    return false;
+  }
+  return new Set([
+    "ambiguous-declaration-token-patch",
+    "ambiguous-python-main-guard-patch",
+    "failed-test-nonrepairing-patch",
+    "python-syntax-regression",
+  ]).has(String(toolResult?.category || ""));
+}
+
 export function shouldReviewToolResult(toolResult, state = {}) {
   if (!toolResult || toolResult.done) return false;
   if (toolResult.permissionAdvice?.autoRecover) return false;
   if (isRecoverableShellToolResult(toolResult)) return false;
+  if (isRecoverablePatchCorrectionResult(toolResult)) return false;
   if (toolResult.ok === false || toolResult.blocked || toolResult.error || toolResult.reason) return true;
   if (isSuspiciousBroadBrowserToolResult(toolResult)) return true;
   // A later successful call is progress, even when another call using the same
@@ -1350,6 +1456,7 @@ export async function reviewScsFinish(client, config, state, result = "", contex
         evidence: [
           ...(semanticEvaluation.missingFiles || []).map((item) => `missing file: ${item}`),
           ...(semanticEvaluation.missingRequiredText || []).map((item) => `missing required text: ${item}`),
+          ...(semanticEvaluation.missingExecutableTerms || []).map((item) => `missing executable source expression: ${item}`),
           ...(semanticEvaluation.presentForbiddenText || []).map((item) => `forbidden text present: ${item}`),
           ...(semanticEvaluation.unsupportedCommandClaims || []).map(
             (item) => `unsupported command claim: ${item.signature}`
@@ -1361,7 +1468,9 @@ export async function reviewScsFinish(client, config, state, result = "", contex
         next_required_action:
           semanticEvaluation.unsupportedCommandClaims?.length || semanticEvaluation.unsupportedOutputClaims?.length
             ? "Replace every unsupported command/interface claim with syntax copied from inspected source, genuine help output, or a successful read-only command. Remove command-output excerpts that are absent from successful runtime stdout. Mark unresolved interfaces unverified instead of guessing, then validate the exact output again."
-            : "Revise the exact output file(s) to satisfy the required and forbidden text terms, then run concrete validation commands before finishing.",
+            : semanticEvaluation.missingExecutableTerms?.length
+              ? "Implement the missing expression in the actual task-owned production path. Comments, strings, help text, and tests do not count. Then rerun concrete project validation before finishing."
+              : "Revise the exact output file(s) to satisfy the required and forbidden text terms, then run concrete validation commands before finishing.",
       },
       "finish_rejected"
     );

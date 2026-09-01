@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { machineRunPayload } from "../src/cli.js";
+import { machineRunPayload, runResultExitCode } from "../src/cli.js";
 import { showProjectSession } from "../src/project.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -35,6 +35,12 @@ const stoppedPayload = machineRunPayload({
 });
 if (stoppedPayload.ok !== false || stoppedPayload.failed !== true || stoppedPayload.stopped !== true) {
   throw new Error(`stopped machine run was reported as success: ${JSON.stringify(stoppedPayload)}`);
+}
+if (runResultExitCode({ stopped: true, reason: "tool_contract_violation" }) !== 1) {
+  throw new Error("a stopped non-JSON agent run still reports shell success");
+}
+if (runResultExitCode({ stopped: false, result: "done" }) !== 0) {
+  throw new Error("a successful agent run was assigned a failing shell exit status");
 }
 
 async function runMachine(label, commandArgs, stdin = "") {

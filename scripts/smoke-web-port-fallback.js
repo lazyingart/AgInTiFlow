@@ -9,9 +9,8 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-web-port-fallback-"));
 const host = "127.0.0.1";
-const occupiedPort = 43100 + Math.floor(Math.random() * 1200);
 
-function listenOccupier(port) {
+function listenOccupier(port = 0) {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
     server.once("error", reject);
@@ -49,13 +48,22 @@ async function waitForHealth(port, child, stdout, stderr) {
   throw new Error(`web fallback health failed. stdout=${stdout()} stderr=${stderr()}`);
 }
 
-const occupier = await listenOccupier(occupiedPort);
+// Let the kernel allocate an actually free port and retain the listener. A
+// random high port can already belong to another project on a shared runner,
+// which made this fallback test itself flaky before the product was exercised.
+const occupier = await listenOccupier();
+const occupiedAddress = occupier.address();
+const occupiedPort = typeof occupiedAddress === "object" && occupiedAddress
+  ? Number(occupiedAddress.port)
+  : 0;
+if (!occupiedPort) throw new Error("failed to reserve the occupied test port");
 let stdout = "";
 let stderr = "";
 const child = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "web", "--port", String(occupiedPort), "--host", host], {
   cwd: runtimeDir,
   env: {
     ...process.env,
+    AGINTIFLOW_NO_AUTO_UPDATE: "1",
     AGINTIFLOW_RUNTIME_DIR: runtimeDir,
     AGINTIFLOW_HOME: path.join(runtimeDir, ".agintiflow-home"),
   },

@@ -2,18 +2,24 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   buildModelTimeoutRetryMessages,
   genericArtifactFilenameBlock,
+  goalClearlyAllowsOverwrite,
+  modelTimeoutExhaustionRoute,
   modelTimeoutRetryRoute,
+  normalizeNoMatchQueryResult,
   applyModelTimeoutRetryRoute,
   recoverFocusedTextRewriteWithWritingSpecialist,
+  reconcileRuntimeRepositoryState,
   repairModelMessageHistory,
   shouldResetStaticDiscoveryPhase,
   runAgent,
   sanitizeToolResult,
   toolResultForModel,
+  shouldPauseForPermissionAdvice,
   shouldShortCircuitToolBatch,
   shellDiagnosticHint,
   skippedAfterBlockedToolResult,
@@ -22,7 +28,12 @@ import { createToolContract, resolveDispatchableToolCallBatch } from "../src/too
 import { formatBehaviorContractForPrompt } from "../src/behavior-contract.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { readCodebaseMap } from "../src/codebase-map.js";
-import { classifyCommand, evaluateCommandPolicy } from "../src/command-policy.js";
+import {
+  classifyCommand,
+  evaluateCommandPolicy,
+  externalValidatorCommandContract,
+} from "../src/command-policy.js";
+import { checkToolUse } from "../src/guardrails.js";
 import { shouldReviewToolResult } from "../src/scs-controller.js";
 import {
   engineeringGuidanceForTask,
@@ -32,7 +43,12 @@ import {
 import { createPlan, normalizeTextToolCallResponse, parseTextToolCalls } from "../src/model-client.js";
 import { selectModelRoute } from "../src/model-routing.js";
 import { listParallelScouts, runParallelScouts, shouldRunParallelScouts } from "../src/parallel-scouts.js";
-import { buildFailedCommandAdvice, buildPermissionAdvice } from "../src/permission-advice.js";
+import {
+  buildFailedCommandAdvice,
+  buildPermissionAdvice,
+  isOptionalGeneratedPreviewCleanup,
+  isUnrequestedCleanupCommand,
+} from "../src/permission-advice.js";
 import { runJsonSpecialist } from "../src/json-specialist.js";
 import { SessionStore } from "../src/session-store.js";
 import { getTaskProfile } from "../src/task-profiles.js";
@@ -86,7 +102,156 @@ async function runMock(goal, sessionId, { resume = false } = {}) {
   };
 }
 
+async function verifyRunAgentRuntimeGitHygiene() {
+  const gitWorkspace = path.join(tempRoot, "runtime-git-workspace");
+  await fs.mkdir(gitWorkspace, { recursive: true });
+  const initialized = spawnSync("git", ["init"], {
+    cwd: gitWorkspace,
+    encoding: "utf8",
+  });
+  assert(initialized.status === 0, `runtime Git hygiene setup failed: ${initialized.stderr || initialized.stdout}`);
+  const config = resolveRuntimeConfig(
+    {
+      provider: "mock",
+      routingMode: "manual",
+      model: "mock-agent",
+      goal: "hello",
+      commandCwd: gitWorkspace,
+      maxSteps: 2,
+    },
+    {
+      baseDir: runtimeDir,
+      packageDir: repoRoot,
+      provider: "mock",
+      routingMode: "manual",
+      model: "mock-agent",
+      commandCwd: gitWorkspace,
+      allowShellTool: false,
+      allowFileTools: true,
+      sandboxMode: "host",
+      packageInstallPolicy: "block",
+      sessionId: "coding-runtime-git-hygiene",
+    }
+  );
+  await runAgent(config);
+  const localExclude = await fs.readFile(path.join(gitWorkspace, ".git", "info", "exclude"), "utf8");
+  assert(
+    localExclude.includes(".aginti/codebase-map.json") &&
+      localExclude.includes(".aginti/verification/"),
+    "runAgent did not protect runtime cache paths in its resolved commandCwd"
+  );
+  const gitignore = await fs.readFile(path.join(gitWorkspace, ".gitignore"), "utf8").catch(() => "");
+  assert(gitignore === "", "runAgent runtime setup edited the tracked .gitignore");
+  const staleRepositoryState = {
+    meta: {
+      projectVerification: {
+        mutationRevision: 4,
+        privateMutationRevision: 0,
+        testRuns: [{
+          command: "python3 acceptance.py",
+          mutationRevision: 4,
+          privateMutationRevision: 0,
+          passed: false,
+          failureSignature: "dirty-worktree",
+          failureSummary: "FAIL: Git worktree is not clean: ?? .aginti/",
+        }],
+      },
+      testFailureRepair: { key: "4:dirty-worktree" },
+    },
+  };
+  const reconciled = await reconcileRuntimeRepositoryState(
+    staleRepositoryState,
+    { commandCwd: gitWorkspace },
+    { changed: false }
+  );
+  assert(
+    reconciled?.clean === true &&
+      staleRepositoryState.meta.projectVerification.privateMutationRevision === 1 &&
+      !staleRepositoryState.meta.testFailureRepair,
+    "a retained cleanliness failure was not invalidated after the live worktree became clean"
+  );
+}
+
 try {
+  await verifyRunAgentRuntimeGitHygiene();
+  const externalValidatorPath = path.join(
+    tempRoot,
+    "private-acceptance",
+    "spreadsheet_contract.py"
+  );
+  const externalValidatorCommand = `python3 ${externalValidatorPath}`;
+  assert(
+    externalValidatorCommandContract(externalValidatorCommand, {
+      commandCwd: workspace,
+    })?.path === externalValidatorPath,
+    "an exact external validator command did not produce an opaque contract"
+  );
+  assert(
+    externalValidatorCommandContract("python3 tests/local_contract.py", {
+      commandCwd: workspace,
+    }) === null,
+    "an in-workspace project test was incorrectly treated as an opaque external validator"
+  );
+  const opaqueValidatorPolicy = {
+    commandCwd: workspace,
+    allowShellTool: true,
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    opaqueExternalValidatorPaths: [externalValidatorPath],
+    opaqueExternalValidatorCommands: [externalValidatorCommand],
+  };
+  assert(
+    evaluateCommandPolicy(externalValidatorCommand, opaqueValidatorPolicy).allowed === true,
+    "the exact declared external validator execution was blocked"
+  );
+  for (const inspectionCommand of [
+    `cat ${externalValidatorPath}`,
+    `sed -n '1,160p' ${externalValidatorPath}`,
+    `cat ${path.relative(workspace, externalValidatorPath)}`,
+    `V=${externalValidatorPath}; grep -n expected "$V"`,
+    `echo validator; cat ${externalValidatorPath}; git status --short`,
+  ]) {
+    const decision = evaluateCommandPolicy(inspectionCommand, opaqueValidatorPolicy);
+    assert(
+      decision.allowed === false &&
+        decision.category === "opaque-external-validator-inspection" &&
+        decision.recoverable === true,
+      `external validator source inspection escaped the opaque contract: ${inspectionCommand}`
+    );
+  }
+  const combinedValidatorCommand =
+    `python3 build_artifact.py; ${externalValidatorCommand}`;
+  const combinedValidatorDecision = evaluateCommandPolicy(
+    combinedValidatorCommand,
+    opaqueValidatorPolicy
+  );
+  assert(
+    combinedValidatorDecision.allowed === false &&
+      combinedValidatorDecision.category === "opaque-external-validator-inspection" &&
+      combinedValidatorDecision.recoverable === true,
+    "a combined producer and external validator command escaped the opaque validator contract"
+  );
+  const combinedValidatorAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: { command: combinedValidatorCommand },
+    guard: combinedValidatorDecision,
+    config: opaqueValidatorPolicy,
+    state: { sessionId: "opaque-validator-command-shape-smoke" },
+  });
+  assert(
+    combinedValidatorAdvice.autoRecover === true &&
+      !combinedValidatorAdvice.suggestedCommand &&
+      /separately|standalone/i.test(combinedValidatorAdvice.instruction) &&
+      /exact declared external validator command unchanged/i.test(
+        combinedValidatorAdvice.instruction
+      ) &&
+      !shouldPauseForPermissionAdvice({
+        blocked: true,
+        permissionAdvice: combinedValidatorAdvice,
+      }),
+    "a recoverable external-validator command-shape error became a permission pause"
+  );
+
   const genericArtifactBlock = await genericArtifactFilenameBlock(
     "write_file",
     { path: "report.md", content: "summary" },
@@ -539,6 +704,16 @@ try {
   );
   assert(guidance.includes("Surgical editing contract:"), "engineering guidance did not include surgical editing contract");
   assert(guidance.includes("Evidence-card template:"), "engineering guidance did not include evidence-card template");
+  const cadGuidance = engineeringGuidanceForTask(
+    "Build a centered parametric CAD cradle and export STEP, STL, 3MF, and a render for 3D printing.",
+    "auto"
+  );
+  assert(cadGuidance.includes("CAD/fabrication:"), "auto guidance did not recognize a CAD fabrication task");
+  assert(cadGuidance.includes("one canonical validation section"), "auto CAD guidance permits ambiguous validation aliases");
+  assert(
+    recommendedMaxStepsForTask({ goal: "Build a CAD holder with STEP STL and 3MF validation.", taskProfile: "auto" }) >= 44,
+    "auto CAD task did not receive a complete build/render/validation budget"
+  );
   assert(
     shouldUseSurgicalContextForTask({
       goal: "fix this large repository bug by tracing callers",
@@ -583,6 +758,311 @@ try {
     ...hostWorkspacePolicy,
     readOnlyRoots: [externalReadRoot],
   };
+  const exactReadOnlySkillLoop = [
+    "for f in",
+    "/home/lachlan/.agintiflow/skillmesh/skills/lazyedit-publish-workflow/SKILL.md",
+    "/home/lachlan/.codex/skills/musia-music-production/SKILL.md",
+    "/home/lachlan/.codex/skills/musia-lalachan-mv-workflow/SKILL.md",
+    "/home/lachlan/.codex/skills/lalachan-xyq-browser-video/SKILL.md",
+    "/home/lachlan/.nvm/versions/node/v22.21.0/lib/node_modules/@lazyingart/agintiflow/skills/browser-automation/SKILL.md",
+    "/home/lachlan/.codex/skills/musia-song-localization/SKILL.md;",
+    'do echo "===== $f ====="; wc -l "$f"; done',
+  ].join(" ");
+  const exactReadOnlySkillLoopPolicy = evaluateCommandPolicy(exactReadOnlySkillLoop, hostWorkspacePolicy);
+  assert(
+    exactReadOnlySkillLoopPolicy.allowed &&
+      exactReadOnlySkillLoopPolicy.category === "read-only" &&
+      exactReadOnlySkillLoopPolicy.boundedForLoop === true &&
+      exactReadOnlySkillLoopPolicy.needsNetwork === false &&
+      exactReadOnlySkillLoopPolicy.writesWorkspace === false,
+    "a finite echo/wc skill audit loop incorrectly required destructive host permission"
+  );
+  const multilineReadOnlyLoopPolicy = evaluateCommandPolicy(
+    [
+      "for target in README.md package.json",
+      "do",
+      '  echo "== ${target} =="',
+      '  wc -l "$target"',
+      "done",
+    ].join("\n"),
+    hostWorkspacePolicy
+  );
+  assert(
+    multilineReadOnlyLoopPolicy.allowed && multilineReadOnlyLoopPolicy.category === "read-only",
+    "a multiline finite read-only loop was not recognized"
+  );
+  for (const unsafeLoop of [
+    'for f in README.md; do rm -rf "$f"; done',
+    'for f in README.md; do curl "https://example.com/$f"; done',
+    'for f in README.md; do cp "$f" copied.md; done',
+    'for f in README.md; do echo "$f" > report.md; done',
+    'for f in $(find . -type f); do wc -l "$f"; done',
+    'for f in *.md; do wc -l "$f"; done',
+    'for f in --pre=unsafe-helper; do rg pattern "$f"; done',
+    'for f in $FILES; do wc -l "$f"; done',
+    'for f in README.md; do wc -l "${f:-package.json}"; done',
+    'for f in README.md; do for g in package.json; do wc -l "$g"; done; done',
+    'for f in README.md; do wc -l "$f" & done',
+  ]) {
+    const unsafeLoopPolicy = evaluateCommandPolicy(unsafeLoop, hostWorkspacePolicy);
+    assert(
+      !unsafeLoopPolicy.allowed && unsafeLoopPolicy.category !== "read-only",
+      `unsafe or dynamic shell loop bypassed the bounded read-only policy: ${unsafeLoop}`
+    );
+  }
+  const exactCompoundReadOnlyAudit = [
+    'echo "=== CWD ==="',
+    'pwd',
+    'echo "=== workspace listing ==="',
+    'ls -la',
+    'echo "=== workspace git status ==="',
+    'git status --short 2>&1 | head -40',
+    'echo "=== read roots ==="',
+    'for d in /home/lachlan/ProjectsLFS/AgenticApp /home/lachlan/ProjectsLFS/Musia /home/lachlan/ProjectsLFS/LALACHAN /home/lachlan/DiskMech/Projects/lazyedit; do echo "--- $d ---"; if [ -d "$d" ]; then ls -la "$d" 2>&1 | head -80; else echo "MISSING"; fi; done',
+  ].join("; ");
+  const exactCompoundReadOnlyAuditPolicy = evaluateCommandPolicy(
+    exactCompoundReadOnlyAudit,
+    hostReadRootPolicy
+  );
+  assert(
+    exactCompoundReadOnlyAuditPolicy.allowed &&
+      exactCompoundReadOnlyAuditPolicy.category === "read-only" &&
+      exactCompoundReadOnlyAuditPolicy.boundedForLoop === true &&
+      exactCompoundReadOnlyAuditPolicy.boundedCompoundSequence === true &&
+      exactCompoundReadOnlyAuditPolicy.needsNetwork === false &&
+      exactCompoundReadOnlyAuditPolicy.writesWorkspace === false,
+    "a finite read-only prelude and conditional directory audit incorrectly required destructive host permission"
+  );
+  const exactReadOnlyExistenceLoopWithSuffix =
+    'for f in scripts/xyq_cdp_browser.py scripts/xyq_chrome/launch_chrome.sh scripts/xyq_chrome/watch_thread_dom_download.py scripts/musia_mv_finalize.sh; do test -e "/home/lachlan/ProjectsLFS/LALACHAN/$f" && echo "OK   $f" || echo "MISS $f"; done; echo "---mv_packs---"; ls -1 /home/lachlan/ProjectsLFS/Musia/data/mv_packs 2>&1; echo "---creative_projects---"; ls -1 /home/lachlan/ProjectsLFS/Musia/data/creative_projects 2>&1 | head -20';
+  const exactReadOnlyExistenceLoopWithSuffixPolicy = evaluateCommandPolicy(
+    exactReadOnlyExistenceLoopWithSuffix,
+    hostReadRootPolicy
+  );
+  assert(
+    exactReadOnlyExistenceLoopWithSuffixPolicy.allowed &&
+      exactReadOnlyExistenceLoopWithSuffixPolicy.category === "read-only" &&
+      exactReadOnlyExistenceLoopWithSuffixPolicy.boundedForLoop === true &&
+      exactReadOnlyExistenceLoopWithSuffixPolicy.boundedCompoundSequence === true &&
+      exactReadOnlyExistenceLoopWithSuffixPolicy.needsNetwork === false &&
+      exactReadOnlyExistenceLoopWithSuffixPolicy.writesWorkspace === false,
+    "a finite read-only existence loop with bounded list suffix incorrectly required destructive host permission"
+  );
+  const exactReadOnlyReportLiteralAudit =
+    'cd . && for s in \'handoff/LABCANVAS_AGENT_API_HANDOFF_2026_07_29.md\' \'/home/lachlan/ProjectsLFS/AgenticApp\' \'src/agenticapp/musia_ops.py\' \'scripts/xyq_chrome/watch_thread_dom_download.py\' \'Reviewed master\' \'ffprobe verification\' \'Song-only versus MV separation\' \'MV request versus publication separation\'; do n=$(grep -c -- "$s" media-routine-readiness.md); echo "$n :: $s"; done; echo \'--- git status ---\'; git status --short';
+  const exactReadOnlyReportLiteralAuditPolicy = evaluateCommandPolicy(
+    exactReadOnlyReportLiteralAudit,
+    hostWorkspacePolicy
+  );
+  assert(
+    exactReadOnlyReportLiteralAuditPolicy.allowed &&
+      exactReadOnlyReportLiteralAuditPolicy.category === "read-only" &&
+      exactReadOnlyReportLiteralAuditPolicy.boundedForLoop === true &&
+      exactReadOnlyReportLiteralAuditPolicy.needsNetwork === false &&
+      exactReadOnlyReportLiteralAuditPolicy.writesWorkspace === false,
+    "a bounded report literal-count audit incorrectly required destructive host permission"
+  );
+  const exactReadOnlyFormattedReportAudit = [
+    "f=media-routine-readiness.md",
+    "printf 'lines\\tbytes\\tsha256\\n'",
+    'wc -lc "$f"',
+    'sha256sum "$f"',
+    "printf '\\n--- literal occurrence counts (bounded) ---\\n'",
+    "for s in \\",
+    "  '/home/lachlan/ProjectsLFS/Musia' \\",
+    "  '/home/lachlan/ProjectsLFS/AgenticApp' \\",
+    "  'music generation' \\",
+    "; do",
+    '  n=$(grep -oF -- "$s" "$f" | wc -l | tr -d \' \')',
+    '  printf \'%-58s %s\\n\' "$s" "$n"',
+    "done",
+  ].join("\n");
+  const exactReadOnlyFormattedReportAuditPolicy = evaluateCommandPolicy(
+    exactReadOnlyFormattedReportAudit,
+    hostWorkspacePolicy
+  );
+  assert(
+    exactReadOnlyFormattedReportAuditPolicy.allowed &&
+      exactReadOnlyFormattedReportAuditPolicy.category === "read-only" &&
+      exactReadOnlyFormattedReportAuditPolicy.boundedForLoop === true &&
+      exactReadOnlyFormattedReportAuditPolicy.needsNetwork === false &&
+      exactReadOnlyFormattedReportAuditPolicy.writesWorkspace === false,
+    "a literal-file formatted count audit incorrectly required destructive host permission"
+  );
+  const exactReadOnlyMultiPatternSummary =
+    "grep -oF -e 'handoff/report.md' -e 'Reviewed master' -e 'ffprobe' report.md | sort | uniq -c";
+  const exactReadOnlyMultiPatternSummaryPolicy = evaluateCommandPolicy(
+    exactReadOnlyMultiPatternSummary,
+    hostWorkspacePolicy
+  );
+  assert(
+    exactReadOnlyMultiPatternSummaryPolicy.allowed &&
+      exactReadOnlyMultiPatternSummaryPolicy.category === "read-only" &&
+      exactReadOnlyMultiPatternSummaryPolicy.needsNetwork === false &&
+      exactReadOnlyMultiPatternSummaryPolicy.writesWorkspace === false,
+    "a bounded grep/sort/uniq count summary incorrectly required destructive host permission"
+  );
+  const exactPdfHeaderAudit =
+    'cd /home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/task-123 && file report.pdf && head -c 8 report.pdf | xxd | head -1';
+  const exactPdfHeaderAuditPolicy = evaluateCommandPolicy(
+    exactPdfHeaderAudit,
+    {
+      ...hostWorkspacePolicy,
+      commandCwd: "/home/lachlan/ProjectsLFS/AgenticApp",
+    }
+  );
+  assert(
+    exactPdfHeaderAuditPolicy.allowed &&
+      exactPdfHeaderAuditPolicy.category === "read-only" &&
+      exactPdfHeaderAuditPolicy.needsNetwork === false &&
+      exactPdfHeaderAuditPolicy.writesWorkspace === false,
+    "a bounded workspace-local PDF header audit incorrectly required destructive host permission"
+  );
+  const pdfinfoPolicy = evaluateCommandPolicy("pdfinfo report.pdf", hostWorkspacePolicy);
+  assert(
+    pdfinfoPolicy.allowed &&
+      pdfinfoPolicy.category === "read-only" &&
+      pdfinfoPolicy.needsNetwork === false &&
+      pdfinfoPolicy.writesWorkspace === false,
+    "plain workspace-local pdfinfo inspection incorrectly required host permission"
+  );
+  for (const unsafeXxdCommand of [
+    "xxd -r - output.bin",
+    "xxd report.pdf output.hex",
+  ]) {
+    const unsafeXxdPolicy = evaluateCommandPolicy(
+      unsafeXxdCommand,
+      hostWorkspacePolicy
+    );
+    assert(
+      !unsafeXxdPolicy.allowed ||
+        unsafeXxdPolicy.category !== "read-only" ||
+        unsafeXxdPolicy.writesWorkspace === true,
+      `write-capable xxd command bypassed host policy: ${unsafeXxdCommand}`
+    );
+  }
+  const exactReadOnlyGitIdentityProbe =
+    'git status --short && echo "TOPLEVEL=$(git rev-parse --show-toplevel 2>&1)" && echo "BRANCH=$(git rev-parse --abbrev-ref HEAD 2>&1)"';
+  const exactReadOnlyGitIdentityProbePolicy = evaluateCommandPolicy(
+    exactReadOnlyGitIdentityProbe,
+    hostWorkspacePolicy
+  );
+  assert(
+    exactReadOnlyGitIdentityProbePolicy.allowed &&
+      exactReadOnlyGitIdentityProbePolicy.category === "read-only" &&
+      exactReadOnlyGitIdentityProbePolicy.needsNetwork === false &&
+      exactReadOnlyGitIdentityProbePolicy.writesWorkspace === false,
+    "bounded read-only git identity substitutions incorrectly required destructive host permission"
+  );
+  const exactReadOnlyGitIdentityLoop =
+    'for d in /home/lachlan/ProjectsLFS/AgenticApp /home/lachlan/ProjectsLFS/Musia /home/lachlan/ProjectsLFS/LALACHAN /home/lachlan/DiskMech/Projects/lazyedit; do echo "=== $d ==="; echo "user.name=[$(git -C "$d" config user.name 2>/dev/null)]"; echo "user.email=[$(git -C "$d" config user.email 2>/dev/null)]"; echo "--status--"; git -C "$d" status --short 2>&1 | head -15; echo; done';
+  const exactReadOnlyGitIdentityLoopPolicy = evaluateCommandPolicy(
+    exactReadOnlyGitIdentityLoop,
+    hostReadRootPolicy
+  );
+  assert(
+    exactReadOnlyGitIdentityLoopPolicy.allowed &&
+      exactReadOnlyGitIdentityLoopPolicy.category === "read-only" &&
+      exactReadOnlyGitIdentityLoopPolicy.boundedForLoop === true &&
+      exactReadOnlyGitIdentityLoopPolicy.needsNetwork === false &&
+      exactReadOnlyGitIdentityLoopPolicy.writesWorkspace === false,
+    "bounded per-repository Git identity/status audit incorrectly required destructive host permission"
+  );
+  const exactReadOnlyGitRepositoryAudit =
+    'for d in /home/lachlan/ProjectsLFS/AgenticApp /home/lachlan/ProjectsLFS/Musia /home/lachlan/ProjectsLFS/LALACHAN /home/lachlan/DiskMech/Projects/lazyedit; do echo "=== $d ==="; git -C "$d" config --get user.name; git -C "$d" config --get user.email; git -C "$d" status --porcelain=v1 --branch; echo "--- remotes ---"; git -C "$d" remote -v; echo; done';
+  const exactReadOnlyGitRepositoryAuditPolicy = evaluateCommandPolicy(
+    exactReadOnlyGitRepositoryAudit,
+    hostReadRootPolicy
+  );
+  assert(
+    exactReadOnlyGitRepositoryAuditPolicy.allowed &&
+      exactReadOnlyGitRepositoryAuditPolicy.category === "read-only" &&
+      exactReadOnlyGitRepositoryAuditPolicy.boundedForLoop === true &&
+      exactReadOnlyGitRepositoryAuditPolicy.needsNetwork === false &&
+      exactReadOnlyGitRepositoryAuditPolicy.writesWorkspace === false,
+    "bounded per-repository Git identity/status/remote audit incorrectly required destructive host permission"
+  );
+  for (const unsafeEchoSubstitution of [
+    'echo "VALUE=$(rm -rf report.md)"',
+    'echo "VALUE=$(cp README.md report.md)"',
+    'echo "VALUE=$(curl https://example.com)"',
+    'echo "VALUE=$(git status; rm -rf report.md)"',
+    'echo "VALUE=$(echo $(pwd))"',
+    'echo "VALUE=$((1 + 1))"',
+    'echo "VALUE=$(git status)" > report.md',
+    'echo "VALUE=`git status`"',
+  ]) {
+    const unsafeEchoSubstitutionPolicy = evaluateCommandPolicy(
+      unsafeEchoSubstitution,
+      hostWorkspacePolicy
+    );
+    assert(
+      !unsafeEchoSubstitutionPolicy.allowed ||
+        unsafeEchoSubstitutionPolicy.category !== "read-only" ||
+        unsafeEchoSubstitutionPolicy.writesWorkspace === true ||
+        unsafeEchoSubstitutionPolicy.needsNetwork === true,
+      `unsafe echo command substitution bypassed the bounded read-only policy: ${unsafeEchoSubstitution}`
+    );
+  }
+  for (const unsafeLoopSubstitution of [
+    'for d in /tmp; do echo "VALUE=$(rm -rf report.md)"; done',
+    'for d in /tmp; do echo "VALUE=$(curl https://example.com)"; done',
+    'for d in /tmp; do echo "VALUE=$(echo $(pwd))"; done',
+    'for d in /tmp; do echo "VALUE=$SECRET"; done',
+    'for d in /tmp; do echo "VALUE=$(git -C "$d" config user.name attacker)"; done',
+    'for d in /tmp; do echo "VALUE=$(git -C "$d" config --global user.name)"; done',
+    'for d in /tmp; do echo "VALUE=$(git -C "$d" status; rm -rf report.md)"; done',
+    'for d in /tmp; do git -C "$d" status --short > report.md; done',
+    'for d in /tmp; do git -C "$d" remote add origin https://example.com/repo.git; done',
+    'for d in /tmp; do git -C "$d" remote set-url origin https://example.com/repo.git; done',
+    'for s in README.md; do n=$(rm -rf report.md); echo "$n :: $s"; done',
+    'for s in README.md; do n=$(curl https://example.com); echo "$n :: $s"; done',
+    'for s in README.md; do n=$(cat "$s"); echo "$n :: $s"; done',
+    'for s in README.md; do n=$(grep -c -- "$s" README.md); rm -rf "$n"; done',
+    'f=README.md; printf "%s\\n" "$(cat .aginti/.env)"; for s in one; do echo "$s"; done',
+    'f=README.md; printf "%s\\n" "$f" > copied.md; for s in one; do echo "$s"; done',
+    'f=$(cat README.md); printf "%s\\n" "$f"; for s in one; do echo "$s"; done',
+    'f=README.md; for s in one; do n=$(grep -oF -- "$s" "$f" | wc -l | tr -d " "); printf -v target "%s" "$n"; done',
+    'f=README.md; for s in one; do n=$(grep -oF -- "$s" "$f" | wc -l | tr -d " "); rm -rf "$n"; done',
+    "grep -oF -e 'term' report.md | sort | uniq -c output.txt",
+    "grep -oF -e 'term' report.md | sort | uniq -c > output.txt",
+    'grep -oF -e "$(cat .aginti/.env)" report.md | sort | uniq -c',
+    'for s in \'README.md; rm -rf report.md\'; do echo "$s"; done',
+  ]) {
+    const unsafeLoopSubstitutionPolicy = evaluateCommandPolicy(
+      unsafeLoopSubstitution,
+      hostReadRootPolicy
+    );
+    assert(
+      !unsafeLoopSubstitutionPolicy.allowed ||
+        unsafeLoopSubstitutionPolicy.category !== "read-only" ||
+        unsafeLoopSubstitutionPolicy.writesWorkspace === true ||
+        unsafeLoopSubstitutionPolicy.needsNetwork === true,
+      `unsafe loop substitution bypassed the bounded read-only policy: ${unsafeLoopSubstitution}`
+    );
+  }
+  for (const unsafeCompoundAudit of [
+    'cp README.md copied.md; for d in /tmp; do echo "$d"; done',
+    'echo start; for d in /tmp; do if [ -d "$d" ]; then rm -rf "$d"; else echo missing; fi; done',
+    'echo start; for d in /tmp; do if [ -d "$d" ]; then curl https://example.com; else echo missing; fi; done',
+    'echo start; for d in /tmp; do if [ -d "$d" ]; then echo "$d" > report.md; else echo missing; fi; done',
+    'echo start; for d in /tmp; do if [ -d "$(pwd)" ]; then ls; else echo missing; fi; done',
+    'echo start; for d in /tmp; do if [ -d "$d" ]; then if [ -f "$d/x" ]; then cat "$d/x"; else echo missing; fi; else echo absent; fi; done',
+    'echo start; for d in $ROOTS; do if [ -d "$d" ]; then ls "$d"; else echo missing; fi; done',
+    'echo start; for d in /tmp; do if [ -d "$d" ]; then ls "$d"; else echo missing; fi; done; rm -rf report.md',
+    'for f in README.md; do test -e "$f" && echo ok || echo missing; done; cp README.md copied.md',
+    'for f in README.md; do test -e "$f" && echo ok || echo missing; done; curl https://example.com',
+    'for f in README.md; do test -e "$f" && echo ok || echo missing; done; echo done > report.md',
+  ]) {
+    const unsafeCompoundAuditPolicy = evaluateCommandPolicy(unsafeCompoundAudit, hostReadRootPolicy);
+    assert(
+      !unsafeCompoundAuditPolicy.allowed ||
+        unsafeCompoundAuditPolicy.category !== "read-only" ||
+        unsafeCompoundAuditPolicy.writesWorkspace === true ||
+        unsafeCompoundAuditPolicy.needsNetwork === true,
+      `unsafe compound shell audit bypassed the bounded read-only policy: ${unsafeCompoundAudit}`
+    );
+  }
   const readRootDoctorPolicy = evaluateCommandPolicy(
     `cd ${externalReadRoot} && node bin/musia.js doctor --json 2>&1 | head -80`,
     hostReadRootPolicy
@@ -651,6 +1131,33 @@ try {
   );
   assert(readonlyVersionPipelinePolicy.allowed, "read-only version probe pipelines should not require package-install-policy=allow");
   assert(readonlyVersionPipelinePolicy.category === "read-only", "read-only version probe pipelines should be classified as read-only");
+  const pgrepNoMatchPolicy = evaluateCommandPolicy(
+    "pgrep -af gateway_service",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    pgrepNoMatchPolicy.allowed &&
+      pgrepNoMatchPolicy.category === "read-only" &&
+      pgrepNoMatchPolicy.noMatchExitIsSuccess === true,
+    "pgrep should be a read-only query whose no-match exit is meaningful evidence"
+  );
+  const pgrepNoMatchResult = normalizeNoMatchQueryResult(
+    { ok: false, exitCode: 1, stdout: "", stderr: "" },
+    pgrepNoMatchPolicy
+  );
+  assert(
+    pgrepNoMatchResult.ok === true &&
+      pgrepNoMatchResult.noMatch === true &&
+      pgrepNoMatchResult.semanticOutcome === "no-match",
+    "pgrep exit 1 with no diagnostics should normalize to successful no-match evidence"
+  );
+  assert(
+    normalizeNoMatchQueryResult(
+      { ok: false, exitCode: 2, stdout: "", stderr: "invalid option" },
+      pgrepNoMatchPolicy
+    ).ok === false,
+    "an actual pgrep error was incorrectly normalized as no-match evidence"
+  );
   const readonlyDiffSlicePolicy = evaluateCommandPolicy(
     "git diff -- src/agent-runner.js | sed -n '1,240p'",
     dockerWorkspaceNoInstallsPolicy
@@ -683,21 +1190,114 @@ try {
   );
   assert(pdflatexCompilePolicy.allowed, "workspace-local pdflatex compile should be allowed without package installs");
   assert(pdflatexCompilePolicy.category === "toolchain", "workspace-local pdflatex compile should be classified as toolchain");
+  for (const engine of ["xelatex", "lualatex"]) {
+    const unicodeLatexCompilePolicy = evaluateCommandPolicy(
+      `${engine} -interaction=nonstopmode -halt-on-error main.tex`,
+      hostWorkspacePolicy
+    );
+    assert(unicodeLatexCompilePolicy.allowed, `workspace-local ${engine} compile should be allowed without destructive host access`);
+    assert(unicodeLatexCompilePolicy.category === "toolchain", `workspace-local ${engine} compile should be classified as toolchain`);
+  }
   const latexmkCompilePolicy = evaluateCommandPolicy(
     'cd profile-latex-20260506 && latexmk -pdf main.tex 2>&1; echo "LATEXMK_EXIT:$?"',
     dockerWorkspaceNoInstallsPolicy
   );
   assert(latexmkCompilePolicy.allowed, "workspace-local latexmk compile should be allowed without package installs");
   assert(latexmkCompilePolicy.category === "toolchain", "workspace-local latexmk compile should be classified as toolchain");
+  const latexmkSynctexCompilePolicy = evaluateCommandPolicy(
+    "latexmk -synctex=1 -interaction=nonstopmode main.tex",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    latexmkSynctexCompilePolicy.allowed,
+    "bounded workspace-local latexmk synctex compile should be allowed"
+  );
+  assert(
+    latexmkSynctexCompilePolicy.category === "toolchain",
+    "bounded workspace-local latexmk synctex compile should be classified as toolchain"
+  );
+  assert(
+    goalClearlyAllowsOverwrite("Remove the unrelated article and produce the requested memo."),
+    "explicit removal of a wrong artifact did not authorize its coherent replacement"
+  );
+  assert(
+    goalClearlyAllowsOverwrite("删除错误文件后生成正确报告。"),
+    "explicit Chinese deletion request did not authorize coherent replacement"
+  );
   const pythonUnittestPolicy = evaluateCommandPolicy(
     "python3 -m unittest test_data_helper.py 2>&1",
     dockerWorkspaceNoInstallsPolicy
   );
   assert(pythonUnittestPolicy.allowed, "stdlib python unittest should be allowed without package installs");
   assert(pythonUnittestPolicy.category === "test", "stdlib python unittest should be classified as test");
+  const pythonNoBytecodeAcceptancePolicy = evaluateCommandPolicy(
+    "PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    pythonNoBytecodeAcceptancePolicy.allowed &&
+      pythonNoBytecodeAcceptancePolicy.category === "test" &&
+      pythonNoBytecodeAcceptancePolicy.substantiveTest === true,
+    "a no-bytecode Python acceptance command should retain substantive test classification"
+  );
   const pythonDemoPolicy = evaluateCommandPolicy("python3 demo.py 2>&1", dockerWorkspaceNoInstallsPolicy);
   assert(pythonDemoPolicy.allowed, "workspace-local python demo script should be allowed without package installs");
   assert(pythonDemoPolicy.category === "toolchain", "workspace-local python demo script should be classified as toolchain");
+  const scopedPdfBuildPolicy = evaluateCommandPolicy(
+    "cd output/task-1 && python3 build_report.py 2>&1 | tail -20 && ls -la *.pdf && sha256sum *.pdf",
+    hostWorkspacePolicy
+  );
+  assert(scopedPdfBuildPolicy.allowed, "bounded PDF builder plus read-only verification was treated as broad host shell");
+  assert(scopedPdfBuildPolicy.category === "toolchain", "bounded PDF builder pipeline should remain a toolchain");
+  const broadLocalProbePolicy = evaluateCommandPolicy(
+    'python3 --version; echo "---IMPORT TEST---"; python3 -c "import pathlib; print(pathlib.Path.cwd())" 2>&1; echo "---FILES---"; ls -la 2>&1 | head -20',
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    broadLocalProbePolicy.allowed && broadLocalProbePolicy.category === "general-shell",
+    "networkless general shell inside docker-workspace should not require package-install permission"
+  );
+  const broadLocalHostProbePolicy = evaluateCommandPolicy(
+    'python3 -c "import pathlib; print(pathlib.Path.cwd())"',
+    { ...hostWorkspacePolicy, packageInstallPolicy: "block" }
+  );
+  assert(
+    !broadLocalHostProbePolicy.allowed,
+    "general shell on the host should remain blocked without trusted destructive access"
+  );
+  const explicitBlockedInstallPolicy = evaluateCommandPolicy(
+    "python3 -m pip install requests",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    !explicitBlockedInstallPolicy.allowed && explicitBlockedInstallPolicy.category === "package-install",
+    "decoupling broad shell from install authorization must not allow explicit package installs"
+  );
+  const destructiveNoInstallsPolicy = evaluateCommandPolicy("rm -rf reports", dockerWorkspaceNoInstallsPolicy);
+  assert(
+    !destructiveNoInstallsPolicy.allowed && destructiveNoInstallsPolicy.category === "destructive",
+    "decoupling broad shell from install authorization must not weaken destructive-command guards"
+  );
+  const multiParagraphCommitPolicy = evaluateCommandPolicy(
+    'git commit -m "Harden LabShare" -m "Fix path traversal, avoid shell injection, and preserve normal use."',
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    multiParagraphCommitPolicy.allowed &&
+      multiParagraphCommitPolicy.category === "git-workflow" &&
+      multiParagraphCommitPolicy.gitOnly === true,
+    "a bounded multi-paragraph Git commit message should remain a Git-only workflow"
+  );
+  const boundedTaskCommitPolicy = evaluateCommandPolicy(
+    "git add -- 'labshare.py' 'tests/test_labshare.py' 'SECURITY.md' && git commit -m 'Harden LabShare'",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(
+    boundedTaskCommitPolicy.allowed &&
+      boundedTaskCommitPolicy.category === "git-workflow" &&
+      boundedTaskCommitPolicy.gitOnly === true,
+    "the task-owned add-and-commit routine should remain a bounded Git workflow"
+  );
   const rVersionProbePolicy = evaluateCommandPolicy("R --version 2>&1", dockerWorkspaceNoInstallsPolicy);
   assert(rVersionProbePolicy.allowed, "R version probe should be allowed without package installs");
   assert(rVersionProbePolicy.category === "read-only", "R version probe should be classified as read-only");
@@ -790,6 +1390,40 @@ try {
   assert(safeChmodAndRunPolicy.allowed, "safe workspace chmod + script run sequence should be allowed in docker-workspace allow mode");
   const unsafeChmodPolicy = evaluateCommandPolicy("chmod +x /etc/passwd", dockerWorkspacePolicy);
   assert(!unsafeChmodPolicy.allowed, "chmod outside the workspace should be blocked");
+  const documentBuildSequencePolicy = evaluateCommandPolicy(
+    "sha256sum README.md PROJECT_NOTES.md source/budget.csv source/meeting-notes.txt source/style-notes.md > /tmp/src-before.sha256 && cat /tmp/src-before.sha256 && echo '---' && chmod +x build.sh scripts/*.py && ./build.sh",
+    dockerWorkspacePolicy
+  );
+  assert(
+    documentBuildSequencePolicy.allowed,
+    "bounded document build sequence with workspace-local chmod glob should be allowed in trusted Docker mode"
+  );
+  assert(
+    documentBuildSequencePolicy.category === "general-shell",
+    "document build sequence should remain broad trusted shell, not destructive"
+  );
+  const documentIntegrityBuildPolicy = evaluateCommandPolicy(
+    "set -e; mkdir -p output .verification; echo '== source hashes BEFORE build =='; sha256sum README.md PROJECT_NOTES.md source/budget.csv source/meeting-notes.txt source/style-notes.md | tee .verification/src-before.sha256; echo '== chmod + build =='; chmod +x build.sh scripts/*.py; ./build.sh; echo '== source hashes AFTER build (must match BEFORE) =='; sha256sum README.md PROJECT_NOTES.md source/budget.csv source/meeting-notes.txt source/style-notes.md | tee .verification/src-after.sha256; diff .verification/src-before.sha256 .verification/src-after.sha256 && echo 'SOURCE FILES UNCHANGED (byte-for-byte preserved)'",
+    dockerWorkspacePolicy
+  );
+  assert(
+    documentIntegrityBuildPolicy.allowed,
+    "document integrity build with bounded workspace tee targets should be allowed in trusted Docker mode"
+  );
+  assert(
+    documentIntegrityBuildPolicy.category === "general-shell",
+    "document integrity build should remain broad trusted shell, not destructive"
+  );
+  const externalTeePolicy = evaluateCommandPolicy("tee /etc/aginti-test", dockerWorkspacePolicy);
+  assert(!externalTeePolicy.allowed, "tee outside the workspace should remain blocked");
+  const globTeePolicy = evaluateCommandPolicy("tee reports/*.txt", dockerWorkspacePolicy);
+  assert(!globTeePolicy.allowed, "tee wildcard targets should remain blocked");
+  const hostGlobChmodPolicy = evaluateCommandPolicy("chmod +x scripts/*.py", hostWorkspacePolicy);
+  assert(!hostGlobChmodPolicy.allowed, "host workspace chmod globs should require explicit trusted host access");
+  const recursiveChmodPolicy = evaluateCommandPolicy("chmod -R +x scripts", dockerWorkspacePolicy);
+  assert(!recursiveChmodPolicy.allowed, "recursive chmod should remain outside the bounded permission-change policy");
+  const parentTraversalChmodPolicy = evaluateCommandPolicy("chmod +x scripts/../outside.py", dockerWorkspacePolicy);
+  assert(!parentTraversalChmodPolicy.allowed, "chmod parent traversal should remain blocked");
   const hostWorkspaceChmodPolicy = evaluateCommandPolicy("chmod +x android-app/gradlew && echo \"CHMOD_OK\"", hostWorkspacePolicy);
   assert(hostWorkspaceChmodPolicy.allowed, "host mode should allow workspace-local chmod without full-host destructive access");
   assert(
@@ -849,12 +1483,54 @@ try {
   assert(cdWorkspacePolicy.allowed, "cd /workspace should be allowed in docker-workspace mode");
   const gitCleanDryRunPolicy = evaluateCommandPolicy("git clean -nd reports", dockerWorkspacePolicy);
   assert(gitCleanDryRunPolicy.allowed, "git clean dry-run should be allowed as read-only inspection evidence");
+  const gitRmCachedPolicy = evaluateCommandPolicy(
+    "git rm --cached -q build/__pycache__/content.cpython-312.pyc",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(gitRmCachedPolicy.allowed, "bounded git rm --cached should preserve the working tree and remain allowed");
+  assert(gitRmCachedPolicy.category === "git-workflow", "bounded git rm --cached should be a git workflow command");
+  const gitRmCachedRecursivePolicy = evaluateCommandPolicy(
+    "git rm --cached -r build",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(!gitRmCachedRecursivePolicy.allowed, "recursive git rm --cached should remain guarded");
+  const gitRmCachedGlobPolicy = evaluateCommandPolicy(
+    "git rm --cached 'build/**/*.pyc'",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(!gitRmCachedGlobPolicy.allowed, "globbed git rm --cached should remain guarded");
+  const gitRmWorkingTreePolicy = evaluateCommandPolicy(
+    "git rm build/content.py",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(!gitRmWorkingTreePolicy.allowed, "git rm without --cached must remain guarded");
   const localGitInitPolicy = evaluateCommandPolicy("git init", dockerWorkspaceNoInstallsPolicy);
   assert(localGitInitPolicy.allowed, "local git init should be allowed without package installs");
   assert(localGitInitPolicy.category === "git-workflow", "local git init should be classified as git-workflow");
   const localGitCommitPolicy = evaluateCommandPolicy('git commit -m "Initial local workflow commit"', dockerWorkspaceNoInstallsPolicy);
   assert(localGitCommitPolicy.allowed, "local git commit should be allowed without package installs");
   assert(localGitCommitPolicy.category === "git-workflow", "local git commit should be classified as git-workflow");
+  const privateRuntimeStagePolicy = evaluateCommandPolicy("git add -- '.aginti/'", dockerWorkspaceNoInstallsPolicy);
+  assert(!privateRuntimeStagePolicy.allowed, "private .aginti runtime state must never be stageable");
+  assert(
+    privateRuntimeStagePolicy.permissionAdvice?.autoRecover === true,
+    "private runtime staging should recover automatically instead of pausing for user approval"
+  );
+  const chainedPrivateRuntimeStagePolicy = evaluateCommandPolicy(
+    "git add -- 'service_ctl.py' && git add -- '.aginti/' && git commit -m 'Repair service'",
+    dockerWorkspaceNoInstallsPolicy
+  );
+  assert(!chainedPrivateRuntimeStagePolicy.allowed, "a chained command must not stage private runtime state");
+  const broadGitAddPolicy = evaluateCommandPolicy("git add -A", dockerWorkspaceNoInstallsPolicy);
+  assert(!broadGitAddPolicy.allowed, "broad git staging must be rejected");
+  assert(
+    broadGitAddPolicy.permissionAdvice?.autoRecover === true,
+    "broad staging should recover automatically to exact task-owned paths"
+  );
+  const commitAllPolicy = evaluateCommandPolicy("git commit -a -m 'Repair service'", dockerWorkspaceNoInstallsPolicy);
+  assert(!commitAllPolicy.allowed, "git commit -a must not bypass bounded task-owned staging");
+  const boundedGitAddPolicy = evaluateCommandPolicy("git add -- 'service_ctl.py'", dockerWorkspaceNoInstallsPolicy);
+  assert(boundedGitAddPolicy.allowed, "bounded task-owned git staging should remain available");
   const localGitSwitchPolicy = evaluateCommandPolicy("git switch -c feature-a", dockerWorkspaceNoInstallsPolicy);
   assert(localGitSwitchPolicy.allowed, "local git switch -c should be allowed without package installs");
   const localGitCheckoutExistingPolicy = evaluateCommandPolicy("git checkout main", dockerWorkspaceNoInstallsPolicy);
@@ -890,6 +1566,72 @@ try {
   });
   assert(permissionAdvice.suggestedCommand.includes("coding-policy-smoke"), "permission advice did not include resume session id");
   assert(permissionAdvice.suggestedCommand.includes("--sandbox-mode docker-workspace"), "permission advice did not suggest docker-workspace recovery");
+  const wrongWorkspaceCdAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: {
+      command:
+        "cd /home/example/project-parent && python3 -m unittest discover -s tests -v",
+    },
+    guard: {
+      category: "blocked",
+      reason:
+        "cd target must be a safe workspace-relative directory: /home/example/project-parent",
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      commandCwd: "/home/example/project-parent/current-project",
+    },
+    state: { sessionId: "coding-wrong-workspace-cd-smoke" },
+  });
+  assert(
+    wrongWorkspaceCdAdvice.autoRecover === true,
+    "an unnecessary outside-workspace cd should be corrected in-turn instead of pausing"
+  );
+  assert(
+    /configured project root/i.test(wrongWorkspaceCdAdvice.instruction),
+    "workspace cd correction did not direct the model back to the configured project root"
+  );
+  assert(
+    !shouldPauseForPermissionAdvice({
+      blocked: true,
+      permissionAdvice: wrongWorkspaceCdAdvice,
+    }),
+    "recoverable workspace cd correction still paused the session"
+  );
+  const outsideScratchAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: { command: "mkdir -p /tmp/test_service && cd /tmp/test_service" },
+    guard: {
+      category: "blocked",
+      reason: "mkdir target must be a safe workspace-relative directory: /tmp/test_service",
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      commandCwd: "/home/example/project",
+    },
+    state: { sessionId: "coding-outside-scratch-smoke" },
+  });
+  assert(
+    outsideScratchAdvice.autoRecover === true,
+    "an outside scratch-directory request should be corrected in-turn instead of pausing"
+  );
+  assert(
+    /\.aginti\/verification/i.test(outsideScratchAdvice.instruction),
+    "scratch-directory correction did not provide a workspace-relative verification path"
+  );
+  assert(
+    !/package-install|approve-package/i.test(
+      [outsideScratchAdvice.summary, outsideScratchAdvice.instruction].join("\n")
+    ),
+    "scratch-directory correction incorrectly suggested package-install escalation"
+  );
+  assert(
+    !shouldPauseForPermissionAdvice({
+      blocked: true,
+      permissionAdvice: outsideScratchAdvice,
+    }),
+    "recoverable scratch-directory correction still paused the session"
+  );
   const destructiveAdvice = buildPermissionAdvice({
     toolName: "run_command",
     args: { command: "rm -rf reports && git reset --hard" },
@@ -915,6 +1657,422 @@ try {
   assert(
     destructiveAdvice.destructiveApprovalCommand.includes("--allow-destructive"),
     "destructive advice did not provide an explicit approval command"
+  );
+  const optionalPreviewCleanupArgs = {
+    command:
+      "rm -f build/verification/page-1.png build/verification/page-2.png; git status --short",
+  };
+  assert(
+    isOptionalGeneratedPreviewCleanup("run_command", optionalPreviewCleanupArgs),
+    "bounded generated verification-preview cleanup was not recognized"
+  );
+  const optionalPreviewCleanupAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: optionalPreviewCleanupArgs,
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: dockerWorkspacePolicy,
+    state: { sessionId: "coding-optional-preview-cleanup-smoke" },
+  });
+  assert(
+    optionalPreviewCleanupAdvice.autoRecover === true,
+    "optional generated-preview cleanup should retain evidence and recover without pausing"
+  );
+  assert(
+    /leave every candidate file in place/i.test(optionalPreviewCleanupAdvice.instruction),
+    "optional generated-preview cleanup advice did not tell the agent to retain evidence"
+  );
+  assert(
+    !isOptionalGeneratedPreviewCleanup("run_command", {
+      command: "rm -f output/final-report.pdf",
+    }),
+    "a requested final artifact was misclassified as optional preview cleanup"
+  );
+  const mixedValidationCleanupArgs = {
+    command:
+      "python3 validate.py; rm -f output/page-*.png scratch-notes.md; git status --short",
+  };
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      mixedValidationCleanupArgs,
+      { goal: "Create and verify a clean document." },
+      {}
+    ),
+    "unrequested cleanup embedded after validation was not recognized as recoverable"
+  );
+  const mixedValidationCleanupAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: mixedValidationCleanupArgs,
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: { ...dockerWorkspacePolicy, goal: "Create and verify a clean document." },
+    state: { sessionId: "coding-unrequested-cleanup-smoke" },
+  });
+  assert(
+    mixedValidationCleanupAdvice.autoRecover === true,
+    "unrequested cleanup should be skipped without pausing substantive work"
+  );
+  const pythonCacheCleanupArgs = {
+    command:
+      "find . -type d -name __pycache__ -prune -exec rm -rf {} + ; find . -type f -name '*.pyc' -delete; git status --short",
+  };
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      pythonCacheCleanupArgs,
+      { goal: "Repair the service, run its tests, and commit the intentional work." },
+      {}
+    ),
+    "post-acceptance Python cache deletion was not recognized as optional housekeeping"
+  );
+  const pythonCacheCleanupAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: pythonCacheCleanupArgs,
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      goal: "Repair the service, run its tests, and commit the intentional work.",
+    },
+    state: { sessionId: "coding-python-cache-cleanup-smoke" },
+  });
+  assert(
+    pythonCacheCleanupAdvice.autoRecover === true,
+    "ignored Python cache cleanup should be skipped without pausing a completed task"
+  );
+  assert(
+    !isUnrequestedCleanupCommand(
+      "run_command",
+      { command: "find . -type f -delete" },
+      { goal: "Repair the service and commit the result." },
+      {}
+    ),
+    "broad find deletion was incorrectly classified as optional Python cache cleanup"
+  );
+  assert(
+    !isUnrequestedCleanupCommand(
+      "run_command",
+      { command: "rm -f output/obsolete.pdf" },
+      { goal: "Delete the obsolete PDF." },
+      {}
+    ),
+    "an explicitly requested deletion was incorrectly treated as optional housekeeping"
+  );
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      { command: "rm -rf /tmp/run-a /tmp/run-b" },
+      {
+        goal:
+          "Continue the deterministic comparison. Do not delete any project or temporary directory; use fresh paths instead.",
+      },
+      {}
+    ),
+    "a negated deletion constraint was mistaken for destructive authorization"
+  );
+  const negatedCleanupAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: { command: "rm -rf /tmp/run-a /tmp/run-b" },
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      goal: "Do not delete any project or temporary directory; keep working on the build.",
+    },
+    state: { sessionId: "coding-negated-cleanup-smoke" },
+  });
+  assert(
+    negatedCleanupAdvice.autoRecover === true,
+    "blocked cleanup under a do-not-delete goal should recover without pausing"
+  );
+  const dynamicEvidenceAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: {
+      command:
+        'STAMP=$(date -u +%Y%m%dT%H%M%SZ); bash build.sh 2>&1 | tee ".aginti/build-${STAMP}.log"',
+    },
+    guard: {
+      category: "destructive",
+      reason:
+        'Command contains a write-capable or destructive token: tee ".aginti/build-${STAMP}.log"',
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      goal: "Build twice and retain deterministic evidence without deleting anything.",
+    },
+    state: { sessionId: "coding-dynamic-evidence-smoke" },
+  });
+  assert(
+    dynamicEvidenceAdvice.autoRecover === true &&
+      /literal workspace-relative evidence paths/i.test(dynamicEvidenceAdvice.instruction),
+    "dynamic evidence filename false positive should recover into literal workspace paths"
+  );
+  assert(
+    !shouldPauseForPermissionAdvice({ blocked: true, permissionAdvice: dynamicEvidenceAdvice }),
+    "dynamic evidence filename recovery still produced a permission pause"
+  );
+  const mixedToolchainAuditCommand = [
+    "cd output/task-1 && python3 build_report.py",
+    "python3 - <<'PY'",
+    "from pathlib import Path",
+    "print(Path('report.pdf').stat().st_size)",
+    "PY",
+  ].join(" && ");
+  const mixedToolchainAuditAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: { command: mixedToolchainAuditCommand },
+    guard: {
+      category: "general-shell",
+      reason: "General shell commands on the host require Allow destructive actions.",
+    },
+    config: hostWorkspacePolicy,
+    state: { sessionId: "coding-mixed-toolchain-audit-smoke" },
+  });
+  assert(
+    mixedToolchainAuditAdvice.autoRecover === true &&
+      mixedToolchainAuditAdvice.recoveryCommand ===
+        "cd output/task-1 && python3 build_report.py",
+    "mixed toolchain and inline audit did not recover to the safe build prefix"
+  );
+  assert(
+    !shouldPauseForPermissionAdvice({
+      blocked: true,
+      permissionAdvice: mixedToolchainAuditAdvice,
+    }),
+    "mixed toolchain and inline audit recovery still paused the session"
+  );
+  const unsafeMixedAuditAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: {
+      command:
+        "rm -rf output/task-1 && python3 build_report.py && python3 - <<'PY'\nprint('x')\nPY",
+    },
+    guard: {
+      category: "general-shell",
+      reason: "General shell commands on the host require Allow destructive actions.",
+    },
+    config: hostWorkspacePolicy,
+    state: { sessionId: "coding-unsafe-mixed-audit-smoke" },
+  });
+  assert(
+    unsafeMixedAuditAdvice.autoRecover !== true,
+    "destructive mixed audit received an unsafe automatic recovery"
+  );
+  const inlinePdfAuditAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: {
+      command:
+        'cd output/task-1 && python3 -c "import re;d=open(\'report.pdf\',\'rb\').read();print(len(re.findall(rb\'/Type\\\\s*/Page[^s]\',d)))"',
+    },
+    guard: {
+      category: "general-shell",
+      reason: "General shell commands on the host require Allow destructive actions.",
+    },
+    config: hostWorkspacePolicy,
+    state: { sessionId: "coding-inline-pdf-audit-smoke" },
+  });
+  assert(
+    inlinePdfAuditAdvice.autoRecover === true &&
+      /deterministic artifact gate/i.test(inlinePdfAuditAdvice.instruction),
+    "read-only inline PDF audit did not recover without stronger permission"
+  );
+  assert(
+    !shouldPauseForPermissionAdvice({
+      blocked: true,
+      permissionAdvice: inlinePdfAuditAdvice,
+    }),
+    "read-only inline PDF audit recovery still paused the session"
+  );
+  const inlinePdfWriteAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: {
+      command:
+        'cd output/task-1 && python3 -c "open(\'report.pdf\',\'wb\').write(b\'replacement\')"',
+    },
+    guard: {
+      category: "general-shell",
+      reason: "General shell commands on the host require Allow destructive actions.",
+    },
+    config: hostWorkspacePolicy,
+    state: { sessionId: "coding-inline-pdf-write-smoke" },
+  });
+  assert(
+    inlinePdfWriteAdvice.autoRecover !== true,
+    "write-capable inline Python received read-only automatic recovery"
+  );
+  const malformedPatchGuard = {
+    allowed: false,
+    category: "workspace-patch",
+    reason: "Patch did not contain any supported file operations.",
+    permissionAdvice: {
+      category: "workspace-patch",
+      autoRecover: true,
+      summary: "The patch format or exact context was not accepted; this is not a permission blocker.",
+      instruction: "Inspect the exact file and retry with a supported focused edit.",
+    },
+  };
+  const malformedPatchAdvice = buildPermissionAdvice({
+    toolName: "apply_patch",
+    args: { patch: "*** a/labshare.py\n*** b/labshare.py" },
+    guard: malformedPatchGuard,
+    config: dockerWorkspacePolicy,
+    state: { sessionId: "coding-malformed-patch-smoke" },
+  });
+  assert(
+    malformedPatchAdvice === malformedPatchGuard.permissionAdvice,
+    "explicit recoverable workspace-patch advice was replaced by generic permission advice"
+  );
+  assert(
+    !shouldPauseForPermissionAdvice({ blocked: true, permissionAdvice: malformedPatchAdvice }),
+    "recoverable malformed patch advice still paused the session for permission"
+  );
+  const destructiveDynamicEvidenceAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: {
+      command:
+        'rm -rf output; STAMP=$(date -u +%Y%m%dT%H%M%SZ); bash build.sh 2>&1 | tee ".aginti/build-${STAMP}.log"',
+    },
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: { ...dockerWorkspacePolicy, goal: "Build and verify the document." },
+    state: { sessionId: "coding-destructive-dynamic-evidence-smoke" },
+  });
+  assert(
+    destructiveDynamicEvidenceAdvice.autoRecover === true &&
+      /Unrequested cleanup was blocked safely/i.test(destructiveDynamicEvidenceAdvice.summary),
+    "a real cleanup token should not be mislabeled as only dynamic evidence formatting"
+  );
+  const documentPageBatchGuard = checkToolUse({
+    toolName: "read_image",
+    args: { imagePaths: ["build/verification/page-1.png", "build/verification/page-2.png"] },
+    snapshot: {},
+    config: { ...dockerWorkspacePolicy, allowFileTools: true, taskProfile: "word" },
+  });
+  assert(
+    documentPageBatchGuard.allowed === false &&
+      documentPageBatchGuard.category === "document-page-visual-batch",
+    "Word document review did not require one visual call per rendered page"
+  );
+  const documentPageBatchAdvice = buildPermissionAdvice({
+    toolName: "read_image",
+    args: { imagePaths: ["build/verification/page-1.png", "build/verification/page-2.png"] },
+    guard: documentPageBatchGuard,
+    config: { ...dockerWorkspacePolicy, taskProfile: "word" },
+    state: { sessionId: "coding-document-page-visual-batch-smoke" },
+  });
+  assert(
+    documentPageBatchAdvice.autoRecover === true &&
+      /once for each rendered page/i.test(documentPageBatchAdvice.instruction),
+    "Word document page batching did not recover into separate visual checks"
+  );
+  const alreadyCommittedAdvice = buildFailedCommandAdvice({
+    args: { command: "git commit -m 'Focused repair'" },
+    commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
+    commandResult: {
+      ok: false,
+      exitCode: 1,
+      stdout: "On branch main\nnothing to commit, working tree clean\n",
+    },
+    config: dockerWorkspacePolicy,
+    state: {
+      meta: {
+        goalContract: { revision: 9 },
+        projectVerification: { mutationRevision: 4 },
+        durableGitEvidence: [{ action: "commit", goalRevision: 9, mutationRevision: 4 }],
+      },
+    },
+  });
+  assert(
+    alreadyCommittedAdvice?.failureKind === "repository-already-committed" &&
+      alreadyCommittedAdvice.autoRecover === true &&
+      /should not be retried/i.test(alreadyCommittedAdvice.summary),
+    "a clean no-op commit with current durable evidence did not converge"
+  );
+  const sameTaskContinuationAdvice = buildFailedCommandAdvice({
+    args: { command: "git commit -m 'Focused repair'" },
+    commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
+    commandResult: {
+      ok: false,
+      exitCode: 1,
+      stdout: "On branch main\nnothing to commit, working tree clean\n",
+    },
+    config: dockerWorkspacePolicy,
+    state: {
+      meta: {
+        goalContract: {
+          revision: 10,
+          history: [
+            { revision: 9, taskHash: "task-a" },
+            { revision: 10, taskHash: "task-a" },
+          ],
+        },
+        projectVerification: { mutationRevision: 4 },
+        durableGitEvidence: [{ action: "commit", goalRevision: 9, mutationRevision: 4 }],
+      },
+    },
+  });
+  assert(
+    sameTaskContinuationAdvice?.failureKind === "repository-already-committed",
+    "a same-task continuation invalidated a clean commit at the current mutation revision"
+  );
+  const newTaskAdvice = buildFailedCommandAdvice({
+    args: { command: "git commit -m 'Focused repair'" },
+    commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
+    commandResult: {
+      ok: false,
+      exitCode: 1,
+      stdout: "On branch main\nnothing to commit, working tree clean\n",
+    },
+    config: dockerWorkspacePolicy,
+    state: {
+      meta: {
+        goalContract: {
+          revision: 10,
+          history: [
+            { revision: 9, taskHash: "task-a" },
+            { revision: 10, taskHash: "task-b" },
+          ],
+        },
+        projectVerification: { mutationRevision: 4 },
+        durableGitEvidence: [{ action: "commit", goalRevision: 9, mutationRevision: 4 }],
+      },
+    },
+  });
+  assert(
+    newTaskAdvice === null,
+    "a commit from a prior task satisfied a genuinely new task"
+  );
+  const staleCommitAdvice = buildFailedCommandAdvice({
+    args: { command: "git commit -m 'Focused repair'" },
+    commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
+    commandResult: {
+      ok: false,
+      exitCode: 1,
+      stdout: "On branch main\nnothing to commit, working tree clean\n",
+    },
+    config: dockerWorkspacePolicy,
+    state: {
+      meta: {
+        goalContract: { revision: 9 },
+        projectVerification: { mutationRevision: 4 },
+        durableGitEvidence: [{ action: "commit", goalRevision: 8, mutationRevision: 4 }],
+      },
+    },
+  });
+  assert(
+    staleCommitAdvice === null,
+    "a stale commit from an earlier goal revision satisfied a fresh commit request"
   );
   const failedNetworkAdvice = buildFailedCommandAdvice({
     args: { command: "git clone https://github.com/lazyingart/AgInTiFlow.git" },
@@ -1109,6 +2267,10 @@ try {
   assert(largeModelRead.contentTruncated, "large model-facing read was not bounded");
   assert(largeModelRead.content.length <= 12100, "large model-facing read exceeded the context cap");
   assert(largeModelRead.nextStartLine > 1, "large model-facing read omitted its continuation line");
+  assert(
+    largeModelRead.continuationHint.includes(`startLine=${largeModelRead.nextStartLine}`),
+    "large model-facing read described a continuation argument that the read_file schema does not accept"
+  );
   const largeModelList = toolResultForModel({
     ok: true,
     toolName: "list_files",
@@ -1180,6 +2342,62 @@ try {
   assert(
     !boundedList.entries.some((item) => item.path.startsWith(".runtime-generated")),
     "list_files traversed an unrecognized hidden runtime directory"
+  );
+  await fs.mkdir(path.join(workspace, "output", "task-scope"), { recursive: true });
+  await fs.writeFile(path.join(workspace, "output", "task-scope", "report.md"), "scoped\n", "utf8");
+  await fs.writeFile(path.join(workspace, "unrelated.md"), "unrelated\n", "utf8");
+  const scopedRead = await executeWorkspaceTool(
+    "read_file",
+    { path: "output/task-scope/report.md" },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+      workspacePathScopeRoots: ["output/task-scope"],
+    }
+  );
+  assert(scopedRead.content === "scoped\n", "task-scoped artifact read failed inside its root");
+  const outsideScopedRead = await executeWorkspaceTool(
+    "read_file",
+    { path: "unrelated.md" },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+      workspacePathScopeRoots: ["output/task-scope"],
+    }
+  );
+  assert(
+    outsideScopedRead.blocked === true &&
+      /outside the active task artifact scope/.test(String(outsideScopedRead.reason || "")),
+    "task-scoped artifact tools could read an unrelated repository file"
+  );
+  const writeScopedRead = await executeWorkspaceTool(
+    "read_file",
+    { path: "unrelated.md" },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+      workspaceWritePathScopeRoots: ["output/task-scope"],
+    }
+  );
+  assert(
+    writeScopedRead.content === "unrelated\n",
+    "write-scoped artifact work could not read safe workspace evidence"
+  );
+  const outsideWriteScopedWrite = await executeWorkspaceTool(
+    "write_file",
+    { path: "outside-scoped-write.md", content: "blocked\n" },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+      workspaceWritePathScopeRoots: ["output/task-scope"],
+    }
+  );
+  assert(
+    outsideWriteScopedWrite.blocked === true &&
+      /outside the active task artifact scope/.test(
+        String(outsideWriteScopedWrite.reason || "")
+      ),
+    "write-scoped artifact work could mutate an unrelated repository file"
   );
   const filenameSearch = await executeWorkspaceTool(
     "search_files",
@@ -1369,6 +2587,93 @@ try {
       invalidFocusedRewrite.errors.some((error) => error.code === "ARGUMENT_PATTERN_MISMATCH"),
     "focused rewrite smoke input did not exercise the semantic pattern failure"
   );
+  const commandDescriptor = {
+    type: "function",
+    function: {
+      name: "run_command",
+      description: "Run one command.",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string", minLength: 1 } },
+        required: ["command"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const annotatedCommandBatch = [
+    {
+      id: "annotated-command-one",
+      type: "function",
+      function: {
+        name: "run_command",
+        arguments: JSON.stringify({
+          command: "printf one",
+          description: "Inspect the first item",
+        }),
+      },
+    },
+    {
+      id: "annotated-command-two",
+      type: "function",
+      function: {
+        name: "run_command",
+        arguments: JSON.stringify({
+          command: "printf two",
+          description: "Inspect the second item",
+        }),
+      },
+    },
+  ];
+  const recoveredAnnotatedCommands = resolveDispatchableToolCallBatch(
+    annotatedCommandBatch,
+    createToolContract([commandDescriptor])
+  );
+  assert(recoveredAnnotatedCommands.ok, "benign command annotations were not normalized");
+  assert(
+    recoveredAnnotatedCommands.recoveredToolCallAnnotations,
+    "benign command annotation recovery was not recorded"
+  );
+  assert(
+    recoveredAnnotatedCommands.recoveredSequentially,
+    "annotated command batch did not retain bounded sequential dispatch"
+  );
+  assert(
+    recoveredAnnotatedCommands.acceptedToolCalls.length === 1 &&
+      recoveredAnnotatedCommands.deferredToolCalls.length === 1,
+    "annotated command batch did not dispatch one call and defer the suffix"
+  );
+  for (const call of [
+    ...recoveredAnnotatedCommands.acceptedToolCalls,
+    ...recoveredAnnotatedCommands.deferredToolCalls,
+  ]) {
+    assert(
+      !Object.hasOwn(JSON.parse(call.function.arguments), "description"),
+      "non-executable command description reached dispatch"
+    );
+  }
+  const unknownAnnotatedCommand = resolveDispatchableToolCallBatch(
+    [
+      {
+        id: "unknown-command-annotation",
+        type: "function",
+        function: {
+          name: "run_command",
+          arguments: JSON.stringify({
+            command: "printf blocked",
+            rationale: "This key is not an approved annotation",
+          }),
+        },
+      },
+    ],
+    createToolContract([commandDescriptor])
+  );
+  assert(
+    !unknownAnnotatedCommand.ok &&
+      unknownAnnotatedCommand.errors.some(
+        (error) => error.code === "ARGUMENT_ADDITIONAL_PROPERTY"
+      ),
+    "an unknown command annotation bypassed the exact tool schema"
+  );
   const focusedWriterCalls = [];
   const focusedRewriteState = {
     meta: {
@@ -1446,8 +2751,43 @@ try {
     model: "localllm-fast",
   });
   assert(
-    defaultLocalTimeoutRoute.timeoutMs === 300000 && defaultLocalTimeoutRoute.retryTimeoutMs === 600000,
-    "LocalLLM default timeout did not allow bounded slow local generation and one longer retry"
+    defaultLocalTimeoutRoute.timeoutMs === 300000 && defaultLocalTimeoutRoute.retryTimeoutMs === 180000,
+    "LocalLLM same-model timeout retry retained a doubled stall window after prompt compaction"
+  );
+  const exhaustedFastRoute = modelTimeoutExhaustionRoute(
+    {
+      provider: "localllm",
+      model: "localllm-fast",
+      mainProvider: "localllm",
+      mainModel: "localllm-deep",
+      spareProvider: "localllm",
+      spareModel: "localllm-deep",
+      localAvailableModels: ["localllm-fast", "localllm-deep"],
+    },
+    defaultLocalTimeoutRoute
+  );
+  assert(
+    exhaustedFastRoute.switchedModel === true &&
+      exhaustedFastRoute.model === "localllm-deep" &&
+      exhaustedFastRoute.retryTimeoutMs === 240000,
+    "two bounded fast-route timeouts did not select one stronger in-provider recovery hop"
+  );
+  const alreadySwitchedTimeoutRoute = modelTimeoutExhaustionRoute(
+    {
+      provider: "localllm",
+      model: "localllm-deep",
+      mainProvider: "localllm",
+      mainModel: "localllm-deep",
+    },
+    modelTimeoutRetryRoute({
+      provider: "localllm",
+      model: "localllm-deep",
+      modelTimeoutMs: 120000,
+    })
+  );
+  assert(
+    alreadySwitchedTimeoutRoute.switchedModel === false,
+    "timeout exhaustion attempted an unbounded model bounce after an existing route switch"
   );
   const artifactTimeoutMessages = buildModelTimeoutRetryMessages(
     {
@@ -1613,14 +2953,33 @@ try {
   assert(patchRun.events.some((event) => event.type === "file.changed"), "patch run did not persist file.changed event");
 
   await fs.writeFile(path.join(workspace, "patch-target.txt"), "old\n", "utf8");
-  const multiPatchRun = await runMock("Apply multi-file Codex patch to replace old and add a note.", "coding-patch-multi");
+  const multiPatchRun = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: [
+        "*** Begin Patch",
+        "*** Update File: patch-target.txt",
+        "@@",
+        "-old",
+        "+new",
+        "*** Add File: notes/patch-note.md",
+        "+Created by AgInTiFlow mock mode.",
+        "+Goal: multi-file patch smoke.",
+        "*** End Patch",
+      ].join("\n"),
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
   const multiPatched = await fs.readFile(path.join(workspace, "patch-target.txt"), "utf8");
   const patchNote = await fs.readFile(path.join(workspace, "notes/patch-note.md"), "utf8");
   assert(multiPatched === "new\n", "mock multi-file patch did not update expected file");
   assert(patchNote.includes("multi-file patch smoke"), "mock multi-file patch did not add expected file");
   assert(
-    multiPatchRun.events.filter((event) => event.type === "file.changed").length >= 2,
-    "multi-file patch did not persist per-file change events"
+    multiPatchRun.ok && multiPatchRun.changes?.length >= 2,
+    "multi-file patch did not report each file change"
   );
 
   await fs.writeFile(path.join(workspace, "unified-target.txt"), "alpha\nold\nomega\n", "utf8");
@@ -2185,6 +3544,7 @@ try {
         checks: [
           "deepseek_history_repair",
           "deepseek_dsml_tool_envelope_normalization",
+          "run_agent_runtime_git_hygiene",
           "interleaved_tool_history_repair",
           "blocked_tool_batch_short_circuit",
           "deepseek_pro_patch_route",

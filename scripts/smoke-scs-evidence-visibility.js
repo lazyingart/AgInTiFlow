@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  deterministicPlanTestIntegrityIssue,
   reconcileScsProgressDecision,
   reviewScsFinish,
   reviewScsProgress,
@@ -11,12 +12,137 @@ import {
 import {
   buildScsEvidenceLedger,
   deriveScsTaskContract,
+  evaluateRequestedArtifactRequirements,
   evaluateScsSemanticContract,
   extractMarkdownCommandEvidence,
   extractMarkdownPathEvidence,
   finishResultClaimsBlocker,
   finishResultClaimsIncompleteWork,
 } from "../src/scs-evidence.js";
+
+const educationArtifactGoal =
+  "Create an editable lesson deck, a separate practice sheet and answer key, printable materials, a helpful preview, and a reproducible build entrypoint.";
+const educationArtifactContract = deriveScsTaskContract({
+  goal: educationArtifactGoal,
+  taskProfile: "education",
+});
+const groupBriefingContract = deriveScsTaskContract({
+  goal: [
+    "Return a substantial Chinese group answer that members can understand without opening the attachment.",
+    "Create a polished PDF as a distinct full report with deeper evidence and references.",
+  ].join(" "),
+  taskProfile: "research",
+});
+const scopedReadThenWriteRoot = fs.mkdtempSync(
+  path.join(os.tmpdir(), "aginti-scoped-read-then-write-")
+);
+const scopedReadThenWriteGoal = [
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "task",
+    request:
+      "Read AGENTS.md and configs/model-policy.json, then create provider-fallback-readiness.md in the task artifact directory.",
+    artifact_root: scopedReadThenWriteRoot,
+  })}`,
+  "Use the task artifact directory for the requested output.",
+].join("\n");
+const scopedReadThenWriteContract = deriveScsTaskContract({
+  goal: scopedReadThenWriteGoal,
+  taskProfile: "auto",
+});
+assert.deepEqual(
+  scopedReadThenWriteContract.exactInputPaths,
+  ["AGENTS.md", "configs/model-policy.json"],
+  "explicit read-then-write artifact contract lost its exact source inputs"
+);
+assert.equal(
+  scopedReadThenWriteContract.requiresSourceGrounding,
+  true,
+  "explicit exact-file reads were not required before artifact completion"
+);
+fs.writeFileSync(
+  path.join(scopedReadThenWriteRoot, "provider-fallback-readiness.md"),
+  "# Provider fallback readiness\n",
+  "utf8"
+);
+const ungroundedScopedArtifact = evaluateScsSemanticContract(
+  scopedReadThenWriteContract,
+  { commandCwd: scopedReadThenWriteRoot, events: [], state: {} }
+);
+assert.equal(
+  ungroundedScopedArtifact.ok,
+  false,
+  "artifact completion passed without the explicitly requested source reads"
+);
+assert.deepEqual(
+  ungroundedScopedArtifact.missingSourceReads,
+  ["AGENTS.md", "configs/model-policy.json"],
+  "artifact completion did not report every unread exact input"
+);
+assert.deepEqual(
+  groupBriefingContract.requiredArtifactKinds.map((item) => item.id),
+  ["format:.pdf"],
+  "an ordinary chat answer was incorrectly converted into a separate answer-key artifact"
+);
+assert.deepEqual(
+  educationArtifactContract.requiredArtifactKinds.map((item) => item.id).sort(),
+  [
+    "answer-material",
+    "editable-presentation",
+    "practice-material",
+    "printable-document",
+    "reproducible-build-entrypoint",
+    "visual-preview",
+  ],
+  "multi-artifact education request did not retain each semantic deliverable"
+);
+assert.deepEqual(
+  deriveScsTaskContract({
+    goal: "Create a canvas artifact preview for this smoke test.",
+    taskProfile: "auto",
+  }).requiredArtifactKinds,
+  [],
+  "a generic frontend canvas preview was incorrectly converted into a required image-file artifact"
+);
+const educationWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-education-artifacts-"));
+const educationState = {
+  meta: {
+    goalContract: {
+      lifecycle: [{ at: new Date(Date.now() - 2000).toISOString() }],
+    },
+    projectVerification: { mutationHistory: [] },
+  },
+};
+fs.mkdirSync(path.join(educationWorkspace, "workshop"), { recursive: true });
+fs.writeFileSync(path.join(educationWorkspace, "workshop", "lesson-deck.md"), "# Lesson deck\n");
+const incompleteEducationArtifacts = evaluateRequestedArtifactRequirements(
+  educationArtifactContract,
+  { commandCwd: educationWorkspace, state: educationState }
+);
+assert.equal(incompleteEducationArtifacts.ok, false);
+assert.ok(
+  incompleteEducationArtifacts.missing.some((item) => item.id === "editable-presentation"),
+  "Markdown-only deck incorrectly satisfied the editable presentation contract"
+);
+for (const [name, content] of [
+  ["lesson-deck.pptx", "pptx"],
+  ["practice-sheet.md", "practice"],
+  ["answer-key.md", "answers"],
+  ["practice-sheet.pdf", "pdf"],
+  ["lesson-preview.png", "png"],
+  ["build_materials.py", "print('build')\n"],
+]) {
+  fs.writeFileSync(path.join(educationWorkspace, "workshop", name), content);
+}
+const completeEducationArtifacts = evaluateRequestedArtifactRequirements(
+  educationArtifactContract,
+  { commandCwd: educationWorkspace, state: educationState }
+);
+assert.equal(
+  completeEducationArtifacts.ok,
+  true,
+  `complete semantic artifact set was rejected: ${completeEducationArtifacts.reason}`
+);
+fs.rmSync(educationWorkspace, { recursive: true, force: true });
 
 function fakeStudentClient(json) {
   return {
@@ -35,6 +161,318 @@ function fakeStudentClient(json) {
     },
   };
 }
+
+const pageSafeReportContract = deriveScsTaskContract({
+  goal: [
+    "AGINTI_EVIDENCE_SCOPE_JSON: {\"mode\":\"task\",\"request\":\"Revise the exact existing research report at output/wechat_worker/task/report.md, write a complete Markdown report, and use page-safe tables. The host owns PDF compilation.\"}",
+    "Surrounding browser and research policy text is not part of the exact request.",
+  ].join("\n"),
+  taskProfile: "auto",
+});
+
+const forbiddenOutputContract = deriveScsTaskContract({
+  goal: "Continue the task. verification_suite.py does not exist and must not be rerun or created. Preserve smoke_test.py and finish from current evidence.",
+  taskProfile: "devops",
+});
+
+const mixedRepairAndForbiddenOutputContract = deriveScsTaskContract({
+  goal: "Repair service_ctl.py and do not create verification_suite.py.",
+  taskProfile: "devops",
+});
+
+const coordinatedForbiddenOutputContract = deriveScsTaskContract({
+  goal: "Do not create scratch.py or temporary.py; repair service_ctl.py.",
+  taskProfile: "devops",
+});
+
+const wrappedImmutableSourceContract = deriveScsTaskContract({
+  goal: [
+    "Continue the exact task. Do not modify source_brief.md, measurements.csv,",
+    "prompt.txt, or TASK.md.",
+    "Treat source_brief.md, measurements.csv, prompt.txt, and TASK.md as immutable read-only source evidence.",
+    "Repair build_deck.py and rebuild output/deck.pptx.",
+  ].join("\n"),
+  taskProfile: "slides",
+});
+
+const actionWrappedImmutableSourceContract = deriveScsTaskContract({
+  goal: [
+    "Continue the exact task. Do not",
+    "modify source_brief.md, measurements.csv, prompt.txt, or TASK.md.",
+    "Repair build_deck.py and rebuild output/deck.pptx.",
+  ].join("\n"),
+  taskProfile: "slides",
+});
+
+const pathWrappedImmutableSourceContract = deriveScsTaskContract({
+  goal: [
+    "Continue the exact task. Do not modify",
+    "source_brief.md, measurements.csv, prompt.txt, or TASK.md.",
+    "Repair build_deck.py and rebuild output/deck.pptx.",
+  ].join("\n"),
+  taskProfile: "slides",
+});
+
+const wrappedNegativeVerificationOnlyContract = deriveScsTaskContract({
+  goal: [
+    "Continue the exact active presentation task from its clean committed state.",
+    "The prior run completed the task-owned repository repair.",
+    "Do not start over and do",
+    "not modify source_brief.md, measurements.csv, prompt.txt, or TASK.md.",
+    "Do not rebuild, rewrite, recommit, or otherwise mutate the repository.",
+    "Read build_deck.py and TASK.md, run the exact validator, and finish from the retained evidence.",
+  ].join("\n"),
+  taskProfile: "slides",
+});
+
+const recoveryInstructionContract = deriveScsTaskContract({
+  goal: [
+    "Use the retained source and these two failures: the tests invoke ../service_ctl.py, while `python3 service_ctl.py start --state-dir .runtime` fails. Preserve the lifecycle assertions rather than replacing them, repair service_ctl.py, and remove the accidental untracked resume-after-git-baseline-recovery-dev-prompt.txt.",
+    "Then run `python3 -m unittest discover -s tests -v`, followed by `PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py`. Do not use LocalLLM or change provider.",
+  ].join("\n"),
+  taskProfile: "devops",
+});
+
+const readOnlyVerificationContinuationContract = deriveScsTaskContract({
+  goal: [
+    "Continue the exact active DevOps task from its clean committed state. Do not mutate source, tests, or documentation and do not create another commit.",
+    "Run exactly `git status --short` once, then follow the runtime's exact required verification commands serially. These include `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v` and `PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py`.",
+  ].join("\n"),
+  taskProfile: "devops",
+});
+
+const readOnlyReviewContract = deriveScsTaskContract({
+  goal: [
+    "Review focus: changed files only.",
+    "Run a bounded code review. Default to read-only review; do not edit files unless the review focus explicitly asks for fixes.",
+    "Read changed source files and report findings.",
+  ].join("\n"),
+  taskProfile: "review",
+});
+
+const readOnlyOperatorAuditRequest =
+  "This is a short imperfect operator audit. Check these three things without changing source files or sending messages: 1) run curl -fsS http://127.0.0.1:8008/readyz and state whether LocalLLM is ready; 2) read configs/model-policy.json and name the configured AgInTi provider order; 3) run git status --short and say only whether tracked source changes exist, without treating ignored runtime output as source. Cover all three numbered items in one concise answer and write the normal task result.";
+const readOnlyOperatorAuditContract = deriveScsTaskContract({
+  goal: [
+    readOnlyOperatorAuditRequest,
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request: readOnlyOperatorAuditRequest,
+      artifact_root: "/tmp/aginti-read-only-audit",
+    })}`,
+  ].join("\n\n"),
+  taskProfile: "auto",
+});
+
+const explicitReviewRepairContract = deriveScsTaskContract({
+  goal: [
+    "Review focus: inspect changed files and fix confirmed defects.",
+    "Default to read-only review; do not edit files unless the review focus explicitly asks for fixes.",
+  ].join("\n"),
+  taskProfile: "review",
+});
+
+const testWeakeningPlanIssue = deterministicPlanTestIntegrityIssue(
+  {
+    phaseGoal: "Repair the current service implementation from authoritative failures.",
+    plan: [
+      "Add lifecycle test stubs for ownership and status behavior.",
+      "If the CLI returns code 2, ensure the test explicitly checks for this exit code.",
+      "Fix only the failing test case or implementation, then rerun verification.",
+    ],
+    acceptanceCriteria: ["Lifecycle tests accept CLI exit code 2."],
+  },
+  "The fresh test result is authoritative. Repair service_ctl.py, preserve tests, and run the exact test command unchanged."
+);
+assert.equal(
+  testWeakeningPlanIssue?.decision,
+  "veto_plan",
+  "the deterministic SCS gate accepted a plan that weakened authoritative tests"
+);
+assert.match(testWeakeningPlanIssue.reason, /production implementation/i);
+assert.equal(
+  deterministicPlanTestIntegrityIssue(
+    {
+      phaseGoal: "Repair production source.",
+      plan: [
+        "Read the current production source and retained failure evidence.",
+        "Patch the bounded implementation functions without editing tests.",
+        "Run the exact authoritative test command unchanged.",
+      ],
+      acceptanceCriteria: ["The unchanged test suite passes."],
+    },
+    "Repair service_ctl.py and preserve tests."
+  ),
+  null,
+  "a production-only repair plan was incorrectly rejected as test weakening"
+);
+assert(
+  forbiddenOutputContract.excludedOutputPaths.includes("verification_suite.py"),
+  "an explicitly forbidden output path was not retained as an authoritative exclusion"
+);
+assert(
+  !forbiddenOutputContract.exactOutputPaths.includes("verification_suite.py"),
+  "a negated create/run clause incorrectly became an exact output requirement"
+);
+assert(
+  !forbiddenOutputContract.exactInputPaths.includes("verification_suite.py"),
+  "a forbidden absent path incorrectly became an exact input requirement"
+);
+assert(
+  !mixedRepairAndForbiddenOutputContract.excludedOutputPaths.includes("service_ctl.py"),
+  "a later forbidden output path incorrectly excluded the production source named earlier in the same sentence"
+);
+assert(
+  mixedRepairAndForbiddenOutputContract.excludedOutputPaths.includes("verification_suite.py"),
+  "the path directly governed by a do-not-create clause was not excluded"
+);
+assert.deepEqual(
+  coordinatedForbiddenOutputContract.excludedOutputPaths.sort(),
+  ["scratch.py", "temporary.py"],
+  "a coordinated list did not retain each path governed by one exclusion"
+);
+assert.deepEqual(
+  wrappedImmutableSourceContract.excludedOutputPaths.sort(),
+  ["TASK.md", "measurements.csv", "prompt.txt", "source_brief.md"].sort(),
+  "a wrapped immutable source list lost one or more protected paths"
+);
+assert(
+  !wrappedImmutableSourceContract.exactOutputPaths.some((item) =>
+    ["TASK.md", "measurements.csv", "prompt.txt", "source_brief.md"].includes(item)
+  ),
+  "an immutable source path leaked into exact output requirements"
+);
+for (const contract of [
+  actionWrappedImmutableSourceContract,
+  pathWrappedImmutableSourceContract,
+]) {
+  assert.deepEqual(
+    contract.excludedOutputPaths.sort(),
+    ["TASK.md", "measurements.csv", "prompt.txt", "source_brief.md"].sort(),
+    "a negative action or its governed path list lost protection across a line wrap"
+  );
+}
+assert.deepEqual(
+  wrappedNegativeVerificationOnlyContract.excludedOutputPaths.sort(),
+  ["TASK.md", "measurements.csv", "prompt.txt", "source_brief.md"].sort(),
+  "a line-wrapped 'do not' prefix lost its immutable source exclusions"
+);
+assert.deepEqual(
+  wrappedNegativeVerificationOnlyContract.exactOutputPaths,
+  [],
+  "a verification-only continuation inferred exact outputs from a wrapped negative clause"
+);
+assert.equal(
+  wrappedNegativeVerificationOnlyContract.requiresWorkspaceMutation,
+  false,
+  "a verification-only continuation with a wrapped negative prefix required workspace mutation"
+);
+assert.equal(
+  wrappedNegativeVerificationOnlyContract.requiresFileMutation,
+  false,
+  "a verification-only continuation with a wrapped negative prefix required file mutation"
+);
+assert(
+  recoveryInstructionContract.excludedOutputPaths.includes("resume-after-git-baseline-recovery-dev-prompt.txt") &&
+    !recoveryInstructionContract.exactOutputPaths.includes("resume-after-git-baseline-recovery-dev-prompt.txt"),
+  "an explicit deletion target became a required output"
+);
+assert.deepEqual(
+  recoveryInstructionContract.requiredTextTerms,
+  [],
+  "verification commands became required document prose"
+);
+assert.deepEqual(
+  recoveryInstructionContract.requiredExecutableTerms,
+  [],
+  "an environment assignment inside a verification command became required production source"
+);
+assert(
+  !recoveryInstructionContract.exactInputPaths.some((item) => item.includes("PYTHONDONTWRITEBYTECODE")),
+  "a quoted verification command became an input path"
+);
+assert.deepEqual(
+  recoveryInstructionContract.requiredProjectCommands,
+  [
+    "python3 -m unittest discover -s tests -v",
+    "PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py",
+  ],
+  "a verification command introduced by 'followed by' was not retained"
+);
+assert.deepEqual(
+  readOnlyVerificationContinuationContract.exactOutputPaths,
+  [],
+  "a verifier command following a negated create clause became an exact output path"
+);
+assert.deepEqual(
+  readOnlyVerificationContinuationContract.exactInputPaths,
+  [],
+  "a quoted verifier command became an exact input path"
+);
+assert.deepEqual(
+  readOnlyVerificationContinuationContract.requiredProjectCommands,
+  [
+    "git status --short",
+    "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v",
+    "PYTHONDONTWRITEBYTECODE=1 python3 /tmp/devops_sensor_gateway_contract.py",
+  ],
+  "an exact read-only continuation lost one or more required verification commands"
+);
+assert.equal(
+  readOnlyReviewContract.requiresWorkspaceMutation,
+  false,
+  "negative review guardrails were misclassified as a workspace mutation request"
+);
+assert.equal(
+  readOnlyReviewContract.requiresFileMutation,
+  false,
+  "negative review guardrails were misclassified as a file mutation request"
+);
+assert.equal(
+  explicitReviewRepairContract.requiresFileMutation,
+  true,
+  "an explicit review-and-fix focus lost its positive mutation request"
+);
+assert.equal(
+  readOnlyOperatorAuditContract.requiresWorkspaceMutation,
+  false,
+  "a host-managed task response was mistaken for a workspace mutation"
+);
+assert.equal(
+  readOnlyOperatorAuditContract.requiresFileMutation,
+  false,
+  "an observational source-status mention was mistaken for a source mutation"
+);
+assert(
+  readOnlyOperatorAuditContract.requiredEvidence.some(
+    (item) => item.category === "command"
+  ) &&
+    !readOnlyOperatorAuditContract.requiredEvidence.some(
+      (item) => ["artifact", "file"].includes(item.category)
+    ),
+  "the phrase 'cover all items' invented cover-art or file evidence"
+);
+assert(
+  readOnlyOperatorAuditContract.forbiddenActions.some((item) =>
+    /changing source files or sending messages/i.test(item)
+  ) &&
+    !readOnlyOperatorAuditContract.forbiddenActions.some((item) =>
+      /run curl/i.test(item)
+    ),
+  "a colon after a without-clause swallowed the following command"
+);
+assert(
+  pageSafeReportContract.requiredEvidence.some((item) => item.category === "file"),
+  "a scoped existing-report edit did not require file evidence"
+);
+assert(
+  pageSafeReportContract.requiredEvidence.some((item) => item.category === "artifact"),
+  "a scoped existing-report edit did not require artifact evidence"
+);
+assert(
+  !pageSafeReportContract.requiredEvidence.some((item) => item.category === "browser"),
+  "the editorial phrase page-safe incorrectly required browser evidence"
+);
 
 const noEvidenceProgress = {
   role: "student",
@@ -241,13 +679,67 @@ const recoverablePatchLedger = buildScsEvidenceLedger({
   },
 });
 assert.equal(recoverablePatchLedger.blockerCount, 0, "a recoverable patch context miss became a completion blocker");
+const supersededWorkspaceBlockerLedger = buildScsEvidenceLedger({
+  context: {
+    events: [
+      {
+        type: "tool.blocked",
+        data: {
+          toolName: "run_command",
+          category: "blocked",
+          reason: "mkdir target must be a safe workspace-relative directory: /tmp/test_service",
+          permissionAdvice: {
+            category: "blocked",
+            reason: "mkdir target must be a safe workspace-relative directory: /tmp/test_service",
+          },
+        },
+      },
+      {
+        type: "tool.blocked",
+        data: {
+          toolName: "run_command",
+          category: "blocked",
+          reason: "mkdir target must be a safe workspace-relative directory: /tmp/test_service",
+          permissionAdvice: {
+            category: "workspace-command-correction",
+            reason: "mkdir target must be a safe workspace-relative directory: /tmp/test_service",
+            autoRecover: true,
+          },
+        },
+      },
+    ],
+  },
+});
+assert.equal(
+  supersededWorkspaceBlockerLedger.blockerCount,
+  0,
+  "a newer recoverable workspace correction did not retire its stale generic blocker"
+);
 assert.equal(finishResultClaimsBlocker("No external services, logins, or approvals are required."), false);
 assert.equal(finishResultClaimsBlocker("The task is blocked and requires human login approval."), true);
+assert.equal(finishResultClaimsBlocker("I cannot continue because login is required."), true);
+assert.equal(
+  finishResultClaimsBlocker("Never signal processes it cannot identify as this exact gateway instance."),
+  false,
+  "an incidental safety-clause 'cannot' was misclassified as a current external blocker"
+);
 assert.equal(finishResultClaimsIncompleteWork("Completed and verified the requested report."), false);
+assert.equal(
+  finishResultClaimsIncompleteWork(
+    "Read-only status: Still retrying: external_pdf (quality_retry_pending; next attempt at 10:14). Nothing was sent or changed."
+  ),
+  false,
+  "an external retry status was misclassified as unfinished agent work"
+);
 assert.equal(
   finishResultClaimsIncompleteWork("The task is paused. A corrected implementation will be written next."),
   true,
   "future work was accepted as a completed result"
+);
+assert.equal(
+  finishResultClaimsIncompleteWork("The requested report is pending and I will complete it next."),
+  true,
+  "agent-owned pending report work was accepted as complete"
 );
 
 const outputFilenameContract = deriveScsTaskContract({
@@ -262,6 +754,106 @@ assert(
 assert(
   outputFilenameContract.requiredTextTerms.includes("negative evidence"),
   "excluding output filenames also removed a real required text term"
+);
+
+const executableSourceContract = deriveScsTaskContract({
+  goal: "Independent acceptance fails because the canonical source does not use portable start_new_session=True. Repair the actual lifecycle implementation.",
+  taskProfile: "devops",
+});
+assert.deepEqual(
+  executableSourceContract.requiredExecutableTerms,
+  ["start_new_session=True"],
+  "an explicit executable implementation requirement was not inferred"
+);
+const forbiddenExecutableSourceContract = deriveScsTaskContract({
+  goal: "Do not use start_new_session=True; preserve the existing platform-specific behavior.",
+  taskProfile: "devops",
+});
+assert.deepEqual(
+  forbiddenExecutableSourceContract.requiredExecutableTerms,
+  [],
+  "a forbidden executable expression became a positive source requirement"
+);
+const executableRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-executable-source-"));
+try {
+  const sourcePath = path.join(executableRoot, "service_ctl.py");
+  const sourceState = {
+    meta: {
+      projectVerification: {
+        mutationHistory: [{ revision: 1, paths: ["service_ctl.py"] }],
+      },
+    },
+  };
+  fs.writeFileSync(
+    sourcePath,
+    [
+      "import os",
+      "import subprocess",
+      "",
+      "def launch_service(command):",
+      "    # The portable implementation should use start_new_session=True.",
+      "    help_text = 'start_new_session=True'",
+      "    return subprocess.Popen(command, preexec_fn=os.setsid)",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  const commentOnly = evaluateScsSemanticContract(executableSourceContract, {
+    commandCwd: executableRoot,
+    state: sourceState,
+  });
+  assert.equal(commentOnly.ok, false, "a comment/help-string-only expression satisfied executable source semantics");
+  assert.deepEqual(commentOnly.missingExecutableTerms, ["start_new_session=True"]);
+  fs.writeFileSync(
+    sourcePath,
+    [
+      "import subprocess",
+      "",
+      "def launch_service(command):",
+      "    return subprocess.Popen(command, start_new_session=True)",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  const implemented = evaluateScsSemanticContract(executableSourceContract, {
+    commandCwd: executableRoot,
+    state: sourceState,
+  });
+  assert.equal(implemented.ok, true, implemented.reason);
+  assert.deepEqual(implemented.executableSourcePaths, ["service_ctl.py"]);
+} finally {
+  fs.rmSync(executableRoot, { recursive: true, force: true });
+}
+
+const wrappedManifestRepairContract = deriveScsTaskContract({
+  goal: [
+    "The only unresolved content work",
+    "is rebuilding the stale sources.json for the current report.",
+    "The verified claims are retained in",
+    "tmp/reliability-evidence-pass.md. Then write",
+    "sources.json immediately. Do not read any other file.",
+  ].join("\n"),
+  taskProfile: "research",
+});
+assert.deepEqual(
+  wrappedManifestRepairContract.exactOutputPaths,
+  ["sources.json"],
+  "an inflected, soft-wrapped output instruction did not classify its manifest as an exact output"
+);
+assert.deepEqual(
+  wrappedManifestRepairContract.exactInputPaths,
+  ["tmp/reliability-evidence-pass.md"],
+  "a mutable exact output leaked into exact inputs through a later negated read clause"
+);
+
+const wordDocumentContract = deriveScsTaskContract({
+  goal: "Create an editable DOCX and a phone-friendly PDF, then verify both outputs.",
+  taskProfile: "word",
+});
+assert.deepEqual(
+  wordDocumentContract.requiredEvidence.map((item) => item.category).sort(),
+  ["artifact", "command", "file", "visual"],
+  "Word document production must require written files, validation, durable artifacts, and visual evidence"
 );
 
 const groundingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-source-grounding-"));
@@ -488,6 +1080,46 @@ try {
     generatedHelperCannotGroundReport.unsupportedPathClaims.map((item) => item.path),
     ["invented/helper-state.json"],
     "a session-generated helper circularly grounded a path claim"
+  );
+
+  fs.writeFileSync(
+    reportPath,
+    "Verified generated helper: `notes/generated-evidence.md`.\n",
+    "utf8"
+  );
+  const generatedHelperPathIsDirectlyObserved = evaluateScsSemanticContract(contract, {
+    commandCwd: groundingRoot,
+    events: [
+      {
+        type: "tool.completed",
+        data: {
+          ok: true,
+          toolName: "write_file",
+          path: "notes/generated-evidence.md",
+          change: { path: "notes/generated-evidence.md" },
+        },
+      },
+      {
+        type: "file.changed",
+        data: { path: "notes/generated-evidence.md", commandCwd: groundingRoot },
+      },
+      {
+        type: "tool.completed",
+        data: {
+          ok: true,
+          toolName: "read_file",
+          path: "notes/generated-evidence.md",
+          content: helperContent,
+          commandEvidence: extractMarkdownCommandEvidence(helperContent, "notes/generated-evidence.md"),
+          pathEvidence: extractMarkdownPathEvidence(helperContent, "notes/generated-evidence.md"),
+        },
+      },
+    ],
+  });
+  assert.equal(
+    generatedHelperPathIsDirectlyObserved.ok,
+    true,
+    "a successful direct read did not ground the generated file's own path"
   );
 
   const shellSourceContent = [

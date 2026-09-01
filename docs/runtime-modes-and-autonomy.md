@@ -73,6 +73,8 @@ Current contract:
 - `danger` is trusted host/full-access mode: host shell, destructive actions, host installs, password typing, and outside-workspace file paths are enabled. Use it only for tasks you trust; obvious secret/publish exfiltration guards remain hard stops.
 - Workspace file tools may read and write inside the configured project folder when file tools are enabled.
 - Narrow workspace-local shell actions such as safe probes, Gradle/TeX builds, and `chmod +x` on a project script may run when the command policy can classify them precisely.
+- Finite literal read-only audits may bind a small literal path, inspect/hash it, count matches through a bounded read-only pipeline, summarize stdin with `sort | uniq -c`, and display numeric results with `echo` or `printf` without asking for destructive permission. Shell line continuations are accepted for finite literal item lists. Every producer, consumer, and surrounding command must still classify as bounded read-only work; network access, redirects, output-file operands, secret/dynamic expansion, shell-state `printf -v`, mutation, dynamic item lists, and computed values used as executable arguments remain blocked.
+- Completion checks distinguish a resolved historical state such as "previously paused" from work that is currently pending or incomplete. A resolved past blocker therefore does not force another verification loop, while any explicit current unfinished state still does.
 - Android/JVM toolchain commands may include safe local env assignments such as `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `JAVA_HOME`, or `GRADLE_USER_HOME`, plus small workspace-local status-log redirects. Secret-like env vars and redirects outside the workspace remain blocked.
 - Workspace writes outside that folder, secret paths, `.git` internals, and dependency folders such as `node_modules` are blocked.
 - `git clone`, `git fetch`, `git pull --ff-only`, `git push`, `curl`, and `wget` are classified as network operations.
@@ -129,6 +131,10 @@ aginti
 This starts interactive chat with Docker workspace mode, file tools, shell tools, web search, and package installs allowed inside Docker.
 
 Docker workspace mode also mounts common host data roots, such as the user's home parent, read-only at their original absolute paths. This lets a task in `/home/lachlan/ProjectsLFS/aginti-test` inspect a sibling dataset such as `/home/lachlan/ProjectsLFS/ProteinStructure` without switching to host-write mode. Outputs and edits still belong under `/workspace` unless the user explicitly approves stronger host permissions. Set `AGINTI_DOCKER_READONLY_HOST_MOUNTS=/path/a:/path/b` to override the read-only mounts, or set it to `off` to disable them.
+
+For a linked Git worktree, bounded Git mutation commands such as the runtime's path-enumerated `git add` plus `git commit` also receive a writable mount for the validated shared Git common directory. The mount is not added to ordinary shell commands or read-only Git inspection. This lets Docker workspace mode commit the current worktree without granting broad host-write access.
+
+Outstanding exact project commands always run before Git completion. A pending producer, test, or user-declared validation command cannot be preempted by a commit merely because the current artifacts already exist.
 
 Direct trusted host mode:
 

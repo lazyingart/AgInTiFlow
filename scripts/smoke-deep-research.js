@@ -3,12 +3,17 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { auditResearchSynthesis, deepResearch } from "../src/deep-research.js";
+import { auditResearchSynthesis, deepResearch, RESEARCH_VERSION } from "../src/deep-research.js";
 import { checkToolUse } from "../src/guardrails.js";
 import { flushHousekeeping } from "../src/housekeeping.js";
 import { requestNextStep, toolChoiceForProvider } from "../src/model-client.js";
 import { providerStructuredOutputAttempts } from "../src/provider-contract.js";
-import { hasExplicitDeepResearchIntent } from "../src/research-routing.js";
+import {
+  hasExplicitDeepResearchSuppression,
+  hasExplicitDeepResearchIntent,
+  hasLocalResearchWorkspaceIntent,
+  shouldStartWithDeepResearch,
+} from "../src/research-routing.js";
 import { SessionStore } from "../src/session-store.js";
 import { canonicalizeWebUrl, isPublicWebUrl, readWebPage, searchWeb } from "../src/web-search.js";
 
@@ -48,6 +53,120 @@ async function main() {
   assert(!excessiveResearch.allowed, "deep_research accepted an excessive query/source budget");
 
   assert(hasExplicitDeepResearchIntent("literature review with primary papers"), "explicit research intent was not detected");
+  const localEvidenceGoal =
+    "Turn the messy project notes in this folder into an evidence review, write sources.json, and commit the intentional work.";
+  assert(hasLocalResearchWorkspaceIntent(localEvidenceGoal), "local research workspace intent was not detected");
+  assert(
+    !shouldStartWithDeepResearch(localEvidenceGoal),
+    "local-source research incorrectly forced deep_research before workspace inspection"
+  );
+  const inspectedLocalEvidenceMessages = [
+    { role: "user", content: localEvidenceGoal },
+    {
+      role: "assistant",
+      tool_calls: [{ id: "inspect-notes", function: { name: "read_file", arguments: '{"path":"PROJECT_NOTES.md"}' } }],
+    },
+    {
+      role: "assistant",
+      tool_calls: [{ id: "inspect-sources", function: { name: "read_file", arguments: '{"path":"sources.json"}' } }],
+    },
+  ];
+  assert(
+    shouldStartWithDeepResearch(localEvidenceGoal, inspectedLocalEvidenceMessages),
+    "local-source research did not enter bounded deep research after workspace inspection"
+  );
+  assert(
+    !shouldStartWithDeepResearch(localEvidenceGoal, [
+      ...inspectedLocalEvidenceMessages,
+      {
+        role: "assistant",
+        tool_calls: [{ id: "current-research", function: { name: "deep_research", arguments: "{}" } }],
+      },
+    ]),
+    "the current request repeated deep research after already requesting it"
+  );
+  assert(
+    shouldStartWithDeepResearch(localEvidenceGoal, [
+      ...inspectedLocalEvidenceMessages,
+      {
+        role: "assistant",
+        tool_calls: [{ id: "old-research", function: { name: "deep_research", arguments: "{}" } }],
+      },
+      { role: "user", content: "Refresh this evidence review because the current report quality is not acceptable." },
+      {
+        role: "assistant",
+        tool_calls: [{ id: "refresh-report", function: { name: "read_file", arguments: '{"path":"agent-reliability-evidence-review.md"}' } }],
+      },
+      {
+        role: "assistant",
+        tool_calls: [{ id: "refresh-sources", function: { name: "read_file", arguments: '{"path":"sources.json"}' } }],
+      },
+    ]),
+    "a completed research call from an older user intent suppressed a fresh bounded research pass"
+  );
+  assert(
+    shouldStartWithDeepResearch("Write a deep web research report comparing three primary papers."),
+    "standalone deep research no longer starts with the bounded research workflow"
+  );
+  const retainedResearchGoal = [
+    "Continue the interrupted evidence-review task from its saved state.",
+    "Do not run deep_research again. Reuse the completed research artifact.",
+    "Rewrite agent-reliability-evidence-review.md from the retained evidence.",
+  ].join("\n");
+  assert(
+    hasExplicitDeepResearchSuppression(retainedResearchGoal),
+    "an explicit completed-research reuse instruction was not detected"
+  );
+  assert(
+    !shouldStartWithDeepResearch(retainedResearchGoal, inspectedLocalEvidenceMessages),
+    "an explicit prohibition still narrowed the next turn to deep_research"
+  );
+  const coordinatedSuppressionGoal = [
+    "Resume the saved evidence-review task.",
+    "Do not restart the task, run deep_research, or reopen broad discovery.",
+    "Use the retained completed evidence and rebuild sources.json.",
+  ].join("\n");
+  assert(
+    hasExplicitDeepResearchSuppression(coordinatedSuppressionGoal),
+    "a coordinated do-not clause did not suppress deep_research"
+  );
+  assert(
+    !shouldStartWithDeepResearch(localEvidenceGoal, [
+      { role: "user", content: coordinatedSuppressionGoal },
+      ...inspectedLocalEvidenceMessages.slice(1),
+    ]),
+    "a resumed retained-evidence repair was forced back into deep_research after inspection"
+  );
+  assert(
+    shouldStartWithDeepResearch(localEvidenceGoal, [
+      ...inspectedLocalEvidenceMessages,
+      { role: "user", content: "Run a fresh deep research pass now; the retained evidence is stale." },
+      {
+        role: "assistant",
+        tool_calls: [{ id: "fresh-report", function: { name: "read_file", arguments: '{"path":"agent-reliability-evidence-review.md"}' } }],
+      },
+      {
+        role: "assistant",
+        tool_calls: [{ id: "fresh-sources", function: { name: "read_file", arguments: '{"path":"sources.json"}' } }],
+      },
+    ]),
+    "an older completed-research context suppressed a newer explicit refresh request"
+  );
+  assert(
+    !hasExplicitDeepResearchIntent("Create a phone-friendly document from this folder.", [
+      {
+        role: "user",
+        content:
+          'Step 2/30. Latest runtime snapshot:\n{"pageText":"Web search and resumable deep research are available when current evidence is required."}',
+      },
+      {
+        role: "user",
+        content:
+          "The previous tool-call batch was rejected before dispatch. Tools offered in that turn: deep_research, finish.",
+      },
+    ]),
+    "runtime control prose was misclassified as genuine deep-research intent"
+  );
   assert(
     toolChoiceForProvider({ provider: "deepseek" }, []) === "auto",
     "provider-neutral research routing added an unsupported named tool_choice"
@@ -56,12 +175,323 @@ async function main() {
     toolChoiceForProvider(
       { provider: "deepseek" },
       [{ role: "user", content: "Emit exactly one enabled tool call that performs the next concrete action." }]
+    ) === "required",
+    "DeepSeek action recovery did not require a tool call"
+  );
+  assert(
+    JSON.stringify(toolChoiceForProvider(
+      { provider: "deepseek" },
+      [{ role: "user", content: "Emit exactly one enabled tool call that performs the next concrete action." }],
+      [
+        { type: "function", function: { name: "apply_patch" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    )) === JSON.stringify({ type: "function", function: { name: "apply_patch" } }),
+    "DeepSeek action recovery did not force the only executable tool"
+  );
+  assert(
+    JSON.stringify(toolChoiceForProvider(
+      { provider: "deepseek", completionFreshMutationRequired: true },
+      [{ role: "user", content: "Repair the retained source from the exact failure evidence." }],
+      [
+        { type: "function", function: { name: "apply_patch" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    )) === JSON.stringify({ type: "function", function: { name: "apply_patch" } }),
+    "DeepSeek constrained recovery relied on a prompt phrase instead of the offered tool contract"
+  );
+  for (const [runtimeFlag, label] of [
+    ["generatedArtifactProducerPending", "generated artifact producer"],
+    ["requiredProjectCommandPending", "required project command"],
+    ["testVerificationPending", "retained verifier"],
+  ]) {
+    assert(
+      JSON.stringify(toolChoiceForProvider(
+        { provider: "deepseek", [runtimeFlag]: true },
+        [{ role: "user", content: "Continue the exact retained command phase." }],
+        [
+          { type: "function", function: { name: "run_command" } },
+          { type: "function", function: { name: "finish" } },
+        ]
+      )) === JSON.stringify({ type: "function", function: { name: "run_command" } }),
+      `DeepSeek ${label} phase allowed finish before its mandatory command`
+    );
+  }
+  assert(
+    JSON.stringify(toolChoiceForProvider(
+      {
+        provider: "deepseek",
+        testFailureRepairActive: true,
+        testFailureRepairMutationRequired: true,
+      },
+      [{ role: "user", content: "Continue from the retained failing test evidence." }],
+      [
+        { type: "function", function: { name: "apply_patch" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    )) === JSON.stringify({ type: "function", function: { name: "apply_patch" } }),
+    "DeepSeek failed-test repair did not force its sole bounded mutation tool"
+  );
+  assert(
+    JSON.stringify(toolChoiceForProvider(
+      {
+        provider: "deepseek",
+        testFailureRepairActive: true,
+        testFailureRepairMutationRequired: true,
+        testFailureRepairOptionalRereadPaths: ["service.py"],
+      },
+      [{ role: "user", content: "Apply the coherent repair from retained evidence." }],
+      [
+        { type: "function", function: { name: "read_file" } },
+        { type: "function", function: { name: "apply_patch" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    )) === JSON.stringify({ type: "function", function: { name: "apply_patch" } }),
+    "DeepSeek bounded reread fallback displaced the required repair mutation"
+  );
+  assert(
+    JSON.stringify(toolChoiceForProvider(
+      {
+        provider: "deepseek",
+        testFailureRepairActive: true,
+        testFailureRepairMutationRequired: true,
+        testFailureRepairNeedsPatchContext: true,
+      },
+      [{ role: "user", content: "Continue from the retained failing test evidence." }],
+      [
+        { type: "function", function: { name: "read_file" } },
+        { type: "function", function: { name: "apply_patch" } },
+        { type: "function", function: { name: "finish" } },
+      ]
+    )) === JSON.stringify({ type: "function", function: { name: "read_file" } }),
+    "DeepSeek failed-test repair did not force its bounded context refresh first"
+  );
+  assert(
+    toolChoiceForProvider(
+      { provider: "deepseek" },
+      [{ role: "user", content: "Explain what this source does." }],
+      [
+        { type: "function", function: { name: "read_file" } },
+        { type: "function", function: { name: "finish" } },
+      ]
     ) === "auto",
-    "DeepSeek thinking mode received unsupported required tool selection during recovery"
+    "DeepSeek ordinary chat forced a tool merely because few tools were enabled"
   );
   assert(
     JSON.stringify(providerStructuredOutputAttempts("deepseek")) === JSON.stringify(["json_object", "prompt"]),
     "DeepSeek structured extraction still probes an unsupported JSON Schema mode"
+  );
+  let deepSeekActionPayload = null;
+  await requestNextStep(
+    {
+      chat: {
+        completions: {
+          create: async (payload) => {
+            deepSeekActionPayload = payload;
+            return {
+              choices: [{
+                message: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [{
+                    id: "deepseek-action-patch",
+                    type: "function",
+                    function: {
+                      name: "apply_patch",
+                      arguments: JSON.stringify({
+                        path: "service.py",
+                        search: "old",
+                        replace: "new",
+                        expectedReplacements: 1,
+                      }),
+                    },
+                  }],
+                },
+              }],
+            };
+          },
+        },
+      },
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      reasoning: "xhigh",
+      goal: "Repair service.py from exact retained source.",
+      taskProfile: "code",
+      allowFileTools: true,
+      allowShellTool: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      completionFreshMutationRequired: true,
+      completionFreshMutationNeedsSourceRead: false,
+      completionFreshMutationPaths: ["service.py"],
+    },
+    [{ role: "user", content: "Repair the retained source from the exact failure evidence." }]
+  );
+  assert(
+    deepSeekActionPayload?.thinking?.type === "disabled",
+    "DeepSeek reasoning-only recovery did not disable a second expensive thinking pass"
+  );
+  assert(
+    deepSeekActionPayload?.tool_choice?.function?.name === "apply_patch",
+    "DeepSeek reasoning-only recovery did not force its single executable tool"
+  );
+  assert(
+    !Object.hasOwn(deepSeekActionPayload || {}, "reasoning_effort"),
+    "DeepSeek action-only recovery sent a conflicting reasoning effort"
+  );
+  let deepSeekRepairRethinkPayload = null;
+  await requestNextStep(
+    {
+      chat: {
+        completions: {
+          create: async (payload) => {
+            deepSeekRepairRethinkPayload = payload;
+            return {
+              choices: [{
+                message: {
+                  role: "assistant",
+                  reasoning_content: "The unchanged proposal must be revised from the retained failure evidence.",
+                  content: "",
+                  tool_calls: [{
+                    id: "deepseek-rethink-patch",
+                    type: "function",
+                    function: {
+                      name: "apply_patch",
+                      arguments: JSON.stringify({
+                        path: "service.py",
+                        search: "old",
+                        replace: "new",
+                        expectedReplacements: 1,
+                      }),
+                    },
+                  }],
+                },
+              }],
+            };
+          },
+        },
+      },
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      reasoning: "xhigh",
+      goal: "Repair service.py from exact retained source.",
+      taskProfile: "code",
+      allowFileTools: true,
+      allowShellTool: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      completionFreshMutationRequired: true,
+      completionFreshMutationNeedsSourceRead: false,
+      completionFreshMutationPaths: ["service.py"],
+    },
+    [
+      { role: "user", content: "Repair the retained source from the exact failure evidence." },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{
+          id: "deepseek-rejected-patch",
+          type: "function",
+          function: {
+            name: "apply_patch",
+            arguments: JSON.stringify({
+              path: "service.py",
+              search: "old",
+              replace: "old",
+              expectedReplacements: 1,
+            }),
+          },
+        }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "deepseek-rejected-patch",
+        content: JSON.stringify({
+          ok: false,
+          blocked: true,
+          recoverable: true,
+          toolName: "apply_patch",
+          category: "failed-test-nonrepairing-patch",
+          reason: "The replacement leaves the current actionable line unchanged.",
+        }),
+      },
+      { role: "user", content: "Continue from the exact tool result." },
+    ]
+  );
+  assert(
+    deepSeekRepairRethinkPayload?.thinking?.type === "enabled",
+    "DeepSeek did not restore thinking after a deterministic non-repairing patch rejection"
+  );
+  assert(
+    !Object.hasOwn(deepSeekRepairRethinkPayload || {}, "tool_choice"),
+    "DeepSeek repair rethink sent tool_choice even though V4 thinking tool calls reject it"
+  );
+  assert(
+    deepSeekRepairRethinkPayload?.tools?.some((tool) => tool?.function?.name === "apply_patch"),
+    "DeepSeek repair rethink dropped the constrained mutation tool"
+  );
+  let deepSeekRepairReadPayload = null;
+  await requestNextStep(
+    {
+      chat: {
+        completions: {
+          create: async (payload) => {
+            deepSeekRepairReadPayload = payload;
+            return {
+              choices: [{
+                message: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [{
+                    id: "deepseek-repair-read",
+                    type: "function",
+                    function: {
+                      name: "read_file",
+                      arguments: JSON.stringify({ path: "service.py" }),
+                    },
+                  }],
+                },
+              }],
+            };
+          },
+        },
+      },
+    },
+    {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      reasoning: "xhigh",
+      goal: "Repair service.py from the exact failed test evidence.",
+      taskProfile: "code",
+      allowFileTools: true,
+      allowShellTool: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      testFailureRepairActive: true,
+      testFailureRepairMutationRequired: true,
+      testFailureRepairNeedsPatchContext: true,
+      testFailureRepairPatchTargets: ["service.py"],
+      testFailureRepairContextPaths: ["service.py"],
+    },
+    [{ role: "user", content: "Continue from the retained failing test evidence." }]
+  );
+  assert(
+    deepSeekRepairReadPayload?.tool_choice?.function?.name === "read_file",
+    "DeepSeek failed-test repair request did not force the bounded context read"
+  );
+  assert(
+    deepSeekRepairReadPayload?.thinking?.type === "disabled",
+    "DeepSeek failed-test context refresh spent another unbounded reasoning pass"
   );
 
   assert(!isPublicWebUrl("http://127.0.0.1/private"), "public URL guard accepted loopback");
@@ -411,6 +841,7 @@ async function main() {
                   ],
                 }],
                 keyFindings: [{ claim: "Claims retain exact evidence IDs.", evidenceIds: ["S1-C1", "S2-C1"], confidence: "high" }],
+                recommendations: [],
                 contradictions: [],
                 uncertainties: [],
                 nextQuestions: [],
@@ -478,6 +909,7 @@ async function main() {
     },
     store
   );
+  assert(research.version === RESEARCH_VERSION, "deep research did not expose its result-schema version");
   assert(research.ok && research.sourceCount === 2, `deep research failed: ${research.error || "unknown"}`);
   assert(
     researchSearchProviders.length === 2 && researchSearchProviders.every((provider) => provider === "multi"),
@@ -571,6 +1003,7 @@ async function main() {
                   executiveSummaryEvidenceIds: ["S1-C1"],
                   sections: [{ heading: "Claim", paragraphs: [{ text: "The gain was measured.", evidenceIds: ["S1-C1"] }] }],
                   keyFindings: [],
+                  recommendations: [],
                   contradictions: [],
                   uncertainties: ["The exact source was inaccessible."],
                   nextQuestions: [],
@@ -704,6 +1137,7 @@ async function main() {
                     { claim: "A second independent source corroborates the measurement.", evidenceIds: ["S2-C1"], confidence: "high" },
                     { claim: "A third independent source supplies separate evidence.", evidenceIds: ["S3-C1"], confidence: "high" },
                   ],
+                  recommendations: [],
                   contradictions: [],
                   uncertainties: ["Benchmark scope remains limited."],
                   nextQuestions: [],
@@ -974,6 +1408,95 @@ async function main() {
     "a bounded official PDF was still constrained by the generic 2 MiB page limit"
   );
 
+  const namedOfficialResearch = await deepResearch(
+    {
+      query: "Compare official Temporal docs and official LangGraph docs for durable agent execution.",
+      depth: "quick",
+      sourcePolicy: "primary",
+      maxQueries: 1,
+      maxSources: 2,
+      gapPasses: 0,
+      researchId: "named-official-products-smoke",
+      outputPath: "reports/named-official-products.md",
+      dryRun: true,
+    },
+    {
+      provider: "mock",
+      model: "mock-agent",
+      commandCwd: researchWorkspace,
+      webSearchImpl: async ({ query }) => ({
+        ok: true,
+        toolName: "web_search",
+        provider: "test",
+        query,
+        results: /official system card engineering blog architecture/i.test(query)
+          ? [
+              {
+                rank: 1,
+                title: "Durable Execution Solutions",
+                url: "https://temporal.io/blog/durable-execution-solutions",
+                canonicalUrl: "https://temporal.io/blog/durable-execution-solutions",
+                domain: "temporal.io",
+                snippet: "Temporal explains durable execution and workflow recovery.",
+                provider: "test",
+              },
+              {
+                rank: 2,
+                title: "Third-party retry commentary",
+                url: "https://appscale.example.org/blog/retry-commentary",
+                canonicalUrl: "https://appscale.example.org/blog/retry-commentary",
+                domain: "appscale.example.org",
+                snippet: "A secondary opinion about retry behavior.",
+                provider: "test",
+              },
+            ]
+          : [
+              {
+                rank: 1,
+                title: "LangGraph",
+                url: "https://www.langchain.com/langgraph",
+                canonicalUrl: "https://www.langchain.com/langgraph",
+                domain: "langchain.com",
+                snippet: "LangGraph provides durable execution for long-running stateful agents.",
+                provider: "test",
+              },
+              {
+                rank: 2,
+                title: "Generic durable systems survey",
+                url: "https://link.springer.com/article/generic-durable-systems",
+                canonicalUrl: "https://link.springer.com/article/generic-durable-systems",
+                domain: "link.springer.com",
+                snippet: "A broad survey with little agent-specific implementation detail.",
+                provider: "test",
+              },
+            ],
+      }),
+      webPageReaderImpl: async ({ url }) => ({
+        ok: true,
+        toolName: "read_web_page",
+        url,
+        title: url.includes("temporal.io") ? "Temporal Durable Execution" : "LangGraph",
+        readable: true,
+        contentType: "text/html",
+        retrievedAt: "2026-08-25T00:00:00.000Z",
+        sha256: (url.includes("temporal.io") ? "1" : "2").repeat(64),
+        content: "The official product page documents durable execution, checkpointing, and recovery behavior.",
+        passages: ["The official product page documents durable execution, checkpointing, and recovery behavior."],
+      }),
+    },
+    new SessionStore(path.join(tempRoot, "sessions"), "named-official-products-smoke")
+  );
+  assert(namedOfficialResearch.ok, `named official product research failed: ${namedOfficialResearch.error || "unknown"}`);
+  assert(namedOfficialResearch.requirements.officialDiscovery, "'official Temporal docs' did not preserve first-party discovery intent");
+  assert(
+    namedOfficialResearch.sources.map((source) => source.domain).sort().join(",") === "langchain.com,temporal.io",
+    `named first-party product pages were displaced by weaker filler: ${namedOfficialResearch.sources.map((source) => source.domain).join(", ")}`
+  );
+  assert(namedOfficialResearch.sources.every((source) => source.firstParty), "a named official product root was not classified as first-party");
+  const namedOfficialReport = await fs.readFile(namedOfficialResearch.reportPath, "utf8");
+  assert(namedOfficialReport.includes("## Limitations, Uncertainties, And Coverage Gaps"), "research report omitted an explicit limitations section");
+  assert(namedOfficialReport.includes("## Sources Inspected But Not Cited"), "dry-run report hid the uncited-source boundary");
+
   const scholarlyGapCalls = [];
   const scholarlyGapResearch = await deepResearch(
     {
@@ -1040,6 +1563,7 @@ async function main() {
                     paragraphs: [{ text: "Two primary sources support the result.", evidenceIds: ["S1-C1", "S2-C1"] }],
                   }],
                   keyFindings: [{ claim: "Independent evidence was recovered.", evidenceIds: ["S1-C1", "S2-C1"], confidence: "high" }],
+                  recommendations: [],
                   contradictions: [],
                   uncertainties: [],
                   nextQuestions: [],
@@ -1179,6 +1703,7 @@ async function main() {
                     evidenceIds: ["S1-C1", "S2-C1", "S3-C1"],
                     confidence: "high",
                   }],
+                  recommendations: [],
                   contradictions: [],
                   uncertainties: ["Real throughput depends on local hardware."],
                   nextQuestions: [],

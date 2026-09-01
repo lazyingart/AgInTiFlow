@@ -383,6 +383,10 @@ export function machineRunPayload(run, fallbackSessionId = "", metadata = {}) {
   };
 }
 
+export function runResultExitCode(run = {}) {
+  return run?.stopped === true || run?.failed === true ? 1 : 0;
+}
+
 function printMachineRunResult(run, fallbackSessionId = "", metadata = {}) {
   const payload = machineRunPayload(run, fallbackSessionId, metadata);
   console.log(JSON.stringify(payload));
@@ -2507,6 +2511,7 @@ export async function main(argv = process.argv.slice(2)) {
         ...(jsonFlag ? { onConsole: () => {} } : {}),
       });
       const run = await runAgent(config);
+      if (runResultExitCode(run) !== 0) process.exitCode = 1;
       if (jsonFlag) {
         printMachineRunResult(run, runArgs.sessionId, {
           provider: config.provider,
@@ -2604,6 +2609,7 @@ export async function main(argv = process.argv.slice(2)) {
       config.expectedRuntimeRevision = preparedRuntime.expectedRuntimeRevision;
       if (preparedRuntime.runtimePatch) config.runtimePatch = preparedRuntime.runtimePatch;
       const run = await runAgent(config);
+      if (runResultExitCode(run) !== 0) process.exitCode = 1;
       if (jsonFlag) {
         printMachineRunResult(run, sessionId, {
           provider: config.provider,
@@ -2765,5 +2771,6 @@ export async function main(argv = process.argv.slice(2)) {
     config.expectedRuntimeRevision = preparedRuntime.expectedRuntimeRevision;
     if (preparedRuntime.runtimePatch) config.runtimePatch = preparedRuntime.runtimePatch;
   }
-  await runAgent(config);
+  const run = await runAgent(config);
+  if (runResultExitCode(run) !== 0) process.exitCode = 1;
 }

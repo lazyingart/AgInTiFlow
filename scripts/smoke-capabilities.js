@@ -49,6 +49,20 @@ async function runCliIn(cwd, args, envOverrides = {}) {
   return result.stdout;
 }
 
+async function runCliAllowStopped(args, envOverrides = {}) {
+  try {
+    const stdout = await runCli(args, envOverrides);
+    return { stdout, stderr: "", exitCode: 0 };
+  } catch (error) {
+    if (!Number.isInteger(error?.code)) throw error;
+    return {
+      stdout: String(error.stdout || ""),
+      stderr: String(error.stderr || ""),
+      exitCode: error.code,
+    };
+  }
+}
+
 try {
   await runCli(["init"]);
   const agintiMd = await fs.readFile(path.join(tempRoot, "AGINTI.md"), "utf8");
@@ -133,7 +147,7 @@ try {
     capabilities.tools?.taskProfiles?.some((profile) => profile.id === "pipeline"),
     "capabilities did not report pipeline task profile"
   );
-  for (const profileId of ["docs", "data", "qa", "database", "devops", "security", "slides", "education", "java", "ios", "go", "rust", "dotnet", "php", "ruby"]) {
+  for (const profileId of ["docs", "data", "qa", "database", "devops", "security", "slides", "education", "java", "ios", "go", "rust", "dotnet", "php", "ruby", "cad"]) {
     assert(
       capabilities.tools?.taskProfiles?.some((profile) => profile.id === profileId),
       `capabilities did not report ${profileId} task profile`
@@ -143,8 +157,24 @@ try {
   assert(qaProfile, "QA profile is missing");
   assert(defaultMaxStepsForProfile("qa") >= 40, "QA profile step budget is too low for verification and cleanup");
   assert(defaultMaxStepsForProfile("pipeline") >= 44, "pipeline profile step budget is too low for repair/verify/resume loops");
+  const cadProfile = listTaskProfiles().find((profile) => profile.id === "cad");
+  assert(cadProfile, "CAD profile is missing");
+  assert(defaultMaxStepsForProfile("cad") >= 44, "CAD profile step budget is too low for build/render/validation repair loops");
+  assert(/one canonical machine-readable validation section/i.test(cadProfile.prompt), "CAD profile permits ambiguous validation aliases");
+  assert(/top-level `validation` object/i.test(cadProfile.prompt), "CAD profile does not establish one stable validation schema");
+  assert(/`solid_count`[\s\S]*`bbox_mm`[\s\S]*`watertight`[\s\S]*`object_count`/i.test(cadProfile.prompt), "CAD profile omits conventional format-native evidence field names");
+  assert(/enrich its missing direct evidence fields instead of renaming/i.test(cadProfile.prompt), "CAD profile permits same-failure schema oscillation");
+  assert(/STEP\/B-rep evidence needs solid count/i.test(cadProfile.prompt), "CAD profile does not require format-native STEP evidence");
+  assert(/STL evidence needs watertightness/i.test(cadProfile.prompt), "CAD profile does not require format-native STL evidence");
+  assert(/3MF evidence needs package validity/i.test(cadProfile.prompt), "CAD profile does not require format-native 3MF evidence");
   assert(!/misleading failing test/i.test(qaProfile.prompt), "QA profile still encourages misleading test fixtures");
   assert(/do not stage fake bugs/i.test(qaProfile.prompt), "QA profile does not discourage fake staged failures");
+  const slidesProfile = listTaskProfiles().find((profile) => profile.id === "slides");
+  assert(slidesProfile, "slides profile is missing");
+  assert(/source-grounded editable slide source/i.test(slidesProfile.prompt), "slides profile does not require grounded editable source");
+  assert(/render every slide/i.test(slidesProfile.prompt), "slides profile does not require full rendered inspection");
+  assert(/wrapped-title decoration overlap/i.test(slidesProfile.prompt), "slides profile does not guard wrapped-title collisions");
+  assert(/fresh git status --short/i.test(slidesProfile.prompt), "slides profile does not require fresh repository evidence");
   assert(
     capabilities.trustedDockerPolicy.some((check) => check.command.startsWith("apt-get install") && check.allowed),
     "trusted Docker policy did not allow apt-get install"
@@ -188,7 +218,7 @@ try {
   const doctor = JSON.parse(await runCli(["doctor", "--capabilities", "--json"]));
   assert(doctor.project.root === tempRoot, "doctor --capabilities used the wrong project root");
   assert(doctor.project.instructionsPresent, "doctor --capabilities did not report AGINTI.md");
-  const envSandboxRun = await runCli(
+  const envSandboxRun = await runCliAllowStopped(
     ["--provider", "mock", "--routing", "manual", "--model", "mock-agent", "--max-steps", "1", "env sandbox smoke"],
     {
       SANDBOX_MODE: "host",
@@ -196,8 +226,19 @@ try {
       USE_DOCKER_SANDBOX: "false",
     }
   );
-  assert(envSandboxRun.includes("Shell: host policy=allow"), "one-shot CLI did not respect host sandbox env defaults");
-  assert(!envSandboxRun.includes("Docker workspace:"), "one-shot CLI forced Docker despite host sandbox env defaults");
+  assert(envSandboxRun.exitCode === 1, "a step-budget-stopped one-shot CLI run did not report failure");
+  assert(
+    envSandboxRun.stderr.includes("Stopped after 1 steps without finish()."),
+    "a step-budget-stopped one-shot CLI run did not expose its terminal reason"
+  );
+  assert(
+    envSandboxRun.stdout.includes("Shell: host policy=allow"),
+    "one-shot CLI did not respect host sandbox env defaults"
+  );
+  assert(
+    !envSandboxRun.stdout.includes("Docker workspace:"),
+    "one-shot CLI forced Docker despite host sandbox env defaults"
+  );
 
   console.log(
     JSON.stringify(

@@ -75,7 +75,7 @@ export const PROVIDER_CONTRACTS = Object.freeze({
     defaultModel: "deepseek-v4-flash",
     toolProtocol: "native",
     structuredOutput: "json_object",
-    supportsReasoningEffort: false,
+    supportsReasoningEffort: true,
     textToolFallback: false,
   }),
   openai: Object.freeze({

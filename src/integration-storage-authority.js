@@ -30,6 +30,7 @@ export const INTEGRATION_STORAGE_LIMITATIONS = Object.freeze({
   nodeOpenat: false,
   nodeOpenat2: false,
   openat2ResolveBeneath: false,
+  resolveBeneath: false,
   noXdev: false,
   nodeRenameat2: false,
   nodeUnlinkat: false,
@@ -44,6 +45,7 @@ export const INTEGRATION_RETAINED_FILE_LIMITATIONS = Object.freeze({
   nodeOpenat: false,
   nodeOpenat2: false,
   openat2ResolveBeneath: false,
+  resolveBeneath: false,
   noXdev: false,
   nodeRenameat2: false,
   nodeUnlinkat: false,
@@ -69,6 +71,8 @@ export const INTEGRATION_RETAINED_REGULAR_FILE_LOCK_LIMITATIONS = Object.freeze(
   linuxKernelFlock: true,
   rootOwnedDigestPinnedHelperRequired: true,
   helperDependencyChainPinned: false,
+  resolveBeneath: false,
+  noXdev: false,
   localFilesystemRequired: true,
   networkFilesystemSafety: false,
   advisoryOnly: true,
@@ -868,6 +872,15 @@ function assertDirectoryOpen(dir) {
   if (dir.poisoned) fail("INTEGRATION_STORAGE_POISONED", dir.poisonReason || "Retained directory handle is poisoned.");
 }
 
+function assertRootNotPoisoned(root) {
+  if (root.poisoned) fail("INTEGRATION_STORAGE_POISONED", root.poisonReason || "Retained storage authority is poisoned.");
+}
+
+function assertDirectoryNotPoisoned(dir) {
+  assertRootNotPoisoned(dir.root);
+  if (dir.poisoned) fail("INTEGRATION_STORAGE_POISONED", dir.poisonReason || "Retained directory handle is poisoned.");
+}
+
 function releaseOperation(target, token) {
   if (!target.activeOperations.has(token)) return;
   target.activeOperations.delete(token);
@@ -1367,6 +1380,7 @@ async function readRetainedProtectedFile(state, fileNameInput, optionsInput, { p
     });
   }
   if (problem) throwNormalizedFileOperationError(problem, "read");
+  assertDirectoryNotPoisoned(dir);
   return result;
 }
 
@@ -1454,6 +1468,7 @@ async function readRetainedProtectedBinaryFile(state, fileNameInput, optionsInpu
     });
   }
   if (problem) throwNormalizedFileOperationError(problem, "binary read");
+  assertDirectoryNotPoisoned(dir);
   return result;
 }
 
@@ -1727,6 +1742,7 @@ async function atomicWriteRetainedProtectedBytes(state, fileNameInput, bytesInpu
     });
   }
   if (problem) throwNormalizedFileOperationError(problem, "atomic replace");
+  assertDirectoryNotPoisoned(dir);
   return result;
 }
 
@@ -1756,6 +1772,7 @@ async function syncRetainedProtectedBinaryDirectory(state) {
   }
   release();
   if (problem) throwNormalizedFileOperationError(problem, "directory sync");
+  assertDirectoryNotPoisoned(dir);
   return Object.freeze({ directorySynced: true });
 }
 

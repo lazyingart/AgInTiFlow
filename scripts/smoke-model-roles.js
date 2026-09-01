@@ -29,10 +29,25 @@ import {
   shouldActivateScs,
   shouldRequestScsReplan,
 } from "../src/scs-controller.js";
-import { buildScsEvidenceLedger, deriveScsTaskContract, evaluateScsEvidence } from "../src/scs-evidence.js";
+import {
+  buildScsEvidenceLedger,
+  buildTmuxGitIntent,
+  deriveScsTaskContract,
+  evaluateScsEvidence,
+  gitActionsSatisfyContract,
+  inferSuccessfulGitActionsFromCommandResult,
+  inferSuccessfulGitActionsFromTmuxCapture,
+  reconcileTmuxGitEvidenceEvents,
+} from "../src/scs-evidence.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { classifyGoalIntent, isDirectAnswerIntent } from "../src/goal-intent.js";
 import { languageWriterDefaults } from "../src/writing-specialist.js";
+import {
+  attachVerifiedTmuxGitEvidence,
+  recordDurableEvidenceCategories,
+  rememberTmuxGitIntent,
+  sanitizeToolResult,
+} from "../src/agent-runner.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 for (const key of [
@@ -518,6 +533,78 @@ assert(
   parseTextToolCalls("An HTML function element is ordinary prose.").length === 0,
   "ordinary function prose became a tool call"
 );
+const functionParameterToolCalls = parseTextToolCalls(
+  'I will inspect the file.\n<function=read_file>\n<parameter=path>\nservice_ctl.py\n</parameter>\n</function>\n</tool_call>'
+);
+assert(
+  functionParameterToolCalls.length === 1,
+  "function/parameter text tool-call parser did not tolerate the local model closing-tag dialect"
+);
+assert(
+  functionParameterToolCalls[0].function.name === "read_file" &&
+    JSON.parse(functionParameterToolCalls[0].function.arguments).path === "service_ctl.py",
+  "function/parameter text tool-call parser returned the wrong name or path"
+);
+const typedFunctionParameterToolCall = parseTextToolCalls(
+  '<function=read_file><parameter=startLine>12</parameter><parameter=includeHidden>false</parameter></function>'
+);
+assert(
+  JSON.parse(typedFunctionParameterToolCall[0].function.arguments).startLine === 12 &&
+    JSON.parse(typedFunctionParameterToolCall[0].function.arguments).includeHidden === false,
+  "function/parameter text tool-call parser did not preserve primitive argument types"
+);
+const normalizedFunctionParameterToolResponse = normalizeTextToolCallResponse({
+  choices: [{
+    message: {
+      role: "assistant",
+      content:
+        'Let me read it.\n<function=read_file><parameter=path>tests/test_service_ctl.py</parameter></function></tool_call>',
+    },
+  }],
+});
+assert(
+  normalizedFunctionParameterToolResponse.choices[0].message.tool_calls?.length === 1 &&
+    normalizedFunctionParameterToolResponse.choices[0].message.content === "Let me read it.",
+  "function/parameter tool response was not normalized into one native call with clean prose"
+);
+const standaloneToolObject = JSON.stringify({
+  toolName: "apply_patch",
+  args: {
+    path: "service_ctl.py",
+    search: "old source",
+    replace: "new source",
+    expectedReplacements: 1,
+  },
+});
+const standaloneToolObjectCalls = parseTextToolCalls(
+  `I will apply the coherent patch now:\n${standaloneToolObject}\n${standaloneToolObject}`
+);
+assert(
+  standaloneToolObjectCalls.length === 1 &&
+    standaloneToolObjectCalls[0].function.name === "apply_patch",
+  "line-delimited standalone tool JSON was not parsed and deduplicated"
+);
+assert(
+  JSON.parse(standaloneToolObjectCalls[0].function.arguments).path === "service_ctl.py",
+  "standalone tool JSON parser lost the exact arguments"
+);
+assert(
+  parseTextToolCalls(`Example only:\n\u0060\u0060\u0060json\n${standaloneToolObject}\n\u0060\u0060\u0060`).length === 0,
+  "a fenced standalone tool example was incorrectly treated as an executable call"
+);
+const normalizedStandaloneToolResponse = normalizeTextToolCallResponse({
+  choices: [{
+    message: {
+      role: "assistant",
+      content: `Applying the patch.\n${standaloneToolObject}`,
+    },
+  }],
+});
+assert(
+  normalizedStandaloneToolResponse.choices[0].message.tool_calls?.length === 1 &&
+    normalizedStandaloneToolResponse.choices[0].message.content === "Applying the patch.",
+  "standalone tool JSON response was not normalized into a clean native call"
+);
 const malformedRequestedToolResponse = normalizeTextToolCallResponse({
   choices: [
     {
@@ -775,6 +862,17 @@ const readinessOnlyContract = deriveScsTaskContract({
   ].join("\n"),
   taskProfile: "auto",
 });
+const releaseProofFilenameContract = deriveScsTaskContract({
+  goal: [
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create a task-owned plain-text artifact named scoped-path-release-proof.txt, read it back, and finish without external actions."}',
+    "The host writes a final task record after the agent finishes.",
+  ].join("\n"),
+  taskProfile: "auto",
+});
+const explicitPackageReleaseContract = deriveScsTaskContract({
+  goal: "Release the package to npm and verify the published version.",
+  taskProfile: "auto",
+});
 assert(
   readinessOnlyContract.requiredEvidence.some((item) => item.category === "file") &&
     readinessOnlyContract.requiredEvidence.some((item) => item.category === "command"),
@@ -783,6 +881,15 @@ assert(
 assert(
   !readinessOnlyContract.requiredEvidence.some((item) => ["publish", "browser", "visual", "artifact"].includes(item.category)),
   "read-only readiness contract required a forbidden external action or target artifact"
+);
+assert(
+  releaseProofFilenameContract.requiredEvidence.some((item) => item.category === "file") &&
+    !releaseProofFilenameContract.requiredEvidence.some((item) => item.category === "publish"),
+  "a release-like artifact filename fabricated an external publication obligation"
+);
+assert(
+  explicitPackageReleaseContract.requiredEvidence.some((item) => item.category === "publish"),
+  "an explicit package release lost its publication evidence obligation"
 );
 assert(
   uploadContract.exactInputPaths.includes("/tmp/reference-a.png") &&
@@ -894,6 +1001,81 @@ const strongUploadFinish = await reviewScsFinish(
 );
 assert(strongUploadFinish.decision === "finish_allowed", "SCS finish gate should allow satisfied upload evidence");
 
+const refreshedSecurityContract = deriveScsTaskContract({
+  goal: "Fix the security issue and run the regression tests.",
+  taskProfile: "security",
+});
+const correctiveSecurityContract = deriveScsTaskContract({
+  goal: [
+    "Independent acceptance failed: audit fields permit newline log injection.",
+    "Reopen the exact repair, add a focused regression test, fix the root cause,",
+    "run the full visible tests, review the diff, and commit only this corrective work.",
+  ].join(" "),
+  taskProfile: "security",
+});
+assert(
+  correctiveSecurityContract.requiresWorkspaceMutation === true &&
+    correctiveSecurityContract.requiresFileMutation === true &&
+    correctiveSecurityContract.requiredEvidence.some((item) => item.category === "file") &&
+    correctiveSecurityContract.requiredEvidence.some((item) => item.category === "test") &&
+    correctiveSecurityContract.requiredGitActions.includes("commit"),
+  "a requested regression-test repair could enter Git completion without fresh file and test evidence"
+);
+const staleContractFinish = await reviewScsFinish(
+  { mock: true },
+  { provider: "mock", model: "mock-agent", taskProfile: "security" },
+  {
+    goal: refreshedSecurityContract.outcome,
+    meta: {
+      scs: {
+        taskContract: {
+          ...refreshedSecurityContract,
+          requiredEvidence: [
+            ...refreshedSecurityContract.requiredEvidence,
+            { id: "browser", category: "browser", description: "stale browser evidence" },
+          ],
+        },
+      },
+    },
+    messages: [
+      {
+        role: "tool",
+        content: JSON.stringify({
+          toolName: "write_file",
+          ok: true,
+          path: "SECURITY.md",
+          args: { path: "SECURITY.md" },
+        }),
+      },
+      {
+        role: "tool",
+        content: JSON.stringify({
+          toolName: "run_command",
+          ok: true,
+          exitCode: 0,
+          args: { command: "python -m unittest discover -s tests -v" },
+          stdout: "Ran 10 tests\nOK",
+          projectTest: {
+            passed: true,
+            command: "python -m unittest discover -s tests -v",
+            mutationRevision: 0,
+          },
+        }),
+      },
+    ],
+  },
+  "Implemented the security repair and all 10 regression tests pass.",
+  {
+    goal: refreshedSecurityContract.outcome,
+    taskProfile: "security",
+    taskContract: refreshedSecurityContract,
+  }
+);
+assert(
+  staleContractFinish.decision === "finish_allowed",
+  "SCS final review reused an obsolete persisted contract instead of the accepted completion contract"
+);
+
 const codeContract = deriveScsTaskContract({
   goal: "Fix the bug in src/app.js and run the test.",
   taskProfile: "code",
@@ -905,6 +1087,10 @@ const commitContract = deriveScsTaskContract({
 const correctionCommitContract = deriveScsTaskContract({
   goal: "Fix analysis.py without changing validated results or artifact names, run the exact tests, commit only the intentional source correction, and verify clean status.",
   taskProfile: "code",
+});
+const pythonTypeAnnotationContract = deriveScsTaskContract({
+  goal: "Continue the security repair. The prior write incorrectly treated safe Python type annotations as credentials. Complete the regression tests and commit the intentional work.",
+  taskProfile: "security",
 });
 const gitStatusLedger = buildScsEvidenceLedger({
   state: {
@@ -947,6 +1133,10 @@ assert(
   "a local without-clause swallowed the later positive commit instruction"
 );
 assert(
+  !pythonTypeAnnotationContract.requiredEvidence.some((item) => item.category === "browser"),
+  "Python type annotations fabricated a browser typing requirement"
+);
+assert(
   correctionCommitContract.exactInputPaths.includes("analysis.py"),
   "a named source file in a correction request was not retained for bounded inspection"
 );
@@ -962,11 +1152,234 @@ assert(
   evaluateScsEvidence(commitContract, gitStatusLedger).missingGitActions.includes("commit"),
   "the completion deficit did not identify the missing commit"
 );
+const readOnlyGitContract = {
+  requiresExternalEvidence: true,
+  requiredEvidence: [
+    { id: "command", category: "command", description: "read-only verification" },
+    { id: "git", category: "git", description: "existing commit verification" },
+  ],
+  requiredToolCalls: [],
+  requiredGitActions: [],
+  requiredProjectCommands: [],
+};
+assert(
+  evaluateScsEvidence(readOnlyGitContract, gitStatusLedger).ok,
+  "read-only Git evidence was rejected when the contract required no consequential Git action"
+);
 const committedEvaluation = evaluateScsEvidence(commitContract, gitCommitLedger);
 assert(
   committedEvaluation.missingGitActions.length === 0 &&
     !committedEvaluation.missing.some((item) => item.category === "git"),
   "a successful git commit did not satisfy the explicit git requirement"
+);
+const tmuxCommitCommand = [
+  'echo "===AGINTI_REVIEW_COMMIT_START==="',
+  'git add README.md && git commit -m "finish review"',
+  'echo "===COMMIT_EXIT:$?==="',
+].join(" ; ");
+const tmuxCommitIntent = buildTmuxGitIntent(tmuxCommitCommand);
+assert(
+  tmuxCommitIntent?.actions.includes("commit") &&
+    tmuxCommitIntent.markers.includes("===AGINTI_REVIEW_COMMIT_START==="),
+  "a marked workspace tmux commit command did not retain bounded Git intent"
+);
+const tmuxCommitCapture = {
+  ok: true,
+  toolName: "tmux_capture_pane",
+  target: "review:0.0",
+  content: [
+    "===AGINTI_REVIEW_COMMIT_START===",
+    "[review abc1234] finish review",
+    " 1 file changed, 2 insertions(+)",
+    "===COMMIT_EXIT:0===",
+  ].join("\n"),
+};
+const verifiedTmuxCommit = inferSuccessfulGitActionsFromTmuxCapture(
+  tmuxCommitIntent,
+  tmuxCommitCapture
+);
+assert(
+  verifiedTmuxCommit.length === 1 && verifiedTmuxCommit[0] === "commit",
+  "a fresh marked tmux capture did not prove its successful Git commit"
+);
+assert(
+  inferSuccessfulGitActionsFromTmuxCapture(tmuxCommitIntent, {
+    ...tmuxCommitCapture,
+    content: tmuxCommitCapture.content.replace("COMMIT_EXIT:0", "COMMIT_EXIT:1"),
+  }).length === 0,
+  "a nonzero tmux commit exit marker was accepted as Git evidence"
+);
+assert(
+  inferSuccessfulGitActionsFromTmuxCapture(tmuxCommitIntent, {
+    ...tmuxCommitCapture,
+    content: tmuxCommitCapture.content.replace("AGINTI_REVIEW_COMMIT_START", "STALE_COMMIT_START"),
+  }).length === 0,
+  "a tmux capture without the current command marker was accepted as fresh Git evidence"
+);
+const tmuxEvidenceState = {
+  meta: {
+    goalContract: { revision: 2 },
+    projectVerification: { mutationRevision: 3 },
+  },
+};
+const tmuxSendResult = {
+  ok: true,
+  toolName: "tmux_send_keys",
+  target: "review:0.0",
+  sentTextSha256: "a".repeat(64),
+};
+rememberTmuxGitIntent(
+  tmuxEvidenceState,
+  { text: tmuxCommitCommand },
+  tmuxSendResult
+);
+const trackedTmuxCapture = { ...tmuxCommitCapture };
+assert(
+  attachVerifiedTmuxGitEvidence(tmuxEvidenceState, trackedTmuxCapture).includes("commit"),
+  "the same-pane tmux capture did not close the pending Git intent"
+);
+recordDurableEvidenceCategories(tmuxEvidenceState, trackedTmuxCapture);
+assert(
+  tmuxEvidenceState.meta.durableGitEvidence.some(
+    (item) =>
+      item.action === "commit" &&
+      item.goalRevision === 2 &&
+      item.mutationRevision === 3
+  ),
+  "verified tmux commit evidence was not retained at the active goal and mutation revision"
+);
+assert(
+  !tmuxEvidenceState.meta.pendingTmuxGitEvidence["review:0.0"],
+  "verified tmux Git intent remained pending after same-pane capture"
+);
+const tmuxCommitLedger = buildScsEvidenceLedger({
+  context: {
+    events: [
+      {
+        type: "tool.completed",
+        data: {
+          ...tmuxCommitCapture,
+          verifiedGitActions: verifiedTmuxCommit,
+          verifiedGitGoalRevision: 1,
+          verifiedGitMutationRevision: 1,
+        },
+      },
+    ],
+  },
+});
+assert(
+  evaluateScsEvidence(commitContract, tmuxCommitLedger).missingGitActions.length === 0,
+  "verified tmux commit evidence did not satisfy the completion contract"
+);
+const historicalTmuxEvents = [
+  { type: "goal.updated", data: { revision: 2 } },
+  {
+    type: "tool.completed",
+    data: {
+      ok: true,
+      toolName: "run_command",
+      goalRevision: 2,
+      projectMutationRevision: 3,
+      args: { command: "git status --short" },
+      exitCode: 0,
+      stdout: " M README.md",
+    },
+  },
+  {
+    type: "tool.started",
+    data: {
+      toolName: "tmux_send_keys",
+      args: { target: "review:0.0", text: tmuxCommitCommand },
+    },
+  },
+  {
+    type: "tool.completed",
+    data: {
+      ...tmuxSendResult,
+      target: "review:0.0",
+    },
+  },
+  {
+    type: "tool.completed",
+    data: {
+      ...tmuxCommitCapture,
+      content: undefined,
+      contentPreview: tmuxCommitCapture.content,
+    },
+  },
+];
+const reconciledHistoricalEvents = reconcileTmuxGitEvidenceEvents(
+  historicalTmuxEvents
+);
+assert(
+  reconciledHistoricalEvents.at(-1)?.data?.verifiedGitActions?.includes("commit") &&
+    reconciledHistoricalEvents.at(-1)?.data?.verifiedGitGoalRevision === 2 &&
+    reconciledHistoricalEvents.at(-1)?.data?.verifiedGitMutationRevision === 3,
+  "restart reconciliation did not recover revision-scoped tmux commit evidence"
+);
+assert(
+  evaluateScsEvidence(
+    commitContract,
+    buildScsEvidenceLedger({ context: { events: historicalTmuxEvents } })
+  ).missingGitActions.length === 0,
+  "historical marked tmux commit events did not satisfy the completion contract"
+);
+for (const invalidEvents of [
+  historicalTmuxEvents.map((event, index) =>
+    index === 3 ? { ...event, type: "tool.failed", data: { ...event.data, ok: false } } : event
+  ),
+  historicalTmuxEvents.map((event, index) =>
+    index === 4 ? { ...event, data: { ...event.data, target: "other:0.0" } } : event
+  ),
+  historicalTmuxEvents.map((event, index) =>
+    index === 4
+      ? {
+          ...event,
+          data: {
+            ...event.data,
+            contentPreview: event.data.contentPreview.replace("COMMIT_EXIT:0", "COMMIT_EXIT:1"),
+          },
+        }
+      : event
+  ),
+]) {
+  assert(
+    !reconcileTmuxGitEvidenceEvents(invalidEvents).at(-1)?.data?.verifiedGitActions,
+    "failed, cross-pane, or nonzero historical tmux evidence was accepted"
+  );
+}
+const sanitizedLongTmuxCapture = sanitizeToolResult({
+  ...tmuxCommitCapture,
+  content: `${"old scrollback\n".repeat(200)}${tmuxCommitCapture.content}`,
+});
+assert(
+  sanitizedLongTmuxCapture.contentTruncated === true &&
+    sanitizedLongTmuxCapture.contentTail.includes("===COMMIT_EXIT:0===") &&
+    inferSuccessfulGitActionsFromTmuxCapture(
+      tmuxCommitIntent,
+      sanitizedLongTmuxCapture
+    ).includes("commit"),
+  "truncated tmux evidence did not preserve and verify its bounded content tail"
+);
+const recoveredCommitActions = inferSuccessfulGitActionsFromCommandResult({
+  ok: true,
+  exitCode: 0,
+  args: {
+    command:
+      'echo "seed author: $(git log -1 --format=\'%an <%ae>\')"; git config user.name "$(git log -1 --format=\'%an\')"; git commit -m "finish handoff" && git log -1 --oneline',
+  },
+  stdout: "[main abc1234] finish handoff\n 8 files changed, 499 insertions(+)",
+});
+assert(
+  recoveredCommitActions.length === 1 && recoveredCommitActions[0] === "commit",
+  "a canonical successful commit was lost because its command had a setup prefix or shell expansion"
+);
+assert(
+  gitActionsSatisfyContract(
+    { requiredGitActions: ["add", "commit"] },
+    recoveredCommitActions
+  ),
+  "a successful commit did not satisfy the implied staging step after a partially successful add/commit chain"
 );
 const explainCodeContract = deriveScsTaskContract({
   goal: "Explain JavaScript closures at a high level.",
@@ -981,6 +1394,13 @@ const canvasArtifactContract = deriveScsTaskContract({
 });
 const jsonObjectContract = deriveScsTaskContract({
   goal: "Extract a valid JSON object with schema from this text.",
+});
+const scopedStaticJsonContract = deriveScsTaskContract({
+  goal: [
+    "Host wrapper: validate code, run commands, inspect browsers, and perform deep research when the request needs them.",
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create and verify output/parity/aginti_verified_artifact.json with one valid JSON object, then read it back."}',
+  ].join("\n"),
+  taskProfile: "code",
 });
 const virtualFileContract = deriveScsTaskContract({
   goal: "Create file: /workspace/virtual-output.txt with virtual Docker path support.",
@@ -1062,6 +1482,20 @@ assert(
   "JSON object extraction should not be treated as a workspace file requirement without an explicit file/path"
 );
 assert(
+  scopedStaticJsonContract.requiredEvidence.some((item) => item.category === "file") &&
+    !scopedStaticJsonContract.requiredEvidence.some((item) => item.category === "command"),
+  "a scoped standalone JSON artifact should require file evidence without an unrelated shell command"
+);
+assert(
+  scopedStaticJsonContract.exactOutputPaths.includes("output/parity/aginti_verified_artifact.json") &&
+    !scopedStaticJsonContract.exactInputPaths.includes("output/parity/aginti_verified_artifact.json"),
+  "create-and-verify should retain the structured-data path as an output rather than an input"
+);
+assert(
+  scopedStaticJsonContract.requiredExecutableTerms.length === 0,
+  "a required JSON boolean value was misclassified as executable production-source syntax"
+);
+assert(
   virtualFileContract.requiredEvidence.some((item) => item.category === "file") &&
     !virtualFileContract.requiredEvidence.some((item) => item.category === "artifact"),
   "virtual output filename should require file evidence without treating output in the filename as an artifact"
@@ -1117,7 +1551,14 @@ const checkedCodeEval = evaluateScsEvidence(
       messages: [
         {
           role: "tool",
-          content: JSON.stringify({ toolName: "run_command", ok: true, exitCode: 0, args: { command: "npm test" }, stdout: "ok" }),
+          content: JSON.stringify({
+            toolName: "run_command",
+            ok: true,
+            exitCode: 0,
+            args: { command: "npm test" },
+            stdout: "ok",
+            projectTest: { passed: true, command: "npm test", mutationRevision: 0 },
+          }),
         },
       ],
     },

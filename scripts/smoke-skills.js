@@ -112,9 +112,38 @@ const pythonSkill = skills.find((skill) => skill.id === "python");
 assert(pythonSkill?.body.includes("PEP 701 relaxed f-strings"), "Python skill must mention 3.12 f-string compatibility traps");
 assert(pythonSkill?.body.includes("only proves the active interpreter"), "Python skill must guard syntax-check overclaims");
 assert(selectedIds("write SQL migrations for sqlite schema").includes("database"), "database prompt did not select database");
+const imperfectDatabaseRepairSkills = selectedIds(
+  "The reading archive broke after its recent schema upgrade: an old library came back empty, and search gives surprising results for some punctuation. Please inspect the project, fix the underlying problems without discarding existing data, add useful regression coverage, run the checks, and commit the intentional repair. Keep the implementation small and standard-library only."
+);
+assert(imperfectDatabaseRepairSkills.includes("database"), "normal database repair prompt omitted database guidance");
+assert(imperfectDatabaseRepairSkills.includes("qa-testing"), "normal database repair prompt omitted regression-test guidance");
+for (const unrelated of [
+  "autonomous-artifact-pipeline",
+  "bgpt-paper-search",
+  "data-analysis",
+  "exa-search",
+  "exploratory-data-analysis",
+  "optimize-for-gpu",
+]) {
+  assert(
+    !imperfectDatabaseRepairSkills.includes(unrelated),
+    `normal database repair prompt selected unrelated ${unrelated} guidance`
+  );
+}
 assert(selectedIds("debug Docker deployment logs and port config").includes("devops-deployment"), "devops prompt did not select devops-deployment");
 assert(selectedIds("review auth security and secrets handling").includes("security-review"), "security prompt did not select security-review");
+const securitySkill = skills.find((skill) => skill.id === "security-review");
+assert(
+  securitySkill?.body.includes("carriage-return, newline") &&
+    securitySkill?.body.includes("residual risks and non-goals"),
+  "security skill omitted audit-record injection or structured security-note guidance"
+);
 assert(selectedIds("make a PowerPoint pitch deck").includes("presentation-slides"), "slides prompt did not select presentation-slides");
+const presentationSkill = skills.find((skill) => skill.id === "presentation-slides");
+assert(presentationSkill?.body.includes("Render every slide"), "presentation skill does not require every slide to be rendered");
+assert(presentationSkill?.body.includes("wrapped titles"), "presentation skill does not require wrapped-title inspection");
+assert(presentationSkill?.body.includes("git status --short"), "presentation skill does not require final repository evidence");
+assert(presentationSkill?.body.includes("Do not call the deck complete"), "presentation skill still permits build-only completion");
 assert(selectedIds("edit a markdown screenplay final draft").includes("writing-editing"), "writing prompt did not select writing-editing");
 assert(selectedIds("create a lesson with exercises and quiz").includes("education-tutorial"), "education prompt did not select education-tutorial");
 assert(selectedIds("review this PR architecture without editing").includes("code-review"), "review prompt did not select code-review");

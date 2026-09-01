@@ -14,7 +14,7 @@ import {
 } from "./web-search.js";
 import { resolveWorkspacePath } from "./workspace-tools.js";
 
-const RESEARCH_VERSION = 12;
+export const RESEARCH_VERSION = 14;
 const DEPTH_BUDGETS = Object.freeze({
   quick: Object.freeze({ maxQueries: 3, maxSources: 6, concurrency: 3, gapPasses: 0 }),
   standard: Object.freeze({ maxQueries: 6, maxSources: 12, concurrency: 4, gapPasses: 1 }),
@@ -136,14 +136,29 @@ function researchRequirements(args = {}, config = {}) {
     /学术|學術|论文|論文|文献综述|文獻綜述|期刊|引用|系统综述|系統綜述/.test(intent);
   const officialDiscovery =
     sourcePolicy(args.sourcePolicy) === "official" ||
-    /\b(?:first[- ]party|official (?:documentation|engineering|implementation|technical|writeups?)|system card|vendor engineering)\b/i.test(intent) ||
+    /\b(?:first[- ]party|official\b[^.\n]{0,100}\b(?:docs?|documentation|engineering|guidance|implementation|technical|writeups?)|(?:docs?|documentation|engineering|guidance|implementation|technical|writeups?)\b[^.\n]{0,100}\b(?:from|by)\s+(?:the\s+)?official|system card|vendor engineering)\b/i.test(intent) ||
     /官方(?:文档|文檔|工程|技术|技術)|第一方|系统卡|系統卡/.test(intent);
+  const requireRecommendations =
+    args.requireRecommendations === true ||
+    /\b(?:actionable|concrete|implementation|practical)\s+(?:advice|recommendations?|steps)|\brecommend(?:ation|ations|ed)?\b|\bwhat (?:we|i|the team) should do\b/i.test(intent) ||
+    /建议|建議|推荐|推薦|下一步|怎么做|怎麼做/.test(intent);
+  const requireVerificationMethod =
+    args.requireVerificationMethod === true ||
+    /\b(?:reproducible|repeatable)\s+(?:verification|validation|audit|method|procedure)|\b(?:verification|validation)\s+(?:method|procedure|protocol)|\bhow to (?:reproduce|verify|validate)\b/i.test(intent) ||
+    /可复现|可復現|验证方法|驗證方法|验证流程|驗證流程/.test(intent);
+  const includeEvidenceAppendix =
+    args.includeEvidenceAppendix === true ||
+    /\b(?:exact|verbatim|source-grounded)\s+(?:quotes?|quotations?|excerpts?)|\bevidence appendix\b|\bquote-level evidence\b/i.test(intent) ||
+    /原文引文|原文引用|证据附录|證據附錄/.test(intent);
   return {
     requirePdf,
     pdfMode: requirePdf ? (pdfWhenAvailable ? "when-available" : "required") : "optional",
     minIndependentSources: Math.max(requestedMinimum, inferredMinimum),
     scholarlyDiscovery,
     officialDiscovery,
+    requireRecommendations,
+    requireVerificationMethod,
+    includeEvidenceAppendix,
     includeNegativeEvidence:
       args.includeNegativeEvidence === true ||
       /\b(?:negative|conflicting|contradictory|counter[- ]?evidence|disagreement|limitations?|falsifying|unresolved)\b/i.test(intent) ||
@@ -350,6 +365,18 @@ const SYNTHESIS_SCHEMA = {
         additionalProperties: false,
       },
     },
+    recommendations: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+          evidenceIds: { type: "array", items: { type: "string" } },
+        },
+        required: ["text", "evidenceIds"],
+        additionalProperties: false,
+      },
+    },
     contradictions: { type: "array", items: { type: "string" } },
     uncertainties: { type: "array", items: { type: "string" } },
     nextQuestions: { type: "array", items: { type: "string" } },
@@ -360,6 +387,7 @@ const SYNTHESIS_SCHEMA = {
     "executiveSummaryEvidenceIds",
     "sections",
     "keyFindings",
+    "recommendations",
     "contradictions",
     "uncertainties",
     "nextQuestions",
@@ -678,7 +706,7 @@ function scholarlyCandidate(result = {}) {
   return scholarlyDomain(result.domain, result.url) || indexes.some((index) => ["arxiv", "crossref"].includes(index));
 }
 
-function firstPartyCandidate(result = {}) {
+function firstPartyCandidate(result = {}, discoveryQuery = result.discoveryQuery || "") {
   if (repositoryCandidate(result) || scholarlyCandidate(result)) return false;
   const domain = String(result.domain || "").toLowerCase();
   let pathname = "";
@@ -699,6 +727,8 @@ function firstPartyCandidate(result = {}) {
         ? suffix
         : secondLevel;
   const titleAndSnippet = `${result.title || ""} ${result.snippet || ""}`.toLowerCase();
+  const discoveryText = String(discoveryQuery || "").toLowerCase();
+  const pathnameParts = pathname.split("/").filter(Boolean);
   const brandedOfficialArtifact =
     /\b(?:introducing|official|system card|technical report|whitepaper)\b/i.test(titleAndSnippet) &&
     brand.length >= 4 &&
@@ -706,11 +736,22 @@ function firstPartyCandidate(result = {}) {
   const cdnOfficialArtifact =
     /^cdn\./.test(domain) && /(?:system[-_]?card|technical[-_]?report|whitepaper)/.test(pathname);
   const discoveryIntentMatchesBrand =
-    result.sourceIntent === "first-party" && brand.length >= 4 && titleAndSnippet.includes(brand);
+    result.sourceIntent === "first-party" && brand.length >= 4 &&
+    (titleAndSnippet.includes(brand) || discoveryText.includes(brand));
   const discoveryIntentLooksTechnical =
     result.sourceIntent === "first-party" &&
     domainParts.length >= 3 &&
     /\b(?:architecture|engineering|how (?:we|it) (?:built|works)|implementation|retrieval system|system card|technical (?:article|blog|report|writeup|write-up))\b/i.test(titleAndSnippet);
+  const queryNamesDomainBrand =
+    brand.length >= 4 &&
+    discoveryText.includes(brand) &&
+    !/\b(?:review of|comparison of|alternative to)\b/i.test(titleAndSnippet);
+  const queryNamesProductRoot =
+    domainParts.length === 2 &&
+    pathnameParts.length === 1 &&
+    pathnameParts[0].length >= 4 &&
+    discoveryText.includes(pathnameParts[0]) &&
+    titleAndSnippet.includes(pathnameParts[0]);
   return (
     /\.(gov|mil)$/.test(domain) ||
     /^(?:api|developer|developers|docs|engineering|research)\./.test(domain) ||
@@ -718,7 +759,9 @@ function firstPartyCandidate(result = {}) {
     brandedOfficialArtifact ||
     cdnOfficialArtifact ||
     discoveryIntentMatchesBrand ||
-    discoveryIntentLooksTechnical
+    discoveryIntentLooksTechnical ||
+    queryNamesDomainBrand ||
+    queryNamesProductRoot
   );
 }
 
@@ -737,9 +780,9 @@ function lowEvidenceCandidate(result = {}) {
   );
 }
 
-function officialSource(result = {}) {
+function officialSource(result = {}, discoveryQuery = result.discoveryQuery || "") {
   if (repositoryCandidate(result)) return false;
-  return scholarlyCandidate(result) || firstPartyCandidate(result);
+  return scholarlyCandidate(result) || firstPartyCandidate(result, discoveryQuery);
 }
 
 const RANKING_STOPWORDS = new Set([
@@ -827,6 +870,9 @@ function rankCandidates(searches, policy, query) {
         ]);
         existing.workVariantCount = existing.variantUrls.length;
         existing.scholarlyIndexes = unique([...(existing.scholarlyIndexes || []), ...(result.scholarlyIndexes || []), result.scholarlyIndex]);
+        existing.discoveryRoutes = unique([...(existing.discoveryRoutes || []), search.id || resultDiscoveryQuery]);
+        existing.firstParty = Boolean(existing.firstParty || firstPartyCandidate(result, resultDiscoveryQuery));
+        existing.official = Boolean(existing.official || officialSource(result, resultDiscoveryQuery));
         if (lexicalHits > Number(existing.lexicalHits || 0)) {
           existing.lexicalHits = lexicalHits;
           existing.queryTermCount = queryTermCount;
@@ -834,9 +880,9 @@ function rankCandidates(searches, policy, query) {
         continue;
       }
       let score = lexicalHits;
-      const official = officialSource(result);
+      const official = officialSource(result, resultDiscoveryQuery);
       const scholarly = scholarlyCandidate(result);
-      const firstParty = firstPartyCandidate(result);
+      const firstParty = firstPartyCandidate(result, resultDiscoveryQuery);
       const repository = repositoryCandidate(result);
       const discoveryIndex = discoveryIndexCandidate(result);
       const lowEvidence = lowEvidenceCandidate(result);
@@ -867,6 +913,7 @@ function rankCandidates(searches, policy, query) {
         providerConsensusCount: providers.length,
         domainHint: search.domainHint || "",
         discoveredBy: [resultDiscoveryQuery],
+        discoveryRoutes: [search.id || resultDiscoveryQuery],
         workIdentity: result.workIdentity || scholarlyWorkIdentity(result),
         workAliases: aliases,
         variantUrls: unique(result.variantUrls || [result.url]),
@@ -943,6 +990,34 @@ function selectDiverseCandidates(candidates, limit, policy = "primary", requirem
       const [candidate] = remaining.splice(firstPartyIndex, 1);
       selected.push({ ...candidate, diversityAdjustedScore: Number(candidate.score || 0) });
       domainCounts.set(candidate.domain || "", 1);
+    }
+  }
+  // Preserve topical breadth from the planner without allowing one marginal
+  // page per query to fill the whole source budget. Reserve at most half of the
+  // budget for strong route leaders, then let global quality and domain
+  // diversity choose the remainder.
+  const routeLeaderBudget = Math.max(0, Math.min(selectionLimit - selected.length, Math.ceil(selectionLimit / 2)));
+  if (routeLeaderBudget > 0) {
+    const routeLeaders = new Map();
+    for (const candidate of remaining) {
+      if (strictPolicy && !preferred.includes(candidate)) continue;
+      if (!candidateIsStronglyRelevant(candidate) && !(candidate.firstParty && Number(candidate.lexicalHits || 0) >= 1)) continue;
+      for (const route of candidate.discoveryRoutes || candidate.discoveredBy || []) {
+        const current = routeLeaders.get(route);
+        if (!current || Number(candidate.score || 0) > Number(current.score || 0)) routeLeaders.set(route, candidate);
+      }
+    }
+    const leaders = [...new Set(routeLeaders.values())]
+      .filter((candidate) => !selected.some((item) => item.url === candidate.url))
+      .sort((left, right) => Number(right.firstParty) - Number(left.firstParty) || Number(right.score || 0) - Number(left.score || 0))
+      .slice(0, routeLeaderBudget);
+    for (const leader of leaders) {
+      const index = remaining.findIndex((candidate) => candidate.url === leader.url);
+      if (index < 0 || selected.length >= selectionLimit) continue;
+      const [candidate] = remaining.splice(index, 1);
+      const repeatedDomainCount = domainCounts.get(candidate.domain || "") || 0;
+      selected.push({ ...candidate, diversityAdjustedScore: Number(candidate.score || 0) - repeatedDomainCount * 4 });
+      domainCounts.set(candidate.domain || "", repeatedDomainCount + 1);
     }
   }
   while (remaining.length && selected.length < selectionLimit) {
@@ -1030,6 +1105,7 @@ async function readCandidates(candidates, args, config, budget, startIndex = 0) 
       firstParty: Boolean(candidate.firstParty),
       score: candidate.score,
       discoveredBy: candidate.discoveredBy || [],
+      discoveryRoutes: candidate.discoveryRoutes || [],
       providers: candidate.providers || [],
       providerConsensusCount: candidate.providerConsensusCount || 0,
       scholarlyIndexes: candidate.scholarlyIndexes || [],
@@ -1516,6 +1592,7 @@ function deterministicSynthesis(query, plan, sources, evidence, audit) {
       sourceIds: finding.sourceIds,
       confidence: finding.confidence,
     })),
+    recommendations: [],
     contradictions: [],
     uncertainties: unique([...missingQuestions, ...limitations]),
     nextQuestions: (audit.missingQuestions || []).map((question) => conciseLine(question.question, 320)),
@@ -1549,6 +1626,9 @@ async function synthesize(query, plan, sources, evidence, audit, requirements, a
       requirements.includeNegativeEvidence
         ? "The evidence contract explicitly requires negative or conflicting evidence; preserve it in the relevant section, contradictions, or uncertainties."
         : "Preserve material negative evidence when supplied.",
+      requirements.requireRecommendations
+        ? "The request requires practical recommendations. Return a non-empty recommendations array; each recommendation must be concrete and cite the exact evidenceIds that justify it."
+        : "Add recommendations only when the verified evidence supports a useful action.",
       "Prefer primary sources and give dates when claims may change over time.",
       "Do not cite a source that does not support the sentence.",
     ].join(" "),
@@ -1639,6 +1719,7 @@ export function auditResearchSynthesis(synthesis, sources, evidence = null) {
     }))
     .filter((section) => section.paragraphs.length);
   synthesis.keyFindings = (synthesis.keyFindings || []).filter((finding) => acceptStatement(finding));
+  synthesis.recommendations = (synthesis.recommendations || []).filter((recommendation) => acceptStatement(recommendation));
 
   if (!summaryAccepted) {
     const supported = [
@@ -1687,7 +1768,7 @@ function renderMarkdown(state) {
   const lines = [
     `# ${synthesis.title || `Research report: ${state.query}`}`,
     "",
-    `**Question:** ${state.query}`,
+    `**Research objective:** ${compact(state.plan?.objective || state.query, 480).replace(/\s+/g, " ")}`,
     `**As of:** ${state.updatedAt}`,
     `**Depth:** ${state.budget.depth}`,
     "",
@@ -1709,21 +1790,55 @@ function renderMarkdown(state) {
     }
     lines.push("");
   }
+  if (synthesis.recommendations?.length) {
+    lines.push("## Practical Recommendations", "");
+    for (const recommendation of synthesis.recommendations) {
+      lines.push(`- ${recommendation.text} ${citationText(recommendation.sourceIds)}`.trim());
+    }
+    lines.push("");
+  }
   if (synthesis.contradictions?.length) {
     lines.push("## Contradictions", "", ...synthesis.contradictions.map((item) => `- ${item}`), "");
   }
-  if (synthesis.uncertainties?.length || state.coverage.missingQuestions?.length) {
-    lines.push("## Uncertainties And Coverage Gaps", "");
-    for (const item of unique([
+  {
+    lines.push("## Limitations, Uncertainties, And Coverage Gaps", "");
+    const limitations = unique([
       ...(synthesis.uncertainties || []),
       ...(state.coverage.missingQuestions || []).map((question) => `Unresolved: ${question.question}`),
-    ])) {
+    ]);
+    if (!limitations.length) {
+      limitations.push("No additional limitation was extracted as a verified claim; consult the source and coverage audit before generalizing the findings.");
+    }
+    for (const item of limitations) {
       lines.push(`- ${item}`);
     }
     lines.push("");
   }
-  lines.push("## Sources", "");
-  for (const source of state.sources) {
+  if (state.requirements?.requireVerificationMethod) {
+    lines.push(
+      "## Reproducible Verification Method",
+      "",
+      "1. Re-run the recorded research objective with the same source policy, date boundary, and query/source budgets.",
+      "2. Open each cited exact URL and compare the retrieved timestamp and SHA-256 digest recorded below.",
+      "3. Locate every evidence-appendix quotation verbatim in the corresponding source; exclude any quotation that no longer matches.",
+      "4. Recompute source independence, first-party coverage, citation coverage, and unresolved questions before accepting the recommendations.",
+      ""
+    );
+  }
+  if (state.requirements?.includeEvidenceAppendix) {
+    lines.push("## Verified Evidence Appendix", "");
+    for (const item of state.evidence || []) {
+      for (const claim of item.claims || []) {
+        if (!claim.quoteVerified) continue;
+        lines.push(`- **${claim.evidenceId} (${claim.confidence || "confidence not rated"})**: “${claim.quote}” [${item.sourceId}]`);
+      }
+    }
+    lines.push("");
+  }
+  const verifiedSources = state.sources.filter((source) => verifiedSourceIds.has(source.id));
+  const otherSources = state.sources.filter((source) => !verifiedSourceIds.has(source.id));
+  lines.push("## Verified Sources", "");
+  for (const source of verifiedSources) {
     const labels = [
       source.firstParty ? "first-party official" : "",
       source.scholarly ? "scholarly" : "",
@@ -1736,7 +1851,19 @@ function renderMarkdown(state) {
           : "no verified evidence",
     ].filter(Boolean).join(", ");
     const pdf = source.pdfTextExtracted && source.pdfUrl ? `; [parsed PDF](${source.pdfUrl})` : "";
-    lines.push(`- [${source.id}] [${source.title}](${source.url})${labels ? ` — ${labels}` : ""}${source.publishedAt ? `; ${source.publishedAt}` : ""}${pdf}`);
+    const digest = source.sha256 ? `; SHA-256 ${source.sha256}` : "";
+    lines.push(`- [${source.id}] [${source.title}](${source.url})${labels ? ` — ${labels}` : ""}${source.publishedAt ? `; ${source.publishedAt}` : ""}${source.retrievedAt ? `; retrieved ${source.retrievedAt}` : ""}${digest}${pdf}`);
+  }
+  if (otherSources.length) {
+    lines.push("", "## Sources Inspected But Not Cited", "");
+    for (const source of otherSources) {
+      const status = searchExcerptSourceIds.has(source.id)
+        ? "search-excerpt-only, not cited"
+        : source.readable
+          ? "readable but no quote-verified claim"
+          : `unreadable: ${source.readError || "no readable content"}`;
+      lines.push(`- [${source.id}] [${source.title}](${source.url}) — ${status}`);
+    }
   }
   lines.push(
     "",
@@ -1834,6 +1961,7 @@ function publicResult(state, paths, extra = {}) {
   return {
     ok: state.status === "completed",
     toolName: "deep_research",
+    version: state.version || RESEARCH_VERSION,
     researchId: state.researchId,
     status: state.status,
     stage: state.stage,
@@ -1930,6 +2058,7 @@ export async function deepResearch(args = {}, config = {}, store = null) {
 
   if (existing?.status === "failed") {
     state.status = "running";
+    const previousError = String(state.error || "");
     delete state.error;
     if (!state.sources?.length) {
       state.searches = [];
@@ -1938,6 +2067,10 @@ export async function deepResearch(args = {}, config = {}, store = null) {
       state.synthesis = null;
       state.audit = {};
       state.gapPassCompleted = false;
+    }
+    if (/requested practical recommendations/i.test(previousError)) {
+      state.synthesis = null;
+      state.audit = {};
     }
   }
 
@@ -2154,6 +2287,9 @@ export async function deepResearch(args = {}, config = {}, store = null) {
       state.audit = auditResearchSynthesis(state.synthesis, state.sources, state.evidence);
       state.stage = "synthesized";
       await saveState(state, paths, store);
+    }
+    if (requirements.requireRecommendations && !state.synthesis.recommendations?.length) {
+      throw new Error("The requested practical recommendations were not supported by verified evidence.");
     }
     state.status = "completed";
     state.stage = "completed";

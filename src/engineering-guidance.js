@@ -73,6 +73,13 @@ const LANGUAGE_HINTS = [
     text:
       "LaTeX: keep source/figures together, compile from the document directory, run enough passes for refs/bibliography, publish PDF/source artifacts to canvas.",
   },
+  {
+    id: "cad-fabrication",
+    pattern:
+      /\b(cad|3d print(?:ing)?|print[- ]ready|stl|3mf|brep|b-rep|cadquery|openscad|freecad|shapr3d|mechanical (?:holder|fixture|cradle|bracket)|step (?:file|model|export|format))\b/i,
+    text:
+      "CAD/fabrication: read measured inputs and project instructions first; keep one parametric producer; separate clean editable geometry from sacrificial print aids; rebuild STEP, STL, 3MF, and renders from source; record format-native solid, bounds, volume, watertightness, component, package-object, and visual evidence in one canonical validation section; inspect the actual render and direct-print layout before finishing.",
+  },
 ];
 
 const COMPLEX_ENGINEERING_PATTERN =
@@ -97,6 +104,7 @@ const SURGICAL_CONTEXT_PROFILES = new Set([
   "php",
   "ruby",
   "c-cpp",
+  "cad",
 ]);
 
 export function shouldUseSurgicalContextForTask({ goal = "", taskProfile = "auto", complexityScore = 0 } = {}) {
@@ -160,6 +168,7 @@ export function engineeringGuidanceForTask(goal = "", taskProfile = "auto") {
     "Never send sudo passwords or wait at interactive password prompts. If host-level permission is truly required, stop that path, explain the blocker, and provide a manual command instead of hanging.",
     "Shell commands already start in the configured workspace. Prefer workspace-relative commands such as python3 scripts/check.py or cd subdir && make; do not prefix commands with absolute host cd paths unless the tool explicitly requires it.",
     "When you create or fix scripts, reports, tables, generated files, or analysis outputs, inspect the actual output. If it contains obvious duplicates, noisy rows, stale names, broken markdown, or contradictions, patch the source/output and rerun the check rather than merely explaining the defect in the report.",
+    "Treat an exact external acceptance or validator command as opaque verification evidence. Implement from the user request and project-owned instructions, run that command unchanged, and use its diagnostics. Do not read, grep, cat, or reconstruct the external validator before its first failed run; if diagnostics are insufficient, use only the one bounded source view the runtime exposes.",
     "Before claiming a coding task is finished, run git status --short when git is available. Leave the worktree clean, or explicitly report and justify each remaining untracked/unstaged artifact.",
     "Do not claim there are no transient artifacts unless you checked recursively for the relevant stack, such as find . -type d -name __pycache__ -o -name '*.pyc' for Python. A clean git status means tracked work is clean; ignored caches such as __pycache__ may still exist and should be removed or described accurately if relevant.",
     "For generated screenshots, images, PDFs, reports, archives, and app packages, choose a descriptive non-conflicting workspace path when the user did not specify one. Verify the file still exists after cleanup before claiming it was saved.",
@@ -189,6 +198,9 @@ export function recommendedMaxStepsForTask({ goal = "", taskProfile = "auto", co
   }
   if (normalizedProfile === "large-codebase" || complexityScore >= 3 || COMPLEX_ENGINEERING_PATTERN.test(text)) {
     return Math.max(profileDefault, 36);
+  }
+  if (/\b(cad|3d print(?:ing)?|stl|3mf|brep|b-rep|cadquery|openscad|freecad|shapr3d|step (?:file|model|export|format))\b/i.test(text)) {
+    return Math.max(profileDefault, 44);
   }
   if (/\b(latex|tex|pdflatex|latexmk|pdf|website|app|docker|system|install|setup|debug)\b/i.test(text)) {
     return Math.max(profileDefault, 30);

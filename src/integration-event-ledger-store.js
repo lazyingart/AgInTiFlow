@@ -131,7 +131,7 @@ const DEFAULT_STALE_LOCK_MS = 60_000;
 const DEFAULT_MAX_EVENTS = 10_000;
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_APPEND_PRIMITIVE_BYTES = 16 * 1024 * 1024;
-const RETAINED_EVENT_LEDGER_LOCK_FILE = ".aginti-flock-v1-event-ledger";
+export const INTEGRATION_RETAINED_EVENT_LEDGER_LOCK_FILE = ".aginti-flock-v1-event-ledger";
 const RETAINED_EVENT_LEDGER_SCOPE_DOMAIN = "aginti-retained-public-event-ledger-scope-v1";
 const RETAINED_EVENT_LEDGER_RECEIPT_DOMAIN = "aginti-retained-public-event-ledger-outbox-receipt-v1";
 const RETAINED_EVENT_LEDGER_POINTER_DOMAIN = "aginti-retained-public-event-ledger-pointer-v1";
@@ -896,7 +896,7 @@ function retainedDirectoryExpected(expected) {
 function retainedLockExpected(expected) {
   return Object.freeze({
     ...retainedDirectoryExpected(expected),
-    lockFileName: RETAINED_EVENT_LEDGER_LOCK_FILE,
+    lockFileName: INTEGRATION_RETAINED_EVENT_LEDGER_LOCK_FILE,
     helperSha256: expected.helperSha256,
     lockFileIdentityDigest: expected.lockFileIdentityDigest,
     helperIdentityDigest: expected.helperIdentityDigest,

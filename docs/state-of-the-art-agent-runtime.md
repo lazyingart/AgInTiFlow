@@ -130,6 +130,13 @@ only after a categorized provider failure and must not replay verified side
 effects. Codex and Claude remain explicit opt-in backends rather than hidden
 fallbacks.
 
+Timeout compaction also preserves goal-scoped deep-research completion. A
+same-task repair of the immediately preceding report keeps ordinary file,
+shell, and validation tools after a model switch instead of forcing another
+research pass. A genuinely new research request does not inherit that marker
+and still begins with the bounded `deep_research` workflow. Native function
+calling and the text-tool fallback apply the same rule.
+
 ## Machine Host Protocol
 
 The supported subprocess boundary is:
@@ -160,6 +167,16 @@ existing routine owned by the relevant project:
 
 The agent selects, invokes, monitors, and verifies those routines. It does not
 replace them with prompt-specific shell fragments.
+
+## Verification Recovery
+
+Failed project tests are authoritative evidence unless the current request
+explicitly asks to change them. AgInTiFlow keeps the failing command and source
+lineage, constrains repair writes to evidence-linked production files, and
+rejects repeated attempts to weaken the test specification. If bounded
+LocalLLM recovery exhausts its authenticated strong routes without producing a
+passing verification, the same session can rebound once to its original
+provider while preserving the goal, source context, and verifier evidence.
 
 ## Acceptance Gates
 

@@ -31,6 +31,7 @@ import {
   estimateToolSchemaTokens,
 } from "./context-budget-controller.js";
 import { attachToolContract } from "./tool-contract.js";
+import { scopedChatopsEvidenceGoal } from "./scs-evidence.js";
 
 function isRetainedWorkspaceProfile(config = {}) {
   return config.integrationSessionProfile === INTEGRATION_TEXT_WORKSPACE_PROFILE_ID ||
@@ -134,6 +135,10 @@ function chatReasoningEffort(config = {}) {
 }
 
 function withChatReasoningEffort(payload = {}, config = {}) {
+  if (payload.thinking?.type === "disabled") {
+    const { reasoning_effort: _reasoningEffort, ...rest } = payload;
+    return rest;
+  }
   const reasoning = chatReasoningEffort(config);
   if (!reasoning) {
     const { reasoning_effort: _reasoningEffort, ...rest } = payload;
@@ -148,6 +153,64 @@ function shouldRetryWithoutReasoningEffort(error, payload = {}) {
   return /reasoning[_\s.-]?effort|unsupported parameter|unknown parameter|unrecognized request argument/i.test(message);
 }
 
+function annotateProviderRequestError(error, config = {}, label = "model request") {
+  if (!error || (typeof error !== "object" && typeof error !== "function")) return error;
+  try {
+    Object.defineProperties(error, {
+      agintiProviderRequest: { value: true, configurable: true },
+      agintiProvider: { value: String(config.provider || ""), configurable: true },
+      agintiProviderModel: { value: String(config.model || ""), configurable: true },
+      agintiProviderRequestLabel: { value: String(label || "model request"), configurable: true },
+    });
+  } catch {
+    // Some SDK errors can be non-extensible. Classification still has the
+    // explicit preflight path, while an unmarked runtime error fails normally.
+  }
+  return error;
+}
+
+const TRANSIENT_PROVIDER_REQUEST_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "ENETRESET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+export function isTransientProviderRequestError(error) {
+  if (!error) return false;
+  const status = Number(error?.status || error?.response?.status || 0);
+  if (status === 408 || status === 425 || status === 429 || status >= 500) return true;
+
+  const codes = [
+    error?.code,
+    error?.cause?.code,
+    error?.error?.code,
+    error?.response?.data?.error?.code,
+  ]
+    .map((value) => String(value || "").trim().toUpperCase())
+    .filter(Boolean);
+  if (codes.some((code) => TRANSIENT_PROVIDER_REQUEST_CODES.has(code))) return true;
+
+  const message = [
+    error?.message,
+    error?.cause?.message,
+    error?.error?.message,
+    error?.response?.data?.error?.message,
+    error?.response?.data?.message,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /(?:^|\b)terminated(?:\b|$)|socket hang up|premature (?:stream )?close|other side closed|connection (?:was )?(?:reset|closed|terminated)|network (?:request )?(?:failed|error)|fetch failed|upstream connect error/i.test(
+    message
+  );
+}
+
 export async function createChatCompletion(client, payload, config, label = "model request") {
   const preparedPayload = withChatReasoningEffort(payload, config);
   const timeout = resolveModelTimeoutMs(config);
@@ -157,9 +220,13 @@ export async function createChatCompletion(client, payload, config, label = "mod
     } catch (error) {
       if (shouldRetryWithoutReasoningEffort(error, preparedPayload)) {
         const { reasoning_effort: _reasoningEffort, ...retryPayload } = preparedPayload;
-        return client.chat.completions.create(retryPayload, requestOptions(config));
+        try {
+          return await client.chat.completions.create(retryPayload, requestOptions(config));
+        } catch (retryError) {
+          throw annotateProviderRequestError(retryError, config, label);
+        }
       }
-      throw error;
+      throw annotateProviderRequestError(error, config, label);
     }
   }
 
@@ -196,24 +263,56 @@ export async function createChatCompletion(client, payload, config, label = "mod
   } catch (error) {
     if (shouldRetryWithoutReasoningEffort(error, preparedPayload)) {
       const { reasoning_effort: _reasoningEffort, ...retryPayload } = preparedPayload;
-      return await client.chat.completions.create(retryPayload, {
-        ...requestOptions(config),
-        signal: controller.signal,
-      });
+      try {
+        return await client.chat.completions.create(retryPayload, {
+          ...requestOptions(config),
+          signal: controller.signal,
+        });
+      } catch (retryError) {
+        throw annotateProviderRequestError(retryError, config, label);
+      }
     }
     if (timedOut && error?.name !== "ModelTimeoutError") {
       const timeoutError = new Error(`${label} timed out after ${timeout}ms`);
       timeoutError.name = "ModelTimeoutError";
       timeoutError.cause = error;
-      throw timeoutError;
+      throw annotateProviderRequestError(timeoutError, config, label);
     }
-    throw error;
+    throw annotateProviderRequestError(error, config, label);
   } finally {
     if (timer) clearTimeout(timer);
     if (config.abortSignal) {
       config.abortSignal.removeEventListener("abort", abortFromParent);
     }
   }
+}
+
+export async function requestDirectResponse(client, config, messages = []) {
+  if (client.mock) {
+    return mockChatResponse(`Mock direct response for: ${config.goal}`);
+  }
+
+  const directMessages = [
+    ...messages,
+    {
+      role: "user",
+      content: [
+        "Response-only scope: return the requested final content directly as the assistant response.",
+        "Do not produce an execution plan, call tools, mention internal runtime details, or stop at a placeholder.",
+        "Preserve every material requirement and all source-grounded details supplied in the current request.",
+      ].join(" "),
+    },
+  ];
+  const payload = {
+    model: config.model,
+    temperature: 0,
+    messages: prepareMessages(config, directMessages),
+    ...(Number(config.maxOutputTokens || 0) > 0
+      ? { max_tokens: Number(config.maxOutputTokens) }
+      : {}),
+  };
+  assertLocalRequestWithinContext(payload, config, "response-only model request");
+  return createChatCompletion(client, payload, config, "response-only model request");
 }
 
 function assertLocalRequestWithinContext(payload = {}, config = {}, label = "agent step request") {
@@ -242,17 +341,110 @@ function assertLocalRequestWithinContext(payload = {}, config = {}, label = "age
 
 export { hasExplicitDeepResearchIntent } from "./research-routing.js";
 
-export function toolChoiceForProvider(config, messages = []) {
-  const requiresConcreteContinuation = messages.slice(-3).some(
+function requiresConcreteToolContinuation(messages = []) {
+  return messages.slice(-3).some(
     (message) =>
       message?.role === "user" &&
       /emit exactly one enabled tool call that performs the next concrete action/i.test(String(message.content || ""))
   );
-  // DeepSeek thinking models reject tool_choice="required" even though they
-  // accept the same native tool schema with auto selection. The continuation
-  // instruction remains explicit in the messages, so keep the supported
-  // provider mode instead of turning a recoverable truncation into HTTP 400.
-  if (requiresConcreteContinuation && normalizeProviderId(config.provider, "") !== "deepseek") {
+}
+
+function singleExecutableToolName(tools = []) {
+  const names = (Array.isArray(tools) ? tools : [])
+    .filter((tool) => tool?.type === "function")
+    .map((tool) => String(tool.function?.name || ""))
+    .filter(Boolean);
+  const actionable = [...new Set(names.filter((name) => name !== "finish"))];
+  if (actionable.length !== 1) return "";
+  return names.every((name) => name === "finish" || name === actionable[0])
+    ? actionable[0]
+    : "";
+}
+
+function deepSeekConstrainedActionRequired(config = {}, messages = []) {
+  return requiresConcreteToolContinuation(messages) ||
+    config.completionFreshMutationRequired === true ||
+    config.patchContextRefreshRequired === true ||
+    config.patchContextRepairRequired === true ||
+    config.generatedArtifactProducerPending === true ||
+    config.requiredProjectCommandPending === true ||
+    config.testVerificationPending === true ||
+    config.testFailureStalemateRevalidation === true ||
+    (
+      config.testFailureRepairActive === true &&
+      config.testFailureRepairMutationRequired === true
+    );
+}
+
+function deepSeekConstrainedReadRequired(config = {}) {
+  return config.completionFreshMutationNeedsSourceRead === true ||
+    config.patchContextRefreshRequired === true ||
+    (
+      config.patchContextRepairRequired === true &&
+      Math.max(0, Number(config.patchContextRepairReadCount || 0)) < 1
+    ) ||
+    (
+      config.testFailureRepairActive === true &&
+      config.testFailureRepairMutationRequired === true &&
+      config.testFailureRepairNeedsPatchContext === true
+    );
+}
+
+function deepSeekActionOnlyTool(config = {}, messages = [], tools = []) {
+  if (normalizeProviderId(config.provider, "") !== "deepseek") return "";
+  if (!deepSeekConstrainedActionRequired(config, messages)) return "";
+  const offeredNames = new Set(
+    (Array.isArray(tools) ? tools : [])
+      .filter((tool) => tool?.type === "function")
+      .map((tool) => String(tool.function?.name || ""))
+      .filter(Boolean)
+  );
+  if (deepSeekConstrainedReadRequired(config) && offeredNames.has("read_file")) {
+    return "read_file";
+  }
+  if (
+    config.testFailureRepairActive === true &&
+    config.testFailureRepairMutationRequired === true &&
+    offeredNames.has("apply_patch")
+  ) {
+    return "apply_patch";
+  }
+  const constrainedTool = singleExecutableToolName(tools);
+  if (constrainedTool) return constrainedTool;
+  const actionable = (Array.isArray(tools) ? tools : [])
+    .filter((tool) => tool?.type === "function" && tool.function?.name !== "finish")
+    .map((tool) => String(tool.function?.name || ""))
+    .filter(Boolean);
+  return actionable.length === 1 ? actionable[0] : "";
+}
+
+function deepSeekActionOnlyRequest(config = {}, messages = [], tools = []) {
+  return normalizeProviderId(config.provider, "") === "deepseek" &&
+    !deepSeekRepairRethinkRequired(messages) &&
+    Boolean(
+      requiresConcreteToolContinuation(messages) ||
+      deepSeekActionOnlyTool(config, messages, tools)
+    );
+}
+
+function deepSeekRepairRethinkRequired(messages = []) {
+  const payload = latestToolPayload(messages);
+  return String(payload?.toolName || "") === "apply_patch" &&
+    payload?.ok === false &&
+    payload?.recoverable === true &&
+    String(payload?.category || "") === "failed-test-nonrepairing-patch";
+}
+
+export function toolChoiceForProvider(config, messages = [], tools = []) {
+  const requiresConcreteContinuation = requiresConcreteToolContinuation(messages);
+  const deepSeekActionTool = deepSeekActionOnlyTool(config, messages, tools);
+  if (deepSeekActionTool) {
+    return {
+      type: "function",
+      function: { name: deepSeekActionTool },
+    };
+  }
+  if (requiresConcreteContinuation) {
     return "required";
   }
   if (config.provider !== "venice") return "auto";
@@ -263,20 +455,24 @@ export function toolChoiceForProvider(config, messages = []) {
 }
 
 export function usesTextToolProtocol(config = {}) {
+  if (config.forceTextToolProtocol === true && providerCanRetryWithTextToolProtocol(config.provider)) {
+    return true;
+  }
   return providerPrefersTextToolProtocol(config);
 }
 
-function shouldRetryWithTextToolProtocol(error, config = {}) {
+export function shouldRetryWithTextToolProtocol(error, config = {}) {
   if (!providerCanRetryWithTextToolProtocol(config.provider)) return false;
   const message = [
     error?.message,
     error?.error?.message,
+    error?.cause?.message,
     error?.response?.data?.error?.message,
     error?.response?.data?.message,
   ]
     .filter(Boolean)
     .join(" ");
-  return /invalid request parameters|tool_choice|parallel_tool_calls|tools/i.test(message);
+  return /invalid request parameters|invalid tool call arguments|unexpected end of json input|tool[_\s.-]?call[^\n]{0,80}(?:invalid|malformed|truncated|parse)|tool_choice|parallel_tool_calls|tools/i.test(message);
 }
 
 function textToolProtocolPrompt(tools = []) {
@@ -293,6 +489,7 @@ function textToolProtocolPrompt(tools = []) {
     '[TOOL_CALLS]tool_name[ARGS]{"arg":"value"}',
     'A strict id form is also accepted: [TOOL_CALLS]tool_name[ARGS]call_short_id[ARGS]{"arg":"value"}',
     'A JSON block form is accepted too: TOOL_CALLS: ```json [{"name":"tool_name","arguments":{"arg":"value"}}] ```',
+    'A function/parameter form is accepted too: <function=tool_name><parameter=arg>value</parameter></function>.',
     "Return only one or more TOOL_CALLS blocks when calling tools; do not wrap them in markdown.",
     "Keep tool-call JSON valid and complete. For long write_file content, prefer a concise complete file or smaller follow-up edits over emitting huge/truncated JSON.",
     "If no tool is needed, answer normally.",
@@ -321,7 +518,9 @@ function messagesWithTextToolProtocol(config, messages, tools) {
     }
     return message;
   });
-  const requireDeepResearch = tools.some((tool) => tool?.function?.name === "deep_research") &&
+  const requireDeepResearch =
+    config.deepResearchCompletedForCurrentWork !== true &&
+    tools.some((tool) => tool?.function?.name === "deep_research") &&
     shouldStartWithDeepResearch(config.goal, messages);
   const protocol = {
     role: "system",
@@ -345,7 +544,8 @@ export function parseTextToolCalls(content = "") {
   const calls = [];
   for (const call of parseRequestedToolCalls(text)) calls.push(call);
   for (const call of parseXmlToolCalls(text, calls.length)) calls.push(call);
-  for (const call of parseDsmlToolCalls(text, calls.length)) calls.push(call);
+  for (const call of parseFunctionParameterToolCalls(text, calls.length)) calls.push(call);
+  for (const call of parseStandaloneToolJsonCalls(text, calls.length)) calls.push(call);
   const jsonBlock = text.match(/TOOL_CALLS\s*:\s*```(?:json)?\s*([\s\S]*?)```/i);
   if (jsonBlock?.[1]) {
     try {
@@ -406,7 +606,9 @@ function hasTextToolCallMarker(content = "") {
     /Requested tools?\s*:/i.test(text) ||
     /<tool_calls?>/i.test(text) ||
     hasBareFunctionToolCallMarker(text) ||
-    hasDsmlToolCallMarker(text)
+    hasDsmlToolCallMarker(text) ||
+    /<function\s*=/i.test(text) ||
+    /^\s*\{\s*"toolName"\s*:/m.test(text)
   );
 }
 
@@ -735,6 +937,124 @@ function parseDsmlToolCalls(content = "", offset = 0) {
   return calls;
 }
 
+function parseFunctionParameterValue(value = "") {
+  const decoded = decodeXmlToolArgs(value);
+  if (!decoded) return "";
+  if (
+    /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)$/.test(decoded) ||
+    /^[\[{]/.test(decoded)
+  ) {
+    try {
+      return JSON.parse(decoded);
+    } catch {
+      return decoded;
+    }
+  }
+  return decoded;
+}
+
+function parseFunctionParameterToolCalls(content = "", offset = 0) {
+  const text = String(content || "");
+  const calls = [];
+  const functionPattern = /<function\s*=\s*(?:"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)'|([A-Za-z0-9_-]+))\s*>([\s\S]*?)<\/function\s*>/gi;
+  let functionMatch;
+  while ((functionMatch = functionPattern.exec(text))) {
+    const name = String(
+      functionMatch[1] || functionMatch[2] || functionMatch[3] || ""
+    ).trim();
+    const body = String(functionMatch[4] || "");
+    if (!name) continue;
+
+    const args = {};
+    const seen = new Set();
+    let malformed = false;
+    let parameterCount = 0;
+    const parameterPattern = /<parameter\s*=\s*(?:"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)'|([A-Za-z0-9_-]+))\s*>([\s\S]*?)<\/parameter\s*>/gi;
+    let parameterMatch;
+    while ((parameterMatch = parameterPattern.exec(body))) {
+      const parameterName = String(
+        parameterMatch[1] || parameterMatch[2] || parameterMatch[3] || ""
+      ).trim();
+      if (!parameterName || seen.has(parameterName)) {
+        malformed = true;
+        break;
+      }
+      seen.add(parameterName);
+      parameterCount += 1;
+      args[parameterName] = parseFunctionParameterValue(parameterMatch[4]);
+    }
+    const residue = body.replace(
+      /<parameter\s*=\s*(?:"[A-Za-z0-9_-]+"|'[A-Za-z0-9_-]+'|[A-Za-z0-9_-]+)\s*>[\s\S]*?<\/parameter\s*>/gi,
+      ""
+    ).trim();
+    if (
+      malformed ||
+      residue ||
+      (/<parameter\s*=/i.test(body) && parameterCount === 0)
+    ) {
+      continue;
+    }
+    calls.push({
+      id: `text-tool-${offset + calls.length + 1}`,
+      type: "function",
+      function: {
+        name,
+        arguments: JSON.stringify(args),
+      },
+    });
+  }
+  return calls;
+}
+
+function parseStandaloneToolJsonCalls(content = "", offset = 0) {
+  const lines = String(content || "").split(/\r?\n/);
+  const firstToolLine = lines.findIndex((line) =>
+    /^\s*\{\s*"toolName"\s*:/.test(line)
+  );
+  if (firstToolLine < 0) return [];
+  const proseBefore = lines.slice(0, firstToolLine).join("\n");
+  if ((proseBefore.match(/```/g) || []).length % 2 === 1) return [];
+
+  const calls = [];
+  const seen = new Set();
+  for (const rawLine of lines.slice(firstToolLine)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (!/^\{\s*"toolName"\s*:/.test(line) || !line.endsWith("}")) return [];
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      return [];
+    }
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      typeof parsed.toolName !== "string" ||
+      !/^[A-Za-z0-9_-]+$/.test(parsed.toolName) ||
+      !parsed.args ||
+      typeof parsed.args !== "object" ||
+      Array.isArray(parsed.args) ||
+      Object.keys(parsed).some((key) => !["toolName", "args", "id"].includes(key))
+    ) {
+      return [];
+    }
+    const signature = JSON.stringify([parsed.toolName, parsed.args]);
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    calls.push({
+      id: String(parsed.id || `text-tool-${offset + calls.length + 1}`),
+      type: "function",
+      function: {
+        name: parsed.toolName,
+        arguments: JSON.stringify(parsed.args),
+      },
+    });
+  }
+  return calls;
+}
+
 function findMatchingParen(text = "", openIndex = 0) {
   let depth = 0;
   let quote = "";
@@ -805,8 +1125,9 @@ function textBeforeToolCallMarker(content = "") {
     .split("TOOL_CALLS:")[0]
     .split(/Requested tools?\s*:/i)[0]
     .split(/<tool_calls?>/i)[0]
-    .split(/<function=[A-Za-z0-9_-]{1,128}>/u)[0]
+    .split(/<function\s*=/i)[0]
     .split(/<[|｜]{2}DSML[|｜]{2}tool_calls>/iu)[0]
+    .split(/^\s*\{\s*"toolName"\s*:/m)[0]
     .split("<|tool_call>")[0]
     .trim();
 }
@@ -1036,6 +1357,31 @@ function mockWorkspaceToolForGoal(goal = "") {
   return null;
 }
 
+function mockPreparatoryWorkspaceTool(requestTools = []) {
+  const descriptors = new Map(
+    (Array.isArray(requestTools) ? requestTools : [])
+      .filter((descriptor) => descriptor?.type === "function")
+      .map((descriptor) => [String(descriptor.function?.name || ""), descriptor])
+      .filter(([name]) => name)
+  );
+  if (descriptors.has("inspect_project")) {
+    return mockToolCall("inspect_project", {
+      path: ".",
+      maxDepth: 6,
+      limit: 400,
+    });
+  }
+  const readFile = descriptors.get("read_file");
+  if (readFile) {
+    const choices = readFile.function?.parameters?.properties?.path?.enum;
+    const selectedPath = Array.isArray(choices) && choices.length
+      ? String(choices[0] || "")
+      : "";
+    if (selectedPath) return mockToolCall("read_file", { path: selectedPath });
+  }
+  return null;
+}
+
 function mockWebSearchToolForGoal(goal = "") {
   const text = String(goal || "");
   if (!/\b(web search|search web|search the web|look up|current|latest|recent|docs|documentation|online)\b/i.test(text)) return null;
@@ -1162,20 +1508,44 @@ function mockChatResponse(content, toolCalls = []) {
   };
 }
 
+export function planningContinuityContext(state = {}, limit = 2) {
+  const contract = state.meta?.goalContract;
+  const history = Array.isArray(contract?.history) ? contract.history : [];
+  const currentRevision = Math.max(0, Number(contract?.revision || 0));
+  const currentGoal = String(state.goal || "").replace(/\s+/g, " ").trim();
+  const retained = [];
+  const seen = new Set();
+  for (const entry of [...history].reverse()) {
+    if (currentRevision > 0 && Number(entry?.revision || 0) >= currentRevision) continue;
+    const preview = String(entry?.preview || "").replace(/\s+/g, " ").trim();
+    if (!preview || preview === currentGoal || seen.has(preview)) continue;
+    retained.push(
+      compactTextForTokenBudget(redactSensitiveText(preview), 1600, { headFraction: 0.45 })
+    );
+    seen.add(preview);
+    if (retained.length >= Math.max(1, Number(limit || 2))) break;
+  }
+  return retained;
+}
+
 export async function createPlan(client, config, state) {
   const taskProfile = getTaskProfile(config.taskProfile);
   const engineeringGuidance = isRetainedWorkspaceProfile(config)
     ? ""
     : engineeringGuidanceForTask(state.goal, config.taskProfile);
-  const selectedSkills = isRetainedWorkspaceProfile(config) ? [] : selectSkillsForGoal(state.goal, {
-    taskProfile: config.taskProfile,
-    limit: 5,
-    projectRoot: config.commandCwd || config.baseDir || process.cwd(),
-  });
+  const selectedSkills = isRetainedWorkspaceProfile(config) ? [] : selectSkillsForGoal(
+    scopedChatopsEvidenceGoal(state.goal, config.taskProfile),
+    {
+      taskProfile: config.taskProfile,
+      limit: 5,
+      projectRoot: config.commandCwd || config.baseDir || process.cwd(),
+    }
+  );
   const skillContext = formatSkillsForPrompt(selectedSkills);
   const projectInstructions = state.meta?.projectInstructions;
   const platform = platformInfo();
   const mcpSummary = summarizeMcpConfig(config.commandCwd || config.baseDir || process.cwd());
+  const continuityContext = planningContinuityContext(state);
   if (client.mock) {
     return [
       "1. Inspect the request and prefer the local shell when available.",
@@ -1203,12 +1573,17 @@ export async function createPlan(client, config, state) {
         role: "system",
         content: isRetainedWorkspaceProfile(config)
           ? `You are planning a retained ${config.integrationSessionProfile} task. Use only the exact retained workspace tools${isRetainedVisionWorkspaceProfile(config) ? `; read_image accepts only an opaque retained PNG reference and always uses the loopback ${INTEGRATION_RETAINED_VISION_MODEL_ID} route` : "; image perception is disabled"}. Shell execution, browser, canvas, specialists, long jobs, tmux, MCP, and web tools are disabled. ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise 3-to-6-step execution plan and finish once verified.`
-          : `You are planning a browser, shell, workspace, and coding-agent task. The plan is only a launchpad: after planning, the runtime will continue with tools until the task is complete or genuinely blocked. Use tools only when the user actually asks for workspace, browser, shell, web, canvas, image, MCP, or specialist work. For greetings, thanks, or simple conversational turns, finish directly; never invent file creation or shell work for them. Prefer real workspace edits/checks over advice-only answers only when the request is an explicit task or deliverable. If a local shell command can satisfy a local task, prefer that before browser actions. Treat any suggested start URL as optional. ${browserStateReconciliationGuidance()} ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise execution plan with 3 to 6 steps only for requests that need execution. Mention risks or blockers when relevant. Keep it short and practical.`,
+          : `You are planning a browser, shell, workspace, and coding-agent task. The plan is only a launchpad: after planning, the runtime will continue with tools until the task is complete or genuinely blocked. Use tools only when the user actually asks for workspace, browser, shell, web, canvas, image, MCP, or specialist work. For greetings, thanks, or simple conversational turns, finish directly; never invent file creation or shell work for them. Prefer real workspace edits/checks over advice-only answers only when the request is an explicit task or deliverable. If a local shell command can satisfy a local task, prefer that before browser actions. Treat any suggested start URL as optional. Same-session continuity context is authoritative for named or established commands and routines: never reinterpret an established external verifier as web search or substitute a nearby tool. Never plan destructive cleanup without concrete observed disposable-file evidence and an explicit cleanup requirement. For a clean-worktree gate, inspect scoped Git state, commit only task-owned changes, then rerun the retained verifier. ${browserStateReconciliationGuidance()} ${formatBehaviorContractForPrompt({ mode: "plan" })} Write a concise execution plan with 3 to 6 steps only for requests that need execution. Mention risks or blockers when relevant. Keep it short and practical.`,
       },
       {
         role: "user",
         content: [
           `Goal: ${planGoal}`,
+          continuityContext.length
+            ? `Recent same-session requirements (context only; preserve exact commands and do not repeat completed side effects):\n${continuityContext
+                .map((item, index) => `${index + 1}. ${item}`)
+                .join("\n")}`
+            : "",
           state.startUrl ? `Suggested start URL: ${state.startUrl}` : "",
           config.allowedDomains.length > 0 ? `Allowed domains: ${config.allowedDomains.join(", ")}` : "",
           config.allowShellTool
@@ -1315,6 +1690,11 @@ export async function createPlan(client, config, state) {
         role: "user",
         content: [
           `Goal: ${minimalGoal}`,
+          continuityContext.length
+            ? `Recent same-session requirements:\n${continuityContext
+                .map((item, index) => `${index + 1}. ${item}`)
+                .join("\n")}`
+            : "",
           `Task profile: ${isRetainedWorkspaceProfile(config) ? config.integrationSessionProfile : taskProfile.label}. ${isRetainedWorkspaceProfile(config) ? retainedWorkspaceTaskProfilePrompt(config) : taskProfile.prompt}`,
           projectInstructions?.exists
             ? `Project instructions are available at ${projectInstructions.path}; read them when executing.`
@@ -1520,7 +1900,7 @@ export async function requestNextStep(client, config, messages) {
       function: {
         name: "writing_specialist",
         description:
-          "Call an isolated writing-only LLM context for novels, books, scenes, scripts, essays, research-paper prose, LaTeX manuscript text, or substantial revision. Pass only writing-relevant context: brief, canon, style guide, prior draft, target, constraints, audience, and intended downstream format. Do not pass agent runtime, shell, browser, safety, tool, or file-management instructions. The tool returns draft prose plus continuity/revision notes and a format_handoff for a separate formatter/file step.",
+          "Call an isolated writing-only LLM context for novels, books, scenes, scripts, essays, research-paper prose, LaTeX manuscript text, or substantial revision. Pass only writing-relevant context: brief, canon, style guide, prior draft, target, constraints, audience, and intended downstream format. For source-grounded work, first read the exact source files and include their relevant actual text, not merely filenames or a claim that a file is the source of truth. Do not pass agent runtime, shell, browser, safety, tool, or file-management instructions. The tool returns draft prose plus continuity/revision notes and a format_handoff for a separate formatter/file step.",
         parameters: {
           type: "object",
           properties: {
@@ -2472,6 +2852,14 @@ export async function requestNextStep(client, config, messages) {
 
   if (client.mock) {
     const response = (() => {
+    const offeredToolNames = new Set(
+      requestTools
+        .map((descriptor) => String(descriptor?.function?.name || ""))
+        .filter(Boolean)
+    );
+    const desiredWorkspaceTool = config.allowFileTools
+      ? mockWorkspaceToolForGoal(config.goal)
+      : null;
     const toolPayload = latestToolPayload(messages);
     if (toolPayload) {
       if (toolPayload.toolName === "agentlink_list_peers" && isMockAgentLinkGoal(config.goal)) {
@@ -2502,6 +2890,24 @@ export async function requestNextStep(client, config, messages) {
             }`,
           }),
         ]);
+      }
+      if (
+        desiredWorkspaceTool &&
+        toolPayload.toolName !== desiredWorkspaceTool.function.name
+      ) {
+        if (offeredToolNames.has(desiredWorkspaceTool.function.name)) {
+          return mockChatResponse(
+            "Mock mode completed repository grounding and will now exercise the requested workspace mutation.",
+            [desiredWorkspaceTool]
+          );
+        }
+        const preparatoryTool = mockPreparatoryWorkspaceTool(requestTools);
+        if (preparatoryTool && preparatoryTool.function.name !== toolPayload.toolName) {
+          return mockChatResponse(
+            "Mock mode will continue through the exact repository-grounding tool offered for this turn.",
+            [preparatoryTool]
+          );
+        }
       }
       const output = [
         toolPayload.stdout,
@@ -2602,9 +3008,18 @@ export async function requestNextStep(client, config, messages) {
     }
 
     if (config.allowFileTools) {
-      const workspaceTool = mockWorkspaceToolForGoal(config.goal);
+      const workspaceTool = desiredWorkspaceTool;
       if (workspaceTool) {
-        return mockChatResponse("Mock mode will exercise a guarded workspace file tool.", [workspaceTool]);
+        if (offeredToolNames.has(workspaceTool.function.name)) {
+          return mockChatResponse("Mock mode will exercise a guarded workspace file tool.", [workspaceTool]);
+        }
+        const preparatoryTool = mockPreparatoryWorkspaceTool(requestTools);
+        if (preparatoryTool) {
+          return mockChatResponse(
+            "Mock mode will first use the exact repository-grounding tool offered for this turn.",
+            [preparatoryTool]
+          );
+        }
       }
     }
 
@@ -2625,13 +3040,21 @@ export async function requestNextStep(client, config, messages) {
     });
   }
   const textToolProtocol = usesTextToolProtocol(config);
+  const deepSeekRepairRethink = deepSeekRepairRethinkRequired(messages);
   const nativePayload = {
     model: config.model,
     temperature: 0,
-    tool_choice: toolChoiceForProvider(config, messages),
+    ...(deepSeekRepairRethink
+      ? {}
+      : { tool_choice: toolChoiceForProvider(config, messages, requestTools) }),
     parallel_tool_calls: false,
     messages: prepareMessages(config, messages),
     tools: requestTools,
+    ...(deepSeekRepairRethink
+      ? { thinking: { type: "enabled" } }
+      : deepSeekActionOnlyRequest(config, messages, requestTools)
+        ? { thinking: { type: "disabled" } }
+        : {}),
     ...(Number(config.maxOutputTokens || 0) > 0 ? { max_tokens: Number(config.maxOutputTokens) } : {}),
   };
   const textPayload = {

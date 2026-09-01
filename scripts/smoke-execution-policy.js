@@ -15,6 +15,8 @@ import {
 } from "../src/context-budget-controller.js";
 import { maxStepsForExecutionPolicy, selectExecutionPolicy } from "../src/execution-policy.js";
 import { SessionStore } from "../src/session-store.js";
+import { selectSkillsForGoal } from "../src/skill-library.js";
+import { scopedChatopsEvidenceGoal } from "../src/scs-evidence.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-execution-policy-"));
@@ -56,6 +58,86 @@ try {
     scsActive: true,
   });
   assert(scsPolicy.tier === "thorough" && scsPolicy.requiresPlan, "SCS must not run without a thorough phase plan");
+  const responseOnlyPolicy = selectExecutionPolicy({
+    requestedTier: "thorough",
+    routingMode: "complex",
+    taskProfile: "research",
+    complexityScore: 99,
+    scsActive: true,
+    responseOnly: true,
+  });
+  assert(
+    responseOnlyPolicy.tier === "focused" && !responseOnlyPolicy.requiresPlan,
+    "explicit response-only work should override complexity and SCS planning"
+  );
+
+  const responseOnlyGoal = [
+    "Use the supplied evidence to write a complete reader-facing answer.",
+    "Context: " + "source-grounded lesson evidence ".repeat(120),
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "host-managed-response",
+      request: "Return the complete answer as assistant text.",
+    })}`,
+  ].join("\n");
+  const responseOnlyConfig = resolveRuntimeConfig(
+    {
+      provider: "mock",
+      routingMode: "complex",
+      model: "mock-agent",
+      goal: responseOnlyGoal,
+      taskProfile: "research",
+      enableScs: "full",
+    },
+    {
+      baseDir: runtimeDir,
+      packageDir: repoRoot,
+      provider: "mock",
+      routingMode: "complex",
+      model: "mock-agent",
+    }
+  );
+  assert(responseOnlyConfig.executionTier === "focused", "response-only runtime did not select focused execution");
+  assert(!responseOnlyConfig.executionPolicy.requiresPlan, "response-only runtime still requires a plan");
+
+  const scopedArtifactGoal = [
+    "LabCanvas host wrapper: use browser automation, deep research, source ingestion, and recovery skills when relevant.",
+    "General host guidance: inspect complex repositories carefully and create a plan for difficult work.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request: "Create and verify output/parity/scoped-artifact.json with one valid JSON object.",
+    })}`,
+  ].join("\n");
+  const scopedArtifactConfig = resolveRuntimeConfig(
+    {
+      provider: "mock",
+      routingMode: "smart",
+      model: "mock-agent",
+      goal: scopedArtifactGoal,
+      taskProfile: "auto",
+      enableScs: "auto",
+    },
+    {
+      baseDir: runtimeDir,
+      packageDir: repoRoot,
+      provider: "mock",
+      routingMode: "smart",
+      model: "mock-agent",
+    }
+  );
+  assert(
+    scopedArtifactConfig.executionTier === "focused" && !scopedArtifactConfig.executionPolicy.requiresPlan,
+    "host wrapper keywords inflated a scoped static-artifact task into planned execution"
+  );
+  assert(!scopedArtifactConfig.scsActive, "host wrapper keywords incorrectly activated SCS for a scoped static artifact");
+  const scopedSkillIds = selectSkillsForGoal(
+    scopedChatopsEvidenceGoal(scopedArtifactGoal, "auto"),
+    { taskProfile: "auto", limit: 6, projectRoot: workspace }
+  ).map((skill) => skill.id);
+  assert(scopedSkillIds.includes("structured-json"), "scoped JSON task did not retain its relevant structured-data skill");
+  assert(
+    !scopedSkillIds.some((id) => ["source-ingestion", "autonomous-artifact-pipeline", "wechat-labcanvas-chatops"].includes(id)),
+    `literal paths or payload values selected unrelated skills: ${scopedSkillIds.join(", ")}`
+  );
 
   const simpleConfig = resolveRuntimeConfig(
     {

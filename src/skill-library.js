@@ -419,21 +419,31 @@ const DESCRIPTION_STOP_WORDS = new Set([
   "after",
   "also",
   "before",
+  "checks",
   "content",
   "create",
+  "data",
   "exact",
+  "existing",
   "file",
   "files",
   "from",
   "general",
   "into",
+  "keep",
+  "only",
   "output",
   "path",
   "paths",
   "project",
   "read",
+  "reading",
+  "recent",
   "report",
   "request",
+  "results",
+  "search",
+  "standard",
   "task",
   "that",
   "their",
@@ -443,14 +453,19 @@ const DESCRIPTION_STOP_WORDS = new Set([
   "user",
   "when",
   "with",
+  "without",
   "work",
   "write",
 ]);
 
 const SKILL_ID_STOP_WORDS = new Set([
+  "and",
   "agent",
   "aginti",
+  "for",
   "development",
+  "of",
+  "the",
   "production",
   "skill",
   "system",
@@ -458,6 +473,43 @@ const SKILL_ID_STOP_WORDS = new Set([
   "tools",
   "workflow",
 ]);
+
+// These words are useful in a focused request, but occur incidentally across
+// many unrelated tasks. Weakening them in longer goals keeps one generic word
+// from consuming a full skill slot while preserving short requests such as
+// "analyze data" or "commit changes".
+const GENERIC_ROUTING_TERMS = new Set([
+  "analysis",
+  "app",
+  "application",
+  "artifact",
+  "code",
+  "commit",
+  "data",
+  "file",
+  "files",
+  "project",
+  "report",
+  "result",
+  "results",
+  "search",
+  "test",
+  "tests",
+  "testing",
+  "work",
+]);
+
+function normalizedSkillRoutingText(goal = "") {
+  return String(goal || "")
+    .toLowerCase()
+    .replace(
+      /(?:^|[\s`'"(])(?:~|\.{1,2}|\/|[a-z0-9_-])[a-z0-9_./~-]*\.([a-z0-9]{1,12})\b/gi,
+      (_match, extension) => ` file.${String(extension || "").toLowerCase()} `
+    )
+    .replace(/\b[a-z_][a-z0-9_.-]*\s*=\s*[a-z0-9_.-]+\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function descriptionTerms(value = "") {
   return [
@@ -470,7 +522,16 @@ function descriptionTerms(value = "") {
   ];
 }
 
-function scoreSkill(skill, text, taskProfile) {
+function focusedGenericSignal(goalText, needle) {
+  if (!GENERIC_ROUTING_TERMS.has(needle)) return true;
+  const terms = String(goalText || "")
+    .toLowerCase()
+    .split(/[^a-z0-9+#.]+/)
+    .filter(Boolean);
+  return terms.length <= 4 && textHasTrigger(goalText, needle);
+}
+
+function scoreSkill(skill, text, taskProfile, goalText = text) {
   let score = 0;
   if (skill.id === taskProfile) score += 10;
   if (skill.triggers.includes(taskProfile)) score += 6;
@@ -479,13 +540,14 @@ function scoreSkill(skill, text, taskProfile) {
     .split(/[^a-z0-9+#.]+/)
     .filter((term) => term.length >= 3 && !SKILL_ID_STOP_WORDS.has(term));
   for (const term of idTerms) {
-    if (textHasTrigger(text, term)) score += 2;
+    if (textHasTrigger(text, term)) score += focusedGenericSignal(goalText, term) ? 2 : 0.5;
   }
   for (const trigger of skill.triggers) {
     const needle = trigger.toLowerCase();
     if (!needle) continue;
     if (textHasTrigger(text, needle)) {
-      score += Math.max(2, Math.min(6, Math.ceil(needle.length / 6)));
+      const triggerScore = Math.max(2, Math.min(6, Math.ceil(needle.length / 6)));
+      score += focusedGenericSignal(goalText, needle) ? triggerScore : 0.5;
       continue;
     }
     const triggerTerms = descriptionTerms(needle);
@@ -495,7 +557,7 @@ function scoreSkill(skill, text, taskProfile) {
   }
   const descriptionMatches = descriptionTerms(skill.description).filter((token) => textHasTrigger(text, token));
   if (descriptionMatches.length >= 3) {
-    score += Math.min(3, descriptionMatches.length * 0.35);
+    score += Math.min(3, descriptionMatches.length * 0.5);
   }
   return score;
 }
@@ -515,20 +577,20 @@ function textHasTrigger(text, needle) {
 }
 
 export function selectSkillsForGoal(goal = "", { taskProfile = "auto", limit = 6, includeBody = true, projectRoot = process.cwd() } = {}) {
-  const goalText = String(goal || "").toLowerCase();
-  const text = `${goalText} ${taskProfile}`.toLowerCase();
+  const goalText = normalizedSkillRoutingText(goal);
+  const text = goalText;
   const skills = listSkills({ includeBody, projectRoot });
   const ranked = skills
     .map((skill) => ({
       skill,
-      score: scoreSkill(skill, text, taskProfile),
-      directGoalScore: scoreSkill(skill, goalText, "auto"),
+      score: scoreSkill(skill, text, taskProfile, goalText),
+      directGoalScore: scoreSkill(skill, goalText, "auto", goalText),
     }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.skill.id.localeCompare(b.skill.id));
   const explicitProfile = Boolean(taskProfile && taskProfile !== "auto");
   const bestScore = ranked[0]?.score || 0;
-  const relevanceFloor = explicitProfile && bestScore >= 6 ? Math.max(2, bestScore * 0.5) : 0;
+  const relevanceFloor = explicitProfile && bestScore >= 6 ? Math.max(2, bestScore * 0.5) : 2;
   const scored = ranked
     .filter((item) => item.score >= relevanceFloor || item.directGoalScore >= 4)
     .map((item) => item.skill);

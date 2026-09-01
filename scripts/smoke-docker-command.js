@@ -6,12 +6,94 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  dockerWritableGitMounts,
+  dockerWorkspaceAliasMounts,
+  ensureDockerGitIdentity,
+} from "../src/docker-sandbox.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-docker-command-"));
 
 try {
+  const identityRepo = path.join(tempRoot, "identity-repo");
+  const dockerState = path.join(tempRoot, "docker-state");
+  await fs.mkdir(identityRepo, { recursive: true });
+  await fs.mkdir(path.join(dockerState, "home"), { recursive: true });
+  await execFileAsync("git", ["init", identityRepo]);
+  await execFileAsync("git", ["-C", identityRepo, "config", "user.name", "AgInTi Test Author"]);
+  await execFileAsync("git", ["-C", identityRepo, "config", "user.email", "aginti-test@example.invalid"]);
+  assert.deepEqual(
+    dockerWorkspaceAliasMounts({ commandCwd: identityRepo, sandboxMode: "docker-workspace" }),
+    [identityRepo],
+    "Docker workspace mode should preserve the exact host workspace path as a scoped writable alias"
+  );
+  assert.deepEqual(
+    dockerWorkspaceAliasMounts({ commandCwd: identityRepo, sandboxMode: "docker-readonly" }),
+    [],
+    "Read-only Docker mode must not create a writable host-path alias"
+  );
+  const identity = await ensureDockerGitIdentity(
+    { commandCwd: identityRepo, dockerStateDir: dockerState },
+    {
+      root: dockerState,
+      home: path.join(dockerState, "home"),
+      cache: path.join(dockerState, "cache"),
+      env: path.join(dockerState, "env"),
+    }
+  );
+  assert.equal(identity.configured, true, "Docker Git identity should reuse an existing repository author");
+  const identityConfig = path.join(dockerState, "home", ".gitconfig.aginti-author");
+  const [storedName, storedEmail] = await Promise.all([
+    execFileAsync("git", ["config", "--file", identityConfig, "--get", "user.name"]),
+    execFileAsync("git", ["config", "--file", identityConfig, "--get", "user.email"]),
+  ]);
+  assert.equal(storedName.stdout.trim(), "AgInTi Test Author");
+  assert.equal(storedEmail.stdout.trim(), "aginti-test@example.invalid");
+  assert.equal((await fs.stat(identityConfig)).mode & 0o777, 0o600, "Docker author config should be private");
+
+  const worktreeRoot = path.join(tempRoot, "worktree-root");
+  const linkedWorktree = path.join(tempRoot, "linked-worktree");
+  await execFileAsync("git", ["init", worktreeRoot]);
+  await execFileAsync("git", ["-C", worktreeRoot, "config", "user.name", "AgInTi Test Author"]);
+  await execFileAsync("git", ["-C", worktreeRoot, "config", "user.email", "aginti-test@example.invalid"]);
+  await fs.writeFile(path.join(worktreeRoot, "seed.txt"), "seed\n", "utf8");
+  await execFileAsync("git", ["-C", worktreeRoot, "add", "seed.txt"]);
+  await execFileAsync("git", ["-C", worktreeRoot, "commit", "-m", "seed"]);
+  await execFileAsync("git", ["-C", worktreeRoot, "worktree", "add", "-b", "linked-test", linkedWorktree]);
+  const linkedCommonDir = (await execFileAsync(
+    "git",
+    ["-C", linkedWorktree, "rev-parse", "--path-format=absolute", "--git-common-dir"]
+  )).stdout.trim();
+  assert.deepEqual(
+    dockerWritableGitMounts(
+      "git add -- changed.txt && git commit -m 'linked worktree change'",
+      { commandCwd: linkedWorktree, sandboxMode: "docker-workspace" },
+      { gitOnly: true }
+    ),
+    [linkedCommonDir],
+    "Docker Git mutation did not mount validated linked-worktree metadata writable"
+  );
+  assert.deepEqual(
+    dockerWritableGitMounts(
+      "git status --short",
+      { commandCwd: linkedWorktree, sandboxMode: "docker-workspace" },
+      { gitOnly: true }
+    ),
+    [],
+    "read-only Git inspection received an unnecessary writable metadata mount"
+  );
+  assert.deepEqual(
+    dockerWritableGitMounts(
+      "git add -- seed.txt",
+      { commandCwd: worktreeRoot, sandboxMode: "docker-workspace" },
+      { gitOnly: true }
+    ),
+    [],
+    "ordinary repositories should rely on the existing writable workspace mount"
+  );
+
   const { stdout } = await execFileAsync(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "docker", "status", "--json", "--cwd", tempRoot], {
     cwd: tempRoot,
     env: {

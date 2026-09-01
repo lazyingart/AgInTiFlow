@@ -25,6 +25,7 @@ import { normalizeDynamicStepsMode } from "./step-budget-controller.js";
 import { maxStepsForExecutionPolicy, selectExecutionPolicy } from "./execution-policy.js";
 import { normalizeContextBudgetMode } from "./context-budget-controller.js";
 import { BASELINE_PROVIDER, normalizeProviderBaseURL, normalizeProviderId } from "./provider-contract.js";
+import { isResponseOnlyEvidenceScope, scopedChatopsEvidenceGoal } from "./scs-evidence.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -100,6 +101,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
   const requestedProvider = resolveRequestedProvider(overrides, args);
   const routingMode = normalizeRoutingMode(overrides.routingMode || args.routingMode || process.env.AGENT_ROUTING_MODE || "smart");
   const taskProfile = normalizeTaskProfile(overrides.taskProfile || args.taskProfile || process.env.AGINTI_TASK_PROFILE || "auto");
+  const taskSelectionGoal = scopedChatopsEvidenceGoal(args.goal || "", taskProfile);
   const language = resolveLanguage(overrides.language || args.language || process.env.AGINTI_LANGUAGE || "");
   // Capability/resource snapshots are trusted runtime inputs. They are deliberately
   // not inferred from ambient cloud credentials or optimistic environment flags.
@@ -140,7 +142,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     routingMode: sessionModelLocked ? "manual" : routingMode,
     provider: requestedProvider,
     model: requestedModel,
-    goal: args.goal || "",
+    goal: taskSelectionGoal,
     taskProfile,
     routeProvider,
     routeModel: overrides.routeModel || args.routeModel || process.env.AGINTI_ROUTE_MODEL || "",
@@ -189,7 +191,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     overrides.scsValidationMode ?? args.scsValidationMode ?? process.env.AGINTI_SCS_VALIDATION_MODE ?? "auto"
   );
   const scsActive = shouldActivateScs(scsMode, {
-    goal: args.goal || "",
+    goal: taskSelectionGoal,
     taskProfile,
     complexityScore: route.complexityScore,
   });
@@ -225,7 +227,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       ? normalizeProviderBaseURL(activeProvider, overrides.baseURL || defaults.baseURL)
       : overrides.baseURL || defaults.baseURL;
   const defaultMaxSteps = recommendedMaxStepsForTask({
-    goal: args.goal || "",
+    goal: taskSelectionGoal,
     taskProfile,
     complexityScore: route.complexityScore,
   });
@@ -237,6 +239,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     taskProfile,
     complexityScore: route.complexityScore,
     scsActive,
+    responseOnly: isResponseOnlyEvidenceScope(args.goal || ""),
   });
   const configuredMaxSteps = overrides.maxSteps ?? args.maxSteps ?? process.env.MAX_STEPS;
   const maxStepsExplicit = configuredMaxSteps !== undefined && String(configuredMaxSteps).trim() !== "";

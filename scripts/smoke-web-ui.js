@@ -15,6 +15,7 @@ const server = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js")
   cwd: runtimeDir,
   env: {
     ...process.env,
+    AGINTIFLOW_NO_AUTO_UPDATE: "1",
     AGINTIFLOW_HOME: agintiflowHome,
     AGINTIFLOW_RUNTIME_DIR: runtimeDir,
   },
@@ -35,17 +36,21 @@ function delay(ms) {
 }
 
 async function waitForHealth() {
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + 30000;
+  let lastError = "";
   while (Date.now() < deadline) {
     if (server.exitCode !== null) break;
     try {
       const health = await fetch(`${baseUrl}/health`).then((response) => response.json());
       if (health.ok) return health;
-    } catch {
+    } catch (error) {
+      lastError = String(error?.message || error);
       await delay(250);
     }
   }
-  throw new Error(`web server did not become healthy. stdout=${stdout.slice(-500)} stderr=${stderr.slice(-500)}`);
+  throw new Error(
+    `web server did not become healthy. lastError=${lastError} stdout=${stdout.slice(-500)} stderr=${stderr.slice(-500)}`
+  );
 }
 
 async function waitForRunState(page, status, timeout = 20000) {
@@ -133,7 +138,9 @@ try {
   if ((await page.locator('[data-workspace-file="notes/workspace-ui.md"]').getAttribute("draggable")) !== "true") {
     throw new Error("workspace file rows are not draggable");
   }
-  await page.locator("#workspace-automap").click();
+  const automapButton = page.locator("#workspace-automap");
+  await automapButton.scrollIntoViewIfNeeded();
+  await automapButton.click();
   await page.locator('[data-workspace-lane="docs"]').click();
   await page.waitForSelector('[data-workspace-file="notes/workspace-ui.md"]', { timeout: 10000 });
   await page.locator('[data-workspace-file="notes/workspace-ui.md"]').click();

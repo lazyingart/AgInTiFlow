@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   ensureProjectSessionStorage,
   listProjectSessionRemovalCandidates,
@@ -455,9 +455,21 @@ try {
     "utf8"
   );
   await fs.writeFile(path.join(legacyDir, "events.jsonl"), "", "utf8");
+  const gitInit = spawnSync("git", ["init"], {
+    cwd: legacyProject,
+    encoding: "utf8",
+  });
+  assert(gitInit.status === 0, `legacy storage Git init failed: ${gitInit.stderr || gitInit.stdout}`);
   const paths = await ensureProjectSessionStorage(legacyProject);
-  const gitignore = await fs.readFile(path.join(legacyProject, ".gitignore"), "utf8");
-  assert(gitignore.includes(".aginti-sessions/") && gitignore.includes(".sessions/"), "session folders were not protected by .gitignore");
+  const gitignore = await readOptional(path.join(legacyProject, ".gitignore"));
+  const localExclude = await fs.readFile(path.join(legacyProject, ".git", "info", "exclude"), "utf8");
+  assert(gitignore === "", "runtime session setup dirtied the tracked .gitignore");
+  assert(
+    localExclude.includes(".aginti-sessions/") &&
+      localExclude.includes(".sessions/") &&
+      localExclude.includes(".aginti/codebase-map.json"),
+    "runtime session/cache paths were not protected by the repository-local Git exclude"
+  );
   const migrated = await listProjectSessions(legacyProject, 10);
   assert(migrated.some((session) => session.sessionId === legacySession), "legacy session was not discoverable after migration");
   assert(

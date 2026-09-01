@@ -117,6 +117,22 @@ function matchingReadOnlyRoot(config, target) {
     .find((root) => isInside(root, target));
 }
 
+function configuredWorkspaceScopeRoots(config, root, { writeAccess = false } = {}) {
+  const values = [
+    ...(Array.isArray(config.workspacePathScopeRoots)
+      ? config.workspacePathScopeRoots
+      : []),
+    ...(writeAccess && Array.isArray(config.workspaceWritePathScopeRoots)
+      ? config.workspaceWritePathScopeRoots
+      : []),
+  ];
+  return values
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .map((item) => path.resolve(root, normalizeWorkspaceInputPath(item)))
+    .filter((item) => isInside(root, item));
+}
+
 function hashText(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
 }
@@ -256,11 +272,20 @@ export function normalizeWorkspaceInputPath(rawPath) {
   return rawPath;
 }
 
-export function resolveWorkspacePath(config, inputPath = ".", { allowReadOnlyRoots = false } = {}) {
+export function resolveWorkspacePath(
+  config,
+  inputPath = ".",
+  { allowReadOnlyRoots = false, writeAccess = false } = {}
+) {
   const root = workspaceRoot(config);
   const rawPath = sanitizePathInput(inputPath);
   const workspacePath = normalizeWorkspaceInputPath(rawPath);
   const absolutePath = path.resolve(root, workspacePath);
+  const scopedRoots = configuredWorkspaceScopeRoots(config, root, { writeAccess });
+
+  if (scopedRoots.length && !scopedRoots.some((scopeRoot) => isInside(scopeRoot, absolutePath))) {
+    throw new Error(`Path is outside the active task artifact scope: ${rawPath}`);
+  }
 
   if (!isInside(root, absolutePath)) {
     const readOnlyRoot = allowReadOnlyRoots ? matchingReadOnlyRoot(config, absolutePath) : "";
@@ -351,7 +376,7 @@ function stripSafeCredentialReferences(content) {
   const codeKeyName = String.raw`(?:api[_-]?key|apiKey|token|secret|password|passwd|npmToken|authToken|grsai|veniceApiKey|venice_api_key)`;
   const codeExpression = String.raw`[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\([^"'\n]*\))?`;
   const envName = String.raw`[A-Z][A-Z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|GRSAI|VENICE)[A-Z0-9_]*`;
-  const safeStatus = String.raw`(?:false|true|null|none|unset|missing|not[-_ ]?set|\[REDACTED\])`;
+  const safeStatus = String.raw`(?:false|true|null|none|unset|missing|not[-_ ]?set|\[REDACTED\]|\*{3,})`;
 
   text = text.replace(
     new RegExp(String.raw`\b${keyName}\s*[:=]\s*${safeStatus}\b`, "gi"),
@@ -435,7 +460,7 @@ export function checkWorkspaceToolUse(toolName, args, config) {
       const operations = parsePatchDocument(args.patch);
       for (const operation of operations) {
         for (const candidate of [operation.path, operation.newPath].filter(Boolean)) {
-          const target = resolveWorkspacePath(config, candidate);
+          const target = resolveWorkspacePath(config, candidate, { writeAccess: true });
           const policy = pathPolicy(toolName, target.relativePath);
           if (!policy.allowed) return policy;
         }
@@ -446,6 +471,7 @@ export function checkWorkspaceToolUse(toolName, args, config) {
     }
     const target = resolveWorkspacePath(config, args.path || ".", {
       allowReadOnlyRoots: !WORKSPACE_WRITE_TOOL_NAMES.includes(toolName),
+      writeAccess: WORKSPACE_WRITE_TOOL_NAMES.includes(toolName),
     });
     const policy = pathPolicy(toolName, target.relativePath);
     if (!policy.allowed) return policy;
@@ -990,7 +1016,7 @@ async function deleteChange(target, action = "delete_file", details = {}) {
 }
 
 async function writeFile(config, args) {
-  const target = resolveWorkspacePath(config, args.path);
+  const target = resolveWorkspacePath(config, args.path, { writeAccess: true });
   const mode = args.mode === "overwrite" ? "overwrite" : "create";
   const exists = await fs
     .stat(target.absolutePath)
@@ -1017,7 +1043,7 @@ async function applyPatch(config, args) {
     return applyPatchDocument(config, args);
   }
 
-  const target = resolveWorkspacePath(config, args.path);
+  const target = resolveWorkspacePath(config, args.path, { writeAccess: true });
   const { content: beforeText, hash } = await readTextFile(target);
   if (args.baseHash && args.baseHash !== hash) {
     throw new Error(`Base hash mismatch for ${target.relativePath}; read the file again before patching.`);
@@ -1218,10 +1244,12 @@ async function applyPatchDocument(config, args) {
     if (seenPaths.has(operation.path)) throw new Error(`Patch contains duplicate file operations for ${operation.path}.`);
     seenPaths.add(operation.path);
 
-    const target = resolveWorkspacePath(config, operation.path);
+    const target = resolveWorkspacePath(config, operation.path, { writeAccess: true });
     const policy = pathPolicy("apply_patch", target.relativePath);
     if (!policy.allowed) throw new Error(policy.reason);
-    const newTarget = operation.newPath ? resolveWorkspacePath(config, operation.newPath) : null;
+    const newTarget = operation.newPath
+      ? resolveWorkspacePath(config, operation.newPath, { writeAccess: true })
+      : null;
     if (newTarget) {
       const newPolicy = pathPolicy("apply_patch", newTarget.relativePath);
       if (!newPolicy.allowed) throw new Error(newPolicy.reason);
@@ -1284,7 +1312,7 @@ async function applyPatchDocument(config, args) {
       continue;
     }
     if (operation.newPath) {
-      const newTarget = resolveWorkspacePath(config, operation.newPath);
+      const newTarget = resolveWorkspacePath(config, operation.newPath, { writeAccess: true });
       const policy = pathPolicy("apply_patch", newTarget.relativePath);
       if (!policy.allowed) throw new Error(policy.reason);
       changes.push(await writeChange(newTarget, item.afterText, "apply_patch_move", { fromPath: target.relativePath, patchFormat: "multi-file" }));
