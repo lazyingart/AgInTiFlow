@@ -4556,6 +4556,36 @@ try {
       failedSpacedExitProbeResult.projectTest?.explicitExitStatus === 1,
     "a spaced nonzero test-status wrapper was recorded as successful generic evidence"
   );
+  const pipedUnittestCommand =
+    "python3 -m unittest discover -s tests -p 'test_wechat_document_reader.py' -v 2>&1 | tail -14; echo \"EXIT=${PIPESTATUS[0]}\"";
+  assert(
+    parseNonMutatingExitStatusWrapper(pipedUnittestCommand)?.command ===
+      "python3 -m unittest discover -s tests -p 'test_wechat_document_reader.py' -v 2>&1" &&
+      isSubstantiveTestCommand(pipedUnittestCommand),
+    "the exact bounded PIPESTATUS unittest wrapper lost its test identity"
+  );
+  for (const [status, expectedPassed] of [[0, true], [1, false]]) {
+    const state = { meta: { goalContract: { revision: 1 } } };
+    const result = {
+      toolName: "run_command",
+      ok: true,
+      exitCode: 0,
+      args: { command: pipedUnittestCommand },
+      stdout: `Ran 7 tests in 0.01s\n${status === 0 ? "OK" : "FAILED (failures=1)"}\nEXIT=${status}\n`,
+      stderr: "",
+      commandPolicy: classifyCommand(pipedUnittestCommand),
+    };
+    recordProjectVerificationOutcome(state, result, {
+      commandCwd: workspace,
+      taskProfile: "qa",
+    });
+    assert(
+      result.projectTest?.passed === expectedPassed &&
+        result.projectTest?.explicitExitStatus === status &&
+        state.meta.projectVerification?.mutationRevision === 0,
+      `a PIPESTATUS unittest wrapper was not recorded at the correct status/revision: ${status}`
+    );
+  }
   for (const [command, output, expectedRevision] of [
     ['npm test; printf "EXIT_CODE=%d\\n" "$?"', "EXIT_CODE=0\n", 0],
     ['git push; echo "EXIT=$?"', "EXIT=0\n", 0],
@@ -4577,6 +4607,50 @@ try {
     assert(
       state.meta.projectVerification?.mutationRevision === expectedRevision,
       `a status wrapper changed the inner command's mutation identity: ${command}`
+    );
+  }
+  const boundedFindCommand =
+    `cd ${workspace} && echo "=== CANDIDATES ===" && ` +
+    "find . -maxdepth 4 \\( -name '*.py' -o -name '*.md' \\) -not -path './output/*' 2>/dev/null | sort; echo DONE";
+  const boundedFindPolicy = evaluateCommandPolicy(boundedFindCommand, {
+    commandCwd: workspace,
+    allowShellTool: true,
+    allowDestructive: false,
+    sandboxMode: "host",
+  });
+  assert(
+    boundedFindPolicy.allowed === true &&
+      boundedFindPolicy.category === "read-only" &&
+      boundedFindPolicy.writesWorkspace === false,
+    "the exact bounded read-only find sequence was classified as a project mutation"
+  );
+  const boundedFindState = { meta: { goalContract: { revision: 1 } } };
+  const boundedFindResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: boundedFindCommand },
+    stdout: "./tests/test_wechat_document_reader.py\nDONE\n",
+    stderr: "",
+    commandPolicy: boundedFindPolicy,
+  };
+  recordProjectVerificationOutcome(boundedFindState, boundedFindResult, {
+    commandCwd: workspace,
+    taskProfile: "qa",
+  });
+  assert(
+    boundedFindState.meta.projectVerification?.mutationRevision === 0,
+    "a successful bounded read-only find fabricated a source revision"
+  );
+  for (const command of [
+    "find . -maxdepth 4 -name '*.py' -delete",
+    "find . -maxdepth 4 -name '*.py' -exec touch {} \\;",
+  ]) {
+    const classification = classifyCommand(command);
+    assert(
+      classification.writesWorkspace === true &&
+        ["destructive", "general-shell"].includes(classification.category),
+      `a write-capable find form was accepted as read-only: ${command}`
     );
   }
   const readOnlyValidatorState = { meta: { goalContract: { revision: 1 } } };
@@ -6030,13 +6104,86 @@ try {
       sandboxMode: "host",
     }
   );
+  const scopedCompoundTestLogCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command: [
+        `cd ${JSON.stringify(workspace)}`,
+        `LOG=${JSON.stringify(path.join(scopedTaskRoot, "document-reader-test.log"))}`,
+        'echo "RUN_MARKER=now" > "$LOG"',
+        'python3 -m unittest discover -s tests -p \'test_reader.py\' -v >> "$LOG" 2>&1',
+        'echo "EXIT=0" >> "$LOG"',
+        'cat "$LOG"',
+      ].join(" && "),
+    },
+    projectMutationPaths: [],
+    stdout: "Ran 7 tests\nOK\nEXIT=0\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    scopedCompoundTestLogCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "auto",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const nullRedirectValidationCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command: [
+        `cd ${JSON.stringify(workspace)}`,
+        `python3 -m json.tool ${JSON.stringify(
+          path.join(scopedTaskRoot, "agent-result.json")
+        )} > /dev/null`,
+        'echo "JSON_VALID"',
+        `grep -c '^## [0-9]' ${JSON.stringify(
+          path.join(scopedTaskRoot, "source-intake-audit.md")
+        )}`,
+      ].join(" && "),
+    },
+    projectMutationPaths: [],
+    stdout: "JSON_VALID\n5\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    nullRedirectValidationCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "auto",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
   assert(
     requestedOutputRevision === 1 &&
       scopedTaskState.meta.projectVerification?.mutationRevision === 1 &&
       readOnlyArtifactValidation.readOnlyArtifactValidation === true &&
       scopedManifestCommand.scopedTaskArtifactWrite === true &&
-      pythonScopedManifestCommand.scopedTaskArtifactWrite === true,
-    "task-scoped delivery bookkeeping invalidated requested artifact evidence"
+      pythonScopedManifestCommand.scopedTaskArtifactWrite === true &&
+      scopedCompoundTestLogCommand.scopedTaskArtifactWrite === true &&
+      nullRedirectValidationCommand.readOnlyArtifactValidation === true,
+    `task-scoped delivery bookkeeping invalidated requested artifact evidence: ${JSON.stringify({
+      requestedOutputRevision,
+      mutationRevision:
+        scopedTaskState.meta.projectVerification?.mutationRevision,
+      readOnlyArtifactValidation:
+        readOnlyArtifactValidation.readOnlyArtifactValidation,
+      scopedManifestCommand: scopedManifestCommand.scopedTaskArtifactWrite,
+      pythonScopedManifestCommand:
+        pythonScopedManifestCommand.scopedTaskArtifactWrite,
+      scopedCompoundTestLogCommand:
+        scopedCompoundTestLogCommand.scopedTaskArtifactWrite,
+      nullRedirectValidationCommand:
+        nullRedirectValidationCommand.readOnlyArtifactValidation,
+    })}`
   );
   const mutatingInlinePython = {
     toolName: "run_command",

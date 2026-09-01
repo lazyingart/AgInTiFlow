@@ -2227,10 +2227,51 @@ function normalizeProjectCommand(value = "") {
   return canonicalizeShellCommand(value);
 }
 
+function pipelineStatusCommand(value = "", pipelineIndex = 0) {
+  const sequence = parseTopLevelShellSequence(value);
+  if (
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator ||
+    sequence.commands.length < 2 ||
+    sequence.separators.at(-1) !== "|"
+  ) {
+    return "";
+  }
+
+  let pipelineStart = sequence.commands.length - 1;
+  while (pipelineStart > 0 && sequence.separators[pipelineStart - 1] === "|") {
+    pipelineStart -= 1;
+  }
+  const commandIndex = pipelineStart + Number(pipelineIndex || 0);
+  if (commandIndex < pipelineStart || commandIndex >= sequence.commands.length) return "";
+  return normalizeProjectCommand(sequence.commands[commandIndex]);
+}
+
 export function parseNonMutatingExitStatusWrapper(value = "") {
   const normalized = normalizeProjectCommand(value);
   if (!normalized) return null;
   const label = "(?:EXIT|STATUS|RESULT)(?:_CODE)?";
+  const pipelinePattern = new RegExp(
+    `^(?<pipelineCommand>[\\s\\S]+);\\s*echo\\s+(?:"(?<doubleLabel>${label})\\s*[:=]\\s*\\$\\{PIPESTATUS\\[0\\]\\}"|(?<bareLabel>${label})\\s*[:=]\\s*\\$\\{PIPESTATUS\\[0\\]\\})$`,
+    "i"
+  );
+  const pipelineMatch = normalized.match(pipelinePattern);
+  if (pipelineMatch?.groups?.pipelineCommand) {
+    const wrappedCommand = normalizeProjectCommand(pipelineMatch.groups.pipelineCommand);
+    const command = pipelineStatusCommand(wrappedCommand, 0);
+    if (command) {
+      return {
+        command,
+        wrappedCommand,
+        label: String(
+          pipelineMatch.groups.doubleLabel || pipelineMatch.groups.bareLabel || ""
+        ).toUpperCase(),
+        statusSource: "pipeline",
+        pipelineIndex: 0,
+      };
+    }
+  }
   const patterns = [
     new RegExp(
       `^(?<command>[\\s\\S]+);\\s*echo\\s+(?:\"(?<doubleLabel>${label})\\s*[:=]\\s*\\$\\?\"|'(?<singleLabel>${label})\\s*[:=]\\s*\\$\\?'|(?<bareLabel>${label})\\s*[:=]\\s*\\$\\?)$`,

@@ -17,7 +17,6 @@ const READ_ONLY_PATTERNS = [
   /^command\s+-v\s+[-\w.]+$/,
   /^uname(?:\s+-a)?$/,
   /^ls(?:\s+(?:"[^"\n]*"|'[^'\n]*'|[-\w./~*]+))*$/,
-  /^find(?:\s+[./~\w-]+)*(?:\s+-maxdepth\s+\d+)?(?:\s+-type\s+[fd])?$/,
   /^rg(?:\s+.+)?$/,
   /^grep(?:\s+.+)?$/,
   /^pgrep(?:\s+.+)?$/,
@@ -143,8 +142,71 @@ function isReadOnlyFindCommand(command = "") {
   if (!/^find\s+/.test(normalized)) return false;
   if (/(^|\s)(-delete|-exec|-execdir|-ok|-okdir|-fprint|-fprintf|-fls)\b/.test(normalized)) return false;
   const unquoted = stripQuotedSegments(normalized);
-  if (/[|<>;&`$]/.test(unquoted)) return false;
-  return /^find\s+(?:[-./~\w]+|\/workspace)(?:\s+[-\w]+(?:\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s|<>;&`$]+))?)*$/.test(normalized);
+  if (/[|<>;&`$]/.test(unquoted) || hasActiveShellExpansion(normalized)) return false;
+
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "find" || tokens.length < 4) return false;
+  let index = 1;
+  let roots = 0;
+  while (index < tokens.length && !tokens[index].startsWith("-") && !["(", ")", "!"].includes(tokens[index])) {
+    const root = tokens[index];
+    if (!/^(?:\.{1,2}|\/workspace(?:\/[-\w./~*]+)?|~?(?:\/)?[-\w./*]+)$/.test(root)) return false;
+    roots += 1;
+    index += 1;
+  }
+  if (!roots) return false;
+
+  let maxDepth = null;
+  let parenthesisDepth = 0;
+  const patternPredicates = new Set([
+    "-name",
+    "-iname",
+    "-path",
+    "-ipath",
+    "-wholename",
+    "-iwholename",
+  ]);
+  const operators = new Set(["!", "-not", "-o", "-or", "-a", "-and", "-true", "-false", "-empty", "-print", "-print0", "-quit"]);
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token === "(") {
+      parenthesisDepth += 1;
+      index += 1;
+      continue;
+    }
+    if (token === ")") {
+      parenthesisDepth -= 1;
+      if (parenthesisDepth < 0) return false;
+      index += 1;
+      continue;
+    }
+    if (operators.has(token)) {
+      index += 1;
+      continue;
+    }
+    const argument = tokens[index + 1];
+    if (!argument || /[\u0000-\u001f\u007f]/u.test(argument)) return false;
+    if (token === "-maxdepth" || token === "-mindepth") {
+      if (!/^\d+$/.test(argument)) return false;
+      const depth = Number(argument);
+      if (!Number.isSafeInteger(depth) || depth > 64) return false;
+      if (token === "-maxdepth") maxDepth = depth;
+      index += 2;
+      continue;
+    }
+    if (token === "-type") {
+      if (!/^[bcdpflsD]$/.test(argument)) return false;
+      index += 2;
+      continue;
+    }
+    if (patternPredicates.has(token)) {
+      if (argument.length > 1024) return false;
+      index += 2;
+      continue;
+    }
+    return false;
+  }
+  return parenthesisDepth === 0 && maxDepth !== null;
 }
 
 function isUnboundedRecursiveGrep(command = "") {
