@@ -1187,6 +1187,64 @@ function createPendingCompileIntentRunner() {
   });
 }
 
+function createCorrectedDocumentRunner(documentWorkerClient) {
+  return Object.freeze({
+    async run(scope, _input, options = {}) {
+      const firstSource = [
+        "\\documentclass{article}",
+        "\\begin{document}",
+        "Rejected first document attempt.",
+        "\\end{document}",
+        "",
+      ].join("\n");
+      await assert.rejects(
+        documentWorkerClient.compile(
+          scope,
+          Object.freeze({
+            filename: "corrected-document.tex",
+            source: firstSource,
+            requirements: compileRequirements(0),
+          }),
+          Object.freeze({ signal: options.signal, authorizeRequest: options.onDocumentCompileIntent })
+        ),
+        (error) => error?.code === "ANALYSIS_TEX_COMPILE_FAILED"
+      );
+      const correctedSource = [
+        "\\documentclass{article}",
+        "\\usepackage{amsmath}",
+        "\\begin{document}",
+        "Corrected document attempt with $\\boldsymbol{x}$.",
+        "\\end{document}",
+        "",
+      ].join("\n");
+      const compiled = await documentWorkerClient.compile(
+        scope,
+        Object.freeze({
+          filename: "corrected-document.tex",
+          source: correctedSource,
+          requirements: compileRequirements(0),
+        }),
+        Object.freeze({ signal: options.signal, authorizeRequest: options.onDocumentCompileIntent })
+      );
+      for (const artifact of compiled.artifacts) await options.onArtifact?.(artifact);
+      assert.equal(await options.onDocumentCommitIntent?.(compiled.artifacts), true);
+      await documentWorkerClient.commitArtifacts(
+        scope,
+        { receiptDigest: compiled.receipt.digest, artifacts: compiled.artifacts },
+        { signal: options.signal }
+      );
+      const result = plannerResult({
+        text: "The corrected TeX source and PDF are ready.",
+        artifacts: compiled.artifacts,
+        toolCalls: 2,
+        executionStatus: "succeeded",
+      });
+      await options.onFinal?.(result);
+      return result;
+    },
+  });
+}
+
 function createCommittedDocumentRunner(documentWorkerClient) {
   return Object.freeze({
     async run(scope, _input, options = {}) {
@@ -1387,8 +1445,9 @@ async function createPendingCompileIntentState(root) {
     const envelope = JSON.parse(bytes.toString("utf8"));
     const run = envelope.state.runs.find((candidate) => candidate.id === started.run.id);
     assert(run, "pending compile-intent run was not persisted");
-    assert.equal(run.status, "running", "pending compile-intent run must remain nonterminal for recovery");
-    assert.equal(run.schedulingState, "running");
+    assert.equal(run.status, "failed", "compile-only failure must release the conversation");
+    assert.equal(run.schedulingState, "terminal");
+    assert.equal(run.completedAt === null, false);
     assert.match(run.documentCompileIntent?.issuanceId, /^iss_[a-f0-9]{16}_[a-f0-9]{64}$/u);
     assert.equal(run.documentCompileIntent?.requestId, null);
     assert.equal(run.documentCompileIntent?.compileAuthorityTokenDigest, null);
@@ -1452,11 +1511,11 @@ async function optionalDocumentCompileRecoveryDegradationRoundTrip(temporaryRoot
   });
   try {
     const proof = await service.recoverBeforeListen({ timeoutMs: 5_000 });
-    assert.equal(proof.nonterminalRunsObserved, 1);
+    assert.equal(proof.nonterminalRunsObserved, 0);
     assert.equal(proof.nonterminalRunsRecovered, 0);
-    assert.equal(proof.nonterminalRunsRemaining, 1);
-    assert.equal(proof.deferredOptionalDocumentRuns, 1);
-    assert.equal(proof.pendingDocumentIntentsObserved, 1);
+    assert.equal(proof.nonterminalRunsRemaining, 0);
+    assert.equal(proof.deferredOptionalDocumentRuns, 0);
+    assert.equal(proof.pendingDocumentIntentsObserved, 0);
     assert.deepEqual(await fs.readFile(pending.stateFile), pending.bytes);
 
     const unrelatedScope = context("principal-analysis-doc-compile-defer", "e".repeat(64));
@@ -1467,6 +1526,44 @@ async function optionalDocumentCompileRecoveryDegradationRoundTrip(temporaryRoot
     );
     await service.waitForIdle();
     assert.equal((await service.getRunStatus({ runId: started.run.id }, unrelatedScope)).run.status, "completed");
+  } finally {
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function correctedDocumentCompileIntentRoundTrip(temporaryRoot) {
+  const root = path.join(temporaryRoot, "corrected-document-compile-intent");
+  const worker = createDocumentWorkerFixture();
+  worker.failNextCompile("TEX_COMPILE_FAILED");
+  const client = worker.client();
+  const service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: createCorrectedDocumentRunner(client),
+    stateRoot: root,
+    documentWorkerClient: client,
+    documentWorkerEnabled: true,
+  });
+  try {
+    const thread = await service.createThread({ title: "Corrected document compile" }, context());
+    const started = await service.startRun({
+      threadId: thread.thread.id,
+      input: { text: "Create a TeX source and compiled PDF, correcting one rejected source." },
+    }, context());
+    await service.waitForIdle();
+    const completed = (await service.getRunStatus({ runId: started.run.id }, context())).run;
+    assert.equal(completed.status, "completed", JSON.stringify(completed.error));
+    assert.equal((await service.getThread({ threadId: thread.thread.id }, context())).thread.status, "idle");
+    assert.equal((await service.listArtifacts({ runId: started.run.id }, context())).artifacts.length, 2);
+    const envelope = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+    const persisted = envelope.state.runs.find(({ id }) => id === started.run.id);
+    assert.equal(persisted.documentCompileIntent.sourceSha256,
+      crypto.createHash("sha256").update([
+        "\\documentclass{article}",
+        "\\usepackage{amsmath}",
+        "\\begin{document}",
+        "Corrected document attempt with $\\boldsymbol{x}$.",
+        "\\end{document}",
+        "",
+      ].join("\n"), "utf8").digest("hex"));
   } finally {
     await service.close({ mode: "abort" }).catch(() => {});
   }
@@ -3851,6 +3948,7 @@ async function main() {
     await concurrentNoFileDeleteStartRoundTrip(temporaryRoot, fakeRunner);
     await optionalDocumentRecoveryDegradationRoundTrip(temporaryRoot, fakeRunner);
     await optionalDocumentCompileRecoveryDegradationRoundTrip(temporaryRoot, fakeRunner);
+    await correctedDocumentCompileIntentRoundTrip(temporaryRoot);
     await optionalDocumentCommitRecoveryErrorPreservesState(temporaryRoot);
     await optionalDocumentDeletionProbeOutagePreservesState(temporaryRoot);
     const service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });

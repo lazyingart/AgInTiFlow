@@ -4853,14 +4853,10 @@ function createService(options, { testOnly }) {
     return state.documentCommitIntents.some((intent) => intent.runId === runId && intent.status === "pending");
   }
 
-  function hasPendingDocumentCompileIntent(run) {
-    return run.documentCompileIntent !== undefined;
-  }
-
   function hasPendingOptionalDocumentWork(state, run) {
     return (
       !TERMINAL_RUN_STATUSES.has(run.status) &&
-      (hasPendingDocumentCommitIntent(state, run.id) || hasPendingDocumentCompileIntent(run))
+      hasPendingDocumentCommitIntent(state, run.id)
     );
   }
 
@@ -4869,7 +4865,6 @@ function createService(options, { testOnly }) {
   }
 
   function isPendingOptionalDocumentRun(state, run) {
-    if (documentWorkerClient === undefined && hasPendingDocumentCompileIntent(run)) return true;
     return state.documentCommitIntents.some((intent) =>
       intent.runId === run.id && intent.status === "pending" &&
       (isFileWorkerCommitIntent(intent) ? fileWorkerClient === undefined : documentWorkerClient === undefined)
@@ -4890,9 +4885,9 @@ function createService(options, { testOnly }) {
         changed = true;
         continue;
       }
-      if (documentIntents.some((intent) => intent.status === "pending") || hasPendingDocumentCompileIntent(run)) {
+      if (documentIntents.some((intent) => intent.status === "pending")) {
         // Do not terminalize a crash-replayable paired document while its
-        // workstation commit ACK or compile issuance is temporarily unavailable.
+        // workstation commit ACK is temporarily unavailable.
         // Scoped polling will retry reconciliation.
         continue;
       }
@@ -6277,7 +6272,8 @@ function createService(options, { testOnly }) {
         cause: error,
       });
     }
-    return mutate(scope, (state) => {
+    let replacedCompileIntent = false;
+    const result = await mutate(scope, (state) => {
       const run = findRun(state, runId);
       if (run.threadId !== threadId || TERMINAL_RUN_STATUSES.has(run.status)) {
         fail("ANALYSIS_CANCELLED", "Document compile lost its active run authority.", { status: 499 });
@@ -6300,9 +6296,43 @@ function createService(options, { testOnly }) {
             existing.sourceSha256 !== candidate.sourceSha256 ||
             existing.requirementsDigest !== requirementsDigest
           ) {
-            fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile intent conflicts with this run.", {
-              status: 409,
-            });
+            const active = activeRuns.get(runId);
+            if (
+              !active || active.phase !== "running" ||
+              active.documentCompileReplacementCount !== 0 ||
+              existing.requestId === null ||
+              existing.compileAuthorityTokenDigest === null ||
+              existing.operationDigest === null ||
+              existing.requirementsDigest !== requirementsDigest ||
+              existing.compileAuthorityEpoch !== candidate.compileAuthorityEpoch
+            ) {
+              fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile intent conflicts with this run.", {
+                status: 409,
+              });
+            }
+            const issuanceId = createDocumentWorkerCompileIssuanceId(candidate.compileAuthorityEpoch);
+            run.documentCompileIntent = {
+              schemaVersion: DOCUMENT_COMPILE_INTENT_SCHEMA_VERSION,
+              issuanceId,
+              requestId: null,
+              compileAuthorityEpoch: candidate.compileAuthorityEpoch,
+              compileAuthorityTokenDigest: null,
+              contentDigest,
+              operationDigest: null,
+              sourceSha256: candidate.sourceSha256,
+              requirementsDigest,
+              createdAt: timestamp(),
+            };
+            replacedCompileIntent = true;
+            return {
+              changed: true,
+              result: Object.freeze({
+                schemaVersion: INTEGRATION_DOCUMENT_WORKER_COMPILE_ISSUE_INTENT_SCHEMA_VERSION,
+                issuanceId,
+                compileAuthorityEpoch: candidate.compileAuthorityEpoch,
+                contentDigest,
+              }),
+            };
           }
           return {
             changed: false,
@@ -6378,6 +6408,16 @@ function createService(options, { testOnly }) {
       existing.operationDigest = operationDigest;
       return { changed: true, result: request };
     });
+    if (replacedCompileIntent) {
+      const active = activeRuns.get(runId);
+      if (!active || active.phase !== "running" || active.documentCompileReplacementCount !== 0) {
+        fail("ANALYSIS_DOCUMENT_COMPILE_AUTHORITY_REQUIRED", "Document compile correction authority was lost.", {
+          status: 409,
+        });
+      }
+      active.documentCompileReplacementCount = 1;
+    }
+    return result;
   }
 
   async function authorizeFilePublish(scope, threadId, runId, proposedRequest) {
@@ -6678,7 +6718,7 @@ function createService(options, { testOnly }) {
       }
       if (
         !cancelled &&
-        (documentIntents.some((intent) => intent.status === "pending") || hasPendingDocumentCompileIntent(run))
+        documentIntents.some((intent) => intent.status === "pending")
       ) {
         return { changed: false, result: ownedRun(run) };
       }
@@ -6860,6 +6900,7 @@ function createService(options, { testOnly }) {
       threadId,
       runId,
       controller,
+      documentCompileReplacementCount: 0,
       phase: "reserving",
       slotReserved: false,
       promise: null,
