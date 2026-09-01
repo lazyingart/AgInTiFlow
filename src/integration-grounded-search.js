@@ -43,8 +43,10 @@ export const INTEGRATION_DEEP_RESEARCH_POLL_INTERVAL_MS = 1_000;
 export const INTEGRATION_DEEP_RESEARCH_MAX_RESPONSE_BYTES = 256 * 1024;
 export const INTEGRATION_DEEP_RESEARCH_MAX_REPORT_BYTES = 96 * 1024;
 
-const WEB_READINESS_QUERY = "grounded web search operational readiness";
-const PAPERS_READINESS_QUERY = "grounded papers search operational readiness";
+// Use one stable topical token so provider relevance filters can validate the
+// transport without treating synthetic operational prose as user evidence.
+const WEB_READINESS_QUERY = "SQLite";
+const PAPERS_READINESS_QUERY = "SQLite";
 const MAX_QUERY_CHARACTERS = 800;
 const MAX_PUBLIC_SNIPPET_CHARACTERS = 1_200;
 const MAXIMUM_ALLOWED_DOMAINS = 16;

@@ -577,6 +577,7 @@ assert.equal(activation.minimumTimeoutMs, INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS
 const result = await client.search({ query: "  verified   research  ", mode: "papers", limit: 20 });
 assert.equal(calls.length, 3);
 assert.deepEqual(calls.slice(0, 2).map((call) => call.request.mode), ["web", "papers"]);
+assert.deepEqual(calls.slice(0, 2).map((call) => call.request.query), ["SQLite", "SQLite"]);
 assert.equal(calls[2].url, INTEGRATION_GROUNDED_SEARCH_ENDPOINT);
 assert.equal(calls[2].init.method, "POST");
 assert.equal(calls[2].init.headers.Authorization, `Bearer ${TOKEN}`);
