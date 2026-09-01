@@ -205,6 +205,20 @@ const readOnlyReviewContract = deriveScsTaskContract({
   taskProfile: "review",
 });
 
+const readOnlyOperatorAuditRequest =
+  "This is a short imperfect operator audit. Check these three things without changing source files or sending messages: 1) run curl -fsS http://127.0.0.1:8008/readyz and state whether LocalLLM is ready; 2) read configs/model-policy.json and name the configured AgInTi provider order; 3) run git status --short and say only whether tracked source changes exist, without treating ignored runtime output as source. Cover all three numbered items in one concise answer and write the normal task result.";
+const readOnlyOperatorAuditContract = deriveScsTaskContract({
+  goal: [
+    readOnlyOperatorAuditRequest,
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request: readOnlyOperatorAuditRequest,
+      artifact_root: "/tmp/aginti-read-only-audit",
+    })}`,
+  ].join("\n\n"),
+  taskProfile: "auto",
+});
+
 const explicitReviewRepairContract = deriveScsTaskContract({
   goal: [
     "Review focus: inspect changed files and fix confirmed defects.",
@@ -373,6 +387,34 @@ assert.equal(
   explicitReviewRepairContract.requiresFileMutation,
   true,
   "an explicit review-and-fix focus lost its positive mutation request"
+);
+assert.equal(
+  readOnlyOperatorAuditContract.requiresWorkspaceMutation,
+  false,
+  "a host-managed task response was mistaken for a workspace mutation"
+);
+assert.equal(
+  readOnlyOperatorAuditContract.requiresFileMutation,
+  false,
+  "an observational source-status mention was mistaken for a source mutation"
+);
+assert(
+  readOnlyOperatorAuditContract.requiredEvidence.some(
+    (item) => item.category === "command"
+  ) &&
+    !readOnlyOperatorAuditContract.requiredEvidence.some(
+      (item) => ["artifact", "file"].includes(item.category)
+    ),
+  "the phrase 'cover all items' invented cover-art or file evidence"
+);
+assert(
+  readOnlyOperatorAuditContract.forbiddenActions.some((item) =>
+    /changing source files or sending messages/i.test(item)
+  ) &&
+    !readOnlyOperatorAuditContract.forbiddenActions.some((item) =>
+      /run curl/i.test(item)
+    ),
+  "a colon after a without-clause swallowed the following command"
 );
 assert(
   pageSafeReportContract.requiredEvidence.some((item) => item.category === "file"),

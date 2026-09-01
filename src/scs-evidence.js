@@ -1275,8 +1275,19 @@ function goalRequestsExplicitTestMutation(text = "") {
   );
 }
 
+function stripHostManagedResponseNarration(goal = "") {
+  return String(goal || "").replace(
+    /\b(?:and\s+)?(?:write|return|provide)\s+(?:(?:a|the)\s+)?(?:(?:concise|final|normal|structured)\s+)?(?:(?:agent|task)\s+)?(?:answer|response|result)\b(?!\s+(?:as|at|file|in|into|json|markdown|pdf|text|to|under)\b)/gi,
+    ""
+  );
+}
+
 function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
-  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
+  const text = normalizedText(
+    stripHostManagedResponseNarration(
+      stripCompletedWorkNarration(stripForbiddenLanguage(goal))
+    )
+  );
   const explicitAddMutation =
     goalRequestsExplicitTestMutation(text) ||
     /\badd\b(?:\s+(?:a|an|the|new|additional|specific))*\s+(?:code|documents?|files?|notes?|readme|scripts?|source|workspace)\b/.test(
@@ -1448,7 +1459,12 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   if (goalRequestsTestExecution(positiveGoal)) {
     categories.add("test");
   }
-  if (textHas(mandatoryEvidenceText, /\b(artifact|canvas|pdf|image|video|screenshot|cover|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b/) || /输出|产物|图片|视频|截图|封面|生成/.test(mandatoryEvidenceText)) {
+  if (
+    textHas(
+      mandatoryEvidenceText,
+      /\b(artifact|canvas|pdf|image|video|screenshot|plot|chart|figure|docx|archive|copy to|export|generated|generate|draft)\b|\b(?:album|book|paper|report|video)\s+cover\b|\bcover\s+(?:art|design|image)\b/
+    ) || /输出|产物|图片|视频|截图|封面|生成/.test(mandatoryEvidenceText)
+  ) {
     categories.add("artifact");
   }
   if (
@@ -1513,14 +1529,14 @@ function inferForbiddenActions(goal = "") {
   const text = String(goal || "");
   const forbidden = [];
   const isAction = (value = "") =>
-    /\b(use|open|click|browse|browser|upload|attach|submit|publish|deploy|run|execute|install|delete|remove|commit|push|call|api|alter|change|edit|fix|modify|patch|repair|rewrite|touch|write)\b/i.test(
+    /\b(use|open|click|browse|browser|upload|attach|submit|publish|deploy|run|execute|install|delete|remove|commit|push|call|api|alter|chang(?:e|ing)|edit(?:ing)?|fix(?:ing)?|modif(?:y|ying)|patch(?:ing)?|repair(?:ing)?|rewrit(?:e|ing)|send(?:ing)?|touch(?:ing)?|writ(?:e|ing))\b/i.test(
       value
     ) || /浏览器|网页|打开|点击|上传|提交|发布|部署|运行|执行|安装|删除|复制|移动|修改|编辑|修复|改写|写入|提交代码|推送|调用|API/.test(value);
   const patterns = [
     { re: /\b(do not|don't|dont|never|no need to)\s+([^.\n;]+)/gi, prefix: "User forbids" },
     // A sentence such as "without changing X, run tests and commit" starts a
     // positive instruction after the comma. Keep only the local without-clause.
-    { re: /\bwithout\s+([^.,\n;]+)/gi, prefix: "User forbids" },
+    { re: /\bwithout\s+([^.,:\uFF1A\n;]+)/gi, prefix: "User forbids" },
     { re: /不要([^。\n；]+)/g, prefix: "User forbids" },
     { re: /禁止([^。\n；]+)/g, prefix: "User forbids" },
   ];
