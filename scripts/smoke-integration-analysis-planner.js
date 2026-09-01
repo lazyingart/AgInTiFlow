@@ -2016,7 +2016,6 @@ async function unsupportedMixedActionsDiscloseAndContinue() {
     ["Install numpy, then explain a median in one sentence.", /package installation is unavailable/u],
     ["Run a shell command, then explain a median in one sentence.", /shell and subprocess execution are unavailable/u],
     ["Search the web, then explain a median in one sentence.", /bounded web search was not enabled/u],
-    ["Create a CSV file, then explain a median in one sentence.", /outside the bounded verified local artifact broker/u],
     ["Deploy this answer, then explain a median in one sentence.", /external actions such as deployment/u],
     ["Explain a median, then install numpy.", /package installation is unavailable/u],
     ["Create a PDF report, then explain a median.", /outside the bounded verified local artifact broker/u],
@@ -2049,6 +2048,7 @@ async function unsupportedMixedActionsDiscloseAndContinue() {
     "Add NumPy to the explanation.",
     "Use the word shell in a sentence.",
     "Find internet references in the supplied text.",
+    "Explain how to create a CSV file without creating one.",
     "Send the summary to me.",
   ];
   for (let index = 0; index < explanatoryPrompts.length; index += 1) {
@@ -2094,6 +2094,34 @@ async function coordinatedExecutionClausesHonorLocalNegation() {
     assert.equal(result.toolCalls, 1, prompt);
     assert.equal(result.executionStatus, "succeeded", prompt);
     assert.equal(result.artifacts.some(({ kind }) => kind === "plot"), needsPlot, prompt);
+    routed.coordinator.close();
+  }
+}
+
+async function leadingGeneralFileImperativesRequireTheFileWorker() {
+  const prompts = [
+    "Create exactly three downloadable files named notes.md, results.csv, and demo.html.",
+    "Write a downloadable status.md file with a short verified status.",
+    "Produce two attachments named data.json and README.txt.",
+  ];
+  for (let index = 0; index < prompts.length; index += 1) {
+    let modelCalls = 0;
+    const routed = fixture(async () => {
+      modelCalls += 1;
+      return textResponse("A model must not answer before the required file worker is available.");
+    });
+    await assert.rejects(
+      routed.planner.run(
+        scope("run_00000000-0000-4000-8004-" + String(index + 1).padStart(12, "0")),
+        { prompt: prompts[index] }
+      ),
+      (error) =>
+        error?.code === "ANALYSIS_FILE_WORKER_UNAVAILABLE" &&
+        error?.status === 503 &&
+        /no files were created/u.test(error.message),
+      prompts[index]
+    );
+    assert.equal(modelCalls, 0, prompts[index] + " reached inference before file-worker routing");
     routed.coordinator.close();
   }
 }
@@ -4429,6 +4457,7 @@ await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
 await unsupportedMixedActionsDiscloseAndContinue();
 await coordinatedExecutionClausesHonorLocalNegation();
+await leadingGeneralFileImperativesRequireTheFileWorker();
 await texPdfIntentCannotFinishWithProseOnly();
 await texPdfIntentCompilesAndSealsBothFiles();
 await exactFencedTeXSourceIsBoundByteForByte();
