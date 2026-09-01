@@ -6,6 +6,7 @@ import {
   evaluateIntegrationDocumentArtifactCompletion,
   extractIntegrationExactFencedTeXSource,
   isIntegrationDocumentArtifactRevision,
+  isIntegrationPriorArtifactDocumentConversion,
 } from "../src/integration-document-artifacts.js";
 import { createDocumentWorkerFixture, compileRequirements } from "./test-document-worker-fixture.js";
 
@@ -64,6 +65,8 @@ for (const prompt of [
   "Create both .tex and .pdf deliverables without base64 encoding the PDF.",
   "Write the LaTeX file and build the PDF; no fake PDF is acceptable.",
   "Compile a short TeX source into a PDF and do not simulate either file.",
+  "Calculate an SVM on a test sample and show the plot and write a paper with the figure. Then convert to PDF from text.",
+  "Write a short report about the experiment, then convert the text into a PDF.",
   "请提供 LaTeX 源文件和编译后的 PDF。",
   "我需要 LaTeX 源文件和编译后的 PDF。",
   "制作 LaTeX 和 PDF 文件。",
@@ -91,6 +94,7 @@ for (const prompt of [
   "Provide advice on creating a LaTeX source and compiled PDF.",
   "Provide an explanation of LaTeX and PDF.",
   "Write about LaTeX and PDF.",
+  "Explain how someone can convert text to PDF.",
 ]) {
   assert.equal(
     classifyIntegrationDocumentArtifactIntent(prompt, []).required,
@@ -103,12 +107,57 @@ const priorConversation = [
   { role: "user", content: productionPrompt },
   { role: "assistant", content: "Created the requested TeX source and PDF." },
 ];
+const compoundSvmPrompt =
+  "Calculate an SVM on a test sample and show the plot and write a paper with the figure. Then convert to PDF from text.";
+assert.equal(
+  classifyIntegrationDocumentArtifactIntent(compoundSvmPrompt, priorConversation, true).required,
+  true,
+  "the new SVM paper must route to document creation even inside an older QAOA thread",
+);
+assert.equal(
+  isIntegrationDocumentArtifactRevision(compoundSvmPrompt, priorConversation, true),
+  false,
+  "the new SVM paper must not revise or inherit the older QAOA document",
+);
 const ordinary = classifyIntegrationDocumentArtifactIntent("What is QAOA in one sentence?", priorConversation);
 assert.equal(ordinary.required, false, "ordinary same-thread chat must not inherit file creation authority");
 const revision = classifyIntegrationDocumentArtifactIntent("revise it and recompile", priorConversation);
 assert.equal(revision.required, true);
 assert.equal(revision.requirements.minimumFigureCount, 1, "explicit revision retains the figure requirement");
 assert.equal(isIntegrationDocumentArtifactRevision("revise it and recompile", priorConversation), true);
+assert.equal(isIntegrationPriorArtifactDocumentConversion("Compile it to PDF"), true);
+assert.equal(isIntegrationPriorArtifactDocumentConversion("Explain how to compile it to PDF"), false);
+const immediatePlotConversionContext = Object.freeze({
+  active: true,
+  allowImplicitReference: false,
+  preferPriorArtifacts: true,
+  minimumFigureCount: 1,
+});
+assert.equal(
+  classifyIntegrationDocumentArtifactIntent(
+    "Compile it to PDF",
+    priorConversation,
+    immediatePlotConversionContext,
+  ).required,
+  true,
+);
+assert.equal(
+  classifyIntegrationDocumentArtifactIntent(
+    "Compile it to PDF",
+    priorConversation,
+    immediatePlotConversionContext,
+  ).requirements.minimumFigureCount,
+  1,
+);
+assert.equal(
+  isIntegrationDocumentArtifactRevision(
+    "Compile it to PDF",
+    priorConversation,
+    immediatePlotConversionContext,
+  ),
+  false,
+  "a bare conversion after a newer plot must bind to that plot rather than the older document",
+);
 assert.equal(
   classifyIntegrationDocumentArtifactIntent(
     "Update the previous TeX and PDF. Do not fake or base64-encode the PDF.",

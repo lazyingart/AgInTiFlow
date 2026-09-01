@@ -16,6 +16,8 @@ const ZERO_DIGEST = "0".repeat(64);
 const PRODUCTION_PROMPT = "Write a latex of qaoa compile and give me link of pdf with figures";
 const NORMAL_FOLLOW_UP = "What is 2 + 2?";
 const REVISE_FOLLOW_UP = "revise the previous TeX document and recompile";
+const SVM_RESULT_PROMPT = "Calculate an SVM on a test sample and show the plot.";
+const COMPILE_IMMEDIATE_RESULT_PROMPT = "Compile it to PDF";
 const CANCEL_PROMPT = "Create a LaTeX report and PDF, but pause during artifact capture.";
 const INTERRUPT_PROMPT = "Create a LaTeX report and PDF, then simulate an interruption before commit.";
 const AFTER_COMMIT_PROMPT = "Create a LaTeX report and PDF, then simulate a crash after worker commit.";
@@ -148,6 +150,28 @@ function documentResult(artifacts) {
   });
 }
 
+function svmPlotResult() {
+  const plot = sanitizeIntegrationArtifact({
+    id: `art_${"9".repeat(64)}`,
+    title: "SVM decision boundary",
+    kind: "plot",
+    spec: {
+      schemaVersion: "1",
+      type: "line",
+      labels: ["-1", "0", "1"],
+      series: [{ name: "boundary", data: [-1, 0, 1] }],
+    },
+  });
+  return Object.freeze({
+    schemaVersion: INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
+    text: "The verified SVM plot is ready.",
+    kind: "analysis",
+    toolCalls: 1,
+    executionStatus: "succeeded",
+    artifacts: Object.freeze([plot]),
+  });
+}
+
 function createDocumentRunner(fixture, client, controls = {}) {
   const calls = [];
   const runner = Object.freeze({
@@ -158,7 +182,14 @@ function createDocumentRunner(fixture, client, controls = {}) {
         prompt: input.prompt,
         conversation: Object.freeze(input.conversation.map((message) => Object.freeze({ ...message }))),
         priorArtifacts: Object.freeze(input.priorArtifacts.map((artifact) => sanitizeIntegrationArtifact(artifact))),
+        priorDocumentSupplied: options.priorDocument !== undefined,
       }));
+      if (input.prompt === SVM_RESULT_PROMPT) {
+        const result = svmPlotResult();
+        await options.onArtifact?.(result.artifacts[0]);
+        await options.onFinal?.(result);
+        return result;
+      }
       const intent = classifyIntegrationDocumentArtifactIntent(input.prompt, input.conversation);
       if (!intent.required) {
         const result = directResult();
@@ -347,6 +378,53 @@ async function committedContinuationRoundTrip(temporaryRoot) {
   } finally {
     controls.releaseProduction.resolve();
     fixture.setAvailable(true);
+    await service.close({ mode: "abort" }).catch(() => {});
+  }
+}
+
+async function immediatePlotConversionDoesNotReopenOlderDocument(temporaryRoot) {
+  const stateRoot = path.join(temporaryRoot, "immediate-plot-document-conversion");
+  const fixture = createDocumentWorkerFixture();
+  const client = fixture.client();
+  const runner = createDocumentRunner(fixture, client);
+  const service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: runner,
+    stateRoot,
+    documentWorkerClient: client,
+    documentWorkerEnabled: true,
+  });
+  try {
+    const thread = await service.createThread({ title: "Immediate plot conversion" }, context());
+    const qaoa = await service.startRun(
+      { threadId: thread.thread.id, input: { text: PRODUCTION_PROMPT } },
+      context()
+    );
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: qaoa.run.id }, context())).run.status, "completed");
+
+    const svm = await service.startRun(
+      { threadId: thread.thread.id, input: { text: SVM_RESULT_PROMPT } },
+      context()
+    );
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: svm.run.id }, context())).run.status, "completed");
+
+    const converted = await service.startRun(
+      { threadId: thread.thread.id, input: { text: COMPILE_IMMEDIATE_RESULT_PROMPT } },
+      context()
+    );
+    await service.waitForIdle();
+    const completed = (await service.getRunStatus({ runId: converted.run.id }, context())).run;
+    assert.equal(completed.status, "completed", JSON.stringify(completed.error));
+    const call = runner.calls.find(({ scope }) => scope.runId === converted.run.id);
+    assert(call, "immediate-result conversion did not reach the runner");
+    assert.equal(call.priorDocumentSupplied, false, "the older QAOA TeX source leaked into the SVM conversion");
+    assert.equal(call.priorArtifacts.length, 1);
+    assert.equal(call.priorArtifacts[0].kind, "plot");
+    assert.equal(call.priorArtifacts[0].title, "SVM decision boundary");
+    const convertedArtifacts = (await service.listArtifacts({ runId: converted.run.id }, context())).artifacts;
+    assert.deepEqual(convertedArtifacts.map(({ kind }) => kind), ["file", "file"]);
+  } finally {
     await service.close({ mode: "abort" }).catch(() => {});
   }
 }
@@ -1271,6 +1349,7 @@ async function main() {
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-document-session-broker-"));
   try {
     await committedContinuationRoundTrip(temporaryRoot);
+    await immediatePlotConversionDoesNotReopenOlderDocument(temporaryRoot);
     await compileIssuanceRefreshesOnlyBeforeWorkerIdentity(temporaryRoot);
     await compileIssuanceResponseLossReplaysAfterRestart(temporaryRoot);
     await mismatchedCommittedObjectLinkageIsRejected(temporaryRoot);

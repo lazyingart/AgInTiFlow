@@ -9,6 +9,7 @@ import {
   classifyIntegrationDocumentArtifactIntent,
   evaluateIntegrationDocumentArtifactCompletion,
   isIntegrationDocumentArtifactRevision,
+  isIntegrationPriorArtifactDocumentConversion,
 } from "./integration-document-artifacts.js";
 import {
   INTEGRATION_DOCUMENT_COMPILE_REQUIREMENTS_SCHEMA_VERSION,
@@ -5370,17 +5371,24 @@ function createService(options, { testOnly }) {
     const lineage = latestCommittedDocumentSourceLineage(state, run);
     const allowImplicitReference = lineage !== null &&
       immediatelyPrecedingCompletedRunId(state, run) === lineage.sourceRunId;
+    const preferPriorArtifacts =
+      lineage !== null &&
+      !allowImplicitReference &&
+      input.priorArtifacts.length > 0 &&
+      isIntegrationPriorArtifactDocumentConversion(input.prompt);
     const strictContext = lineage === null
       ? false
       : Object.freeze({
           active: true,
           allowImplicitReference,
+          preferPriorArtifacts,
           minimumFigureCount: 0,
         });
     const revision = isIntegrationDocumentArtifactRevision(input.prompt, input.conversation, strictContext);
     if (
       lineage !== null &&
       !allowImplicitReference &&
+      !preferPriorArtifacts &&
       !revision &&
       isIntegrationDocumentArtifactRevision(input.prompt, input.conversation, true)
     ) {
@@ -6881,10 +6889,19 @@ function createService(options, { testOnly }) {
           input.prompt,
           input.conversation,
           revisionMaterial === null
-            ? false
+            ? input.priorArtifacts.length > 0 &&
+                isIntegrationPriorArtifactDocumentConversion(input.prompt)
+              ? Object.freeze({
+                  active: false,
+                  allowImplicitReference: false,
+                  preferPriorArtifacts: true,
+                  minimumFigureCount: input.priorArtifacts.some(({ kind }) => kind === "plot") ? 1 : 0,
+                })
+              : false
             : Object.freeze({
                 active: true,
                 allowImplicitReference: true,
+                preferPriorArtifacts: false,
                 minimumFigureCount: revisionMaterial.priorDocument.verifiedFigureCount,
               })
         ),

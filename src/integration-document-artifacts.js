@@ -83,7 +83,7 @@ function documentCreationExclusionText(value = "") {
 function imperativeClause(value = "") {
   let text = String(value || "").trim();
   text = text.replace(/^(?:please|kindly)\s+/iu, "");
-  text = text.replace(/^(?:now\s+|continue\s+(?:(?:and|to)\s+)?|go\s+ahead\s+(?:(?:and|to)\s+)?)/iu, "");
+  text = text.replace(/^(?:now\s+|then\s+|continue\s+(?:(?:and|to)\s+)?|go\s+ahead\s+(?:(?:and|to)\s+)?)/iu, "");
   text = text.replace(/^(?:can|could|would|will)\s+you\s+(?:(?:please|kindly)\s+)?/iu, "");
   text = text.replace(/^i(?:'d|\s+would)?\s+(?:like|want|need)\s+(?:you\s+)?to\s+/iu, "");
   text = text.replace(/^let(?:'s|\s+us)\s+/iu, "");
@@ -145,7 +145,9 @@ function requestsDocumentCreation(value = "") {
     (CHINESE_DOCUMENT_NEED_ACTION.test(clause) && DOCUMENT_NEED_DELIVERABLE.test(clause)) ||
     CHINESE_DOCUMENT_ACTION.test(clause) ||
     /^use\s+(?:latex|tex)\b/iu.test(clause) ||
-    /^convert\b[^.!?\r\n]{0,160}\b(?:latex|tex|\.tex)\b[^.!?\r\n]{0,100}\b(?:to|into)\s+(?:a\s+)?pdf\b/iu.test(clause)
+    /^convert\b[^.!?\r\n]{0,160}\b(?:latex|tex|\.tex)\b[^.!?\r\n]{0,100}\b(?:to|into)\s+(?:a\s+)?pdf\b/iu.test(clause) ||
+    /^convert\b[^.!?\r\n]{0,120}\b(?:to|into)\s+(?:a\s+)?pdf\b[^.!?\r\n]{0,120}\bfrom\s+(?:the\s+)?(?:text|paper|report|document|manuscript)\b/iu.test(clause) ||
+    /^convert\b[^.!?\r\n]{0,120}\b(?:text|paper|report|document|manuscript)\b[^.!?\r\n]{0,120}\b(?:to|into)\s+(?:a\s+)?pdf\b/iu.test(clause)
   );
 }
 
@@ -180,11 +182,14 @@ function requestsTeXAndPdf(value = "") {
     /\b(?:write|create|generate|prepare|produce|save)\b[^.!?\r\n]{0,160}(?:\.tex\b|\b(?:latex|tex)\b)[\s\S]{0,220}\b(?:compile|typeset|render|export|build)\b[^.!?\r\n]{0,120}\b(?:pdf|\.pdf)\b/iu.test(text);
   const fencedSourceProduction =
     /\b(?:compile|typeset|render|export|build)\b[^.!?\r\n]{0,140}\bpdf\b[\s\S]{0,260}\btex-source\b/iu.test(text);
+  const textualPaperPdfProduction =
+    /\b(?:write|create|generate|prepare|produce|draft)\b[^.!?\r\n]{0,180}\b(?:paper|report|manuscript|document)\b[\s\S]{0,280}\b(?:convert|compile|typeset|render|export|build)\b[^.!?\r\n]{0,120}\b(?:to|into|as)?\s*(?:a\s+)?pdf\b/iu.test(text) ||
+    /\b(?:convert|compile|typeset|render|export|build)\b[^.!?\r\n]{0,120}\b(?:to|into|as)?\s*(?:a\s+)?pdf\b[^.!?\r\n]{0,120}\bfrom\s+(?:the\s+)?(?:text|paper|report|document|manuscript)\b/iu.test(text);
   const chineseFormats =
     /(?:latex|tex|\.tex)[^。！？\r\n]{0,100}(?:和|及|与|與|以及|连同|連同)[^。！？\r\n]{0,100}(?:pdf|\.pdf)/iu.test(text) ||
     /(?:pdf|\.pdf)[^。！？\r\n]{0,100}(?:和|及|与|與|以及|连同|連同)[^。！？\r\n]{0,100}(?:latex|tex|\.tex)/iu.test(text) ||
     /(?:使用|用)[^。！？\r\n]{0,40}(?:latex|tex)[^。！？\r\n]{0,100}(?:生成|编译|編譯|导出|導出|制作|製作)[^。！？\r\n]{0,60}(?:pdf|\.pdf)/iu.test(text);
-  return explicitExtensions || coordinatedFormats || pairedDeliverableFormats || latexPdfProduction || sequentialProduction || fencedSourceProduction || chineseFormats;
+  return explicitExtensions || coordinatedFormats || pairedDeliverableFormats || latexPdfProduction || sequentialProduction || fencedSourceProduction || textualPaperPdfProduction || chineseFormats;
 }
 
 function requestsDocumentFollowup(value = "", { allowImplicitReference = true } = {}) {
@@ -231,6 +236,23 @@ function explicitDocumentArtifactIntent(prompt = "") {
   return requestsDocumentCreation(affirmative) && requestsTeXAndPdf(affirmative);
 }
 
+export function isIntegrationPriorArtifactDocumentConversion(prompt = "") {
+  const unquoted = quotedContextRemoved(prompt);
+  const exclusionText = documentCreationExclusionText(unquoted);
+  if (DOCUMENT_PAIR_EXCLUSION.test(exclusionText) || DOCUMENT_CREATION_EXCLUSION.test(exclusionText)) {
+    return false;
+  }
+  const clauses = affirmativeDocumentText(unquoted)
+    .split(/[.!?。！？;；\r\n]+/u)
+    .map((item) => imperativeClause(item))
+    .filter(Boolean);
+  return clauses.some((clause) =>
+    /^(?:compile|convert|typeset|render|export|turn)\b[^.!?\r\n]{0,80}\b(?:it|this|that|these|those|the\s+(?:result|results|analysis|calculation|plot|figure|table|text|markdown|content|paper|report|document))\b[^.!?\r\n]{0,100}\b(?:to|into|as)?\s*(?:a\s+)?pdf\b/iu.test(clause) ||
+    /^make\b[^.!?\r\n]{0,40}\b(?:it|this|that|the\s+(?:result|analysis|plot|figure|table|text|markdown|content|paper|report|document))\b[^.!?\r\n]{0,80}\b(?:into|as)\s+(?:a\s+)?pdf\b/iu.test(clause) ||
+    /^(?:把|将|將)(?:它|这个|這個|上述结果|上述結果|以上结果|以上結果|该结果|該結果|分析|图表|圖表|文本|内容|內容|报告|報告)(?:转换|轉換|编译|編譯|导出|導出|制作|製作)(?:为|為|成)?pdf/u.test(clause)
+  );
+}
+
 function documentConversationState(conversation = []) {
   if (!Array.isArray(conversation)) return Object.freeze({ active: false, immediate: false });
   let active = false;
@@ -255,7 +277,13 @@ function documentConversationState(conversation = []) {
 
 function normalizeActiveDocumentContext(value) {
   if (value === true) {
-    return Object.freeze({ active: true, allowImplicitReference: true, minimumFigureCount: 0, explicit: false });
+    return Object.freeze({
+      active: true,
+      allowImplicitReference: true,
+      preferPriorArtifacts: false,
+      minimumFigureCount: 0,
+      explicit: false,
+    });
   }
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const minimum = Number.isSafeInteger(value.minimumFigureCount) &&
@@ -265,11 +293,18 @@ function normalizeActiveDocumentContext(value) {
     return Object.freeze({
       active: value.active === true,
       allowImplicitReference: value.allowImplicitReference === true,
+      preferPriorArtifacts: value.preferPriorArtifacts === true,
       minimumFigureCount: minimum,
       explicit: true,
     });
   }
-  return Object.freeze({ active: false, allowImplicitReference: false, minimumFigureCount: 0, explicit: false });
+  return Object.freeze({
+    active: false,
+    allowImplicitReference: false,
+    preferPriorArtifacts: false,
+    minimumFigureCount: 0,
+    explicit: false,
+  });
 }
 
 function minimumFigureCount(prompt = "", conversation = [], priorMinimumFigureCount = 0) {
@@ -310,8 +345,11 @@ export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversat
   const allowImplicitReference = context.explicit
     ? context.allowImplicitReference
     : context.active || conversationState.immediate || !conversationState.active;
+  const priorArtifactConversion =
+    context.preferPriorArtifacts && isIntegrationPriorArtifactDocumentConversion(prompt);
   const required =
     explicitDocumentArtifactIntent(prompt) ||
+    priorArtifactConversion ||
     (active && requestsDocumentFollowup(prompt, { allowImplicitReference }));
   const explicitInitialCreation = isExplicitInitialDocumentCreation(prompt);
   return Object.freeze({
@@ -323,7 +361,12 @@ export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversat
       schemaVersion: INTEGRATION_DOCUMENT_COMPILE_REQUIREMENTS_SCHEMA_VERSION,
       profile: "self-contained-tex-v1",
       minimumFigureCount: required
-        ? minimumFigureCount(
+        ? priorArtifactConversion
+          ? Math.max(
+              context.minimumFigureCount,
+              DOCUMENT_FIGURE.test(affirmativeDocumentText(prompt)) ? 1 : 0
+            )
+          : minimumFigureCount(
             prompt,
             explicitInitialCreation ? [] : conversation,
             explicitInitialCreation ? 0 : context.minimumFigureCount
@@ -337,6 +380,7 @@ export function isIntegrationDocumentArtifactRevision(prompt = "", conversation 
   const current = imperativeClause(affirmativeDocumentText(quotedContextRemoved(prompt)));
   if (hasSelfContainedFencedTeXSource(prompt) && explicitDocumentArtifactIntent(prompt)) return false;
   const context = normalizeActiveDocumentContext(activeDocument);
+  if (context.preferPriorArtifacts && isIntegrationPriorArtifactDocumentConversion(prompt)) return false;
   const conversationState = documentConversationState(conversation);
   const active = context.active || conversationState.active;
   const allowImplicitReference = context.explicit

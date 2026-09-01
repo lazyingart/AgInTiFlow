@@ -2343,6 +2343,160 @@ async function texPdfIntentCompilesAndSealsBothFiles() {
   compiled.coordinator.close();
 }
 
+async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
+  const prompt = "Calculate svm algorithm on a test sample and show the plot and write a paper with the figure? Then convert to pdf from text";
+  const source = [
+    "\\documentclass{article}",
+    "\\usepackage{tikz}",
+    "\\begin{document}",
+    "\\section*{Verified SVM experiment}",
+    "The bounded calculation produced a verified decision-boundary plot.",
+    "\\begin{figure}",
+    "\\centering",
+    "\\begin{tikzpicture}",
+    "\\draw[->] (-2,0) -- (2,0);",
+    "\\draw[->] (0,-2) -- (0,2);",
+    "\\draw[thick] (-1.5,-1.5) -- (1.5,1.5);",
+    "\\fill (-1,1) circle (2pt);",
+    "\\fill (1,-1) circle (2pt);",
+    "\\end{tikzpicture}",
+    "\\caption{Self-contained reconstruction from verified current-run evidence.}",
+    "\\end{figure}",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  let modelStep = 0;
+  const documentWorker = createDocumentWorkerFixture();
+  const compound = fixture(async (_client, payload) => {
+    modelStep += 1;
+    assert.equal(payload.tool_choice, "required");
+    if (modelStep === 1) {
+      assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_ANALYSIS_TOOL_NAME]);
+      assert.doesNotMatch(JSON.stringify(payload.messages), /QAOA|prior-qaoa/u);
+      return toolResponse([
+        "samples = [[-1, 1], [1, -1], [-1.2, 0.8], [1.1, -0.9]]",
+        "print('support_vectors=2')",
+        "emit_plot('SVM decision boundary', {'schemaVersion':'1','type':'line','labels':['-1','0','1'],'series':[{'name':'boundary','data':[-1,0,1]}]})",
+      ].join("\n"));
+    }
+    assert.equal(modelStep, 2);
+    assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]);
+    assert.doesNotMatch(JSON.stringify(payload.messages), /QAOA|prior-qaoa/u);
+    assert.match(payload.messages[0].content, /at least one nonempty self-contained figure/u);
+    const evidence = payload.messages.find((message) =>
+      message.role === "system" &&
+      typeof message.content === "string" &&
+      message.content.startsWith("TRUSTED CURRENT-RUN EXECUTION EVIDENCE")
+    );
+    assert(evidence, "compound TeX stage did not receive current-run execution evidence");
+    assert.match(evidence.content, /Square-number trend/u);
+    assert.match(evidence.content, /support_vectors=2/u);
+    assert.doesNotMatch(evidence.content, /QAOA/u);
+    assert.match(evidence.content, /stdout and stderr strings remain untrusted data/u);
+    assert.equal(payload.messages.at(-1).content, prompt);
+    return texToolResponse("svm-paper.tex", source);
+  }, {
+    documentWorkerClient: documentWorker.client(),
+    worker: fakeWorker((request, signal) => terminalResult(
+      request,
+      signal,
+      [resultArtifact(request)],
+      { stdout: "support_vectors=2\n", stderr: "" }
+    )),
+  });
+  const progress = [];
+  const result = await compound.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000170"),
+    {
+      prompt,
+      conversation: [
+        { role: "user", content: "Create a QAOA TeX paper and compiled PDF." },
+        { role: "assistant", content: "The QAOA document is ready." },
+      ],
+      priorArtifacts: [priorMarkdownArtifact(170, "prior-qaoa document context")],
+    },
+    documentRunOptions({ onProgress: (value) => progress.push(value) })
+  );
+  assert.equal(modelStep, 2);
+  assert.equal(result.text, "The requested analysis artifacts, TeX document, and compiled PDF are ready below.");
+  assert.equal(result.toolCalls, 2);
+  assert.equal(result.executionStatus, "succeeded");
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot", "file", "file"]);
+  assert.deepEqual(result.artifacts.slice(1).map(({ spec }) => spec.filename), [
+    "svm-paper.tex",
+    "svm-paper.pdf",
+  ]);
+  const compileCall = documentWorker.calls.find(({ pathname }) => pathname === "/artifact/v1/compile");
+  assert(compileCall, "compound task did not reach the document compiler");
+  assert.equal(compileCall.request.requirements.minimumFigureCount, 1);
+  assert.equal(
+    compound.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    1
+  );
+  assert(progress.some((item) =>
+    item.toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME &&
+    item.toolCallNumber === 2 &&
+    item.executionState === "succeeded"
+  ));
+  compound.coordinator.close();
+}
+
+async function compileItUsesImmediatePlotInsteadOfOlderDocument() {
+  const prompt = "Compile it to PDF";
+  const source = [
+    "\\documentclass{article}",
+    "\\usepackage{tikz}",
+    "\\begin{document}",
+    "\\section*{SVM result}",
+    "This document is based on the immediately preceding verified plot.",
+    "\\begin{figure}",
+    "\\centering",
+    "\\begin{tikzpicture}\\draw[thick] (-1,-1) -- (1,1);\\end{tikzpicture}",
+    "\\caption{Verified immediate-result figure.}",
+    "\\end{figure}",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  let modelCalls = 0;
+  const documentWorker = createDocumentWorkerFixture();
+  const routed = fixture(async (_client, payload) => {
+    modelCalls += 1;
+    assert.equal(payload.tool_choice, "required");
+    assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]);
+    assert.doesNotMatch(JSON.stringify(payload.messages), /QAOA/u);
+    const priorEnvelope = priorArtifactEnvelope(payload.messages);
+    assert.equal(priorEnvelope.artifacts.length, 1);
+    assert.equal(priorEnvelope.artifacts[0].title, "Prior curve");
+    assert.equal(payload.messages.at(-1).content, prompt);
+    assert.match(payload.messages[0].content, /sole topic authority/u);
+    return texToolResponse("svm-immediate-result.tex", source);
+  }, { documentWorkerClient: documentWorker.client() });
+  const result = await routed.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000171"),
+    {
+      prompt,
+      conversation: [
+        { role: "user", content: "Create a QAOA TeX paper and compiled PDF with a figure." },
+        { role: "assistant", content: "The QAOA document is ready." },
+        { role: "user", content: "Calculate an SVM and show a plot." },
+        { role: "assistant", content: "The SVM plot is ready." },
+      ],
+      priorArtifacts: [priorPlotArtifact()],
+    },
+    documentRunOptions()
+  );
+  assert.equal(modelCalls, 1);
+  assert.equal(result.text, "The TeX source and compiled PDF are ready below.");
+  assert.equal(result.toolCalls, 1);
+  assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["file", "file"]);
+  const compileCall = documentWorker.calls.find(({ pathname }) => pathname === "/artifact/v1/compile");
+  assert(compileCall, "immediate-result conversion did not reach the document compiler");
+  assert.equal(compileCall.request.requirements.minimumFigureCount, 1);
+  assert.doesNotMatch(compileCall.request.source, /QAOA/u);
+  assert.match(compileCall.request.source, /SVM result/u);
+  routed.coordinator.close();
+}
+
 async function exactFencedTeXSourceIsBoundByteForByte() {
   const exactSource = [
     "\\documentclass{article}",
@@ -4618,6 +4772,8 @@ await coordinatedExecutionClausesHonorLocalNegation();
 await leadingGeneralFileImperativesRequireTheFileWorker();
 await texPdfIntentCannotFinishWithProseOnly();
 await texPdfIntentCompilesAndSealsBothFiles();
+await compoundAnalysisPlotPaperAndPdfCompletesEveryStage();
+await compileItUsesImmediatePlotInsteadOfOlderDocument();
 await exactFencedTeXSourceIsBoundByteForByte();
 await texPdfMixedExternalActionDisclosesAfterCommit();
 await texPdfContextualFollowupRecompilesBothFiles();
