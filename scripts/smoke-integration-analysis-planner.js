@@ -2448,6 +2448,101 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
   compound.coordinator.close();
 }
 
+async function requestedPlotSeriesAreValidatedBeforePublication() {
+  const prompt =
+    "Run Python and expose a decision-boundary plot with sample points and support vectors.";
+  const source = (marker, includeBoundary) => [
+    `marker = '${marker}'`,
+    "series = [",
+    "  {'name':'Class 0','points':[{'x':0,'y':0}]},",
+    "  {'name':'Class 1','points':[{'x':1,'y':1}]},",
+    "  {'name':'Support Vectors','points':[{'x':0.5,'y':0.5}]},",
+    ...(includeBoundary
+      ? ["  {'name':'Decision Boundary','points':[{'x':0,'y':1},{'x':1,'y':0}]},"]
+      : []),
+    "]",
+    "emit_plot('Verified classifier', {'schemaVersion':'1','type':'scatter','xLabel':'x','yLabel':'y','series':series})",
+  ].join("\n");
+  const artifactFor = (request, includeBoundary) => {
+    const artifact = Object.freeze({
+      title: "Verified classifier",
+      kind: "plot",
+      spec: Object.freeze({
+        schemaVersion: "1",
+        type: "scatter",
+        xLabel: "x",
+        yLabel: "y",
+        series: Object.freeze([
+          Object.freeze({ name: "Class 0", points: Object.freeze([{ x: 0, y: 0 }]) }),
+          Object.freeze({ name: "Class 1", points: Object.freeze([{ x: 1, y: 1 }]) }),
+          Object.freeze({ name: "Support Vectors", points: Object.freeze([{ x: 0.5, y: 0.5 }]) }),
+          ...(includeBoundary
+            ? [Object.freeze({
+                name: "Decision Boundary",
+                points: Object.freeze([{ x: 0, y: 1 }, { x: 1, y: 0 }]),
+              })]
+            : []),
+        ]),
+      }),
+    });
+    return sanitizeIntegrationArtifact({ id: artifactId(request, artifact), ...artifact });
+  };
+  let modelStep = 0;
+  let workerCalls = 0;
+  const published = [];
+  const progress = [];
+  const validated = fixture(async (_client, payload) => {
+    modelStep += 1;
+    if (modelStep === 1) return toolResponse(source("source_missing", false));
+    if (modelStep === 2) {
+      assert.match(payload.messages.at(-1).content, /Python source: decision boundary/u);
+      return toolResponse(source("artifact_missing", true));
+    }
+    if (modelStep === 3) {
+      assert.match(payload.messages.at(-1).content, /completed plot artifact: decision boundary/u);
+      return toolResponse(source("artifact_complete", true));
+    }
+    assert.equal(payload.tools, undefined);
+    return textResponse("The verified decision boundary and requested points are ready.");
+  }, {
+    worker: fakeWorker((request, signal) => {
+      workerCalls += 1;
+      const includeBoundary = request.source.includes("artifact_complete");
+      return terminalResult(
+        request,
+        signal,
+        [artifactFor(request, includeBoundary)],
+        { stdout: "fit_verified=true\n", stderr: "" }
+      );
+    }),
+  });
+  const result = await validated.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000172"),
+    { prompt },
+    {
+      onArtifact: (artifact) => published.push(artifact),
+      onProgress: (value) => progress.push(value),
+    }
+  );
+  assert.equal(modelStep, 4);
+  assert.equal(workerCalls, 2, "the source-level rejection must not dispatch the worker");
+  assert.equal(result.toolCalls, 3);
+  assert.equal(published.length, 1, "an incomplete plot must not be published before correction");
+  assert.deepEqual(result.artifacts[0].spec.series.map(({ name }) => name), [
+    "Class 0",
+    "Class 1",
+    "Support Vectors",
+    "Decision Boundary",
+  ]);
+  assert.equal(
+    progress.filter(({ executionState }) => executionState === "succeeded").length,
+    1,
+    "only the semantically complete plot may report successful execution"
+  );
+  assert.equal(result.text, "The verified decision boundary and requested points are ready.");
+  validated.coordinator.close();
+}
+
 async function compileItUsesImmediatePlotInsteadOfOlderDocument() {
   const prompt = "Compile it to PDF";
   const source = [
@@ -3309,7 +3404,7 @@ async function requiredToolFormationRetryIsContextBoundedAndWorkerless() {
       {
         prompt:
           "Run Python and create one Markdown artifact from this supplied context. " +
-          "x".repeat(13_000),
+          "x".repeat(12_600),
       }
     ),
     (error) => error?.code === "ANALYSIS_CONTEXT_BUDGET_EXCEEDED" && error?.status === 413
@@ -4780,6 +4875,7 @@ await leadingGeneralFileImperativesRequireTheFileWorker();
 await texPdfIntentCannotFinishWithProseOnly();
 await texPdfIntentCompilesAndSealsBothFiles();
 await compoundAnalysisPlotPaperAndPdfCompletesEveryStage();
+await requestedPlotSeriesAreValidatedBeforePublication();
 await compileItUsesImmediatePlotInsteadOfOlderDocument();
 await exactFencedTeXSourceIsBoundByteForByte();
 await texPdfMixedExternalActionDisclosesAfterCommit();

@@ -156,10 +156,47 @@ const COMMON_UNAVAILABLE_PYTHON_PACKAGES = new Set([
   "tensorflow",
   "torch",
 ]);
+const REQUESTED_PLOT_ELEMENT_RULES = Object.freeze([
+  Object.freeze({
+    key: "decision boundary",
+    request: /\b(?:decision|classification|separating)[-\s]+(?:boundary|line|hyperplane)\b|\bseparator\s+hyperplane\b/iu,
+    series: /\b(?:boundary|separator|separating|hyperplane)\b/iu,
+  }),
+  Object.freeze({
+    key: "support vectors",
+    request: /\bsupport[-\s]+vectors?\b/iu,
+    series: /\bsupport\b.*\bvectors?\b|\bvectors?\b.*\bsupport\b/iu,
+  }),
+  Object.freeze({
+    key: "margin",
+    request: /\b(?:classification|decision|svm|separating)?\s*margins?\b/iu,
+    series: /\bmargin\b/iu,
+  }),
+  Object.freeze({
+    key: "sample points",
+    request: /\b(?:sample|training|input|observed|data)[-\s]+points?\b/iu,
+    series: /\b(?:class|sample|training|input|observed|data|points?)\b/iu,
+  }),
+  Object.freeze({
+    key: "fitted curve",
+    request: /\b(?:fitted|best[-\s]+fit|regression|trend)[-\s]+(?:curve|line)\b/iu,
+    series: /\b(?:fit|fitted|regression|trend)\b/iu,
+  }),
+  Object.freeze({
+    key: "centroids",
+    request: /\bcentroids?\b/iu,
+    series: /\bcentroids?\b/iu,
+  }),
+  Object.freeze({
+    key: "outliers",
+    request: /\boutliers?\b/iu,
+    series: /\boutliers?\b/iu,
+  }),
+]);
 const ABSOLUTE_PATH_PATTERN =
   /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
 const PLOT_ARTIFACT_ACTION =
-  /(?:^plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)\S|^visuali[sz]e\b|\b(?:make|create|generate|draw|show|render|produce|return|include|output|emit|add|prepare)\s+(?:me\s+)?(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:plot|chart|graph)\b|\b(?:make|create|generate|draw|show|display|render|produce|return|include|output|emit|add|prepare)\b[^.!?;\r\n]{0,120}\b(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,2}(?:(?:line|bar|scatter|area)[-\s]+)?(?:plot|chart|graph)\s+artifact\b|(?:画图|绘图|生成图表|显示图表))/iu;
+  /(?:^plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)\S|^visuali[sz]e\b|\b(?:make|create|generate|draw|show|expose|render|produce|return|include|output|emit|add|prepare)\s+(?:me\s+)?(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:plot|chart|graph)\b|\b(?:make|create|generate|draw|show|display|expose|render|produce|return|include|output|emit|add|prepare)\b[^.!?;\r\n]{0,120}\b(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,2}(?:(?:line|bar|scatter|area)[-\s]+)?(?:plot|chart|graph)\s+artifact\b|(?:画图|绘图|生成图表|显示图表))/iu;
 const NEGATED_PLOT_ARTIFACT_ACTION =
   /(?:\b(?:do\s+not|don't|never|avoid|no\s+need\s+to)\b.{0,40}\b(?:plot|chart|graph|visuali[sz]e)\b|\b(?:not|no|without)\s+(?:(?:a|any)\s+)?(?:plot|chart|graph|plotting|visuali[sz](?:ation|ing)?)\b|\bwithout\s+(?:making|creating|generating|drawing|showing|displaying|rendering|producing|returning|including|outputting|emitting)\s+(?:(?:a|any)\s+)?(?:plot|chart|graph)\b)/iu;
 const TABLE_ARTIFACT_ACTION =
@@ -442,6 +479,7 @@ const SYSTEM_PROMPT = [
   "For UI output, call emit_plot(title, spec), emit_table(title, spec), or emit_markdown(title, markdown). These helpers are already defined. Do not import plotting packages.",
   "For an explicit plot, chart, or graph request, every candidate execution source must call emit_plot and a successful answer must include its plot artifact; prose, stdout, plotting-library calls, file saves, tables, and Markdown do not satisfy it.",
   "Every explicitly requested visual element must be present in the emitted plot data. Compute fitted curves, decision boundaries, margins, and highlighted selected points from the fitted parameters and expose them as named series; a plot containing only the input samples is incomplete when the user requested a fitted result.",
+  "Give every requested visual element a stable literal series name that states what it represents, such as Decision Boundary, Support Vectors, Margin, Fitted Curve, Centroids, or Outliers. Every emitted series must contain real computed data; never emit an empty placeholder series.",
   "For an explicit table request, a successful answer must include at least one emit_table artifact; prose, stdout, plots, and Markdown do not satisfy it. One execution may emit both a requested plot and table.",
   "For an explicit Markdown artifact request, a successful answer must include at least one emit_markdown artifact; prose, stdout, plots, and tables do not satisfy it. One execution may emit every requested artifact kind.",
   "A categorical plot spec is {schemaVersion:'1',type:'line'|'bar'|'area',labels:[...],series:[{name:'...',data:[finite numbers]}]}. A scatter plot spec is exactly {schemaVersion:'1',type:'scatter',xLabel:'...',yLabel:'...',series:[{name:'...',points:[{x:number,y:number}]}]}; scatter points are objects, never tuples or positional arrays. Multiple scatter series may represent classes, a fitted boundary, and selected points.",
@@ -560,7 +598,7 @@ function unquotedImperativeClauses(value) {
     .replace(/^\s*(?:context|quoted\s+(?:request|prompt|instruction|phrase)|previous\s+(?:request|prompt|instruction)|message\s*\d*)\s*:\s*.*$/gimu, " ");
   return unquoted
     .split(/(?:[!?。！？;；\r\n]+|\.(?=\s|$))/u)
-    .flatMap((clause) => clause.split(/(?:,\s*)?\b(?:and\s+then|then|but)\b\s+(?=(?:(?:please|kindly)\s+)?(?:do\s+not|don't|dont|never|avoid|run|execute|make|create|generate|draw|show|render|plot|visuali[sz]e|install|uninstall|upgrade|add|search|browse|google|visit|fetch|open|read|look\s+up|find|save|export|upload|download|deploy|publish|push|email|post|submit|send|change|update|delete|remove|explain|describe|discuss|summari[sz]e|define|write|produce|prepare)\b)/giu))
+    .flatMap((clause) => clause.split(/(?:,\s*)?\b(?:and\s+then|then|but)\b\s+(?=(?:(?:please|kindly)\s+)?(?:do\s+not|don't|dont|never|avoid|run|execute|make|create|generate|draw|show|expose|render|plot|visuali[sz]e|install|uninstall|upgrade|add|search|browse|google|visit|fetch|open|read|look\s+up|find|save|export|upload|download|deploy|publish|push|email|post|submit|send|change|update|delete|remove|explain|describe|discuss|summari[sz]e|define|write|produce|prepare)\b)/giu))
     .map((clause) => imperativeActionText(clause))
     .filter(Boolean);
 }
@@ -1764,20 +1802,70 @@ function commonUnavailablePythonImports(source) {
   return Object.freeze([...found].sort());
 }
 
-function preflightRejectedExecution(source) {
-  const packages = commonUnavailablePythonImports(source);
-  if (packages.length === 0) return null;
+function requestedPlotElements(value, plotRequested) {
+  if (!plotRequested) return Object.freeze([]);
+  const normalized = String(value || "").normalize("NFKC");
+  return Object.freeze(REQUESTED_PLOT_ELEMENT_RULES.filter(({ request }) => request.test(normalized)));
+}
+
+function literalPlotSeriesNames(source) {
+  const names = [];
+  const pattern = /["']name["']\s*:\s*(?:[rub]*)?(["'])([^"'\\\r\n]{1,120})\1/giu;
+  for (const match of String(source || "").matchAll(pattern)) names.push(match[2].normalize("NFKC"));
+  return Object.freeze(names);
+}
+
+function missingRequestedPlotElementsFromNames(requirements, names) {
+  return Object.freeze(requirements
+    .filter(({ series }) => !names.some((name) => series.test(name)))
+    .map(({ key }) => key));
+}
+
+function missingRequestedPlotElements(requirements, artifacts) {
+  if (requirements.length === 0) return Object.freeze([]);
+  const names = artifacts
+    .filter(({ kind }) => kind === "plot")
+    .flatMap(({ spec }) => Array.isArray(spec?.series) ? spec.series.map(({ name }) => String(name || "")) : []);
+  return missingRequestedPlotElementsFromNames(requirements, names);
+}
+
+function rejectedPlotExecution(result, missingElements, { preflight = false } = {}) {
+  const location = preflight ? "Python source" : "completed plot artifact";
   return Object.freeze({
     ok: false,
     status: "failed",
     exitCode: null,
     stdout: "",
-    stderr: `Unavailable third-party Python imports were rejected: ${packages.join(", ")}.`,
+    stderr: `Requested plot series were missing from the ${location}: ${missingElements.join(", ")}.`,
     outputTruncated: false,
-    durationMs: 0,
+    durationMs: preflight ? 0 : Math.max(0, Number(result?.durationMs) || 0),
     artifacts: Object.freeze([]),
     resultDigest: null,
   });
+}
+
+function preflightRejectedExecution(source, plotElementRequirements = Object.freeze([])) {
+  const packages = commonUnavailablePythonImports(source);
+  if (packages.length > 0) {
+    return Object.freeze({
+      ok: false,
+      status: "failed",
+      exitCode: null,
+      stdout: "",
+      stderr: `Unavailable third-party Python imports were rejected: ${packages.join(", ")}.`,
+      outputTruncated: false,
+      durationMs: 0,
+      artifacts: Object.freeze([]),
+      resultDigest: null,
+    });
+  }
+  const missingElements = missingRequestedPlotElementsFromNames(
+    plotElementRequirements,
+    literalPlotSeriesNames(source)
+  );
+  return missingElements.length === 0
+    ? null
+    : rejectedPlotExecution(null, missingElements, { preflight: true });
 }
 
 function validateCoordinatorReadinessProof(value) {
@@ -2480,6 +2568,7 @@ function createPlanner({
     let explicitPlotArtifact = executionObligations.plotArtifact;
     let explicitTableArtifact = executionObligations.tableArtifact;
     let explicitMarkdownArtifact = executionObligations.markdownArtifact;
+    let plotElementRequirements = requestedPlotElements(input.prompt, explicitPlotArtifact);
     let executionForbidden = currentTurnForbidsExecution(input.prompt, executionObligations);
     const explicitPython = classifyIntegrationExplicitPythonPrompt(input.prompt);
     const fencedNonExecution = explicitPython.kind === "non-execution";
@@ -2489,6 +2578,7 @@ function createPlanner({
       explicitPlotArtifact = false;
       explicitTableArtifact = false;
       explicitMarkdownArtifact = false;
+      plotElementRequirements = Object.freeze([]);
       executionForbidden = true;
       messages[0] = Object.freeze({
         role: "system",
@@ -2510,6 +2600,7 @@ function createPlanner({
       explicitPlotArtifact = executionObligations.plotArtifact;
       explicitTableArtifact = executionObligations.tableArtifact;
       explicitMarkdownArtifact = executionObligations.markdownArtifact;
+      plotElementRequirements = requestedPlotElements(input.prompt, explicitPlotArtifact);
       executionForbidden = false;
     }
 
@@ -2571,12 +2662,16 @@ function createPlanner({
 
     const executeOnce = async (executionInput, toolCallNumber) => {
       let lastExecutionState = "";
+      let terminalSuccessPending = false;
       await emitProgress("executing", {
         toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
         toolCallNumber,
         executionState: "starting",
       });
-      const rejectedExecution = preflightRejectedExecution(executionInput.source);
+      const rejectedExecution = preflightRejectedExecution(
+        executionInput.source,
+        plotElementRequirements
+      );
       let execution;
       if (rejectedExecution) {
         lastExecutionState = "failed";
@@ -2587,11 +2682,16 @@ function createPlanner({
         });
         execution = rejectedExecution;
       } else {
+        const stagedArtifacts = [];
         execution = await coordinator.execute(scope, executionInput, {
           invocationOrdinal: toolCallNumber,
           signal,
           async onProgress(progress) {
             const state = EXECUTION_STATES.has(progress?.state) ? progress.state : "running";
+            if (state === "succeeded") {
+              terminalSuccessPending = true;
+              return;
+            }
             if (state === lastExecutionState) return;
             lastExecutionState = state;
             await emitProgress("executing", {
@@ -2600,8 +2700,28 @@ function createPlanner({
               executionState: state,
             });
           },
-          onArtifact: captureArtifact,
+          onArtifact: async (artifact) => stagedArtifacts.push(artifact),
         });
+        const missingElements = execution.ok === true
+          ? missingRequestedPlotElements(plotElementRequirements, execution.artifacts)
+          : Object.freeze([]);
+        if (missingElements.length > 0) {
+          await emitProgress("executing", {
+            toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
+            toolCallNumber,
+            executionState: "failed",
+          });
+          return rejectedPlotExecution(execution, missingElements);
+        }
+        for (const artifact of stagedArtifacts) await captureArtifact(artifact);
+        if (execution.ok === true && (terminalSuccessPending || executionSucceeded(execution.status))) {
+          lastExecutionState = "succeeded";
+          await emitProgress("executing", {
+            toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
+            toolCallNumber,
+            executionState: "succeeded",
+          });
+        }
       }
       for (const artifact of execution.artifacts) await captureArtifact(artifact);
       return execution;
