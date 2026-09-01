@@ -2372,6 +2372,13 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
     assert.equal(payload.tool_choice, "required");
     if (modelStep === 1) {
       assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_ANALYSIS_TOOL_NAME]);
+      assert.match(payload.tools[0].function.description, /type:'scatter'.*points:\[\{x:0,y:1\}\]/u);
+      assert.match(payload.tools[0].function.description, /file writes, and image saves do not create UI artifacts/u);
+      assert.match(payload.messages[0].content, /derive parameters, predictions, metrics, and selected points/u);
+      assert.match(payload.messages[0].content, /every candidate execution source must call emit_plot/u);
+      assert.match(payload.messages[0].content, /correct gradient sign/u);
+      assert.match(payload.messages[0].content, /arbitrary nearest-point count/u);
+      assert.match(payload.messages[0].content, /Every explicitly requested visual element/u);
       assert.doesNotMatch(JSON.stringify(payload.messages), /QAOA|prior-qaoa/u);
       return toolResponse([
         "samples = [[-1, 1], [1, -1], [-1.2, 0.8], [1.1, -0.9]]",
@@ -3302,7 +3309,7 @@ async function requiredToolFormationRetryIsContextBoundedAndWorkerless() {
       {
         prompt:
           "Run Python and create one Markdown artifact from this supplied context. " +
-          "x".repeat(14_600),
+          "x".repeat(13_000),
       }
     ),
     (error) => error?.code === "ANALYSIS_CONTEXT_BUDGET_EXCEEDED" && error?.status === 413

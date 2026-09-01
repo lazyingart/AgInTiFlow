@@ -472,6 +472,52 @@ const xmlTextToolCalls = parseTextToolCalls(
 assert(xmlTextToolCalls.length === 2, "XML text tool-call parser did not detect multiple calls");
 assert(xmlTextToolCalls[0].function.name === "inspect_project", "XML text tool-call parser returned wrong first tool");
 assert(xmlTextToolCalls[1].function.arguments.includes('"depth":2'), "XML text tool-call parser returned wrong arguments");
+const bareFunctionToolText = [
+  "<function=execute_python_analysis>",
+  "<parameter=source>",
+  "def main():\n    emit_plot({'schemaVersion': '1', 'type': 'scatter', 'series': []})",
+  "</parameter>",
+  "<parameter=timeout_ms>120000</parameter>",
+  "</function>",
+  "</tool_call>",
+].join("\n");
+const bareFunctionToolCalls = parseTextToolCalls(bareFunctionToolText);
+assert(bareFunctionToolCalls.length === 1, "bare function tool-call parser did not detect LocalLLM call");
+assert(bareFunctionToolCalls[0].function.name === "execute_python_analysis", "bare function parser returned wrong tool name");
+const bareFunctionArgs = JSON.parse(bareFunctionToolCalls[0].function.arguments);
+assert(bareFunctionArgs.source.includes("emit_plot"), "bare function parser lost multiline source");
+assert(bareFunctionArgs.timeout_ms === 120000, "bare function parser did not preserve numeric parameter type");
+const normalizedBareFunction = normalizeTextToolCallResponse({
+  choices: [{ message: { role: "assistant", content: bareFunctionToolText } }],
+});
+assert(
+  normalizedBareFunction.choices[0].message.tool_calls?.[0]?.function?.name === "execute_python_analysis",
+  "bare function response was left as assistant text"
+);
+assert(normalizedBareFunction.choices[0].message.content === "", "bare function envelope leaked into assistant content");
+for (const [label, body] of [
+  ["truncated", "<function=read_file><parameter=path>notes.md</function>"],
+  ["duplicate parameter", "<function=read_file><parameter=path>a</parameter><parameter=path>b</parameter></function>"],
+  ["trailing junk", "<function=read_file><parameter=path>a</parameter></function> ignored"],
+]) {
+  assert(parseTextToolCalls(body).length === 0, `${label} bare function text unexpectedly produced tool calls`);
+}
+const prefixedBareFunctionText = "I will inspect it now. <function=read_file><parameter=path>a</parameter></function>";
+assert(
+  parseTextToolCalls(prefixedBareFunctionText).length === 1,
+  "bounded explanatory prefix prevented a valid bare function call"
+);
+const normalizedPrefixedBareFunction = normalizeTextToolCallResponse({
+  choices: [{ message: { role: "assistant", content: prefixedBareFunctionText } }],
+});
+assert(
+  normalizedPrefixedBareFunction.choices[0].message.content === "I will inspect it now.",
+  "bare function normalization did not preserve bounded explanatory text"
+);
+assert(
+  parseTextToolCalls("An HTML function element is ordinary prose.").length === 0,
+  "ordinary function prose became a tool call"
+);
 const malformedRequestedToolResponse = normalizeTextToolCallResponse({
   choices: [
     {

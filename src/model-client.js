@@ -340,6 +340,7 @@ export function parseTextToolCalls(content = "") {
   const text = String(content || "");
   if (!hasTextToolCallMarker(text)) return [];
   if (hasDsmlToolCallMarker(text)) return parseDsmlToolCalls(text);
+  if (hasBareFunctionToolCallMarker(text)) return parseBareFunctionToolCalls(text);
 
   const calls = [];
   for (const call of parseRequestedToolCalls(text)) calls.push(call);
@@ -404,8 +405,91 @@ function hasTextToolCallMarker(content = "") {
     /TOOL_CALLS\s*:/i.test(text) ||
     /Requested tools?\s*:/i.test(text) ||
     /<tool_calls?>/i.test(text) ||
+    hasBareFunctionToolCallMarker(text) ||
     hasDsmlToolCallMarker(text)
   );
+}
+
+const MAX_BARE_FUNCTION_TOOL_BYTES = 64 * 1024;
+const MAX_BARE_FUNCTION_TOOL_CALLS = 16;
+const MAX_BARE_FUNCTION_TOOL_PARAMETERS = 64;
+const MAX_BARE_FUNCTION_TOOL_PARAMETER_BYTES = 16 * 1024;
+
+function hasBareFunctionToolCallMarker(content = "") {
+  const text = String(content || "");
+  const scan = text.length > MAX_BARE_FUNCTION_TOOL_BYTES + 256
+    ? text.slice(0, MAX_BARE_FUNCTION_TOOL_BYTES + 256)
+    : text;
+  return /<function=[A-Za-z0-9_-]{1,128}>/u.test(scan);
+}
+
+function parseBareFunctionParameterValue(rawValue = "") {
+  const value = decodeXmlToolArgs(rawValue);
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (value === "null") return null;
+  if (/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/u.test(value)) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return value;
+}
+
+function parseBareFunctionToolCalls(content = "", callOffset = 0) {
+  const text = String(content || "");
+  if (Buffer.byteLength(text, "utf8") > MAX_BARE_FUNCTION_TOOL_BYTES) return [];
+
+  const calls = [];
+  const firstFunction = text.search(/<function=[A-Za-z0-9_-]{1,128}>/u);
+  if (firstFunction < 0) return [];
+  let offset = firstFunction;
+  while (offset < text.length) {
+    if (calls.length >= MAX_BARE_FUNCTION_TOOL_CALLS) return [];
+    const open = /<function=([A-Za-z0-9_-]{1,128})>/yu;
+    open.lastIndex = offset;
+    const functionMatch = open.exec(text);
+    if (!functionMatch || functionMatch.index !== offset) return [];
+
+    const functionBodyStart = open.lastIndex;
+    const functionClose = text.indexOf("</function>", functionBodyStart);
+    if (functionClose < 0) return [];
+    const body = text.slice(functionBodyStart, functionClose);
+    const args = {};
+    let bodyOffset = dsmlSkipWhitespace(body, 0);
+    let parameterCount = 0;
+    while (bodyOffset < body.length) {
+      if (parameterCount >= MAX_BARE_FUNCTION_TOOL_PARAMETERS) return [];
+      const parameterOpen = /<parameter=([A-Za-z0-9_-]{1,128})>/yu;
+      parameterOpen.lastIndex = bodyOffset;
+      const parameterMatch = parameterOpen.exec(body);
+      if (!parameterMatch || parameterMatch.index !== bodyOffset) return [];
+      const parameterName = parameterMatch[1];
+      if (Object.hasOwn(args, parameterName)) return [];
+
+      const valueStart = parameterOpen.lastIndex;
+      const parameterClose = body.indexOf("</parameter>", valueStart);
+      if (parameterClose < 0) return [];
+      const rawValue = body.slice(valueStart, parameterClose);
+      if (Buffer.byteLength(rawValue, "utf8") > MAX_BARE_FUNCTION_TOOL_PARAMETER_BYTES) return [];
+      args[parameterName] = parseBareFunctionParameterValue(rawValue);
+      parameterCount += 1;
+      bodyOffset = dsmlSkipWhitespace(body, parameterClose + "</parameter>".length);
+    }
+
+    calls.push({
+      id: `text-tool-${callOffset + calls.length + 1}`,
+      type: "function",
+      function: {
+        name: functionMatch[1],
+        arguments: JSON.stringify(normalizeTextToolArguments(functionMatch[1], args)),
+      },
+    });
+    offset = dsmlSkipWhitespace(text, functionClose + "</function>".length);
+    if (text.startsWith("</tool_call>", offset)) {
+      offset = dsmlSkipWhitespace(text, offset + "</tool_call>".length);
+    }
+  }
+  return calls;
 }
 
 function hasDsmlToolCallMarker(content = "") {
@@ -721,6 +805,7 @@ function textBeforeToolCallMarker(content = "") {
     .split("TOOL_CALLS:")[0]
     .split(/Requested tools?\s*:/i)[0]
     .split(/<tool_calls?>/i)[0]
+    .split(/<function=[A-Za-z0-9_-]{1,128}>/u)[0]
     .split(/<[|｜]{2}DSML[|｜]{2}tool_calls>/iu)[0]
     .split("<|tool_call>")[0]
     .trim();
