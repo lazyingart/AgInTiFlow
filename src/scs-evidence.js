@@ -454,6 +454,13 @@ function normalizeWrappedNegativePrefixes(goal = "") {
   );
 }
 
+function normalizeSoftLineWraps(goal = "") {
+  return normalizeWrappedNegativePrefixes(goal).replace(
+    /([A-Za-z0-9,])[ \t]*\r?\n[ \t]*(?=[a-z])/g,
+    "$1 "
+  );
+}
+
 function inferExactOutputPaths(goal = "") {
   const paths = [];
   const lines = String(goal || "").split(/\n/);
@@ -1406,10 +1413,17 @@ function isReadOnlyReadinessTask(goal = "") {
     /\b(?:readiness|capability)\s+(?:audit|check|report|assessment)\b/i.test(text) ||
     /\bwhether\s+(?:i|we|the\s+(?:agent|system))\s+can\b/i.test(text) ||
     /只读检查|只讀檢查|就绪检查|就緒檢查|能力检查|能力檢查|检查是否|檢查是否/.test(text);
+  const contractAuditSignal =
+    /\b(?:audit|inspect|review|assess|document|report\s+on)\s+(?:the\s+)?(?:current\s+)?[^.\n;]{0,140}\b(?:contract|policy|behavio(?:u)?r|workflow|implementation|routine|routing|readiness|capabilit(?:y|ies))\b/i.test(
+      text
+    ) ||
+    /(?:审计|審計|检查|檢查|审查|審查|评估|評估|记录|記錄)[^。；\n]{0,120}(?:契约|契約|策略|行为|行為|流程|实现|實現|例程|路由|就绪|就緒|能力)/.test(
+      text
+    );
   const noActionSignal =
-    /\b(?:do not|don't|dont|never|without)\b[^.\n;]{0,260}\b(?:generate|submit|upload|publish|deploy|log in|login|restart|edit|modify|delete|purchase|pay)\b/i.test(text) ||
+    /\b(?:do not|don't|dont|never|without)\b[^.\n;]{0,260}\b(?:send|generate|submit|upload|publish|deploy|open|browse|focus|restart|alter|change|edit|modify|write|mutate|delete|purchase|pay|log in|login)\b/i.test(text) ||
     /(?:不要|禁止)[^。\n；]{0,260}(?:生成|提交|上传|上傳|发布|發布|部署|登录|登入|重启|重啟|编辑|編輯|修改|删除|刪除|购买|購買|支付)/.test(text);
-  return readinessSignal && noActionSignal;
+  return (readinessSignal || contractAuditSignal) && noActionSignal;
 }
 
 function requiresSourceGrounding(goal = "") {
@@ -1550,7 +1564,7 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
 }
 
 function inferForbiddenActions(goal = "") {
-  const text = String(goal || "");
+  const text = normalizeSoftLineWraps(goal);
   const forbidden = [];
   const isAction = (value = "") =>
     /\b(use|open|click|browse|browser|upload|attach|submit|publish|deploy|run|execute|install|delete|remove|commit|push|call|api|alter|chang(?:e|ing)|edit(?:ing)?|fix(?:ing)?|modif(?:y|ying)|patch(?:ing)?|repair(?:ing)?|rewrit(?:e|ing)|send(?:ing)?|touch(?:ing)?|writ(?:e|ing))\b/i.test(
@@ -1601,7 +1615,7 @@ function inferRequiredToolCalls(goal = "") {
 }
 
 function stripForbiddenLanguage(goal = "") {
-  return normalizeWrappedNegativePrefixes(goal)
+  return normalizeSoftLineWraps(goal)
     .replace(/\b(do not|don't|dont|must not|should not|never|no need to)\s+([^.\n;]+)/gi, "")
     .replace(/\bwithout\s+([^.,:\uFF1A\n;]+)/gi, "")
     .replace(/不要([^。\n；]+)/g, "")

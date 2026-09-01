@@ -8,6 +8,7 @@ import {
   completionRequirementCoverageInstruction,
   continuationExecutionContractDirective,
   removeSupersededCompletionRepairInstructions,
+  repositorySourcePrecedenceInstruction,
   runAgent,
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
@@ -24,6 +25,36 @@ assert.match(completionCoverageInstruction, /Every distinct subject/i);
 assert.match(completionCoverageInstruction, /authoritative structured routine/i);
 assert.match(completionCoverageInstruction, /every relevant section/i);
 assert.match(completionCoverageInstruction, /instead of summarizing only failures or only successes/i);
+
+const sourcePrecedenceInstruction = repositorySourcePrecedenceInstruction();
+assert.match(sourcePrecedenceInstruction, /current direct user request/i);
+assert.match(sourcePrecedenceInstruction, /closest project instructions/i);
+assert.match(sourcePrecedenceInstruction, /most specific current implementation and tests/i);
+assert.match(sourcePrecedenceInstruction, /stale guides/i);
+assert.match(sourcePrecedenceInstruction, /AGENTS\.md/i);
+
+const readOnlyContractAuditGoal = `
+Audit the current source-intake contract and cover an ordinary video, a hypothetical
+same-chat publish request, a Finder card, and a document attachment. Do not send any
+message, publish anything, alter a queue, open a browser, or modify configuration.
+`;
+const readOnlyContractAudit = deriveScsTaskContract({
+  goal: readOnlyContractAuditGoal,
+  taskProfile: "auto",
+});
+assert.equal(readOnlyContractAudit.readOnlyReadiness, true);
+assert(
+  !readOnlyContractAudit.requiredEvidence.some((item) => item.category === "publish"),
+  "a hypothetical publish case inside a forbidden read-only contract audit required live publish evidence"
+);
+assert(
+  !readOnlyContractAudit.requiredEvidence.some((item) => item.category === "browser"),
+  "a forbidden browser action inside a read-only contract audit required browser evidence"
+);
+assert(
+  readOnlyContractAudit.forbiddenActions.some((item) => /publish anything/i.test(item)),
+  "the read-only audit lost its explicit publish prohibition"
+);
 
 assert.equal(
   finishResultClaimsIncompleteWork(
