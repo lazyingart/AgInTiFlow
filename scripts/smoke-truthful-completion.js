@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   completionRequirementCoverageInstruction,
   continuationExecutionContractDirective,
+  evaluateAuthoritativeStructuredCompletionCoverage,
   removeSupersededCompletionRepairInstructions,
   repositorySourcePrecedenceInstruction,
   runAgent,
@@ -25,6 +26,51 @@ assert.match(completionCoverageInstruction, /Every distinct subject/i);
 assert.match(completionCoverageInstruction, /authoritative structured routine/i);
 assert.match(completionCoverageInstruction, /every relevant section/i);
 assert.match(completionCoverageInstruction, /instead of summarizing only failures or only successes/i);
+
+const structuredHealthOutput = JSON.stringify({
+  ok: true,
+  degraded: true,
+  issues: ["wechat_login_required", "android_poll_stalled"],
+  queues: {
+    wechat: { pending: 0, active: 0, stale_count: 0, recent_failure_count: 0 },
+    wecom: { pending: 0, active: 0, stale_count: 0, recent_failure_count: 0 },
+  },
+  schedules: {
+    career_daily: { status: "waiting", running: true },
+    memo_daily: { status: "waiting", running: true },
+    echomind_daily_pdf: { status: "current", running: true },
+  },
+});
+const structuredHealthRecord = [{ output: structuredHealthOutput, authoritative: true }];
+const badStructuredCoverage = evaluateAuthoritativeStructuredCompletionCoverage({
+  goal: "Report queue health, schedule state, and authentication blockers concisely.",
+  candidateResult: "The system is degraded because WeChat login is required. Schedule state is not visible in the retained output.",
+  commandOutputs: structuredHealthRecord,
+});
+assert.equal(badStructuredCoverage.checked, true);
+assert.equal(badStructuredCoverage.ok, false);
+assert(badStructuredCoverage.missingSections.includes("queues"));
+assert(badStructuredCoverage.missingSections.includes("schedules"));
+assert(badStructuredCoverage.contradictedSections.includes("schedules"));
+assert.match(badStructuredCoverage.expectedSummary, /Queues: .*wechat pending 0 active 0.*wecom pending 0 active 0/i);
+assert.match(badStructuredCoverage.expectedSummary, /Other schedules: .*career_daily.*memo_daily.*echomind_daily_pdf/i);
+
+const goodStructuredCoverage = evaluateAuthoritativeStructuredCompletionCoverage({
+  goal: "Report queue health, schedule state, and authentication blockers concisely.",
+  candidateResult: "Both queues are clear: WeChat and WeCom have pending 0, active 0, stale 0, and failures 0. Schedules are running: career_daily and memo_daily are waiting, while echomind_daily_pdf is current. Authentication blockers are wechat_login_required and android_poll_stalled.",
+  commandOutputs: structuredHealthRecord,
+});
+assert.equal(goodStructuredCoverage.checked, true);
+assert.equal(goodStructuredCoverage.ok, true);
+assert.deepEqual(goodStructuredCoverage.missingSections, []);
+
+const unstructuredCoverage = evaluateAuthoritativeStructuredCompletionCoverage({
+  goal: "Explain the architecture.",
+  candidateResult: "The architecture is complete.",
+  commandOutputs: [{ output: "ordinary prose", authoritative: true }],
+});
+assert.equal(unstructuredCoverage.checked, false);
+assert.equal(unstructuredCoverage.ok, true);
 
 const sourcePrecedenceInstruction = repositorySourcePrecedenceInstruction();
 assert.match(sourcePrecedenceInstruction, /current direct user request/i);
@@ -966,6 +1012,63 @@ try {
     compactHealthFallback.events.filter((event) => event.type === "completion.empty_response_repair_requested").length,
     0,
     "finish-only reasoning repair still spent a separate empty-response repair turn"
+  );
+
+  const structuredCoverageFallback = await runCase({
+    id: "authoritative-structured-completion-coverage",
+    goal: [
+      "User request:",
+      "Report queue health, schedule state, and authentication blockers concisely. Read-only inspection; send nothing.",
+      "",
+      "Matched established routines",
+      `- \`wechat-chatops\` ready=true; commands=[${JSON.stringify(compactHealthCommand)}, "python agentic_tools/wechat_gui_agent/scripts/wechat_android_ingress.py --status"]; outputs=["messages", "files", "task records"]; guidance=For a read-only phone, message-intake, queue, or schedule question, run the canonical compact health command first; it already includes both Android lanes. Treat that current snapshot as authoritative and stop once it answers the request. Do not inspect raw chat text or private message ledgers or artifact directories, and do not send or mutate anything, unless the current request explicitly needs it.`,
+    ].join("\n"),
+    taskProfile: "chatops",
+    allowShellTool: true,
+    allowDestructive: true,
+    setup: async (workspace) => {
+      await fs.mkdir(path.join(workspace, "src", "agenticapp"), { recursive: true });
+      await fs.writeFile(path.join(workspace, "src", "agenticapp", "__init__.py"), "", "utf8");
+      await fs.writeFile(
+        path.join(workspace, "src", "agenticapp", "__main__.py"),
+        `print(${JSON.stringify(structuredHealthOutput)})\n`,
+        "utf8"
+      );
+    },
+    responses: [
+      assistant("", [toolCall("structured-health-command", "run_command", { command: compactHealthCommand })]),
+      assistant("", [toolCall("structured-health-bad-finish-1", "finish", {
+        result: "The system is degraded because WeChat login is required. Schedule state is not visible in the retained output.",
+      })]),
+      assistant("", [toolCall("structured-health-bad-finish-2", "finish", {
+        result: "WeChat authentication remains blocked. The schedule section was not returned.",
+      })]),
+    ],
+  });
+  assert.equal(structuredCoverageFallback.calls.length, 3);
+  assert.match(structuredCoverageFallback.result.result, /Queues: .*wechat pending 0 active 0.*wecom pending 0 active 0/i);
+  assert.match(structuredCoverageFallback.result.result, /Other schedules: .*career_daily.*memo_daily.*echomind_daily_pdf/i);
+  assert.match(structuredCoverageFallback.result.result, /issues=wechat_login_required,android_poll_stalled/i);
+  assert.equal(
+    structuredCoverageFallback.events.filter(
+      (event) => event.type === "tool.started" && event.data?.toolName === "run_command"
+    ).length,
+    1,
+    "structured summary repair reran the authoritative command"
+  );
+  assert.equal(
+    structuredCoverageFallback.events.filter(
+      (event) => event.type === "completion.structured_output_repair_requested"
+    ).length,
+    1,
+    "structured summary defect did not request exactly one finish-only repair"
+  );
+  assert.equal(
+    structuredCoverageFallback.events.filter(
+      (event) => event.type === "completion.structured_output_fallback"
+    ).length,
+    1,
+    "repeated bad structured summary did not use the deterministic verified fallback"
   );
 
   const wordCompletionWithoutArtifact = await runCase({
