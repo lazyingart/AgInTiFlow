@@ -2456,7 +2456,7 @@ async function requestedPlotSeriesAreValidatedBeforePublication() {
     "series = [",
     "  {'name':'Class 0','points':[{'x':0,'y':0}]},",
     "  {'name':'Class 1','points':[{'x':1,'y':1}]},",
-    "  {'name':'Support Vectors','points':[{'x':0.5,'y':0.5}]},",
+    "  {'name':'Support Vectors','points':[{'x':0,'y':0},{'x':1,'y':1}]},",
     ...(includeBoundary
       ? ["  {'name':'Decision Boundary','points':[{'x':0,'y':1},{'x':1,'y':0}]},"]
       : []),
@@ -2475,7 +2475,10 @@ async function requestedPlotSeriesAreValidatedBeforePublication() {
         series: Object.freeze([
           Object.freeze({ name: "Class 0", points: Object.freeze([{ x: 0, y: 0 }]) }),
           Object.freeze({ name: "Class 1", points: Object.freeze([{ x: 1, y: 1 }]) }),
-          Object.freeze({ name: "Support Vectors", points: Object.freeze([{ x: 0.5, y: 0.5 }]) }),
+          Object.freeze({
+            name: "Support Vectors",
+            points: Object.freeze([{ x: 0, y: 0 }, { x: 1, y: 1 }]),
+          }),
           ...(includeBoundary
             ? [Object.freeze({
                 name: "Decision Boundary",
@@ -2540,6 +2543,92 @@ async function requestedPlotSeriesAreValidatedBeforePublication() {
     "only the semantically complete plot may report successful execution"
   );
   assert.equal(result.text, "The verified decision boundary and requested points are ready.");
+  validated.coordinator.close();
+}
+
+async function linearClassifierGeometryIsValidatedBeforePublication() {
+  const prompt =
+    "Run Python to fit a linear SVM on a two-class sample and expose a decision-boundary plot with sample points and support vectors.";
+  const source = (marker) => [
+    `marker = '${marker}'`,
+    "emit_plot('Linear SVM', {'schemaVersion':'1','type':'scatter','xLabel':'x','yLabel':'y','series':[",
+    "  {'name':'Class 0 Points','points':[{'x':1,'y':1},{'x':2,'y':2}]},",
+    "  {'name':'Class 1 Points','points':[{'x':6,'y':6},{'x':7,'y':7}]},",
+    "  {'name':'Decision Boundary','points':[{'x':0,'y':8},{'x':8,'y':0}]},",
+    "  {'name':'Support Vectors','points':[{'x':2,'y':2},{'x':6,'y':6}]},",
+    "]})",
+  ].join("\n");
+  const artifactFor = (request, valid) => {
+    const artifact = Object.freeze({
+      title: "Linear SVM",
+      kind: "plot",
+      spec: Object.freeze({
+        schemaVersion: "1",
+        type: "scatter",
+        xLabel: "x",
+        yLabel: "y",
+        series: Object.freeze([
+          Object.freeze({ name: "Class 0 Points", points: Object.freeze([{ x: 1, y: 1 }, { x: 2, y: 2 }]) }),
+          Object.freeze({ name: "Class 1 Points", points: Object.freeze([{ x: 6, y: 6 }, { x: 7, y: 7 }]) }),
+          Object.freeze({
+            name: "Decision Boundary",
+            points: Object.freeze(valid ? [{ x: 0, y: 8 }, { x: 8, y: 0 }] : [{ x: 0, y: 20 }, { x: 8, y: 12 }]),
+          }),
+          Object.freeze({
+            name: "Support Vectors",
+            points: Object.freeze(valid ? [{ x: 2, y: 2 }, { x: 6, y: 6 }] : [{ x: 6, y: 6 }, { x: 7, y: 7 }]),
+          }),
+        ]),
+      }),
+    });
+    return sanitizeIntegrationArtifact({ id: artifactId(request, artifact), ...artifact });
+  };
+  let modelStep = 0;
+  let workerCalls = 0;
+  const published = [];
+  const progress = [];
+  const validated = fixture(async (_client, payload) => {
+    modelStep += 1;
+    if (modelStep === 1) return toolResponse(source("invalid_geometry"));
+    if (modelStep === 2) {
+      const feedback = JSON.parse(payload.messages.at(-1).content);
+      assert.equal(feedback.ok, false);
+      assert.match(feedback.stderr, /semantic validation/u);
+      assert.match(feedback.stderr, /does not separate/u);
+      assert.match(feedback.correction, /compute its parameters inside this execution/u);
+      return toolResponse(source("valid_geometry"));
+    }
+    assert.equal(payload.tools, undefined);
+    return textResponse("The geometrically verified linear classifier plot is ready.");
+  }, {
+    worker: fakeWorker((request, signal) => {
+      workerCalls += 1;
+      return terminalResult(
+        request,
+        signal,
+        [artifactFor(request, request.source.includes("marker = 'valid_geometry'"))],
+        { stdout: "fit_verified=true\n", stderr: "" }
+      );
+    }),
+  });
+  const result = await validated.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000173"),
+    { prompt },
+    {
+      onArtifact: (artifact) => published.push(artifact),
+      onProgress: (value) => progress.push(value),
+    }
+  );
+  assert.equal(modelStep, 3);
+  assert.equal(workerCalls, 2);
+  assert.equal(result.toolCalls, 2);
+  assert.equal(published.length, 1, "invalid classifier geometry must never be published");
+  assert.equal(
+    progress.filter(({ executionState }) => executionState === "succeeded").length,
+    1,
+    "only geometrically valid classifier evidence may report success"
+  );
+  assert.equal(result.text, "The geometrically verified linear classifier plot is ready.");
   validated.coordinator.close();
 }
 
@@ -3404,7 +3493,7 @@ async function requiredToolFormationRetryIsContextBoundedAndWorkerless() {
       {
         prompt:
           "Run Python and create one Markdown artifact from this supplied context. " +
-          "x".repeat(12_600),
+          "x".repeat(12_100),
       }
     ),
     (error) => error?.code === "ANALYSIS_CONTEXT_BUDGET_EXCEEDED" && error?.status === 413
@@ -4148,8 +4237,8 @@ async function explicitMultipleExecutionObligationsAreProven() {
     scope("run_00000000-0000-4000-8000-000000000112"),
     { prompt: "Run Python twice in separate calls and compare the successful results." }
   );
-  assert.equal(recoveredStep, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS + 1);
-  assert.equal(recoveredResult.toolCalls, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS);
+  assert.equal(recoveredStep, 4);
+  assert.equal(recoveredResult.toolCalls, 3);
   assert.equal(recoveredResult.executionStatus, "succeeded");
   assert.equal(
     recovered.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
@@ -4165,7 +4254,7 @@ async function explicitMultipleExecutionObligationsAreProven() {
   await assert.rejects(
     impossible.planner.run(
       scope("run_00000000-0000-4000-8000-000000000113"),
-      { prompt: "Run Python four times in separate calls." }
+      { prompt: "Run Python five times in separate calls." }
     ),
     (error) => error?.code === "ANALYSIS_TOOL_LIMIT" && error?.status === 400
   );
@@ -4255,9 +4344,9 @@ async function recoversPlotOnThirdExecutionAttempt() {
     scope("run_00000000-0000-4000-8000-000000000079"),
     { prompt: "Run Python to create a plot of e^x-x^e." }
   );
-  assert.equal(modelStep, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS + 1);
+  assert.equal(modelStep, 4);
   assert.equal(runtimeExecutions, 2);
-  assert.equal(result.toolCalls, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS);
+  assert.equal(result.toolCalls, 3);
   assert.equal(result.executionStatus, "succeeded");
   assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot"]);
   assert.equal(
@@ -4269,11 +4358,13 @@ async function recoversPlotOnThirdExecutionAttempt() {
 
 async function rejectsFalseCompletionAfterFailedOrArtifactlessExecution() {
   let failedStep = 0;
+  const unavailablePackages = ["numpy", "pandas", "matplotlib", "sklearn"];
   const failed = fixture(async (_client, payload) => {
     failedStep += 1;
-    if (failedStep === 1) return toolResponse("import numpy\nprint(numpy.arange(3))");
-    if (failedStep === 2) return toolResponse("import pandas\nprint(pandas.DataFrame())");
-    if (failedStep === 3) return toolResponse("import matplotlib\nprint(matplotlib.__version__)");
+    if (failedStep <= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS) {
+      const packageName = unavailablePackages[failedStep - 1];
+      return toolResponse(`import ${packageName}\nprint(${packageName})`);
+    }
     assert.equal(Object.hasOwn(payload, "tools"), false);
     return textResponse("Let me fix this and create the plot next.");
   });
@@ -4876,6 +4967,7 @@ await texPdfIntentCannotFinishWithProseOnly();
 await texPdfIntentCompilesAndSealsBothFiles();
 await compoundAnalysisPlotPaperAndPdfCompletesEveryStage();
 await requestedPlotSeriesAreValidatedBeforePublication();
+await linearClassifierGeometryIsValidatedBeforePublication();
 await compileItUsesImmediatePlotInsteadOfOlderDocument();
 await exactFencedTeXSourceIsBoundByteForByte();
 await texPdfMixedExternalActionDisclosesAfterCommit();

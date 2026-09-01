@@ -84,7 +84,7 @@ export const INTEGRATION_DOCUMENT_REVISION_SOURCE_SCHEMA_VERSION =
   "aginti-integration-document-revision-source-v1";
 export const INTEGRATION_DOCUMENT_REVISION_CONTEXT_BUDGET_MESSAGE =
   "The exact previously committed TeX source and revision request exceed the configured LocalLLM context window.";
-export const INTEGRATION_ANALYSIS_MAX_TOOL_CALLS = 3;
+export const INTEGRATION_ANALYSIS_MAX_TOOL_CALLS = 4;
 export const INTEGRATION_ANALYSIS_MAX_CONVERSATION_MESSAGES = 24;
 export const INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACTS = 8;
 export const INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACT_JSON_BYTES = 32 * 1024;
@@ -480,6 +480,7 @@ const SYSTEM_PROMPT = [
   "For an explicit plot, chart, or graph request, every candidate execution source must call emit_plot and a successful answer must include its plot artifact; prose, stdout, plotting-library calls, file saves, tables, and Markdown do not satisfy it.",
   "Every explicitly requested visual element must be present in the emitted plot data. Compute fitted curves, decision boundaries, margins, and highlighted selected points from the fitted parameters and expose them as named series; a plot containing only the input samples is incomplete when the user requested a fitted result.",
   "Give every requested visual element a stable literal series name that states what it represents, such as Decision Boundary, Support Vectors, Margin, Fitted Curve, Centroids, or Outliers. Every emitted series must contain real computed data; never emit an empty placeholder series.",
+  "For a binary linear classifier plot, emit each class as a separate named sample series, compute a nondegenerate straight Decision Boundary that separates the fitted class evidence, and emit Support Vectors only from the actual sample points with representation from both classes. The server validates these geometric postconditions and rejects decorative or internally inconsistent plots.",
   "For an explicit table request, a successful answer must include at least one emit_table artifact; prose, stdout, plots, and Markdown do not satisfy it. One execution may emit both a requested plot and table.",
   "For an explicit Markdown artifact request, a successful answer must include at least one emit_markdown artifact; prose, stdout, plots, and tables do not satisfy it. One execution may emit every requested artifact kind.",
   "A categorical plot spec is {schemaVersion:'1',type:'line'|'bar'|'area',labels:[...],series:[{name:'...',data:[finite numbers]}]}. A scatter plot spec is exactly {schemaVersion:'1',type:'scatter',xLabel:'...',yLabel:'...',series:[{name:'...',points:[{x:number,y:number}]}]}; scatter points are objects, never tuples or positional arrays. Multiple scatter series may represent classes, a fitted boundary, and selected points.",
@@ -1829,6 +1830,113 @@ function missingRequestedPlotElements(requirements, artifacts) {
   return missingRequestedPlotElementsFromNames(requirements, names);
 }
 
+function requestedLinearClassifierEvidence(value, requirements) {
+  const keys = new Set(requirements.map(({ key }) => key));
+  return keys.has("decision boundary") && keys.has("support vectors") &&
+    /\b(?:linear\s+)?(?:svm|support[-\s]+vector[-\s]+machine|binary\s+linear\s+classifier)\b/iu.test(
+      String(value || "").normalize("NFKC")
+    );
+}
+
+function invalidLinearClassifierPlotEvidence(artifacts) {
+  const plots = artifacts.filter(({ kind }) => kind === "plot");
+  const plot = plots.find(({ spec }) =>
+    spec?.type === "scatter" &&
+    spec.series.some(({ name }) => /\b(?:boundary|separator|separating|hyperplane)\b/iu.test(name)) &&
+    spec.series.some(({ name }) => /\bsupport\b.*\bvectors?\b|\bvectors?\b.*\bsupport\b/iu.test(name))
+  );
+  if (!plot) return Object.freeze(["a binary linear-classifier plot must use numeric scatter geometry"]);
+  const boundary = plot.spec.series.find(({ name }) =>
+    /\b(?:boundary|separator|separating|hyperplane)\b/iu.test(name)
+  );
+  const supports = plot.spec.series.find(({ name }) =>
+    /\bsupport\b.*\bvectors?\b|\bvectors?\b.*\bsupport\b/iu.test(name)
+  );
+  const excluded = /\b(?:boundary|separator|separating|hyperplane|support|margin)\b/iu;
+  const classes = plot.spec.series.filter(({ name, points }) =>
+    !excluded.test(name) && /\b(?:class|category|group|label|negative|positive)\b/iu.test(name) &&
+    Array.isArray(points) && points.length > 0
+  );
+  if (!Array.isArray(boundary?.points) || boundary.points.length < 2) {
+    return Object.freeze(["Decision Boundary must contain at least two computed points"]);
+  }
+  if (!Array.isArray(supports?.points) || supports.points.length < 2) {
+    return Object.freeze(["Support Vectors must contain computed points from both classes"]);
+  }
+  if (classes.length !== 2) {
+    return Object.freeze(["binary classifier samples must be emitted as exactly two separate class series"]);
+  }
+  const allPoints = [...classes.flatMap(({ points }) => points), ...boundary.points, ...supports.points];
+  const xValues = allPoints.map(({ x }) => x);
+  const yValues = allPoints.map(({ y }) => y);
+  const scale = Math.max(
+    1,
+    Math.max(...xValues) - Math.min(...xValues),
+    Math.max(...yValues) - Math.min(...yValues)
+  );
+  const tolerance = scale * 1e-7;
+  const first = boundary.points[0];
+  const last = boundary.points.at(-1);
+  const dx = last.x - first.x;
+  const dy = last.y - first.y;
+  const length = Math.hypot(dx, dy);
+  if (!Number.isFinite(length) || length <= tolerance) {
+    return Object.freeze(["Decision Boundary is degenerate"]);
+  }
+  const signedDistance = ({ x, y }) => (dx * (y - first.y) - dy * (x - first.x)) / length;
+  if (boundary.points.some((point) => Math.abs(signedDistance(point)) > tolerance)) {
+    return Object.freeze(["a linear Decision Boundary must be collinear"]);
+  }
+  const classDistances = classes.map(({ points }) => points.map(signedDistance));
+  const classMeans = classDistances.map((distances) =>
+    distances.reduce((total, distance) => total + distance, 0) / distances.length
+  );
+  if (
+    classMeans.some((mean) => Math.abs(mean) <= tolerance) ||
+    Math.sign(classMeans[0]) === Math.sign(classMeans[1])
+  ) {
+    return Object.freeze(["Decision Boundary does not separate the emitted class samples"]);
+  }
+  for (let index = 0; index < classDistances.length; index += 1) {
+    const expectedSign = Math.sign(classMeans[index]);
+    const correctlySeparated = classDistances[index].filter((distance) =>
+      Math.abs(distance) <= tolerance || Math.sign(distance) === expectedSign
+    ).length;
+    if (correctlySeparated / classDistances[index].length < 0.75) {
+      return Object.freeze(["Decision Boundary contradicts too many emitted class samples"]);
+    }
+  }
+  const samePoint = (left, right) =>
+    Math.abs(left.x - right.x) <= tolerance && Math.abs(left.y - right.y) <= tolerance;
+  const representedClasses = new Set();
+  for (const support of supports.points) {
+    const classIndex = classes.findIndex(({ points }) => points.some((point) => samePoint(point, support)));
+    if (classIndex < 0) {
+      return Object.freeze(["Support Vectors contain a point that is not in the emitted sample"]);
+    }
+    representedClasses.add(classIndex);
+  }
+  if (representedClasses.size !== 2) {
+    return Object.freeze(["Support Vectors do not include emitted samples from both classes"]);
+  }
+  for (let index = 0; index < classes.length; index += 1) {
+    const nearest = Math.min(...classDistances[index].map((distance) => Math.abs(distance)));
+    const selected = supports.points.filter((support) =>
+      classes[index].points.some((point) => samePoint(point, support))
+    );
+    if (!selected.some((support) => Math.abs(signedDistance(support)) <= nearest + tolerance)) {
+      return Object.freeze(["Support Vectors are not the nearest emitted samples to the Decision Boundary"]);
+    }
+  }
+  return Object.freeze([]);
+}
+
+function invalidRequestedPlotEvidence(prompt, requirements, artifacts) {
+  return requestedLinearClassifierEvidence(prompt, requirements)
+    ? invalidLinearClassifierPlotEvidence(artifacts)
+    : Object.freeze([]);
+}
+
 function rejectedPlotExecution(result, missingElements, { preflight = false } = {}) {
   const location = preflight ? "Python source" : "completed plot artifact";
   return Object.freeze({
@@ -1839,6 +1947,20 @@ function rejectedPlotExecution(result, missingElements, { preflight = false } = 
     stderr: `Requested plot series were missing from the ${location}: ${missingElements.join(", ")}.`,
     outputTruncated: false,
     durationMs: preflight ? 0 : Math.max(0, Number(result?.durationMs) || 0),
+    artifacts: Object.freeze([]),
+    resultDigest: null,
+  });
+}
+
+function rejectedSemanticPlotExecution(result, issues) {
+  return Object.freeze({
+    ok: false,
+    status: "failed",
+    exitCode: null,
+    stdout: "",
+    stderr: `Requested plot evidence failed semantic validation: ${issues.join("; ")}.`,
+    outputTruncated: false,
+    durationMs: Math.max(0, Number(result?.durationMs) || 0),
     artifacts: Object.freeze([]),
     resultDigest: null,
   });
@@ -2712,6 +2834,17 @@ function createPlanner({
             executionState: "failed",
           });
           return rejectedPlotExecution(execution, missingElements);
+        }
+        const semanticIssues = execution.ok === true
+          ? invalidRequestedPlotEvidence(input.prompt, plotElementRequirements, execution.artifacts)
+          : Object.freeze([]);
+        if (semanticIssues.length > 0) {
+          await emitProgress("executing", {
+            toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
+            toolCallNumber,
+            executionState: "failed",
+          });
+          return rejectedSemanticPlotExecution(execution, semanticIssues);
         }
         for (const artifact of stagedArtifacts) await captureArtifact(artifact);
         if (execution.ok === true && (terminalSuccessPending || executionSucceeded(execution.status))) {
