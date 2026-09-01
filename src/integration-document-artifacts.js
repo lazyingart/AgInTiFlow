@@ -270,12 +270,27 @@ function minimumFigureCount(prompt = "", conversation = [], priorMinimumFigureCo
     for (const message of conversation) {
       if (!message || message.role !== "user" || typeof message.content !== "string") continue;
       const text = quotedContextRemoved(message.content);
+      // Figure requests from unrelated analysis turns (for example, a Python
+      // plot immediately before a new TeX task) are not document lineage.
+      // Only an actual paired TeX/PDF request may contribute public
+      // conversation evidence here; committed revision lineage is carried by
+      // priorMinimumFigureCount below.
+      if (!explicitDocumentArtifactIntent(text)) continue;
       if (explicitlyExcludesFigures(text)) required = false;
       else if (DOCUMENT_FIGURE.test(affirmativeDocumentText(text))) required = true;
     }
   }
   if (DOCUMENT_FIGURE.test(affirmativeDocumentText(current))) required = true;
   return Math.max(required ? 1 : 0, priorMinimumFigureCount);
+}
+
+function isExplicitInitialDocumentCreation(prompt = "") {
+  const current = imperativeClause(affirmativeDocumentText(quotedContextRemoved(prompt)));
+  return (
+    DOCUMENT_INITIAL_CREATION_ACTION.test(current) &&
+    explicitDocumentArtifactIntent(prompt) &&
+    !DOCUMENT_PRIOR_INSTANCE_REFERENCE.test(current)
+  );
 }
 
 export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversation = [], activeDocument = false) {
@@ -288,6 +303,7 @@ export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversat
   const required =
     explicitDocumentArtifactIntent(prompt) ||
     (active && requestsDocumentFollowup(prompt, { allowImplicitReference }));
+  const explicitInitialCreation = isExplicitInitialDocumentCreation(prompt);
   return Object.freeze({
     schemaVersion: INTEGRATION_DOCUMENT_ARTIFACT_SCHEMA_VERSION,
     required,
@@ -297,7 +313,11 @@ export function classifyIntegrationDocumentArtifactIntent(prompt = "", conversat
       schemaVersion: INTEGRATION_DOCUMENT_COMPILE_REQUIREMENTS_SCHEMA_VERSION,
       profile: "self-contained-tex-v1",
       minimumFigureCount: required
-        ? minimumFigureCount(prompt, conversation, context.minimumFigureCount)
+        ? minimumFigureCount(
+            prompt,
+            explicitInitialCreation ? [] : conversation,
+            explicitInitialCreation ? 0 : context.minimumFigureCount
+          )
         : 0,
     }),
   });
@@ -312,10 +332,7 @@ export function isIntegrationDocumentArtifactRevision(prompt = "", conversation 
   const allowImplicitReference = context.explicit
     ? context.allowImplicitReference
     : context.active || conversationState.immediate || !conversationState.active;
-  const explicitInitialCreation =
-    DOCUMENT_INITIAL_CREATION_ACTION.test(current) &&
-    explicitDocumentArtifactIntent(prompt) &&
-    !DOCUMENT_PRIOR_INSTANCE_REFERENCE.test(current);
+  const explicitInitialCreation = isExplicitInitialDocumentCreation(prompt);
   return (
     requestsDocumentFollowup(prompt, { allowImplicitReference }) &&
     !DOCUMENT_NEW_INSTANCE.test(current) &&

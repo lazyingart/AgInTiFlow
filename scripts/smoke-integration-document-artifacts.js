@@ -88,6 +88,31 @@ const revision = classifyIntegrationDocumentArtifactIntent("revise it and recomp
 assert.equal(revision.required, true);
 assert.equal(revision.requirements.minimumFigureCount, 1, "explicit revision retains the figure requirement");
 assert.equal(isIntegrationDocumentArtifactRevision("revise it and recompile", priorConversation), true);
+
+const unrelatedPlotConversation = [
+  {
+    role: "user",
+    content: "Run bounded Python and create one real line-plot artifact with labeled axes and title.",
+  },
+  { role: "assistant", content: "The verified Python plot is ready." },
+];
+assert.equal(
+  classifyIntegrationDocumentArtifactIntent(
+    "Create exactly two downloadable files named qaoa.tex and qaoa.pdf. Compile a short LaTeX note.",
+    unrelatedPlotConversation,
+  ).requirements.minimumFigureCount,
+  0,
+  "an unrelated analysis plot must not become a TeX figure requirement",
+);
+assert.equal(
+  classifyIntegrationDocumentArtifactIntent(
+    "Create another new LaTeX report and compiled PDF without requesting a figure.",
+    priorConversation,
+    { active: true, allowImplicitReference: true, minimumFigureCount: 1 },
+  ).requirements.minimumFigureCount,
+  0,
+  "a new document must not inherit the previous document's figure requirement",
+);
 for (const prompt of [
   "Update it",
   "Change it",
