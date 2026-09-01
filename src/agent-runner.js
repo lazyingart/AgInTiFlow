@@ -4157,6 +4157,7 @@ export function resetGoalScopedRuntimeState(state = {}) {
   const keys = [
     "artifactProgress",
     "completionEvidenceRepair",
+    "structuredCompletionRepair",
     "dataProjectWorkflow",
     "durableEvidenceCategories",
     "durableGitActions",
@@ -4243,6 +4244,7 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
   const keys = [
     "artifactProgress",
     "completionEvidenceRepair",
+    "structuredCompletionRepair",
     "failedTestRecoveryPacket",
     "scs",
     "stepBudget",
@@ -22538,6 +22540,93 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
       },
     };
   }
+  const structuredCoverage = String(candidateResult || "").trim()
+    ? evaluateAuthoritativeStructuredCompletionCoverage({
+        goal: completionContractGoal(config, state),
+        candidateResult,
+        commandOutputs: assessment.commandOutputs,
+      })
+    : {
+        checked: false,
+        ok: true,
+        requestedSections: [],
+        missingSections: [],
+        contradictedSections: [],
+        expectedSummary: "",
+        key: "",
+      };
+  if (structuredCoverage.checked) {
+    const coverageDetail = {
+      step,
+      mode,
+      ok: structuredCoverage.ok,
+      requestedSections: structuredCoverage.requestedSections,
+      missingSections: structuredCoverage.missingSections,
+      contradictedSections: structuredCoverage.contradictedSections,
+    };
+    await store.appendEvent("completion.structured_output_assessed", coverageDetail);
+    observers.event("completion.structured_output_assessed", coverageDetail);
+  }
+  if (assessment.ok && !claimsIncompleteWork && structuredCoverage.checked && !structuredCoverage.ok) {
+    state.meta = state.meta || {};
+    const prior = state.meta.structuredCompletionRepair || {};
+    const attempts = prior.key === structuredCoverage.key
+      ? Math.max(0, Number(prior.attempts || 0))
+      : 0;
+    const detail = {
+      step,
+      mode,
+      key: structuredCoverage.key,
+      repairAttempt: attempts + 1,
+      requestedSections: structuredCoverage.requestedSections,
+      missingSections: structuredCoverage.missingSections,
+      contradictedSections: structuredCoverage.contradictedSections,
+      expectedSummary: structuredCoverage.expectedSummary,
+    };
+    await store.appendEvent("completion.structured_output_rejected", detail);
+    observers.event("completion.structured_output_rejected", detail);
+    if (attempts < 1) {
+      state.meta.structuredCompletionRepair = {
+        key: structuredCoverage.key,
+        attempts: attempts + 1,
+        step,
+        goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+        at: new Date().toISOString(),
+      };
+      const affectedSections = [
+        ...structuredCoverage.missingSections,
+        ...structuredCoverage.contradictedSections,
+      ];
+      const instruction = [
+        "Your proposed final answer omitted or contradicted requested sections that are present in the retained authoritative structured result.",
+        affectedSections.length
+          ? `Correct these sections: ${[...new Set(affectedSections)].join(", ")}.`
+          : "Correct the structured status summary.",
+        "Do not rerun the command, call another tool, or claim that a visible section is unavailable.",
+        structuredCoverage.expectedSummary
+          ? `Authoritative evidence summary: ${structuredCoverage.expectedSummary}`
+          : "Use the retained authoritative output already in this session.",
+        "Return one concise natural answer that covers every requested section, then finish.",
+      ].filter(Boolean).join(" ");
+      state.messages.push({ role: "user", content: instruction });
+      await store.appendEvent("completion.structured_output_repair_requested", {
+        ...detail,
+        instruction,
+      });
+      observers.event("completion.structured_output_repair_requested", detail);
+      return { action: "retry", assessment, detail };
+    }
+    const result = verifiedCompletionFallback(assessment, state);
+    await store.appendEvent("completion.structured_output_fallback", {
+      ...detail,
+      result,
+    });
+    observers.event("completion.structured_output_fallback", detail);
+    return { action: "accept", assessment, detail, resultOverride: result };
+  }
+  if (structuredCoverage.ok && state.meta?.structuredCompletionRepair) {
+    delete state.meta.structuredCompletionRepair;
+  }
   const hasRealBlocker = completionExternalBlockerCanClose({
     candidateResult,
     evidenceLedger: assessment.ledger,
@@ -22880,6 +22969,180 @@ function summarizeJsonCommandOutput(output = "") {
     .slice(0, 8)
     .map(([key, value]) => `${safePublicLabel(key)}=${safePublicStatus(value)}`);
   return pairs.length ? `Observed JSON status: ${pairs.join(", ")}.` : "";
+}
+
+const AUTHORITATIVE_STRUCTURED_SECTION_ALIASES = Object.freeze({
+  queues: ["queue", "queues", "backlog", "队列", "佇列"],
+  schedules: ["schedule", "schedules", "scheduler", "schedulers", "日程", "定时", "定時", "排程"],
+  issues: ["issue", "issues", "problem", "problems", "error", "errors", "blocker", "blockers", "auth", "authentication", "login", "问题", "問題", "错误", "錯誤", "阻塞", "登录", "登入", "授权", "授權"],
+  ingress: ["ingress", "receiver", "receivers", "inbound", "intake", "message intake", "入口", "接收", "收件"],
+});
+
+function structuredSectionAliases(key = "") {
+  const normalized = String(key || "").trim().toLowerCase();
+  const aliases = new Set(AUTHORITATIVE_STRUCTURED_SECTION_ALIASES[normalized] || []);
+  if (normalized) {
+    aliases.add(normalized);
+    aliases.add(normalized.replace(/_/g, " "));
+    if (normalized.endsWith("s") && normalized.length > 3) aliases.add(normalized.slice(0, -1));
+  }
+  return [...aliases].filter(Boolean);
+}
+
+function completionTextHasAny(value = "", terms = []) {
+  const normalized = String(value || "").toLowerCase();
+  return terms.some((rawTerm) => {
+    const term = String(rawTerm || "").trim().toLowerCase();
+    if (!term) return false;
+    if (!/^[a-z0-9_\- ]+$/u.test(term)) return normalized.includes(term);
+    const escaped = term
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/[ _-]+/g, "[ _-]+");
+    return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:$|[^a-z0-9])`, "iu").test(normalized);
+  });
+}
+
+function structuredSectionHasFalseAbsence(candidateResult = "", aliases = []) {
+  const sentences = String(candidateResult || "")
+    .split(/(?<=[.!?。！？;；\n])/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const absence = /(?:\b(?:not|isn['’]?t|wasn['’]?t|no)\b.{0,70}\b(?:visible|available|present|returned|shown|included|provided|reported|exposed|found)\b|\b(?:missing|unavailable|unknown|absent)\b|未(?:显示|返回|提供|包含|找到|看到)|不可见|不存在|没有(?:显示|返回|提供|包含))/iu;
+  return sentences.some((sentence) => completionTextHasAny(sentence, aliases) && absence.test(sentence));
+}
+
+function structuredChildTerms(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.keys(value)
+    .flatMap((key) => [key, ...String(key).split(/[_\-\s]+/u)])
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter((item) => item.length >= 3 && !["daily", "status", "state", "count"].includes(item));
+}
+
+function issueValueTerms(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .flatMap((item) => [String(item || ""), ...String(item || "").split(/[_\-\s]+/u)])
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length >= 4 && !["required", "issue", "error"].includes(item));
+}
+
+function authoritativeStructuredRequestText(goal = "") {
+  const text = String(goal || "");
+  const evidenceLine = text.match(/^AGINTI_EVIDENCE_SCOPE_JSON:\s*(\{[^\n]+\})/mu);
+  if (evidenceLine) {
+    try {
+      const parsed = JSON.parse(evidenceLine[1]);
+      if (String(parsed?.request || "").trim()) return String(parsed.request).trim();
+    } catch {
+      // Fall through to the visible user-request packet or the direct goal.
+    }
+  }
+  const marker = text.match(/(?:^|\n)User request:\s*\n/iu);
+  if (!marker || marker.index === undefined) return text;
+  const start = marker.index + marker[0].length;
+  const tail = text.slice(start);
+  const boundary = tail.search(/\n(?:Matched established routines|Operating contract|Execution contract|Agent context|Task packet)\b/iu);
+  return (boundary >= 0 ? tail.slice(0, boundary) : tail).trim();
+}
+
+function requestedAuthoritativeStructuredSections(goal = "", data = {}) {
+  const request = authoritativeStructuredRequestText(goal);
+  const requested = [];
+  for (const key of Object.keys(data || {})) {
+    const normalized = String(key || "").trim().toLowerCase();
+    const aliasKey = /ingress/i.test(normalized) ? "ingress" : normalized;
+    const aliases = structuredSectionAliases(aliasKey);
+    if (completionTextHasAny(request, aliases)) requested.push(normalized);
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(data || {}, "issues") &&
+    completionTextHasAny(request, AUTHORITATIVE_STRUCTURED_SECTION_ALIASES.issues)
+  ) {
+    requested.push("issues");
+  }
+  return [...new Set(requested)];
+}
+
+function authoritativeStructuredSectionCovered(key = "", value, candidateResult = "") {
+  const normalized = String(key || "").toLowerCase();
+  const aliasKey = /ingress/i.test(normalized) ? "ingress" : normalized;
+  const aliases = structuredSectionAliases(aliasKey);
+  if (structuredSectionHasFalseAbsence(candidateResult, aliases)) {
+    return { covered: false, contradicted: true };
+  }
+  const sectionMentioned = completionTextHasAny(candidateResult, aliases);
+  const childMentioned = completionTextHasAny(candidateResult, structuredChildTerms(value));
+  if (normalized === "queues") {
+    const queueState = /\b(?:pending|active|stale|failures?|failed|running|clear|healthy|idle|empty|backlog)\b|待处理|活动|运行|陈旧|失效|失败|健康|空闲|清空/iu.test(candidateResult);
+    return { covered: (sectionMentioned || childMentioned) && queueState, contradicted: false };
+  }
+  if (normalized === "schedules") {
+    const scheduleState = /\b(?:waiting|pending|running|delivered|current|due|retrying|retry|healthy|idle|enabled|disabled|paused|complete|completed)\b|等待|待处理|运行|已送达|已发送|重试|健康|启用|停用|暂停|完成/iu.test(candidateResult);
+    return { covered: (sectionMentioned || childMentioned) && scheduleState && childMentioned, contradicted: false };
+  }
+  if (normalized === "issues") {
+    const issueTerms = issueValueTerms(value);
+    const noIssues = Array.isArray(value) && value.length === 0 && /\b(?:no|zero)\s+(?:issues?|errors?|blockers?)\b|没有(?:问题|错误|阻塞)/iu.test(candidateResult);
+    return {
+      covered: noIssues || ((sectionMentioned || completionTextHasAny(candidateResult, issueTerms)) && completionTextHasAny(candidateResult, issueTerms)),
+      contradicted: false,
+    };
+  }
+  if (/ingress/i.test(normalized)) {
+    const ingressState = /\b(?:reach|reaches|reachable|received|receives|working|healthy|blocked|stale|unknown|ok)\b|可达|收到|接收|正常|健康|阻塞|未知/iu.test(candidateResult);
+    return { covered: (sectionMentioned || childMentioned) && ingressState, contradicted: false };
+  }
+  if (value && typeof value === "object") {
+    return { covered: sectionMentioned && childMentioned, contradicted: false };
+  }
+  const scalar = String(value ?? "").trim().toLowerCase();
+  const scalarTerms = scalar
+    .split(/[_\-\s]+/u)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2);
+  const scalarCovered = !scalar ||
+    completionTextHasAny(candidateResult, [scalar]) ||
+    (scalarTerms.length > 1 && scalarTerms.every((term) => completionTextHasAny(candidateResult, [term])));
+  return {
+    covered: sectionMentioned && scalarCovered,
+    contradicted: false,
+  };
+}
+
+export function evaluateAuthoritativeStructuredCompletionCoverage({
+  goal = "",
+  candidateResult = "",
+  commandOutputs = [],
+} = {}) {
+  const authoritative = [...(Array.isArray(commandOutputs) ? commandOutputs : [])]
+    .reverse()
+    .find((item) => item?.authoritative === true && parseCommandJsonOutput(item.output));
+  if (!authoritative) {
+    return { checked: false, ok: true, requestedSections: [], missingSections: [], contradictedSections: [], expectedSummary: "", key: "" };
+  }
+  const data = parseCommandJsonOutput(authoritative.output);
+  const requestedSections = requestedAuthoritativeStructuredSections(goal, data);
+  if (!requestedSections.length) {
+    return { checked: false, ok: true, requestedSections: [], missingSections: [], contradictedSections: [], expectedSummary: summarizeJsonCommandOutput(authoritative.output), key: "" };
+  }
+  const missingSections = [];
+  const contradictedSections = [];
+  for (const key of requestedSections) {
+    const coverage = authoritativeStructuredSectionCovered(key, data[key], candidateResult);
+    if (!coverage.covered) missingSections.push(key);
+    if (coverage.contradicted) contradictedSections.push(key);
+  }
+  const expectedSummary = summarizeJsonCommandOutput(authoritative.output);
+  return {
+    checked: true,
+    ok: missingSections.length === 0 && contradictedSections.length === 0,
+    requestedSections,
+    missingSections,
+    contradictedSections,
+    expectedSummary,
+    key: hashForLog(`${String(goal || "")}\0${String(authoritative.output || "")}\0${requestedSections.join(",")}`),
+  };
 }
 
 function completionCommandOutputRecords(scoped = {}) {
@@ -27689,7 +27952,9 @@ async function runAgentOnceUnlocked(config) {
             toolResult: completionDecision.artifactBlock,
           });
         }
-        let fallback = redactSensitiveText(assistantMessage.content?.trim() || "");
+        let fallback = redactSensitiveText(
+          completionDecision.resultOverride || assistantMessage.content?.trim() || ""
+        );
         if (!fallback) {
           const emptyDecision = await repairEmptyCompletion({
             config,
@@ -27936,7 +28201,10 @@ async function runAgentOnceUnlocked(config) {
               toolResult: completionDecision.artifactBlock,
             });
           }
-          const completionResult = canonicalizeVerifiedArtifactCompletion(state, toolResult.result || "");
+          const completionResult = canonicalizeVerifiedArtifactCompletion(
+            state,
+            completionDecision.resultOverride || toolResult.result || ""
+          );
           if (config.scsActive) {
             const decision = await reviewScsFinish(client, config, state, completionResult, {
               events: await store.loadEvents(),
