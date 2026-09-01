@@ -33,9 +33,11 @@ import {
   validateDocumentWorkerCompileRequest,
 } from "./integration-document-worker-contract.js";
 import {
+  INTEGRATION_DEEP_RESEARCH_TOOL_NAME,
   INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
   createIntegrationGroundedSearchArtifactAuthority,
   deriveIntegrationGroundedSearchDomainConstraint,
+  inferIntegrationDeepResearchRequestFromPrompt,
   inferIntegrationGroundedSearchRequestFromPrompt,
   integrationGroundedSearchBoundArtifactId,
   planIntegrationGroundedSearchQuery,
@@ -94,6 +96,7 @@ import {
   INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES,
   INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
   INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT,
+  INTEGRATION_MAXIMUM_SEARCH_SOURCES,
   INTEGRATION_RPC_PATHS,
   canonicalJson,
   contractDigest,
@@ -455,6 +458,12 @@ function publicFailureMessage(error, code = publicErrorCode(error)) {
   }
   if (code.startsWith("GROUNDED_SEARCH_")) {
     return "Grounded search is temporarily unavailable. Your prompt and search settings were preserved; resume this run to try again.";
+  }
+  if (code === "DEEP_RESEARCH_NO_USABLE_SOURCES") {
+    return "Deep research completed, but no safe evidence sources were available. Resume to try again or use a narrower question.";
+  }
+  if (code.startsWith("DEEP_RESEARCH_")) {
+    return "Deep research did not complete. Your prompt and research settings were preserved; resume this run to try again.";
   }
   return "Analysis could not be completed. You can resume this run.";
 }
@@ -4787,18 +4796,19 @@ function createService(options, { testOnly }) {
       if (state.started && !state.terminal) {
         const tex = state.label === "TeX document compiler";
         const search = state.label === "Grounded search";
+        const research = state.label === "Deep research";
         const publicSummary = tex
           ? eventType === "tool.completed"
             ? "TeX source and PDF compiled."
             : /cancelled/iu.test(summary)
               ? "TeX document compilation was cancelled."
               : "TeX document compilation did not complete."
-          : search
+          : search || research
             ? eventType === "tool.completed"
-              ? "Grounded sources retrieved."
+              ? research ? "Deep research report completed." : "Grounded sources retrieved."
               : /cancelled/iu.test(summary)
-                ? "Grounded search was cancelled."
-                : "Grounded search did not complete."
+                ? research ? "Deep research was cancelled." : "Grounded search was cancelled."
+                : research ? "Deep research did not complete." : "Grounded search did not complete."
             : summary;
         appendEvent(
           run,
@@ -5641,6 +5651,7 @@ function createService(options, { testOnly }) {
         INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
         INTEGRATION_FILE_WORKER_TOOL_NAME,
         INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+        INTEGRATION_DEEP_RESEARCH_TOOL_NAME,
       ]).has(progress.toolName)
     ) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis progress tool is invalid.", { status: 502 });
@@ -5667,6 +5678,8 @@ function createService(options, { testOnly }) {
         ? "file-artifact"
       : progress.toolName === INTEGRATION_GROUNDED_SEARCH_TOOL_NAME
         ? "grounded-search"
+      : progress.toolName === INTEGRATION_DEEP_RESEARCH_TOOL_NAME
+        ? "deep-research"
         : "analysis";
     return `${prefix}-${Math.min(INTEGRATION_ANALYSIS_MAX_TOOL_CALLS, Math.max(1, number))}`;
   }
@@ -5675,6 +5688,7 @@ function createService(options, { testOnly }) {
     const tex = toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME;
     const file = toolName === INTEGRATION_FILE_WORKER_TOOL_NAME;
     const search = toolName === INTEGRATION_GROUNDED_SEARCH_TOOL_NAME;
+    const research = toolName === INTEGRATION_DEEP_RESEARCH_TOOL_NAME;
     const terminalSuccess = new Set(["succeeded", "completed"]).has(executionState);
     const terminalFailure = new Set([
       "failed",
@@ -5687,16 +5701,16 @@ function createService(options, { testOnly }) {
       "worker_error",
     ]).has(executionState);
     return Object.freeze({
-      label: tex ? "TeX document compiler" : file ? "Verified file builder" : search ? "Grounded search" : "Python analysis",
+      label: tex ? "TeX document compiler" : file ? "Verified file builder" : search ? "Grounded search" : research ? "Deep research" : "Python analysis",
       terminalSuccess,
       terminalFailure,
       summary: terminalSuccess
-        ? tex ? "TeX source and PDF compiled." : file ? "Verified files committed." : search ? "Grounded sources retrieved." : "Bounded Python analysis completed."
+        ? tex ? "TeX source and PDF compiled." : file ? "Verified files committed." : search ? "Grounded sources retrieved." : research ? "Deep research report completed." : "Bounded Python analysis completed."
         : terminalFailure
-          ? tex ? "TeX document compilation did not complete." : file ? "Verified file creation did not complete." : search ? "Grounded search did not complete." : "Bounded Python analysis did not complete."
+          ? tex ? "TeX document compilation did not complete." : file ? "Verified file creation did not complete." : search ? "Grounded search did not complete." : research ? "Deep research did not complete." : "Bounded Python analysis did not complete."
           : new Set(["starting", "queued"]).has(executionState)
-            ? tex ? "TeX document compilation is preparing." : file ? "Verified file creation is preparing." : search ? "Grounded search is preparing." : "Bounded Python analysis is preparing."
-            : tex ? "TeX document compilation is running." : file ? "Verified files are being sealed locally." : search ? "Grounded search is running." : "Bounded Python analysis is running.",
+            ? tex ? "TeX document compilation is preparing." : file ? "Verified file creation is preparing." : search ? "Grounded search is preparing." : research ? "Deep research is preparing." : "Bounded Python analysis is preparing."
+            : tex ? "TeX document compilation is running." : file ? "Verified files are being sealed locally." : search ? "Grounded search is running." : research ? "Deep research is running." : "Bounded Python analysis is running.",
     });
   }
 
@@ -6977,8 +6991,14 @@ function createService(options, { testOnly }) {
         : payload.threadId
     );
     const prompt = publicText(normalizePrompt(payload.input?.text ?? ""), "analysis prompt");
+    const inferredResearch = inferIntegrationDeepResearchRequestFromPrompt(prompt);
     const search = payload.input?.search === undefined
-      ? inferIntegrationGroundedSearchRequestFromPrompt(prompt) ?? undefined
+      ? inferredResearch === null
+        ? inferIntegrationGroundedSearchRequestFromPrompt(prompt) ?? undefined
+        : validateIntegrationSearch({
+            mode: inferredResearch.mode,
+            limit: INTEGRATION_MAXIMUM_SEARCH_SOURCES,
+          })
       : validateIntegrationSearch(payload.input.search);
     if (search !== undefined && !searchEnabled) {
       conflict("GROUNDED_SEARCH_NOT_READY", "Grounded search is not enabled for this Agent runtime.");
@@ -7413,6 +7433,7 @@ function createService(options, { testOnly }) {
           ? {}
           : { attachments: true, attachmentAuthority: fixedAttachmentAuthority }),
         ...(searchEnabled ? { search: true } : {}),
+        ...(searchEnabled ? { research: true } : {}),
         ...(documentCreationEnabled || fileCreationEnabled ? { files: true } : {}),
         ...(plannerRoleStates === undefined ? {} : { roles: plannerRoleStates }),
       });

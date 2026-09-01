@@ -19,6 +19,7 @@ export const INTEGRATION_GROUNDED_SEARCH_SCHEMA_VERSION = "aginti-integration-gr
 export const INTEGRATION_GROUNDED_SEARCH_ACTIVATION_SCHEMA_VERSION =
   "aginti-integration-grounded-search-activation-v1";
 export const INTEGRATION_GROUNDED_SEARCH_TOOL_NAME = "grounded_search";
+export const INTEGRATION_DEEP_RESEARCH_TOOL_NAME = "deep_research";
 export const INTEGRATION_GROUNDED_SEARCH_DOMAIN_POLICY_SCHEMA_VERSION =
   "aginti-integration-grounded-search-domain-policy-v1";
 export const INTEGRATION_GROUNDED_SEARCH_QUERY_PLAN_SCHEMA_VERSION =
@@ -28,12 +29,19 @@ export const INTEGRATION_GROUNDED_SEARCH_ARTIFACT_AUTHORITY_SCHEMA_VERSION =
 export const LOCALLLM_GROUNDED_SEARCH_REQUEST_SCHEMA_VERSION = "localllm-grounded-search-request-v2";
 export const LOCALLLM_GROUNDED_SEARCH_RESPONSE_SCHEMA_VERSION = "localllm-grounded-search-response-v2";
 export const LOCALLLM_GROUNDED_SEARCH_CONSTRAINTS_SCHEMA_VERSION = "localllm-grounded-search-policy-v1";
+export const LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION = "localllm/research-task/v2";
 export const INTEGRATION_GROUNDED_SEARCH_ENDPOINT = "http://127.0.0.1:18081/api/search/v2";
 export const INTEGRATION_GROUNDED_SEARCH_LOCAL_TARGET_ENDPOINT = "http://127.0.0.1:8008/api/search/v2";
+export const INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT = "http://127.0.0.1:18081/api/research/v2/create";
+export const INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT = "http://127.0.0.1:18081/api/research/v2/status";
+export const INTEGRATION_DEEP_RESEARCH_CANCEL_ENDPOINT = "http://127.0.0.1:18081/api/research/v2/cancel";
 export const INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS = 60_000;
 export const INTEGRATION_GROUNDED_SEARCH_MAX_REQUEST_BYTES = 16 * 1024;
 export const INTEGRATION_GROUNDED_SEARCH_MAX_RESPONSE_BYTES = 256 * 1024;
 export const INTEGRATION_GROUNDED_SEARCH_DEFAULT_DIRECTIVE_LIMIT = 8;
+export const INTEGRATION_DEEP_RESEARCH_POLL_INTERVAL_MS = 1_000;
+export const INTEGRATION_DEEP_RESEARCH_MAX_RESPONSE_BYTES = 256 * 1024;
+export const INTEGRATION_DEEP_RESEARCH_MAX_REPORT_BYTES = 96 * 1024;
 
 const WEB_READINESS_QUERY = "grounded web search operational readiness";
 const PAPERS_READINESS_QUERY = "grounded papers search operational readiness";
@@ -54,6 +62,10 @@ const EXPLICIT_SEARCH_NEGATION =
   /\b(?:do\s+not|don't|dont|never|avoid|skip|without|no\s+need\s+to)\b[^.!?;\r\n]{0,120}\b(?:search|retrieval|sources?|citations?|grounded|web|internet|online|papers?|scholarly|academic|arxiv|literature)\b|\b(?:without|no)\s+(?:grounded\s+)?(?:search|retrieval|sources?|citations?|web|papers?|arxiv)\b/iu;
 const EXPLICIT_GROUNDED_SEARCH_DIRECTIVE =
   /\b(?:use|using|run|perform|do|include|with|via|consult|retrieve|search|find|look\s+up)\b[^.!?;\r\n]{0,160}\b(?:(?:grounded|bounded|real|live|current)\s+)?(?:web|internet|online|papers?|paper|scholarly|academic|arxiv|literature|sources?|citations?|evidence)\s+(?:search|retrieval|sources?|citations?|evidence)\b|\b(?:grounded|bounded|real|live|current)\s+(?:web\s+)?(?:and\s+)?(?:paper\s+)?search\b/iu;
+const EXPLICIT_DEEP_RESEARCH_NEGATION =
+  /\b(?:do\s+not|don't|dont|never|avoid|skip|without|no\s+need\s+to)\b[^.!?;\r\n]{0,120}\b(?:deep|thorough|comprehensive|in[-\s]?depth|extensive)\s+(?:research|investigation|review)\b|(?:不要|无需|無需|避免|跳过|跳過)[^。！？\r\n]{0,80}(?:深度|深入|全面)(?:研究|调研|調研|检索|檢索)/iu;
+const EXPLICIT_DEEP_RESEARCH_DIRECTIVE =
+  /\b(?:deep|thorough|comprehensive|in[-\s]?depth|extensive)\s+(?:(?:web|internet|online|papers?|scholarly|academic|literature)(?:\s+and\s+(?:web|internet|online|papers?|scholarly|academic|literature))?\s+)?(?:research|investigation|review)\b|\b(?:research|investigate|review)\b[^.!?;\r\n]{0,80}\b(?:deeply|thoroughly|comprehensively|in\s+depth)\b|(?:深度|深入|全面)(?:研究|调研|調研|检索|檢索|文献综述|文獻綜述)/iu;
 const WEB_SEARCH_MODE_DIRECTIVE = /\b(?:web|internet|online)\b/iu;
 const PAPER_SEARCH_MODE_DIRECTIVE =
   /\b(?:papers?|paper\s+search|scholarly|academic|peer[-\s]?reviewed|arxiv|literature|publications?)\b/iu;
@@ -79,6 +91,22 @@ const SOURCE_KEYS = Object.freeze([
   "identityDigest",
   "matchedAllowedDomains",
   "matchedExactIdentifiers",
+]);
+const RESEARCH_SOURCE_KEYS = Object.freeze([
+  "title",
+  "url",
+  "snippet",
+  "provider",
+  "providers",
+  "kind",
+  "authors",
+  "year",
+  "published_date",
+  "doi",
+  "citation_count",
+  "score",
+  "query",
+  "provenance",
 ]);
 const PROVIDER_DIAGNOSTIC_KEYS = Object.freeze([
   "name",
@@ -272,6 +300,34 @@ export function inferIntegrationGroundedSearchRequestFromPrompt(prompt) {
     mode,
     limit: Math.min(INTEGRATION_GROUNDED_SEARCH_DEFAULT_DIRECTIVE_LIMIT, INTEGRATION_MAXIMUM_SEARCH_SOURCES),
   }));
+}
+
+export function inferIntegrationDeepResearchRequestFromPrompt(prompt) {
+  if (typeof prompt !== "string") return null;
+  const text = prompt.replace(/\s+/gu, " ").trim();
+  if (
+    !text ||
+    EXPLICIT_SEARCH_NEGATION.test(text) ||
+    EXPLICIT_DEEP_RESEARCH_NEGATION.test(text) ||
+    !EXPLICIT_DEEP_RESEARCH_DIRECTIVE.test(text)
+  ) {
+    return null;
+  }
+  const web = WEB_SEARCH_MODE_DIRECTIVE.test(text);
+  const papers = PAPER_SEARCH_MODE_DIRECTIVE.test(text);
+  const mode = web && papers
+    ? "both"
+    : papers
+      ? "papers"
+      : web
+        ? "web"
+        : "both";
+  const depth = /\b(?:quick|brief|short)\b|(?:快速|简短|簡短)/iu.test(text)
+    ? "quick"
+    : /\bstandard\b|(?:标准|標準)/iu.test(text)
+      ? "standard"
+      : "deep";
+  return Object.freeze({ mode, depth });
 }
 
 export function integrationGroundedSearchConstrainedQuery(prompt, constraint) {
@@ -1445,6 +1501,315 @@ function sourceArtifact(response, limit, request) {
   fail("GROUNDED_SEARCH_NO_USABLE_SOURCES", "Search providers returned no bounded evidence sources.");
 }
 
+function normalizeDeepResearchRequest(value) {
+  const request = exactObject(
+    value,
+    [
+      "question",
+      "query",
+      "mode",
+      "depth",
+      "queryPlanDigest",
+      "domainConstraintDigest",
+      "signal",
+      "onProgress",
+    ],
+    ["question", "query", "mode", "depth", "queryPlanDigest", "domainConstraintDigest"],
+    "deep research request",
+    { code: "DEEP_RESEARCH_INVALID", status: 400 }
+  );
+  if (
+    typeof request.question !== "string" ||
+    !request.question.isWellFormed() ||
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(request.question)
+  ) {
+    fail("DEEP_RESEARCH_INVALID", "Deep research question is invalid.", { status: 400 });
+  }
+  const question = request.question.trim();
+  if (Array.from(question).length < 8 || Array.from(question).length > 4_000) {
+    fail("DEEP_RESEARCH_INVALID", "Deep research question is outside its character bound.", { status: 400 });
+  }
+  const search = validateIntegrationSearch({ mode: request.mode, limit: INTEGRATION_MAXIMUM_SEARCH_SOURCES });
+  if (!new Set(["quick", "standard", "deep"]).has(request.depth)) {
+    fail("DEEP_RESEARCH_INVALID", "Deep research depth is invalid.", { status: 400 });
+  }
+  const query = boundedQuery(request.query);
+  const queryPlanDigest = normalizeInternalDigest(request.queryPlanDigest, "Deep research query-plan");
+  if (request.domainConstraintDigest !== null) {
+    fail(
+      "DEEP_RESEARCH_CONSTRAINT_UNSUPPORTED",
+      "Deep research cannot weaken an exact domain constraint; use grounded search instead.",
+      { status: 409 }
+    );
+  }
+  const signal = normalizeAbortSignal(request.signal, "deep research signal");
+  if (request.onProgress !== undefined && typeof request.onProgress !== "function") {
+    fail("DEEP_RESEARCH_INVALID", "Deep research progress callback is invalid.", { status: 400 });
+  }
+  return Object.freeze({
+    question,
+    query,
+    mode: search.mode,
+    depth: request.depth,
+    queryPlanDigest,
+    domainConstraintDigest: null,
+    signal,
+    onProgress: request.onProgress,
+  });
+}
+
+function validateResearchProviderDiagnostic(value, index) {
+  const provider = exactObject(
+    value,
+    PROVIDER_DIAGNOSTIC_KEYS,
+    PROVIDER_DIAGNOSTIC_KEYS,
+    `deep research provider[${index}]`,
+    { code: "DEEP_RESEARCH_PROTOCOL_INVALID", status: 502 }
+  );
+  const queries = denseArray(provider.queries, `deep research provider[${index}].queries`, {
+    minimum: 0,
+    maximum: 30,
+  });
+  if (
+    typeof provider.name !== "string" ||
+    provider.name.length < 1 ||
+    provider.name.length > 100 ||
+    !new Set(["web", "paper"]).has(provider.kind) ||
+    typeof provider.ok !== "boolean" ||
+    !Number.isSafeInteger(provider.result_count) ||
+    provider.result_count < 0 ||
+    !Number.isSafeInteger(provider.duration_ms) ||
+    provider.duration_ms < 0 ||
+    (provider.error !== null && (typeof provider.error !== "string" || provider.error.length > 2_000)) ||
+    queries.some((query) => typeof query !== "string" || Array.from(query).length > MAX_QUERY_CHARACTERS)
+  ) {
+    fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research provider diagnostics are invalid.");
+  }
+  return Object.freeze({
+    name: provider.name,
+    kind: provider.kind,
+    ok: provider.ok,
+    resultCount: provider.result_count,
+    durationMs: provider.duration_ms,
+    error: provider.error,
+  });
+}
+
+function validateResearchSource(value, index, snippetLimit) {
+  const raw = exactObject(
+    value,
+    RESEARCH_SOURCE_KEYS,
+    RESEARCH_SOURCE_KEYS,
+    `deep research source[${index - 1}]`,
+    { code: "DEEP_RESEARCH_PROTOCOL_INVALID", status: 502 }
+  );
+  const providers = denseArray(raw.providers, `deep research source[${index - 1}].providers`, {
+    minimum: 0,
+    maximum: 20,
+  });
+  const authors = denseArray(raw.authors, `deep research source[${index - 1}].authors`, {
+    minimum: 0,
+    maximum: 100,
+  });
+  const provenance = denseArray(raw.provenance, `deep research source[${index - 1}].provenance`, {
+    minimum: 0,
+    maximum: 64,
+  });
+  if (
+    typeof raw.title !== "string" ||
+    typeof raw.url !== "string" ||
+    typeof raw.snippet !== "string" ||
+    typeof raw.provider !== "string" ||
+    !new Set(["web", "paper"]).has(raw.kind) ||
+    raw.title.length < 1 ||
+    raw.provider.length < 1 ||
+    providers.some((provider) => typeof provider !== "string" || provider.length < 1 || provider.length > 100) ||
+    authors.some((author) => typeof author !== "string" || author.length > 500) ||
+    provenance.some((record) => !plainDataObject(record)) ||
+    (raw.year !== null && (!Number.isSafeInteger(raw.year) || raw.year < 0)) ||
+    (raw.published_date !== null && typeof raw.published_date !== "string") ||
+    (raw.doi !== null && typeof raw.doi !== "string") ||
+    (raw.citation_count !== null && (!Number.isSafeInteger(raw.citation_count) || raw.citation_count < 0)) ||
+    typeof raw.score !== "number" ||
+    !Number.isFinite(raw.score) ||
+    typeof raw.query !== "string" ||
+    Array.from(raw.query).length > MAX_QUERY_CHARACTERS
+  ) {
+    fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research source presentation is invalid.");
+  }
+  const providerNames = [...new Set([...providers, raw.provider])]
+    .map((provider) => clippedText(provider.trim(), 100))
+    .filter(Boolean)
+    .slice(0, 12);
+  const spec = validateIntegrationSourcesSpec({
+    schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+    sources: [{
+      index: 1,
+      title: clippedText(raw.title, 500),
+      url: raw.url,
+      snippet: clippedText(raw.snippet, snippetLimit),
+      providers: providerNames,
+      kind: raw.kind,
+      publishedDate: raw.published_date,
+      doi: raw.doi,
+    }],
+  });
+  return Object.freeze({ ...spec.sources[0], index });
+}
+
+function parseResearchTaskEnvelope(bytes, request, expectedTask = null) {
+  let value;
+  try {
+    value = JSON.parse(UTF8_DECODER.decode(bytes));
+  } catch (error) {
+    fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research returned invalid JSON.", { cause: error });
+  }
+  const envelope = exactObject(
+    value,
+    ["schema", "task"],
+    ["schema", "task"],
+    "deep research response",
+    { code: "DEEP_RESEARCH_PROTOCOL_INVALID", status: 502 }
+  );
+  if (envelope.schema !== LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION) {
+    fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research response schema is invalid.");
+  }
+  const task = exactObject(
+    envelope.task,
+    [
+      "id", "question", "model", "status", "stage", "progress", "mode", "depth",
+      "max_sources", "queries", "sources", "providers", "provider_errors", "report",
+      "error", "created_at", "updated_at",
+    ],
+    [
+      "id", "question", "model", "status", "stage", "progress", "mode", "depth",
+      "max_sources", "queries", "sources", "providers", "provider_errors", "report",
+      "error", "created_at", "updated_at",
+    ],
+    "deep research task",
+    { code: "DEEP_RESEARCH_PROTOCOL_INVALID", status: 502 }
+  );
+  const queries = denseArray(task.queries, "deep research queries", { minimum: 0, maximum: 3 });
+  const sourceValues = denseArray(task.sources, "deep research sources", {
+    minimum: 0,
+    maximum: INTEGRATION_MAXIMUM_SEARCH_SOURCES,
+  });
+  const providers = denseArray(task.providers, "deep research providers", { minimum: 0, maximum: 64 })
+    .map(validateResearchProviderDiagnostic);
+  const providerErrors = denseArray(task.provider_errors, "deep research provider errors", {
+    minimum: 0,
+    maximum: 64,
+  });
+  if (
+    typeof task.id !== "string" ||
+    !/^[a-f0-9]{12}$/u.test(task.id) ||
+    task.question !== request.question ||
+    typeof task.model !== "string" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,127}$/u.test(task.model) ||
+    !new Set(["queued", "running", "complete", "failed", "cancelled"]).has(task.status) ||
+    typeof task.stage !== "string" ||
+    task.stage.length < 1 ||
+    task.stage.length > 500 ||
+    !Number.isSafeInteger(task.progress) ||
+    task.progress < 0 ||
+    task.progress > 100 ||
+    task.mode !== request.mode ||
+    task.depth !== request.depth ||
+    !Number.isSafeInteger(task.max_sources) ||
+    task.max_sources < 1 ||
+    task.max_sources > INTEGRATION_MAXIMUM_SEARCH_SOURCES ||
+    queries.some((query) => typeof query !== "string" || Array.from(query).length > MAX_QUERY_CHARACTERS) ||
+    providerErrors.some((error) => typeof error !== "string" || error.length > 2_000) ||
+    typeof task.report !== "string" ||
+    !task.report.isWellFormed() ||
+    Buffer.byteLength(task.report, "utf8") > INTEGRATION_DEEP_RESEARCH_MAX_REPORT_BYTES ||
+    (task.error !== null && (typeof task.error !== "string" || task.error.length > 4_000)) ||
+    typeof task.created_at !== "number" ||
+    !Number.isFinite(task.created_at) ||
+    typeof task.updated_at !== "number" ||
+    !Number.isFinite(task.updated_at) ||
+    task.updated_at < task.created_at
+  ) {
+    fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research task state is invalid.");
+  }
+  if (expectedTask !== null && (
+    task.id !== expectedTask.id ||
+    task.question !== expectedTask.question ||
+    task.model !== expectedTask.model ||
+    task.mode !== expectedTask.mode ||
+    task.depth !== expectedTask.depth ||
+    task.max_sources !== expectedTask.maxSources ||
+    task.created_at !== expectedTask.createdAt ||
+    task.updated_at < expectedTask.updatedAt ||
+    task.progress < expectedTask.progress
+  )) {
+    fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research task identity or progress regressed.");
+  }
+  if (task.status === "complete" && (
+    task.progress !== 100 ||
+    !task.report.trim() ||
+    task.error !== null ||
+    sourceValues.length < 1
+  )) {
+    fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Completed deep research is incomplete.");
+  }
+  return Object.freeze({
+    id: task.id,
+    question: task.question,
+    model: task.model,
+    status: task.status,
+    stage: task.stage,
+    progress: task.progress,
+    mode: task.mode,
+    depth: task.depth,
+    maxSources: task.max_sources,
+    queries,
+    sourceValues,
+    providers,
+    providerErrors: Object.freeze([...providerErrors]),
+    report: task.report,
+    error: task.error,
+    createdAt: task.created_at,
+    updatedAt: task.updated_at,
+  });
+}
+
+function deepResearchArtifact(task, request) {
+  if (task.sourceValues.length < 1) {
+    fail("DEEP_RESEARCH_NO_USABLE_SOURCES", "Deep research returned no safe evidence sources.");
+  }
+  const authority = createIntegrationGroundedSearchArtifactAuthority({
+    query: request.query,
+    mode: request.mode,
+    queryPlanDigest: request.queryPlanDigest,
+    domainConstraintDigest: null,
+  });
+  for (const snippetLimit of [1_200, 600, 240, 0]) {
+    try {
+      const sources = Object.freeze(task.sourceValues.map((source, index) =>
+        validateResearchSource(source, index + 1, snippetLimit)
+      ));
+      const spec = Object.freeze({ schemaVersion: AGENT_WORKER_SCHEMA_VERSION, sources });
+      const artifact = sanitizeIntegrationArtifact({
+        id: integrationGroundedSearchBoundArtifactId(spec, authority),
+        title: "Deep research sources",
+        kind: "sources",
+        spec,
+      });
+      if (Buffer.byteLength(JSON.stringify(artifact), "utf8") <= MAX_INTEGRATION_PUBLIC_ARTIFACT_BYTES) {
+        return artifact;
+      }
+    } catch (error) {
+      if (snippetLimit === 0) {
+        fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research sources are unsafe or oversized.", {
+          cause: error,
+        });
+      }
+    }
+  }
+  fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research sources exceed the public artifact bound.");
+}
+
 function normalizeSearchRequestIdentifiers(value, label, normalizer) {
   if (value === undefined) return Object.freeze([]);
   const identifiers = denseArray(value, label, { minimum: 0, maximum: MAXIMUM_EXACT_IDENTIFIERS })
@@ -1807,6 +2172,235 @@ function createClient(optionsValue, { testOnly }) {
     }
   }
 
+  async function researchPost(endpointValue, payloadValue, signal) {
+    const payload = JSON.stringify(payloadValue);
+    if (Buffer.byteLength(payload, "utf8") > INTEGRATION_GROUNDED_SEARCH_MAX_REQUEST_BYTES * 2) {
+      fail("DEEP_RESEARCH_REQUEST_TOO_LARGE", "Deep research request exceeded its byte bound.", {
+        status: 413,
+      });
+    }
+    let response;
+    try {
+      response = await waitWithAbort(
+        Promise.resolve(fetchImpl(endpointValue, {
+          method: "POST",
+          headers: Object.freeze({
+            Accept: "application/json",
+            Authorization: `Bearer ${apiKey}`,
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json",
+          }),
+          body: payload,
+          cache: "no-store",
+          credentials: "omit",
+          redirect: "error",
+          referrerPolicy: "no-referrer",
+          signal,
+        })),
+        signal
+      );
+      if (!response || typeof response.status !== "number") {
+        discardResponseBody(response, new Error("deep research unavailable"));
+        fail("DEEP_RESEARCH_UNAVAILABLE", "The private deep research route is unavailable.", {
+          status: 503,
+        });
+      }
+      const bytes = await readBoundedBody(response, signal);
+      return Object.freeze({ status: response.status, bytes, headers: response.headers });
+    } catch (error) {
+      if (error instanceof IntegrationGroundedSearchError) throw error;
+      throw error;
+    }
+  }
+
+  function researchStatusError(response, action) {
+    if (response.status === 401 || response.status === 403) {
+      fail("DEEP_RESEARCH_AUTH_FAILED", "The private deep research credential was rejected.", {
+        status: 503,
+      });
+    }
+    if (response.status === 413) {
+      fail("DEEP_RESEARCH_REQUEST_TOO_LARGE", "Deep research request exceeded its byte bound.", {
+        status: 413,
+      });
+    }
+    if (response.status === 429) {
+      fail("DEEP_RESEARCH_BUSY", "The private deep research queue is busy; retry later.", {
+        status: 429,
+        retryable: true,
+        runtimeStatus: 429,
+        runtimeClassification: "capacity_busy",
+        retryAfterMs: boundedRetryAfterMs({ headers: response.headers }),
+      });
+    }
+    if (response.status >= 500 && response.status <= 504) {
+      fail("DEEP_RESEARCH_UNAVAILABLE", "The private deep research route is unavailable.", {
+        status: 503,
+      });
+    }
+    fail(
+      "DEEP_RESEARCH_PROTOCOL_INVALID",
+      `The private deep research ${action} route returned an unsupported status.`,
+      { status: 502 }
+    );
+  }
+
+  async function emitResearchProgress(request, task) {
+    if (request.onProgress === undefined) return;
+    await request.onProgress(Object.freeze({
+      status: task.status,
+      stage: clippedText(task.stage, 500),
+      progress: task.progress,
+    }));
+  }
+
+  async function pollDelay(signal) {
+    await new Promise((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(signal.reason || new Error("deep research aborted"));
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, INTEGRATION_DEEP_RESEARCH_POLL_INTERVAL_MS);
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  async function cancelResearchTask(taskId) {
+    const cleanupAbort = requestAbort(undefined, 10_000);
+    try {
+      const response = await researchPost(
+        INTEGRATION_DEEP_RESEARCH_CANCEL_ENDPOINT,
+        { task_id: taskId },
+        cleanupAbort.signal
+      );
+      if (response.status !== 200 && response.status !== 404) {
+        researchStatusError(response, "cancel");
+      }
+    } finally {
+      cleanupAbort.cleanup();
+    }
+  }
+
+  async function research(value) {
+    if (!activation) {
+      fail("GROUNDED_SEARCH_NOT_READY", "Deep research has not passed startup readiness.", {
+        status: 503,
+      });
+    }
+    const request = normalizeDeepResearchRequest(value);
+    const timeoutByDepth = Object.freeze({ quick: 5 * 60_000, standard: 10 * 60_000, deep: 15 * 60_000 });
+    const abort = requestAbort(request.signal, timeoutByDepth[request.depth]);
+    let task = null;
+    let terminal = false;
+    try {
+      const created = await researchPost(
+        INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT,
+        {
+          question: request.question,
+          model: "localllm-deep",
+          mode: request.mode,
+          depth: request.depth,
+        },
+        abort.signal
+      );
+      if (created.status !== 202) researchStatusError(created, "create");
+      task = parseResearchTaskEnvelope(created.bytes, request);
+      await emitResearchProgress(request, task);
+      while (new Set(["queued", "running"]).has(task.status)) {
+        const status = await researchPost(
+          INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT,
+          { task_id: task.id },
+          abort.signal
+        );
+        if (status.status !== 200) researchStatusError(status, "status");
+        task = parseResearchTaskEnvelope(status.bytes, request, task);
+        await emitResearchProgress(request, task);
+        if (new Set(["queued", "running"]).has(task.status)) await pollDelay(abort.signal);
+      }
+      terminal = true;
+      if (task.status === "failed") {
+        fail("DEEP_RESEARCH_FAILED", "Deep research could not produce a validated report.", {
+          status: 502,
+        });
+      }
+      if (task.status === "cancelled") {
+        fail("DEEP_RESEARCH_CANCELLED", "Deep research was cancelled.", { status: 499 });
+      }
+      if (task.status !== "complete") {
+        fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research returned an invalid terminal state.");
+      }
+      const artifact = deepResearchArtifact(task, request);
+      return Object.freeze({
+        schemaVersion: LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
+        taskId: task.id,
+        mode: task.mode,
+        depth: task.depth,
+        report: task.report,
+        artifact,
+        sources: artifact.spec.sources,
+        providers: task.providers,
+        providerErrors: task.providerErrors,
+      });
+    } catch (error) {
+      if (task !== null && !terminal) await cancelResearchTask(task.id).catch(() => {});
+      if (error instanceof IntegrationGroundedSearchError) throw error;
+      if (request.signal?.aborted) {
+        fail("DEEP_RESEARCH_CANCELLED", "Deep research was cancelled.", {
+          status: 499,
+          cause: request.signal.reason || error,
+        });
+      }
+      if (abort.timedOut()) {
+        fail("DEEP_RESEARCH_TIMEOUT", "Deep research exceeded its bounded runtime.", {
+          status: 504,
+          cause: error,
+        });
+      }
+      fail("DEEP_RESEARCH_UNAVAILABLE", "The private deep research route is unavailable.", {
+        status: 503,
+        cause: error,
+      });
+    } finally {
+      abort.cleanup();
+    }
+  }
+
+  async function probeResearchRoute(endpointValue, signal) {
+    const abort = requestAbort(signal, timeoutMs);
+    try {
+      const response = await researchPost(
+        endpointValue,
+        { task_id: "deadbeefcafe" },
+        abort.signal
+      );
+      if (response.status !== 404) researchStatusError(response, "readiness");
+      let body;
+      try {
+        body = JSON.parse(UTF8_DECODER.decode(response.bytes));
+      } catch (error) {
+        fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research readiness returned invalid JSON.", {
+          cause: error,
+        });
+      }
+      const responseError = exactObject(
+        body,
+        ["detail"],
+        ["detail"],
+        "deep research readiness response",
+        { code: "DEEP_RESEARCH_PROTOCOL_INVALID", status: 502 }
+      );
+      if (responseError.detail !== "Research task not found") {
+        fail("DEEP_RESEARCH_PROTOCOL_INVALID", "Deep research readiness identity is invalid.");
+      }
+    } finally {
+      abort.cleanup();
+    }
+  }
+
   async function activate(optionsValue = {}) {
     const options = exactObject(optionsValue, ["signal"], [], "grounded search activation options", {
       code: "GROUNDED_SEARCH_ACTIVATION_INVALID",
@@ -1848,6 +2442,8 @@ function createClient(optionsValue, { testOnly }) {
           status: 503,
         });
       }
+      await probeResearchRoute(INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT, signal);
+      await probeResearchRoute(INTEGRATION_DEEP_RESEARCH_CANCEL_ENDPOINT, signal);
       const unsigned = Object.freeze({
         schemaVersion: INTEGRATION_GROUNDED_SEARCH_ACTIVATION_SCHEMA_VERSION,
         owner: "aginti",
@@ -1856,9 +2452,15 @@ function createClient(optionsValue, { testOnly }) {
         ready: true,
         privateLoopback: true,
         exactPostPath: "/api/search/v2",
+        exactResearchPostPaths: Object.freeze([
+          "/api/research/v2/create",
+          "/api/research/v2/status",
+          "/api/research/v2/cancel",
+        ]),
         requestSchemaVersion: LOCALLLM_GROUNDED_SEARCH_REQUEST_SCHEMA_VERSION,
         responseSchemaVersion: LOCALLLM_GROUNDED_SEARCH_RESPONSE_SCHEMA_VERSION,
         constraintsSchemaVersion: LOCALLLM_GROUNDED_SEARCH_CONSTRAINTS_SCHEMA_VERSION,
+        researchTaskSchemaVersion: LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
         relayEndpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
         localTargetEndpoint: INTEGRATION_GROUNDED_SEARCH_LOCAL_TARGET_ENDPOINT,
         credentialRequired: true,
@@ -1872,6 +2474,9 @@ function createClient(optionsValue, { testOnly }) {
         maximumExactIdentifiers: MAXIMUM_EXACT_IDENTIFIERS,
         boundedRequestBytes: INTEGRATION_GROUNDED_SEARCH_MAX_REQUEST_BYTES,
         boundedResponseBytes: INTEGRATION_GROUNDED_SEARCH_MAX_RESPONSE_BYTES,
+        boundedResearchResponseBytes: INTEGRATION_DEEP_RESEARCH_MAX_RESPONSE_BYTES,
+        boundedResearchReportBytes: INTEGRATION_DEEP_RESEARCH_MAX_REPORT_BYTES,
+        researchReady: true,
         endpointDigest: contractDigest({ endpoint }),
         webReadinessArtifactDigest: contractDigest(webProbe.artifact),
         papersReadinessArtifactDigest: contractDigest(papersProbe.artifact),
@@ -1899,9 +2504,15 @@ function createClient(optionsValue, { testOnly }) {
     transport: testOnly ? "test-only-injected-fetch" : "private-loopback-fetch",
     testOnly,
     exactPostPath: "/api/search/v2",
+    exactResearchPostPaths: Object.freeze([
+      "/api/research/v2/create",
+      "/api/research/v2/status",
+      "/api/research/v2/cancel",
+    ]),
     requestSchemaVersion: LOCALLLM_GROUNDED_SEARCH_REQUEST_SCHEMA_VERSION,
     responseSchemaVersion: LOCALLLM_GROUNDED_SEARCH_RESPONSE_SCHEMA_VERSION,
     constraintsSchemaVersion: LOCALLLM_GROUNDED_SEARCH_CONSTRAINTS_SCHEMA_VERSION,
+    researchTaskSchemaVersion: LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
     relayEndpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
     localTargetEndpoint: INTEGRATION_GROUNDED_SEARCH_LOCAL_TARGET_ENDPOINT,
     endpointDigest: contractDigest({ endpoint }),
@@ -1910,6 +2521,8 @@ function createClient(optionsValue, { testOnly }) {
     callerSelectableEndpoint: false,
     boundedRequestBytes: INTEGRATION_GROUNDED_SEARCH_MAX_REQUEST_BYTES,
     boundedResponseBytes: INTEGRATION_GROUNDED_SEARCH_MAX_RESPONSE_BYTES,
+    boundedResearchResponseBytes: INTEGRATION_DEEP_RESEARCH_MAX_RESPONSE_BYTES,
+    boundedResearchReportBytes: INTEGRATION_DEEP_RESEARCH_MAX_REPORT_BYTES,
     maximumQueryCodePoints: MAX_QUERY_CHARACTERS,
     maximumAllowedDomains: MAXIMUM_ALLOWED_DOMAINS,
     maximumExactIdentifiers: MAXIMUM_EXACT_IDENTIFIERS,
@@ -1920,7 +2533,7 @@ function createClient(optionsValue, { testOnly }) {
     queryPolicyDigest: INTEGRATION_GROUNDED_SEARCH_QUERY_POLICY_DIGEST,
   });
   const attestation = Object.freeze({ ...attestationUnsigned, digest: contractDigest(attestationUnsigned) });
-  const client = Object.freeze({ attestation, activate, search });
+  const client = Object.freeze({ attestation, activate, search, research });
   CLIENT_BRAND.add(client);
   CLIENT_METADATA.set(client, Object.freeze({ testOnly }));
   return client;
@@ -1951,9 +2564,15 @@ export function assertIntegrationGroundedSearchActivation(value, { client, allow
     value.ready !== true ||
     value.privateLoopback !== true ||
     value.exactPostPath !== "/api/search/v2" ||
+    canonicalJson(value.exactResearchPostPaths) !== canonicalJson([
+      "/api/research/v2/create",
+      "/api/research/v2/status",
+      "/api/research/v2/cancel",
+    ]) ||
     value.requestSchemaVersion !== LOCALLLM_GROUNDED_SEARCH_REQUEST_SCHEMA_VERSION ||
     value.responseSchemaVersion !== LOCALLLM_GROUNDED_SEARCH_RESPONSE_SCHEMA_VERSION ||
     value.constraintsSchemaVersion !== LOCALLLM_GROUNDED_SEARCH_CONSTRAINTS_SCHEMA_VERSION ||
+    value.researchTaskSchemaVersion !== LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION ||
     value.relayEndpoint !== INTEGRATION_GROUNDED_SEARCH_ENDPOINT ||
     value.localTargetEndpoint !== INTEGRATION_GROUNDED_SEARCH_LOCAL_TARGET_ENDPOINT ||
     value.credentialRequired !== true ||
@@ -1968,6 +2587,9 @@ export function assertIntegrationGroundedSearchActivation(value, { client, allow
     value.maximumExactIdentifiers !== MAXIMUM_EXACT_IDENTIFIERS ||
     value.boundedRequestBytes !== INTEGRATION_GROUNDED_SEARCH_MAX_REQUEST_BYTES ||
     value.boundedResponseBytes !== INTEGRATION_GROUNDED_SEARCH_MAX_RESPONSE_BYTES ||
+    value.boundedResearchResponseBytes !== INTEGRATION_DEEP_RESEARCH_MAX_RESPONSE_BYTES ||
+    value.boundedResearchReportBytes !== INTEGRATION_DEEP_RESEARCH_MAX_REPORT_BYTES ||
+    value.researchReady !== true ||
     !/^[a-f0-9]{64}$/u.test(value.webReadinessArtifactDigest) ||
     !/^[a-f0-9]{64}$/u.test(value.papersReadinessArtifactDigest) ||
     value.webReadinessArtifactDigest === value.papersReadinessArtifactDigest ||

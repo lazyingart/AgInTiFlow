@@ -47,8 +47,13 @@ import {
 } from "../src/integration-explicit-python.js";
 import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import {
+  INTEGRATION_DEEP_RESEARCH_CANCEL_ENDPOINT,
+  INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT,
+  INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT,
+  INTEGRATION_DEEP_RESEARCH_TOOL_NAME,
   INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
   INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+  LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
   LOCALLLM_GROUNDED_SEARCH_REQUEST_SCHEMA_VERSION,
   LOCALLLM_GROUNDED_SEARCH_RESPONSE_SCHEMA_VERSION,
   LOCALLLM_GROUNDED_SEARCH_CONSTRAINTS_SCHEMA_VERSION,
@@ -734,6 +739,15 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
     endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
     apiKey: "test-grounded-search-private-token",
     fetchImpl: async (url, options) => {
+      if (
+        url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT ||
+        url === INTEGRATION_DEEP_RESEARCH_CANCEL_ENDPOINT
+      ) {
+        return new Response(JSON.stringify({ detail: "Research task not found" }), {
+          status: 404,
+          headers: { "cache-control": "no-store", "content-type": "application/json" },
+        });
+      }
       assert.equal(url, INTEGRATION_GROUNDED_SEARCH_ENDPOINT);
       assert.equal(options.method, "POST");
       assert.equal(options.redirect, "error");
@@ -992,6 +1006,145 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
     assert.doesNotMatch(reconciledNarration.text, /(?:No external sources|did not use any web searches)/iu);
   } finally {
     grounded.coordinator.close();
+  }
+}
+
+async function deepResearchCompletesWithoutSecondModelSynthesis() {
+  const prompt = "Perform deep web and paper research on durable local agent task recovery.";
+  const report = [
+    "# Durable task recovery",
+    "",
+    "Durable recovery requires an explicit terminal-state ledger [1].",
+    "",
+    "## Sources",
+    "",
+    "[1] [Verified recovery source](https://example.com/recovery)",
+  ].join("\n");
+  const calls = [];
+  const task = (status, updatedAt, query = prompt) => ({
+    schema: LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
+    task: {
+      id: "b1c2d3e4f5a6",
+      question: prompt,
+      model: "qwen3:30b-a3b-instruct-2507-q4_K_M",
+      status,
+      stage: status === "complete" ? "Research complete" : "Preparing research plan",
+      progress: status === "complete" ? 100 : 0,
+      mode: "both",
+      depth: "deep",
+      max_sources: 20,
+      queries: status === "complete" ? [query] : [],
+      sources: status === "complete" ? [{
+        title: "Verified recovery source",
+        url: "https://example.com/recovery",
+        snippet: "Durable execution records preserve task state across interruption.",
+        provider: "crossref",
+        providers: ["crossref"],
+        kind: "paper",
+        authors: ["Ada Researcher"],
+        year: 2026,
+        published_date: "2026-08-25",
+        doi: "10.1234/durable.recovery",
+        citation_count: 3,
+        score: 2.5,
+        query,
+        provenance: [{ provider: "crossref", query }],
+      }] : [],
+      providers: status === "complete" ? [{
+        name: "crossref",
+        kind: "paper",
+        ok: true,
+        result_count: 1,
+        duration_ms: 25,
+        error: null,
+        queries: [query],
+      }] : [],
+      provider_errors: [],
+      report: status === "complete" ? report : "",
+      error: null,
+      created_at: 1,
+      updated_at: updatedAt,
+    },
+  });
+  const privateResponse = (value, status = 200) => new Response(JSON.stringify(value), {
+    status,
+    headers: { "cache-control": "no-store", "content-type": "application/json" },
+  });
+  const groundedSearchClient = createTestOnlyIntegrationGroundedSearchClient({
+    endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+    apiKey: "test-deep-research-private-token",
+    timeoutMs: 1_000,
+    fetchImpl: async (url, options) => {
+      const request = JSON.parse(options.body);
+      calls.push({ url, request });
+      if (url === INTEGRATION_GROUNDED_SEARCH_ENDPOINT) return groundedSearchResponse(request);
+      if (
+        (url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT ||
+          url === INTEGRATION_DEEP_RESEARCH_CANCEL_ENDPOINT) &&
+        request.task_id === "deadbeefcafe"
+      ) {
+        return privateResponse({ detail: "Research task not found" }, 404);
+      }
+      if (url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT) {
+        assert.deepEqual(request, {
+          question: prompt,
+          model: "localllm-deep",
+          mode: "both",
+          depth: "deep",
+        });
+        return privateResponse(task("queued", 1), 202);
+      }
+      if (url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT) {
+        assert.deepEqual(request, { task_id: "b1c2d3e4f5a6" });
+        return privateResponse(task("complete", 2));
+      }
+      throw new Error(`Unexpected deep research planner route: ${url}`);
+    },
+  });
+  let modelCalls = 0;
+  const deep = fixture(async () => {
+    modelCalls += 1;
+    throw new Error("Pure deep research must not be degraded by a second model synthesis.");
+  }, { groundedSearchClient });
+  const progress = [];
+  const artifacts = [];
+  const finals = [];
+  try {
+    const activation = await deep.planner.activate();
+    assert.equal(activation.groundedSearch.ready, true);
+    assert.equal(activation.groundedSearch.researchReady, true);
+    const result = await deep.planner.run(
+      scope("run_00000000-0000-4000-8004-000000000099"),
+      { prompt, search: { mode: "both", limit: 20 } },
+      {
+        onProgress: (value) => progress.push(value),
+        onArtifact: (value) => artifacts.push(value),
+        onFinal: (value) => finals.push(value),
+      }
+    );
+    assert.equal(modelCalls, 0);
+    assert.equal(result.kind, "direct");
+    assert.equal(result.text, report);
+    assert.equal(result.toolCalls, 0);
+    assert.equal(result.executionStatus, null);
+    assert.deepEqual(result.artifacts, artifacts);
+    assert.deepEqual(finals, [result]);
+    assert.deepEqual(artifacts.map(({ kind }) => kind), ["sources"]);
+    assert.equal(artifacts[0].spec.sources.length, 1);
+    assert(progress.some(({ toolName, executionState }) =>
+      toolName === INTEGRATION_DEEP_RESEARCH_TOOL_NAME && executionState === "starting"
+    ));
+    assert(progress.some(({ toolName, executionState }) =>
+      toolName === INTEGRATION_DEEP_RESEARCH_TOOL_NAME && executionState === "running"
+    ));
+    assert(progress.some(({ toolName, executionState }) =>
+      toolName === INTEGRATION_DEEP_RESEARCH_TOOL_NAME && executionState === "succeeded"
+    ));
+    assert.equal(calls.filter(({ url }) => url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT).length, 1);
+    assert.equal(calls.filter(({ url }) => url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT).length, 2);
+    assert.doesNotMatch(JSON.stringify({ activation, result, progress }), /test-deep-research-private-token/u);
+  } finally {
+    deep.coordinator.close();
   }
 }
 
@@ -4457,6 +4610,7 @@ await deterministicExpressionPlotExecutesWithoutModel();
 await deterministicExpressionPlotFailuresStayTruthful();
 await unsupportedSafeExpressionPlotFallsBackToBoundedModelExecution();
 await groundsWithPrivateSearchBeforeModelSynthesis();
+await deepResearchCompletesWithoutSecondModelSynthesis();
 await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
 await unsupportedMixedActionsDiscloseAndContinue();

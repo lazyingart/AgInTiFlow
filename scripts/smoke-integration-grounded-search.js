@@ -6,12 +6,16 @@ import {
   validateIntegrationSourcesSpec,
 } from "../src/integration-artifacts.js";
 import {
-	  INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+  INTEGRATION_DEEP_RESEARCH_CANCEL_ENDPOINT,
+  INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT,
+  INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT,
+  INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
   INTEGRATION_GROUNDED_SEARCH_LOCAL_TARGET_ENDPOINT,
-	  INTEGRATION_GROUNDED_SEARCH_DOMAIN_POLICY_DIGEST,
-	  INTEGRATION_GROUNDED_SEARCH_QUERY_POLICY_DIGEST,
+  INTEGRATION_GROUNDED_SEARCH_DOMAIN_POLICY_DIGEST,
+  INTEGRATION_GROUNDED_SEARCH_QUERY_POLICY_DIGEST,
   INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS,
-	  INTEGRATION_GROUNDED_SEARCH_MAX_RESPONSE_BYTES,
+  INTEGRATION_GROUNDED_SEARCH_MAX_RESPONSE_BYTES,
+  LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
   LOCALLLM_GROUNDED_SEARCH_REQUEST_SCHEMA_VERSION,
   LOCALLLM_GROUNDED_SEARCH_RESPONSE_SCHEMA_VERSION,
   LOCALLLM_GROUNDED_SEARCH_CONSTRAINTS_SCHEMA_VERSION,
@@ -19,6 +23,7 @@ import {
   createIntegrationGroundedSearchArtifactAuthority,
   createTestOnlyIntegrationGroundedSearchClient,
   deriveIntegrationGroundedSearchDomainConstraint,
+  inferIntegrationDeepResearchRequestFromPrompt,
   inferIntegrationGroundedSearchRequestFromPrompt,
   integrationGroundedSearchBoundArtifactId,
   integrationGroundedSearchConstrainedQuery,
@@ -252,6 +257,16 @@ function jsonResponse(value, headers = {}) {
   });
 }
 
+function privateJsonResponse(value, status = 200) {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: {
+      "cache-control": "no-store",
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
+}
+
 function requestAwareFetch(calls, responseTransform = (value) => value) {
   return async (url, init) => {
     const request = JSON.parse(init.body);
@@ -266,7 +281,21 @@ function testClient(fetchImpl) {
     apiKey: TOKEN,
     timeoutMs: 1_000,
     maximumSources: 20,
-    fetchImpl,
+    fetchImpl: async (url, init) => {
+      if (
+        url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT ||
+        url === INTEGRATION_DEEP_RESEARCH_CANCEL_ENDPOINT
+      ) {
+        return new Response(JSON.stringify({ detail: "Research task not found" }), {
+          status: 404,
+          headers: {
+            "cache-control": "no-store",
+            "content-type": "application/json",
+          },
+        });
+      }
+      return fetchImpl(url, init);
+    },
   });
 }
 
@@ -369,6 +398,23 @@ assert.deepEqual(searchCapability.search, {
   maximumSources: 20,
 });
 assert.deepEqual(searchCapability.artifacts.kinds, ["plot", "table", "markdown", "sources"]);
+const researchCapability = integrationCapabilitiesResponse({
+  enabled: true,
+  cancel: true,
+  resume: true,
+  search: true,
+  research: true,
+});
+assert.deepEqual(researchCapability.search.research, {
+  enabled: true,
+  depths: ["quick", "standard", "deep"],
+  taskProtocol: LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
+  activation: "explicit-prompt",
+});
+assert.deepEqual(
+  assertPublicIntegrationResponse(INTEGRATION_RPC_PATHS.capabilities, researchCapability),
+  researchCapability
+);
 const searchFilesCapability = integrationCapabilitiesResponse({
   enabled: true,
   cancel: true,
@@ -384,6 +430,7 @@ assert.deepEqual(
 for (const invalidCapability of [
   { ...searchCapability, search: { ...searchCapability.search, modes: ["web", "both", "papers"] } },
   { ...searchCapability, search: { ...searchCapability.search, maximumSources: 19 } },
+  { ...researchCapability, search: { ...researchCapability.search, research: { ...researchCapability.search.research, depths: ["deep"] } } },
   { ...searchCapability, artifacts: { ...searchCapability.artifacts, kinds: ["plot", "table", "markdown"] } },
 ]) {
   assert.throws(
@@ -1131,6 +1178,149 @@ await assert.rejects(
   }),
   (error) => error.code === "GROUNDED_SEARCH_IDENTIFIER_CONSTRAINT_FAILED"
 );
+
+const researchQuestion = "Perform deep research on durable local agent task recovery.";
+const researchQuery = "durable local agent task recovery";
+const researchPlanDigest = contractDigest({
+  schemaVersion: "deep-research-smoke-query-v1",
+  query: researchQuery,
+});
+const researchTask = (status, updatedAt) => ({
+  schema: LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
+  task: {
+    id: "a1b2c3d4e5f6",
+    question: researchQuestion,
+    model: "qwen3:30b-a3b-instruct-2507-q4_K_M",
+    status,
+    stage: status === "complete" ? "Research complete" : "Preparing research plan",
+    progress: status === "complete" ? 100 : 0,
+    mode: "both",
+    depth: "deep",
+    max_sources: 20,
+    queries: status === "complete" ? [researchQuery] : [],
+    sources: status === "complete" ? [source(researchQuery)] : [],
+    providers: status === "complete" ? [{
+      name: "crossref",
+      kind: "paper",
+      ok: true,
+      result_count: 1,
+      duration_ms: 25,
+      error: null,
+      queries: [researchQuery],
+    }] : [],
+    provider_errors: [],
+    report: status === "complete"
+      ? "# Research Report\n\n## Findings\n\nDurable task recovery needs explicit terminal state [1].\n\n## Sources\n\n[1] [Verified source](https://example.com/report)"
+      : "",
+    error: null,
+    created_at: 1,
+    updated_at: updatedAt,
+  },
+});
+const researchCalls = [];
+const researchProgress = [];
+const researchClient = createTestOnlyIntegrationGroundedSearchClient({
+  endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+  apiKey: TOKEN,
+  timeoutMs: 1_000,
+  maximumSources: 20,
+  fetchImpl: async (url, init) => {
+    const request = JSON.parse(init.body);
+    researchCalls.push({ url, request, init });
+    if (url === INTEGRATION_GROUNDED_SEARCH_ENDPOINT) {
+      return jsonResponse(searchPayload(request));
+    }
+    if (
+      (url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT ||
+        url === INTEGRATION_DEEP_RESEARCH_CANCEL_ENDPOINT) &&
+      request.task_id === "deadbeefcafe"
+    ) {
+      return privateJsonResponse({ detail: "Research task not found" }, 404);
+    }
+    if (url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT) {
+      assert.deepEqual(request, {
+        question: researchQuestion,
+        model: "localllm-deep",
+        mode: "both",
+        depth: "deep",
+      });
+      return privateJsonResponse(researchTask("queued", 1), 202);
+    }
+    if (url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT) {
+      assert.deepEqual(request, { task_id: "a1b2c3d4e5f6" });
+      return privateJsonResponse(researchTask("complete", 2));
+    }
+    throw new Error(`unexpected research smoke route: ${url}`);
+  },
+});
+await assert.rejects(
+  () => researchClient.research({
+    question: researchQuestion,
+    query: researchQuery,
+    mode: "both",
+    depth: "deep",
+    queryPlanDigest: researchPlanDigest,
+    domainConstraintDigest: null,
+  }),
+  (error) => error.code === "GROUNDED_SEARCH_NOT_READY"
+);
+const researchActivation = await researchClient.activate();
+assert.equal(researchActivation.researchReady, true);
+assert.equal(researchActivation.researchTaskSchemaVersion, LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION);
+assert.deepEqual(researchActivation.exactResearchPostPaths, [
+  "/api/research/v2/create",
+  "/api/research/v2/status",
+  "/api/research/v2/cancel",
+]);
+const researchResult = await researchClient.research({
+  question: researchQuestion,
+  query: researchQuery,
+  mode: "both",
+  depth: "deep",
+  queryPlanDigest: researchPlanDigest,
+  domainConstraintDigest: null,
+  onProgress: async (progress) => researchProgress.push(progress),
+});
+assert.deepEqual(researchProgress.map(({ status, progress }) => ({ status, progress })), [
+  { status: "queued", progress: 0 },
+  { status: "complete", progress: 100 },
+]);
+assert.equal(researchResult.schemaVersion, LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION);
+assert.equal(researchResult.taskId, "a1b2c3d4e5f6");
+assert.equal(researchResult.artifact.kind, "sources");
+assert.equal(researchResult.artifact.spec.sources.length, 1);
+assert.match(researchResult.report, /Durable task recovery/u);
+const researchAuthority = createIntegrationGroundedSearchArtifactAuthority({
+  query: researchQuery,
+  mode: "both",
+  queryPlanDigest: researchPlanDigest,
+  domainConstraintDigest: null,
+});
+assert.equal(
+  researchResult.artifact.id,
+  integrationGroundedSearchBoundArtifactId(researchResult.artifact.spec, researchAuthority)
+);
+assert.equal(researchCalls.filter(({ url }) => url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT).length, 1);
+assert.equal(researchCalls.filter(({ url }) => url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT).length, 2);
+assert.doesNotMatch(JSON.stringify({ researchActivation, researchResult }), new RegExp(TOKEN, "u"));
+
+assert.deepEqual(
+  inferIntegrationDeepResearchRequestFromPrompt("Perform deep web and paper research before answering."),
+  { mode: "both", depth: "deep" }
+);
+assert.deepEqual(
+  inferIntegrationDeepResearchRequestFromPrompt("Do a quick comprehensive web research review."),
+  { mode: "web", depth: "quick" }
+);
+assert.deepEqual(
+  inferIntegrationDeepResearchRequestFromPrompt("请全面研究这个主题并给出证据。"),
+  { mode: "both", depth: "deep" }
+);
+assert.equal(
+  inferIntegrationDeepResearchRequestFromPrompt("Do not perform deep research; answer locally."),
+  null
+);
+assert.equal(inferIntegrationDeepResearchRequestFromPrompt("Summarize this research note."), null);
 
 assert.deepEqual(
   inferIntegrationGroundedSearchRequestFromPrompt(

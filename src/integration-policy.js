@@ -34,6 +34,8 @@ export const INTEGRATION_ARTIFACT_KINDS = Object.freeze(["plot", "table", "markd
 export const INTEGRATION_SEARCH_ARTIFACT_KIND = "sources";
 export const INTEGRATION_SEARCH_MODES = Object.freeze(["web", "papers", "both"]);
 export const INTEGRATION_MAXIMUM_SEARCH_SOURCES = 20;
+export const INTEGRATION_DEEP_RESEARCH_DEPTHS = Object.freeze(["quick", "standard", "deep"]);
+export const INTEGRATION_DEEP_RESEARCH_TASK_PROTOCOL = "localllm/research-task/v2";
 export const INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_MEDIA_TYPES = Object.freeze([
   "image/png",
   "image/jpeg",
@@ -868,6 +870,7 @@ export function integrationCapabilitiesResponse({
   resume = false,
   retry = false,
   search = false,
+  research = false,
   files = false,
   attachments = false,
   roles,
@@ -909,6 +912,16 @@ export function integrationCapabilitiesResponse({
             enabled: true,
             modes: Object.freeze([...INTEGRATION_SEARCH_MODES]),
             maximumSources: INTEGRATION_MAXIMUM_SEARCH_SOURCES,
+            ...(research
+              ? {
+                  research: Object.freeze({
+                    enabled: true,
+                    depths: Object.freeze([...INTEGRATION_DEEP_RESEARCH_DEPTHS]),
+                    taskProtocol: INTEGRATION_DEEP_RESEARCH_TASK_PROTOCOL,
+                    activation: "explicit-prompt",
+                  }),
+                }
+              : {}),
           }),
         }
       : {}),

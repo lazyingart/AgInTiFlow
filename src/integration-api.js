@@ -22,6 +22,8 @@ import {
   INTEGRATION_ANALYSIS_ORDINARY_BODY_RECEIVE_TIMEOUT_MS,
   INTEGRATION_API_PREFIX,
   INTEGRATION_ARTIFACT_KINDS,
+  INTEGRATION_DEEP_RESEARCH_DEPTHS,
+  INTEGRATION_DEEP_RESEARCH_TASK_PROTOCOL,
   INTEGRATION_MAXIMUM_SEARCH_SOURCES,
   INTEGRATION_RPC_PATHS,
   INTEGRATION_SEARCH_ARTIFACT_KIND,
@@ -1373,7 +1375,7 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   exactDataObject(
     serviceCapabilities,
     [
-      "analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "retry", "search", "files",
+      "analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "retry", "search", "research", "files",
       "attachments", "attachmentAuthority", "roles",
     ],
     ["analysisSessionAuthority", "mutationRecoveryAuthority", "cancel", "resume", "retry"],
@@ -1389,6 +1391,14 @@ export async function createIntegrationAnalysisRouterActivation(options = {}) {
   }
   if (serviceCapabilities.search !== undefined && serviceCapabilities.search !== true) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis search capability is invalid.", { status: 503 });
+  }
+  if (
+    serviceCapabilities.research !== undefined &&
+    (serviceCapabilities.research !== true || serviceCapabilities.search !== true)
+  ) {
+    throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis deep research capability is invalid.", {
+      status: 503,
+    });
   }
   if (serviceCapabilities.files !== undefined && serviceCapabilities.files !== true) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis file capability is invalid.", { status: 503 });
@@ -1619,6 +1629,7 @@ function activatedCapabilitiesForService(options, activationMetadata) {
     resume: metadata.serviceCapabilities.resume,
     retry: metadata.serviceCapabilities.retry,
     search: metadata.serviceCapabilities.search === true,
+    research: metadata.serviceCapabilities.research === true,
     files: metadata.serviceCapabilities.files === true,
     attachments: metadata.serviceCapabilities.attachments === true,
     ...(metadata.serviceCapabilities.roles === undefined ? {} : { roles: metadata.serviceCapabilities.roles }),
@@ -2207,7 +2218,7 @@ function assertPublicCapabilityResponse(value = {}) {
     ? { enabled: false, modes: [], maximumSources: 0 }
     : integrationExactKeys(
         response.search,
-        ["enabled", "modes", "maximumSources"],
+        ["enabled", "modes", "maximumSources", "research"],
         "agent capabilities search",
         ["enabled", "modes", "maximumSources"]
       );
@@ -2318,6 +2329,31 @@ function assertPublicCapabilityResponse(value = {}) {
   ) {
     integrationInvalid("agent search capabilities are invalid");
   }
+  let researchCapability;
+  if (search.research !== undefined) {
+    const research = integrationExactKeys(
+      search.research,
+      ["enabled", "depths", "taskProtocol", "activation"],
+      "agent capabilities deep research",
+      ["enabled", "depths", "taskProtocol", "activation"]
+    );
+    if (
+      research.enabled !== true ||
+      !search.enabled ||
+      !Array.isArray(research.depths) ||
+      canonicalJson(research.depths) !== canonicalJson(INTEGRATION_DEEP_RESEARCH_DEPTHS) ||
+      research.taskProtocol !== INTEGRATION_DEEP_RESEARCH_TASK_PROTOCOL ||
+      research.activation !== "explicit-prompt"
+    ) {
+      integrationInvalid("agent deep research capabilities are invalid");
+    }
+    researchCapability = Object.freeze({
+      enabled: true,
+      depths: INTEGRATION_DEEP_RESEARCH_DEPTHS,
+      taskProtocol: INTEGRATION_DEEP_RESEARCH_TASK_PROTOCOL,
+      activation: "explicit-prompt",
+    });
+  }
   const fileEnabled = artifacts.kinds?.includes?.("file") === true;
   if (fileEnabled && !response.enabled) integrationInvalid("disabled capabilities may not advertise file artifacts");
   const artifactKinds = [
@@ -2348,6 +2384,7 @@ function assertPublicCapabilityResponse(value = {}) {
             enabled: true,
             modes: Object.freeze(searchModes),
             maximumSources: INTEGRATION_MAXIMUM_SEARCH_SOURCES,
+            ...(researchCapability === undefined ? {} : { research: researchCapability }),
           }),
         }
       : {}),

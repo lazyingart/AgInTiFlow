@@ -408,6 +408,7 @@ More detail:
 - [docs/auxiliary-image-generation.md](docs/auxiliary-image-generation.md)
 - [docs/perception-and-web-research.md](docs/perception-and-web-research.md)
 - [docs/deep-research-engine.md](docs/deep-research-engine.md)
+- [docs/integration-deep-research.md](docs/integration-deep-research.md)
 - [docs/cli-i18n.md](docs/cli-i18n.md)
 - [docs/skillmesh.md](docs/skillmesh.md)
 

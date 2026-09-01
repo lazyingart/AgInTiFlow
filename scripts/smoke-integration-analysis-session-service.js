@@ -53,9 +53,11 @@ import {
 } from "../src/integration-analysis-state-persistence.js";
 import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import {
+  INTEGRATION_DEEP_RESEARCH_TOOL_NAME,
   INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
   createIntegrationGroundedSearchArtifactAuthority,
   deriveIntegrationGroundedSearchDomainConstraint,
+  inferIntegrationDeepResearchRequestFromPrompt,
   integrationGroundedSearchBoundArtifactId,
   planIntegrationGroundedSearchQuery,
 } from "../src/integration-grounded-search.js";
@@ -2261,11 +2263,14 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
           priorArtifacts: Object.freeze(input.priorArtifacts.map(publicArtifactProjection)),
         }),
       }));
+      const searchToolName = inferIntegrationDeepResearchRequestFromPrompt(input.prompt) === null
+        ? INTEGRATION_GROUNDED_SEARCH_TOOL_NAME
+        : INTEGRATION_DEEP_RESEARCH_TOOL_NAME;
       if (input.search !== undefined) {
         await options.onProgress?.(Object.freeze({
           phase: "executing",
           toolCallsCompleted: 0,
-          toolName: INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+          toolName: searchToolName,
           toolCallNumber: 1,
           executionState: "starting",
         }));
@@ -2299,7 +2304,7 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
         await options.onProgress?.(Object.freeze({
           phase: "executing",
           toolCallsCompleted: 0,
-          toolName: INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
+          toolName: searchToolName,
           toolCallNumber: 1,
           executionState: "succeeded",
           artifactCount: 1,
@@ -2323,6 +2328,7 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
   try {
     const capabilities = await service.getIntegrationCapabilities();
     assert.equal(capabilities.search, true);
+    assert.equal(capabilities.research, true);
     assert.equal(capabilities.analysisSessionAuthority.groundedSearchReady, true);
     const created = await service.createThread({ title: "Durable grounded search" }, context());
     const firstSearch = Object.freeze({ mode: "both", limit: 7 });
@@ -2456,7 +2462,59 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
       1
     );
 
-    let compactionHead = inferred.run.id;
+    const deepPrompt = "Perform deep web and paper research on durable local agent recovery.";
+    const deep = await restarted.resumeRun({
+      runId: inferred.run.id,
+      input: { text: deepPrompt },
+    }, context());
+    await restarted.waitForIdle();
+    const deepCall = calls.at(-1);
+    assert.equal(deepCall.scope.runId, deep.run.id);
+    assert.deepEqual(
+      deepCall.input.search,
+      { mode: "both", limit: 20 },
+      "explicit deep research was not promoted to its maximum bounded durable search authority"
+    );
+    const deepState = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+    assert.deepEqual(
+      deepState.state.runs.find((run) => run.id === deep.run.id).search,
+      { mode: "both", limit: 20 },
+      "deep research authority must be durable before runner launch"
+    );
+    const deepEventsResult = await restarted.loadRunEvents(eventsRequest(deep.run.id), context());
+    const deepEvents = await deepEventsResult.publicEventLedger.loadEventsAfter(0);
+    assert(deepEvents.some(
+      (event) => event.type === "tool.started" && event.payload.publicLabel === "Deep research"
+    ));
+    assert(deepEvents.some(
+      (event) => event.type === "tool.completed" &&
+        event.payload.publicLabel === "Deep research" &&
+        event.payload.publicSummary === "Deep research report completed."
+    ));
+    assert.equal(
+      deepEvents.filter(
+        (event) => event.type === "artifact.created" && event.payload.artifact?.kind === "sources"
+      ).length,
+      1
+    );
+
+    const deepFollowup = await restarted.resumeRun({
+      runId: deep.run.id,
+      input: { text: "Continue in the same chat and summarize the result in one sentence." },
+    }, context());
+    await restarted.waitForIdle();
+    assert.equal(calls.at(-1).input.search, undefined, "ordinary follow-up inherited stale deep-research authority");
+    assert.equal((await restarted.getRunStatus({ runId: deepFollowup.run.id }, context())).run.status, "completed");
+    const deepFollowupEvents = await (
+      await restarted.loadRunEvents(eventsRequest(deepFollowup.run.id), context())
+    ).publicEventLedger.loadEventsAfter(0);
+    assert.equal(
+      deepFollowupEvents.some((event) => event.payload?.publicLabel === "Deep research"),
+      false,
+      "completed deep-research activity leaked into the next message"
+    );
+
+    let compactionHead = deepFollowup.run.id;
     for (let index = 0; index < 18; index += 1) {
       const continued = await restarted.resumeRun({
         runId: compactionHead,
