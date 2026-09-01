@@ -76,15 +76,18 @@ export function assertDistinctIntegrationAnalysisCredentials(value) {
   return true;
 }
 
-export function integrationAnalysisVisionEligibleForStatePersistenceMode(mode, enabled = false) {
+export function integrationAnalysisVisionEligibleForStatePersistenceMode(mode, enabled = undefined) {
   if (!Object.values(INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES).includes(mode)) {
     throw new TypeError("analysis state persistence mode is invalid");
   }
-  if (typeof enabled !== "boolean") throw new TypeError("analysis vision gate is invalid");
-  if (enabled && mode !== INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3) {
+  const requested = enabled === undefined
+    ? mode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3
+    : enabled;
+  if (typeof requested !== "boolean") throw new TypeError("analysis vision gate is invalid");
+  if (requested && mode !== INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3) {
     throw new TypeError("analysis vision requires native-v3 state persistence");
   }
-  return enabled && mode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3;
+  return requested && mode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3;
 }
 
 const IDEMPOTENCY_RECOVERY_AUTHORITY = Object.freeze({

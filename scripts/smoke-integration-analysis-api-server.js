@@ -401,18 +401,19 @@ const checkedConfig = validateIntegrationAnalysisServiceConfig(validConfig());
 assert.equal(checkedConfig.capability.enabled, true);
 assert.equal(checkedConfig.statePersistence.mode, INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3);
 assert.equal(checkedConfig.trustedPrincipalProxy.clientId, "aginti-bff");
-assert.equal(Object.prototype.hasOwnProperty.call(checkedConfig, "vision"), false);
+assert.deepEqual(checkedConfig.vision, { enabled: true });
+assert.deepEqual(publicIntegrationAnalysisServiceConfig(checkedConfig).vision, { enabled: true });
 assert.deepEqual(
   integrationAnalysisCliSummary(checkedConfig, "checked-analysis-ready-to-probe").vision,
-  { enabled: false },
-  "an absent pre-migration gate is reported as disabled without changing the accepted config shape"
+  { enabled: true },
+  "native-v3 defaults to probing the fixed LocalLLM vision capability unless explicitly disabled"
 );
 assert.equal(
   integrationAnalysisVisionEligibleForStatePersistenceMode(
     INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3
   ),
-  false,
-  "the absent vision gate fails closed even after native-v3 migration"
+  true,
+  "the absent vision gate now attempts exact local vision readiness on native-v3"
 );
 assert.equal(
   integrationAnalysisVisionEligibleForStatePersistenceMode(
@@ -511,6 +512,16 @@ assert.match(
   /const attachmentTransportAware = activationMetadata\?\.proof\?\.attachmentTransportAware === true;[\s\S]{0,1024}createAttachmentAdmissionMiddlewares\([\s\S]{0,128}attachmentTransportAware/u,
   "gate-off native-v3 keeps the bounded image parser and receive admission lane"
 );
+assert.match(
+  apiSource,
+  /function activatedCapabilitiesForService[\s\S]{0,768}attachments:\s*metadata\.serviceCapabilities\.attachments === true/u,
+  "activated capabilities must project the exact proven session attachment authority into the public AgentWeb contract"
+);
+assert.match(
+  serverSource,
+  /const visionEligible = integrationAnalysisVisionEligibleForStatePersistenceMode\([\s\S]{0,192}config\.vision\?\.enabled === true[\s\S]{0,384}createIntegrationAnalysisVisionClient\(\{[\s\S]{0,192}baseURL: config\.localModel\.baseURL,[\s\S]{0,192}apiKey: options\.localModelApiKey/u,
+  "production vision activation must use the fixed LocalLLM route and the already-bound model credential"
+);
 const gateOffPreflightIndex = apiSource.indexOf("const gateOffAttachmentMutation =");
 const idempotencyMutationIndex = apiSource.indexOf(
   "transactionalIdempotencyStore.runMutation(",
@@ -551,7 +562,18 @@ assert.equal(
   publicIntegrationAnalysisServiceConfig(r67CompatibleConfig).statePersistence.mode,
   INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2
 );
-assert.equal(Object.prototype.hasOwnProperty.call(r67CompatibleConfig, "vision"), false);
+assert.deepEqual(r67CompatibleConfig.vision, { enabled: false });
+assert.deepEqual(
+  publicIntegrationAnalysisServiceConfig(r67CompatibleConfig).vision,
+  { enabled: false },
+  "r67-compatible state remains image-disabled by default"
+);
+assert.equal(
+  integrationAnalysisVisionEligibleForStatePersistenceMode(
+    INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2
+  ),
+  false
+);
 assert.deepEqual(
   validateIntegrationAnalysisServiceConfig(validConfig({
     statePersistence: { mode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 },

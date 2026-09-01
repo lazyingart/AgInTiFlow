@@ -147,6 +147,10 @@ function normalizeScopes(value) {
   return Object.freeze(scopes);
 }
 
+function defaultVisionEnabledForStatePersistence(mode) {
+  return mode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3;
+}
+
 export function validateIntegrationAnalysisServiceConfig(value) {
   const config = exactObject(value, CONFIG_KEYS, REQUIRED_CONFIG_KEYS, "analysis integration config");
   fixed(
@@ -185,6 +189,8 @@ export function validateIntegrationAnalysisServiceConfig(value) {
       fail("ANALYSIS_CONFIG_INVALID", "Enabled vision requires native-v3 state persistence.");
     }
     vision = Object.freeze({ enabled: candidate.enabled });
+  } else {
+    vision = Object.freeze({ enabled: defaultVisionEnabledForStatePersistence(statePersistence.mode) });
   }
 
   const localModel = exactObject(config.localModel, MODEL_KEYS, MODEL_KEYS, "localModel");
@@ -287,7 +293,7 @@ export function validateIntegrationAnalysisServiceConfig(value) {
     stateRoot: DEFAULT_INTEGRATION_ANALYSIS_SERVICE_STATE_ROOT,
     idempotencyRoot: DEFAULT_INTEGRATION_ANALYSIS_IDEMPOTENCY_ROOT,
     statePersistence: Object.freeze({ mode: statePersistence.mode }),
-    ...(vision === undefined ? {} : { vision }),
+    vision,
     localModel: Object.freeze({
       baseURL: INTEGRATION_ANALYSIS_LOCALLLM_BASE_URL,
       model: INTEGRATION_ANALYSIS_LOCALLLM_MODEL,
