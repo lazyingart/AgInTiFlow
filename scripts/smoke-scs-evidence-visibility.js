@@ -33,6 +33,51 @@ const groupBriefingContract = deriveScsTaskContract({
   ].join(" "),
   taskProfile: "research",
 });
+const scopedReadThenWriteRoot = fs.mkdtempSync(
+  path.join(os.tmpdir(), "aginti-scoped-read-then-write-")
+);
+const scopedReadThenWriteGoal = [
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "task",
+    request:
+      "Read AGENTS.md and configs/model-policy.json, then create provider-fallback-readiness.md in the task artifact directory.",
+    artifact_root: scopedReadThenWriteRoot,
+  })}`,
+  "Use the task artifact directory for the requested output.",
+].join("\n");
+const scopedReadThenWriteContract = deriveScsTaskContract({
+  goal: scopedReadThenWriteGoal,
+  taskProfile: "auto",
+});
+assert.deepEqual(
+  scopedReadThenWriteContract.exactInputPaths,
+  ["AGENTS.md", "configs/model-policy.json"],
+  "explicit read-then-write artifact contract lost its exact source inputs"
+);
+assert.equal(
+  scopedReadThenWriteContract.requiresSourceGrounding,
+  true,
+  "explicit exact-file reads were not required before artifact completion"
+);
+fs.writeFileSync(
+  path.join(scopedReadThenWriteRoot, "provider-fallback-readiness.md"),
+  "# Provider fallback readiness\n",
+  "utf8"
+);
+const ungroundedScopedArtifact = evaluateScsSemanticContract(
+  scopedReadThenWriteContract,
+  { commandCwd: scopedReadThenWriteRoot, events: [], state: {} }
+);
+assert.equal(
+  ungroundedScopedArtifact.ok,
+  false,
+  "artifact completion passed without the explicitly requested source reads"
+);
+assert.deepEqual(
+  ungroundedScopedArtifact.missingSourceReads,
+  ["AGENTS.md", "configs/model-policy.json"],
+  "artifact completion did not report every unread exact input"
+);
 assert.deepEqual(
   groupBriefingContract.requiredArtifactKinds.map((item) => item.id),
   ["format:.pdf"],

@@ -1414,7 +1414,17 @@ function isReadOnlyReadinessTask(goal = "") {
 
 function requiresSourceGrounding(goal = "") {
   const text = String(goal || "");
+  const positiveText = stripForbiddenLanguage(text);
+  const inferredOutputs = new Set(inferExactOutputPaths(positiveText));
+  const explicitSourceInputs = inferExactInputPaths(positiveText).filter(
+    (item) => !inferredOutputs.has(item)
+  );
+  const explicitlyRequestedInputRead = Boolean(
+    /\b(?:read|inspect|review|audit|consult|examine)\b/iu.test(positiveText) &&
+      explicitSourceInputs.length > 0
+  );
   return (
+    explicitlyRequestedInputRead ||
     isReadOnlyReadinessTask(text) ||
     /\b(?:re-?read|read|inspect|review|audit)\b[^.\n;]{0,120}\b(?:repository|project|workspace)\b[^.\n;]{0,120}\b(?:requirements?|instructions?|implementation|source|tests?)\b/i.test(
       text
@@ -3580,7 +3590,10 @@ function sourceEvidencePaths({ events = [], state = {}, contract = {}, commandCw
 }
 
 function sourceScopeCoverage(contract = {}, { events = [], state = {}, commandCwd = process.cwd() } = {}) {
-  const roots = (contract.declaredSourceRoots || []).map((rawPath) => ({
+  const roots = unique([
+    ...(contract.declaredSourceRoots || []),
+    ...(contract.exactInputPaths || []),
+  ]).map((rawPath) => ({
     rawPath,
     absolutePath: resolveContractPath(commandCwd, rawPath).replace(/\/+$/, ""),
   }));
