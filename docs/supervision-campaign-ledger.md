@@ -650,3 +650,28 @@ append-only repairs when replacement is required, and caps repair schemas so a
 small local model receives only the actionable tool surface. Focused coding,
 truthful-completion, writing-routing, progressive-tool, document-quality, and
 dynamic-budget suites pass. These fixes are prepared for AgInTiFlow `0.20.302`.
+
+### Host-scoped deliverables without false source mutation
+
+LabCanvas research run `browser-agent-stale-ui-research-085` showed that
+DeepSeek had already completed current web research and written valid task
+artifacts, but AgInTiFlow rejected `finish` because every file-producing task
+inherited a fresh project-source mutation requirement. The artifact directory
+was intentionally excluded from project mutation accounting, so the runtime
+could never satisfy its own gate and eventually reached the step limit.
+
+The runtime now distinguishes a requested deliverable inside the host-owned
+artifact root from a requested source-code change. Reports, notes, PDFs,
+figures, CAD, presentations, and similar scoped outputs may complete from their
+verified artifact evidence without fabricating a repository edit. A request to
+fix, implement, or modify project source still requires a fresh project
+mutation, even when it also asks for a sidecar report.
+
+Fresh LabCanvas retest `browser-agent-stale-ui-research-086` used the same
+imperfect prompt and a new persistent AgInTi session. It recovered a malformed
+DeepSeek tool call, ran web research, wrote and registered two substantial
+Markdown artifacts with current primary-source citations, separated
+demonstrated evidence from inferred recommendations, and finished normally.
+The retained trace contains no completion-evidence rejection or forced
+source-mutation loop. Focused completion, evidence, progressive-tool, runtime,
+and dynamic-budget suites plus the full npm suite pass for `0.20.303`.

@@ -1316,6 +1316,20 @@ function goalRequestsFileMutation(goal = "", taskProfile = "") {
   );
 }
 
+function goalRequestsScopedArtifactDeliverable(goal = "") {
+  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
+  const deliverable =
+    /\b(?:build|compile|create|draft|export|generate|make|prepare|produce|render|save|write)\b[^.\n;]{0,180}\b(?:artifact|brief|cad|diagram|document|figure|image|markdown|memo|model|note|paper|pcb|pdf|presentation|prompt|report|research note|slide deck|slides?|spreadsheet|story|summary|transcript|video)\b/.test(text) ||
+    /\b(?:artifact|brief|cad|diagram|document|figure|image|markdown|memo|model|note|paper|pcb|pdf|presentation|prompt|report|research note|slide deck|slides?|spreadsheet|story|summary|transcript|video)\b[^.\n;]{0,120}\b(?:build|compile|create|draft|export|generate|make|prepare|produce|render|save|write)\b/.test(text) ||
+    /(?:创建|生成|保存|编写|撰写|制作|导出|准备)[^。；\n]{0,100}(?:报告|笔记|摘要|文档|论文|图表|图片|模型|演示文稿|幻灯片|表格|故事|提示词|转录|视频)/.test(text);
+  if (!deliverable) return false;
+  const projectSourceMutation =
+    /\b(?:change|debug|edit|fix|implement|improve|modify|patch|refactor|repair|replace|rewrite|update)\b[^.\n;]{0,140}\b(?:app|application|code|codebase|implementation|library|package|repo|repository|runtime|source|src\/)\b/.test(text) ||
+    /\b(?:app|application|code|codebase|implementation|library|package|repo|repository|runtime|source|src\/)\b[^.\n;]{0,140}\b(?:change|debug|edit|fix|implement|improve|modify|patch|refactor|repair|replace|rewrite|update)\b/.test(text) ||
+    /(?:修改|修复|实现|改进|重构|调试|替换|更新)[^。；\n]{0,100}(?:代码|代码库|实现|运行时|应用|仓库|源码)/.test(text);
+  return !projectSourceMutation;
+}
+
 function goalRequestsTestExecution(goal = "") {
   const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
   return (
@@ -2029,6 +2043,9 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     positiveEvidenceGoal,
     taskProfile
   );
+  const scopedArtifactDeliverable = Boolean(
+    artifactRoot && goalRequestsScopedArtifactDeliverable(evidenceGoal)
+  );
   return {
     version: 1,
     outcome: compact(evidenceGoal || "Complete the requested task.", 500),
@@ -2038,6 +2055,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
     requiredArtifactKinds,
+    scopedArtifactDeliverable,
     excludedOutputPaths,
     artifactRoot,
     exactInputPaths,

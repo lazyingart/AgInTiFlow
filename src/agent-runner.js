@@ -4289,6 +4289,8 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
     startedMutationRevision,
     requiresWorkspaceMutation: currentTurnContract.requiresWorkspaceMutation === true,
     requiresFileMutation: currentTurnContract.requiresFileMutation === true,
+    scopedArtifactDeliverable:
+      currentTurnContract.scopedArtifactDeliverable === true,
     requiresSourceGrounding: Boolean(
       currentTurnContract.requiresSourceGrounding === true ||
         (
@@ -14666,8 +14668,12 @@ export function completionTaskContract(config = {}, state = {}) {
           0
       )
     );
+    const scopedArtifactDeliverable = currentContract
+      ? currentContract.scopedArtifactDeliverable === true
+      : activeExecutionContract.scopedArtifactDeliverable === true;
     const requiresFreshMutation = Boolean(
-      currentContract?.requiresFileMutation || activeExecutionContract.requiresFileMutation
+      (currentContract?.requiresFileMutation || activeExecutionContract.requiresFileMutation) &&
+        !scopedArtifactDeliverable
     );
     const minimumMutationRevision = requiresFreshMutation
       ? startedMutationRevision + 1
@@ -14720,6 +14726,7 @@ export function completionTaskContract(config = {}, state = {}) {
       requiresFileMutation: authoritativeReadOnlyContinuation
         ? false
         : Boolean(contract.requiresFileMutation || currentContract?.requiresFileMutation),
+      scopedArtifactDeliverable,
       requiresSourceGrounding: authoritativeReadOnlyContinuation
         ? false
         : Boolean(contract.requiresSourceGrounding || currentContract?.requiresSourceGrounding),

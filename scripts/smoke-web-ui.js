@@ -138,7 +138,9 @@ try {
   if ((await page.locator('[data-workspace-file="notes/workspace-ui.md"]').getAttribute("draggable")) !== "true") {
     throw new Error("workspace file rows are not draggable");
   }
-  await page.locator("#workspace-automap").click();
+  const automapButton = page.locator("#workspace-automap");
+  await automapButton.scrollIntoViewIfNeeded();
+  await automapButton.click();
   await page.locator('[data-workspace-lane="docs"]').click();
   await page.waitForSelector('[data-workspace-file="notes/workspace-ui.md"]', { timeout: 10000 });
   await page.locator('[data-workspace-file="notes/workspace-ui.md"]').click();
