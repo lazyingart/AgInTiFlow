@@ -2059,7 +2059,8 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   if (requiredGitActions.length && !requirementCategories.includes("git")) {
     requirementCategories.push("git");
   }
-  const requiresExternalEvidence = requirementCategories.length > 0 || requiredToolCalls.length > 0 || goalRequiresEvidence(evidenceGoal, taskProfile);
+  const requiresExternalEvidence =
+    requirementCategories.length > 0 || requiredToolCalls.length > 0 || goalRequiresEvidence(positiveEvidenceGoal, taskProfile);
   const requiredEvidence = requirementCategories.map((category) => ({
     id: category,
     category,

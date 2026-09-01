@@ -11,7 +11,7 @@ import {
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { SessionStore } from "../src/session-store.js";
-import { finishResultClaimsIncompleteWork } from "../src/scs-evidence.js";
+import { deriveScsTaskContract, finishResultClaimsIncompleteWork } from "../src/scs-evidence.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-truthful-completion-"));
@@ -198,6 +198,9 @@ async function runCase({
   id,
   goal,
   taskProfile = "auto",
+  provider = "openai",
+  model = "scripted-model",
+  routingMode = "manual",
   responses,
   allowShellTool = false,
   allowFileTools = false,
@@ -205,6 +208,9 @@ async function runCase({
   executionTier = "",
   maxOutputTokens = undefined,
   resume = false,
+  runtimePatch = undefined,
+  expectedRuntimeRevision = undefined,
+  providerReadinessMode = undefined,
   setup = null,
   scsActive = false,
 }) {
@@ -215,11 +221,20 @@ async function runCase({
   if (typeof setup === "function") await setup(workspace);
   const calls = [];
   const client = scriptedClient([...responses], calls);
+  const factoryConfigs = [];
+  const clientFactory = async (runtimeConfig = {}) => {
+    factoryConfigs.push({
+      provider: runtimeConfig.provider,
+      model: runtimeConfig.model,
+    });
+    return client;
+  };
+  clientFactory.agintiDeterministicTest = true;
   const config = resolveRuntimeConfig(
     {
-      provider: "openai",
-      routingMode: "manual",
-      model: "scripted-model",
+      provider,
+      routingMode,
+      model,
       goal,
       taskProfile,
       executionTier,
@@ -236,9 +251,9 @@ async function runCase({
     {
       baseDir: workspace,
       packageDir: repoRoot,
-      provider: "openai",
-      routingMode: "manual",
-      model: "scripted-model",
+      provider,
+      routingMode,
+      model,
       executionTier,
       sessionId: id,
       resume: resume ? id : "",
@@ -255,13 +270,13 @@ async function runCase({
       allowMcpTools: false,
       allowParallelScouts: false,
       enableScs: scsActive ? "auto" : "off",
-      clientFactory: async () => client,
+      clientFactory,
     }
   );
   Object.assign(config, {
     apiKey: "scripted-test-only",
     resume: resume ? id : "",
-    clientFactory: async () => client,
+    clientFactory,
     sessionsDir,
     projectSessionsDir,
     useDockerSandbox: false,
@@ -283,15 +298,49 @@ async function runCase({
       : undefined,
     modelTimeoutMs: 1_000,
     ...(executionTier ? { executionTier, executionPolicy: { tier: executionTier, requiresPlan: false, reason: "Scripted completion smoke." } } : {}),
+    ...(providerReadinessMode ? { providerReadinessMode } : {}),
+    ...(runtimePatch ? { runtimePatch } : {}),
+    ...(expectedRuntimeRevision !== undefined ? { expectedRuntimeRevision } : {}),
   });
   const result = await runAgent(config);
   const store = new SessionStore(sessionsDir, id, { projectRoot: workspace, commandCwd: workspace, projectSessionsDir });
   return {
     result,
     calls,
+    factoryConfigs,
     events: await store.loadEvents(),
     state: await store.loadState(),
   };
+}
+
+function providerRuntimePatch(provider, model) {
+  return {
+    provider,
+    model,
+    routingMode: "manual",
+    routeProvider: provider,
+    routeModel: model,
+    mainProvider: provider,
+    mainModel: model,
+    spareProvider: provider,
+    spareModel: model,
+  };
+}
+
+function scopedTaskGoal(request, artifactRoot) {
+  return [
+    "User request:",
+    request,
+    "",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request,
+      artifact_root: artifactRoot,
+    })}`,
+    "",
+    "Artifact contract:",
+    "- If no file is produced, use an empty artifacts list.",
+  ].join("\n");
 }
 
 try {
@@ -409,6 +458,125 @@ try {
   assert.equal(quotedChatClassification.result.stopped, undefined);
   assert.equal(quotedChatClassification.result.result, '{"intent":"generation_only","publish":false}');
   assert(!quotedChatClassification.events.some((event) => event.type === "completion.evidence_rejected"));
+
+  const providerSwitchSessionId = "provider-switch-resume-contract";
+  const providerSwitchFirstTurn = await runCase({
+    id: providerSwitchSessionId,
+    goal: "Create provider-switch-proof.md with the exact text provider switch proof.",
+    taskProfile: "auto",
+    provider: "localllm",
+    model: "localllm-fast",
+    providerReadinessMode: "deterministic-test",
+    allowFileTools: true,
+    responses: [
+      assistant("", [
+        toolCall("write-provider-switch-proof", "write_file", {
+          path: "provider-switch-proof.md",
+          mode: "create",
+          content: "provider switch proof\n",
+        }),
+      ]),
+      assistant("", [
+        toolCall("finish-provider-switch-proof", "finish", {
+          result: "Created provider-switch-proof.md.",
+        }),
+      ]),
+    ],
+  });
+  assert.equal(providerSwitchFirstTurn.result.stopped, undefined);
+  assert.equal(providerSwitchFirstTurn.state.meta?.runtimeConfig?.provider, "localllm");
+  assert.equal(providerSwitchFirstTurn.state.meta?.runtimeConfig?.model, "localllm-fast");
+
+  const providerSwitchSecondTurn = await runCase({
+    id: providerSwitchSessionId,
+    goal: "Resume this exact session with the default provider and return exactly: DEEPSEEK_RESUME_OK",
+    taskProfile: "auto",
+    provider: "deepseek",
+    model: "deepseek-v4-flash",
+    resume: true,
+    runtimePatch: providerRuntimePatch("deepseek", "deepseek-v4-flash"),
+    expectedRuntimeRevision: providerSwitchFirstTurn.state.meta.runtimeConfig.revision,
+    responses: [
+      assistant("", [
+        toolCall("finish-provider-switch-deepseek", "finish", {
+          result: "DEEPSEEK_RESUME_OK",
+        }),
+      ]),
+    ],
+  });
+  assert.equal(providerSwitchSecondTurn.result.stopped, undefined);
+  assert.equal(providerSwitchSecondTurn.result.result, "DEEPSEEK_RESUME_OK");
+  assert.equal(providerSwitchSecondTurn.state.meta?.runtimeConfig?.provider, "deepseek");
+  assert.equal(providerSwitchSecondTurn.state.meta?.runtimeConfig?.model, "deepseek-v4-flash");
+  assert.equal(
+    providerSwitchSecondTurn.events.filter(
+      (event) => event.type === "session.runtime_resolved" && event.data?.provider === "deepseek"
+    ).length,
+    1,
+    "explicit DeepSeek resume did not persist a provider switch"
+  );
+
+  const forcedLocalRequest =
+    "Resume this exact session and return exactly: LOCALLLM_FORCED_RESUME_OK Do not create or modify any file.";
+  const forcedLocalGoal = scopedTaskGoal(
+    forcedLocalRequest,
+    path.join(tempRoot, "artifacts", "provider-switch-resume-contract")
+  );
+  const forcedLocalContract = deriveScsTaskContract({ goal: forcedLocalGoal, taskProfile: "auto" });
+  assert.equal(
+    forcedLocalContract.requiresExternalEvidence,
+    false,
+    "a forbidden file-mutation clause made a pure response-only resume require external evidence"
+  );
+  assert.deepEqual(forcedLocalContract.requiredEvidence, []);
+  assert.deepEqual(forcedLocalContract.exactOutputPaths, []);
+  assert(
+    forcedLocalContract.forbiddenActions.some((item) => /create or modify any file/i.test(item)),
+    "forbidden file mutation was not retained as a guardrail"
+  );
+
+  const forcedLocalResume = await runCase({
+    id: providerSwitchSessionId,
+    goal: forcedLocalGoal,
+    taskProfile: "auto",
+    provider: "localllm",
+    model: "localllm-fast",
+    providerReadinessMode: "deterministic-test",
+    resume: true,
+    runtimePatch: providerRuntimePatch("localllm", "localllm-fast"),
+    expectedRuntimeRevision: providerSwitchSecondTurn.state.meta.runtimeConfig.revision,
+    responses: [
+      assistant("", [
+        toolCall("finish-provider-switch-localllm", "finish", {
+          result: "LOCALLLM_FORCED_RESUME_OK",
+        }),
+      ]),
+    ],
+  });
+  assert.equal(forcedLocalResume.result.stopped, undefined);
+  assert.equal(forcedLocalResume.result.result, "LOCALLLM_FORCED_RESUME_OK");
+  assert.equal(forcedLocalResume.calls.length, 1);
+  assert.deepEqual(forcedLocalResume.factoryConfigs, [{ provider: "localllm", model: "localllm-fast" }]);
+  assert.equal(forcedLocalResume.state.meta?.runtimeConfig?.provider, "localllm");
+  assert.equal(forcedLocalResume.state.meta?.runtimeConfig?.model, "localllm-fast");
+  assert.equal(
+    forcedLocalResume.events.filter(
+      (event) =>
+        event.type === "session.runtime_resolved" &&
+        event.data?.provider === "localllm" &&
+        event.data?.model === "localllm-fast"
+    ).length,
+    1,
+    "explicit LocalLLM resume did not persist the forced provider/model switch"
+  );
+  assert(
+    !forcedLocalResume.events.some(
+      (event) =>
+        event.type === "completion.evidence_rejected" &&
+        /ledger is empty/i.test(String(event.data?.reason || ""))
+    ),
+    "pure LocalLLM resume was rejected for missing external evidence"
+  );
 
   const proseOnlyAction = await runCase({
     id: "prose-only-action",
