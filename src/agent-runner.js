@@ -5190,6 +5190,13 @@ function boundedReadOnlyTestPrefixCommand(value = "") {
   if (!command) return false;
   const tokens = tokenizeShellWords(command);
   if (
+    tokens[0] === "cd" &&
+    tokens.length === 2 &&
+    !/(?:`|\$\(|[|<>])/u.test(command)
+  ) {
+    return true;
+  }
+  if (
     ["date", "echo", "printf"].includes(String(tokens[0] || "")) &&
     !/(?:`|\$\()/u.test(command)
   ) {
@@ -5359,6 +5366,55 @@ function projectTestCommandWrapper(command = "") {
     parseCapturedTestExitStatusWrapper(command) ||
     parseBoundedConditionalTestWrapper(command)
   );
+}
+
+function commandIsNonMutatingTestOutputPipeline(command = "") {
+  const normalized = normalizeProjectCommand(command);
+  if (!normalized || /\b(?:PIPESTATUS|pipefail)\b/u.test(normalized)) return false;
+  const sequence = parseTopLevelShellSequence(normalized);
+  if (
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator ||
+    !sequence.commands.length
+  ) {
+    return false;
+  }
+  let sawTestPipeline = false;
+  for (let index = 0; index < sequence.commands.length;) {
+    if (sequence.separators[index] === "|") {
+      let pipelineEnd = index + 1;
+      while (sequence.separators[pipelineEnd] === "|") pipelineEnd += 1;
+      const test = boundedTestCommandClassification(sequence.commands[index]);
+      if (test.policy.substantiveTest !== true) return false;
+      const filtersAreReadOnly = sequence.commands
+        .slice(index + 1, pipelineEnd + 1)
+        .every((candidate) => {
+          const tokens = tokenizeShellWords(candidate);
+          if (
+            !["cat", "grep", "head", "sed", "sort", "tail", "tr", "uniq", "wc"].includes(
+              String(tokens[0] || "")
+            ) ||
+            /(?:`|\$\(|[<>])/u.test(candidate)
+          ) {
+            return false;
+          }
+          const policy = classifyCommand(candidate);
+          return policy.writesWorkspace !== true && policy.mayMutateProject !== true;
+        });
+      if (!filtersAreReadOnly) return false;
+      sawTestPipeline = true;
+      index = pipelineEnd + 1;
+      continue;
+    }
+    const candidate = String(sequence.commands[index] || "")
+      .trim()
+      .replace(/^(?:[A-Za-z_]\w*=(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|]+)\s*)+/u, "")
+      .trim();
+    if (candidate && !boundedReadOnlyTestPrefixCommand(candidate)) return false;
+    index += 1;
+  }
+  return sawTestPipeline;
 }
 
 function projectExitStatusWrapper(command = "") {
@@ -7248,6 +7304,10 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       commandMutationPaths.length === 0 &&
         commandIsBoundedReadOnlyArtifactValidation(mutationCommand)
     );
+    const nonMutatingTestOutputPipeline = Boolean(
+      commandMutationPaths.length === 0 &&
+        commandIsNonMutatingTestOutputPipeline(mutationCommand)
+    );
     const projectContentMutation = Boolean(
       command &&
         toolResult.blocked !== true &&
@@ -7257,6 +7317,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         !disposableGeneratedVerificationSideEffects &&
         !scopedTaskArtifactWrite &&
         !readOnlyArtifactValidation &&
+        !nonMutatingTestOutputPipeline &&
         (commandSucceeded || commandMutationPaths.length > 0) &&
         (
           commandCanMutateProjectContent(mutationCommand, commandPolicy) ||
@@ -7276,6 +7337,9 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     }
     if (readOnlyArtifactValidation) {
       toolResult.readOnlyArtifactValidation = true;
+    }
+    if (nonMutatingTestOutputPipeline) {
+      toolResult.nonAuthoritativeTestOutputPipeline = true;
     }
     if (testCommandWrapper?.semanticallyReadOnly === true) {
       toolResult.boundedReadOnlyTestWrapper = true;
@@ -22631,6 +22695,9 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
         : "",
       detail.suggestedTestCommands.length
         ? `Use the established test command now: ${detail.suggestedTestCommands.join("; ")}.`
+        : "",
+      detail.missingEvidence.includes("test")
+        ? "Run the focused test directly without piping it through tail, head, tee, grep, or another output filter that can replace the test exit status. If bounded output is essential, enable shell pipefail or capture the test's PIPESTATUS immediately and emit one EXIT=<status> marker. Keep artifact inspection in a separate later command."
         : "",
       detail.failedProjectTestSummary
         ? `The latest current test run failed: ${detail.failedProjectTestSummary}`

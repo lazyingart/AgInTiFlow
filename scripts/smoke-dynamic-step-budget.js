@@ -4556,6 +4556,65 @@ try {
       failedSpacedExitProbeResult.projectTest?.explicitExitStatus === 1,
     "a spaced nonzero test-status wrapper was recorded as successful generic evidence"
   );
+  const unsafePipedTestCommand =
+    "cd . && PYTHONPATH=src python -m pytest tests/test_wechat_document_reader.py -q 2>&1 | tail -5 && echo '---artifacts---' && ls -la output/task";
+  const unsafePipedTestState = { meta: { goalContract: { revision: 1 } } };
+  const unsafePipedTestResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: unsafePipedTestCommand },
+    stdout: "....... [100%]\n7 passed in 0.04s\n---artifacts---\n",
+    stderr: "",
+    projectMutationPaths: [],
+    commandPolicy: classifyCommand(unsafePipedTestCommand),
+  };
+  recordProjectVerificationOutcome(
+    unsafePipedTestState,
+    unsafePipedTestResult,
+    { commandCwd: workspace, taskProfile: "qa", allowShellTool: true, sandboxMode: "host" }
+  );
+  assert(
+    unsafePipedTestState.meta.projectVerification?.mutationRevision === 0 &&
+      unsafePipedTestResult.nonAuthoritativeTestOutputPipeline === true &&
+      unsafePipedTestResult.projectTest === undefined,
+    `an exit-status-hiding test pipeline fabricated source mutation or passing test evidence: ${JSON.stringify({
+      mutationRevision:
+        unsafePipedTestState.meta.projectVerification?.mutationRevision,
+      nonAuthoritativeTestOutputPipeline:
+        unsafePipedTestResult.nonAuthoritativeTestOutputPipeline,
+      projectTest: unsafePipedTestResult.projectTest,
+      policy: unsafePipedTestResult.commandPolicy,
+    })}`
+  );
+  const mutatingPipedTestCommand = `${unsafePipedTestCommand} && touch src/agent-runner.js`;
+  const mutatingPipedTestState = { meta: { goalContract: { revision: 1 } } };
+  const mutatingPipedTestResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: mutatingPipedTestCommand },
+    stdout: "7 passed in 0.04s\n",
+    stderr: "",
+    projectMutationPaths: [],
+    commandPolicy: classifyCommand(mutatingPipedTestCommand),
+  };
+  recordProjectVerificationOutcome(
+    mutatingPipedTestState,
+    mutatingPipedTestResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      allowDestructive: true,
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    mutatingPipedTestState.meta.projectVerification?.mutationRevision === 1 &&
+      mutatingPipedTestResult.nonAuthoritativeTestOutputPipeline !== true,
+    "a source mutation appended to an unsafe test pipeline escaped revision tracking"
+  );
   const pipedUnittestCommand =
     "python3 -m unittest discover -s tests -p 'test_wechat_document_reader.py' -v 2>&1 | tail -14; echo \"EXIT=${PIPESTATUS[0]}\"";
   assert(
