@@ -1850,6 +1850,112 @@ function requestedLinearClassifierEvidence(value, requirements) {
     );
 }
 
+function canonicalLinearClassifierPlot(prompt, requirements, artifacts) {
+  if (!requestedLinearClassifierEvidence(prompt, requirements)) return artifacts;
+  const plotIndex = artifacts.findIndex(({ kind, spec }) => kind === "plot" && spec?.type === "scatter");
+  if (plotIndex < 0) return artifacts;
+  const plot = artifacts[plotIndex];
+  const excluded = /\b(?:boundary|separator|separating|hyperplane|support|margin)\b/iu;
+  const classes = plot.spec.series.filter(({ name, points }) =>
+    !excluded.test(name) && /\b(?:class|category|group|label|negative|positive)\b/iu.test(name) &&
+    Array.isArray(points) && points.length > 0
+  );
+  if (classes.length !== 2) return artifacts;
+  const candidates = [];
+  const addDirection = (x, y) => {
+    const length = Math.hypot(x, y);
+    if (!Number.isFinite(length) || length <= Number.EPSILON) return;
+    const nx = x / length;
+    const ny = y / length;
+    if (candidates.some(([cx, cy]) => Math.abs(Math.abs(cx * nx + cy * ny) - 1) <= 1e-10)) return;
+    candidates.push(Object.freeze([nx, ny]));
+  };
+  for (const left of classes[0].points) {
+    for (const right of classes[1].points) addDirection(right.x - left.x, right.y - left.y);
+  }
+  for (const classSeries of classes) {
+    for (let leftIndex = 0; leftIndex < classSeries.points.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < classSeries.points.length; rightIndex += 1) {
+        const left = classSeries.points[leftIndex];
+        const right = classSeries.points[rightIndex];
+        addDirection(-(right.y - left.y), right.x - left.x);
+      }
+    }
+  }
+  let best = null;
+  for (const [candidateX, candidateY] of candidates) {
+    const projections = classes.map(({ points }) => points.map(({ x, y }) => candidateX * x + candidateY * y));
+    const maximum0 = Math.max(...projections[0]);
+    const minimum0 = Math.min(...projections[0]);
+    const maximum1 = Math.max(...projections[1]);
+    const minimum1 = Math.min(...projections[1]);
+    const forwardGap = minimum1 - maximum0;
+    const reverseGap = minimum0 - maximum1;
+    const candidate = forwardGap >= reverseGap
+      ? Object.freeze({ nx: candidateX, ny: candidateY, low: maximum0, high: minimum1, gap: forwardGap })
+      : Object.freeze({ nx: -candidateX, ny: -candidateY, low: -minimum0, high: -maximum1, gap: reverseGap });
+    if (candidate.gap > 0 && (best === null || candidate.gap > best.gap)) best = candidate;
+  }
+  if (best === null) return artifacts;
+  const allPoints = classes.flatMap(({ points }) => points);
+  const coordinateScale = Math.max(
+    1,
+    Math.max(...allPoints.map(({ x }) => x)) - Math.min(...allPoints.map(({ x }) => x)),
+    Math.max(...allPoints.map(({ y }) => y)) - Math.min(...allPoints.map(({ y }) => y))
+  );
+  if (best.gap <= coordinateScale * 1e-9) return artifacts;
+  const threshold = (best.low + best.high) / 2;
+  const margin = best.gap / 2;
+  const tangent = Object.freeze([-best.ny, best.nx]);
+  const tangentValues = allPoints.map(({ x, y }) => tangent[0] * x + tangent[1] * y);
+  const tangentMinimum = Math.min(...tangentValues);
+  const tangentMaximum = Math.max(...tangentValues);
+  const tangentPadding = Math.max(coordinateScale * 0.15, (tangentMaximum - tangentMinimum) * 0.15, 0.5);
+  const linePoints = (offset) => Object.freeze([
+    Object.freeze({
+      x: best.nx * (threshold + offset) + tangent[0] * (tangentMinimum - tangentPadding),
+      y: best.ny * (threshold + offset) + tangent[1] * (tangentMinimum - tangentPadding),
+    }),
+    Object.freeze({
+      x: best.nx * (threshold + offset) + tangent[0] * (tangentMaximum + tangentPadding),
+      y: best.ny * (threshold + offset) + tangent[1] * (tangentMaximum + tangentPadding),
+    }),
+  ]);
+  const supportTolerance = Math.max(coordinateScale * 1e-7, best.gap * 1e-7);
+  const supportPoints = Object.freeze([
+    ...classes[0].points.filter(({ x, y }) =>
+      Math.abs(best.nx * x + best.ny * y - best.low) <= supportTolerance
+    ),
+    ...classes[1].points.filter(({ x, y }) =>
+      Math.abs(best.nx * x + best.ny * y - best.high) <= supportTolerance
+    ),
+  ]);
+  if (supportPoints.length < 2) return artifacts;
+  const marginRequested = requirements.some(({ key }) => key === "margin");
+  const canonicalPlot = sanitizeIntegrationArtifact({
+    title: "Server-verified linear SVM decision boundary",
+    kind: "plot",
+    spec: Object.freeze({
+      schemaVersion: "1",
+      type: "scatter",
+      ...(plot.spec.xLabel === undefined ? {} : { xLabel: plot.spec.xLabel }),
+      ...(plot.spec.yLabel === undefined ? {} : { yLabel: plot.spec.yLabel }),
+      series: Object.freeze([
+        ...classes.map(({ name, points }) => Object.freeze({ name, points })),
+        Object.freeze({ name: "Decision Boundary", points: linePoints(0) }),
+        ...(marginRequested
+          ? [
+              Object.freeze({ name: "Margin -1", points: linePoints(-margin) }),
+              Object.freeze({ name: "Margin +1", points: linePoints(margin) }),
+            ]
+          : []),
+        Object.freeze({ name: "Support Vectors", points: supportPoints }),
+      ]),
+    }),
+  });
+  return Object.freeze(artifacts.map((artifact, index) => index === plotIndex ? canonicalPlot : artifact));
+}
+
 function invalidLinearClassifierPlotEvidence(artifacts) {
   const plots = artifacts.filter(({ kind }) => kind === "plot");
   const plot = plots.find(({ spec }) =>
@@ -2953,6 +3059,16 @@ function createPlanner({
           },
           onArtifact: async (artifact) => stagedArtifacts.push(artifact),
         });
+        if (execution.ok === true) {
+          const canonicalArtifacts = canonicalLinearClassifierPlot(
+            input.prompt,
+            plotElementRequirements,
+            execution.artifacts
+          );
+          if (canonicalArtifacts !== execution.artifacts) {
+            execution = Object.freeze({ ...execution, artifacts: canonicalArtifacts });
+          }
+        }
         const missingElements = execution.ok === true
           ? missingRequestedPlotElements(plotElementRequirements, execution.artifacts)
           : Object.freeze([]);
@@ -2984,7 +3100,10 @@ function createPlanner({
             artifacts: Object.freeze([...execution.artifacts, verifiedClassifierTable]),
           });
         }
-        for (const artifact of stagedArtifacts) await captureArtifact(artifact);
+        const acceptedArtifactIds = new Set(execution.artifacts.map(({ id }) => id));
+        for (const artifact of stagedArtifacts) {
+          if (acceptedArtifactIds.has(artifact.id)) await captureArtifact(artifact);
+        }
         if (execution.ok === true && (terminalSuccessPending || executionSucceeded(execution.status))) {
           lastExecutionState = "succeeded";
           await emitProgress("executing", {

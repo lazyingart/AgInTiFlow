@@ -2587,25 +2587,17 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
   let workerCalls = 0;
   const published = [];
   const progress = [];
-  const validated = fixture(async (_client, payload) => {
+  const validated = fixture(async () => {
     modelStep += 1;
-    if (modelStep === 1) return toolResponse(source("invalid_geometry"));
-    if (modelStep === 2) {
-      const feedback = JSON.parse(payload.messages.at(-1).content);
-      assert.equal(feedback.ok, false);
-      assert.match(feedback.stderr, /semantic validation/u);
-      assert.match(feedback.stderr, /does not separate/u);
-      assert.match(feedback.correction, /compute its parameters inside this execution/u);
-      return toolResponse(source("valid_geometry"));
-    }
-    throw new Error("server-verified classifier evidence must not require a prose synthesis turn");
+    assert.equal(modelStep, 1, "server canonicalization must avoid a correction or prose turn");
+    return toolResponse(source("invalid_geometry"));
   }, {
     worker: fakeWorker((request, signal) => {
       workerCalls += 1;
       return terminalResult(
         request,
         signal,
-        [artifactFor(request, request.source.includes("marker = 'valid_geometry'"))],
+        [artifactFor(request, false)],
         { stdout: "fit_verified=true\n", stderr: "" }
       );
     }),
@@ -2618,11 +2610,17 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
       onProgress: (value) => progress.push(value),
     }
   );
-  assert.equal(modelStep, 2);
-  assert.equal(workerCalls, 2);
-  assert.equal(result.toolCalls, 2);
+  assert.equal(modelStep, 1);
+  assert.equal(workerCalls, 1);
+  assert.equal(result.toolCalls, 1);
   assert.equal(published.length, 2, "only the valid plot and its server-derived table may be published");
   assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot", "table"]);
+  assert.equal(result.artifacts[0].title, "Server-verified linear SVM decision boundary");
+  assert.notDeepEqual(
+    result.artifacts[0].spec.series.find(({ name }) => name === "Decision Boundary").points,
+    [{ x: 0, y: 20 }, { x: 8, y: 12 }],
+    "worker-drawn invalid geometry leaked through canonicalization"
+  );
   const verifiedTable = result.artifacts[1];
   assert.equal(verifiedTable.title, "Server-verified linear classifier values");
   const modelValues = Object.fromEntries(
