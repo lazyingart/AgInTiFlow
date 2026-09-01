@@ -4556,6 +4556,65 @@ try {
       failedSpacedExitProbeResult.projectTest?.explicitExitStatus === 1,
     "a spaced nonzero test-status wrapper was recorded as successful generic evidence"
   );
+  const unsafePipedTestCommand =
+    "cd . && PYTHONPATH=src python -m pytest tests/test_wechat_document_reader.py -q 2>&1 | tail -5 && echo '---artifacts---' && ls -la output/task";
+  const unsafePipedTestState = { meta: { goalContract: { revision: 1 } } };
+  const unsafePipedTestResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: unsafePipedTestCommand },
+    stdout: "....... [100%]\n7 passed in 0.04s\n---artifacts---\n",
+    stderr: "",
+    projectMutationPaths: [],
+    commandPolicy: classifyCommand(unsafePipedTestCommand),
+  };
+  recordProjectVerificationOutcome(
+    unsafePipedTestState,
+    unsafePipedTestResult,
+    { commandCwd: workspace, taskProfile: "qa", allowShellTool: true, sandboxMode: "host" }
+  );
+  assert(
+    unsafePipedTestState.meta.projectVerification?.mutationRevision === 0 &&
+      unsafePipedTestResult.nonAuthoritativeTestOutputPipeline === true &&
+      unsafePipedTestResult.projectTest === undefined,
+    `an exit-status-hiding test pipeline fabricated source mutation or passing test evidence: ${JSON.stringify({
+      mutationRevision:
+        unsafePipedTestState.meta.projectVerification?.mutationRevision,
+      nonAuthoritativeTestOutputPipeline:
+        unsafePipedTestResult.nonAuthoritativeTestOutputPipeline,
+      projectTest: unsafePipedTestResult.projectTest,
+      policy: unsafePipedTestResult.commandPolicy,
+    })}`
+  );
+  const mutatingPipedTestCommand = `${unsafePipedTestCommand} && touch src/agent-runner.js`;
+  const mutatingPipedTestState = { meta: { goalContract: { revision: 1 } } };
+  const mutatingPipedTestResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: mutatingPipedTestCommand },
+    stdout: "7 passed in 0.04s\n",
+    stderr: "",
+    projectMutationPaths: [],
+    commandPolicy: classifyCommand(mutatingPipedTestCommand),
+  };
+  recordProjectVerificationOutcome(
+    mutatingPipedTestState,
+    mutatingPipedTestResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      allowDestructive: true,
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    mutatingPipedTestState.meta.projectVerification?.mutationRevision === 1 &&
+      mutatingPipedTestResult.nonAuthoritativeTestOutputPipeline !== true,
+    "a source mutation appended to an unsafe test pipeline escaped revision tracking"
+  );
   const pipedUnittestCommand =
     "python3 -m unittest discover -s tests -p 'test_wechat_document_reader.py' -v 2>&1 | tail -14; echo \"EXIT=${PIPESTATUS[0]}\"";
   assert(
@@ -6183,6 +6242,84 @@ try {
       sandboxMode: "host",
     }
   );
+  const liveScopedOutsideStatusTestLogCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        `cd ${JSON.stringify(workspace)} && ` +
+        `TASK=${scopedRelativeTaskRoot} && ` +
+        `{ date -u +"RUN_AT=%FT%TZ"; PYTHONPATH=src python -m pytest tests/test_wechat_document_reader.py -q; } ` +
+        `> "$TASK/document-reader-test.log" 2>&1; rc=$?; echo "PYTEST_EXIT=$rc"; ` +
+        `cat "$TASK/document-reader-test.log"`,
+    },
+    projectMutationPaths: [],
+    stdout: "PYTEST_EXIT=0\n....... [100%]\n7 passed in 0.04s\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    liveScopedOutsideStatusTestLogCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const conditionalTestCommand =
+    `cd ${JSON.stringify(workspace)} && ` +
+    `if PYTHONPATH=src python -c "import pytest" 2>/dev/null; then ` +
+    `PYTHONPATH=src python -m pytest tests/test_wechat_document_reader.py -q; else ` +
+    `PYTHONPATH=src python -m unittest tests.test_wechat_document_reader -v; fi`;
+  const conditionalTestState = { meta: { goalContract: { revision: 1 } } };
+  const conditionalTestResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: conditionalTestCommand },
+    projectMutationPaths: [],
+    stdout: "....... [100%]\n7 passed in 0.04s\n",
+    stderr: "",
+    commandPolicy: classifyCommand(conditionalTestCommand),
+  };
+  recordProjectVerificationOutcome(
+    conditionalTestState,
+    conditionalTestResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const mutatingConditionalTestCommand = conditionalTestCommand.replace(
+    "tests.test_wechat_document_reader -v; fi",
+    "tests.test_wechat_document_reader -v; touch src/agent-runner.js; fi"
+  );
+  const mutatingConditionalTestState = { meta: { goalContract: { revision: 1 } } };
+  const mutatingConditionalTestResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: mutatingConditionalTestCommand },
+    projectMutationPaths: [],
+    stdout: "7 passed in 0.04s\n",
+    stderr: "",
+    commandPolicy: classifyCommand(mutatingConditionalTestCommand),
+  };
+  recordProjectVerificationOutcome(
+    mutatingConditionalTestState,
+    mutatingConditionalTestResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      allowDestructive: true,
+      sandboxMode: "host",
+    }
+  );
   const unsafeScopedLogState = {
     goal: scopedTaskGoal,
     commandCwd: workspace,
@@ -6333,6 +6470,14 @@ try {
       liveScopedTeeTestLogCommand.scopedTaskArtifactWrite === true &&
       liveScopedTeeTestLogCommand.projectTest?.passed === true &&
       liveScopedTeeTestLogCommand.projectTest?.explicitExitStatus === 0 &&
+      liveScopedOutsideStatusTestLogCommand.scopedTaskArtifactWrite === true &&
+      liveScopedOutsideStatusTestLogCommand.projectTest?.passed === true &&
+      liveScopedOutsideStatusTestLogCommand.projectTest?.explicitExitStatus === 0 &&
+      conditionalTestState.meta.projectVerification?.mutationRevision === 0 &&
+      conditionalTestResult.boundedReadOnlyTestWrapper === true &&
+      conditionalTestResult.projectTest?.passed === true &&
+      mutatingConditionalTestState.meta.projectVerification?.mutationRevision === 1 &&
+      mutatingConditionalTestResult.projectTest === undefined &&
       unsafeScopedLogState.meta.projectVerification?.mutationRevision === 1 &&
       outsideScopedGroupTestLogCommand.scopedTaskArtifactWrite !== true &&
       sourceWriteAfterScopedLogState.meta.projectVerification?.mutationRevision === 1 &&
@@ -6357,6 +6502,23 @@ try {
       liveScopedTeeTestLogCommand: {
         scopedTaskArtifactWrite: liveScopedTeeTestLogCommand.scopedTaskArtifactWrite,
         projectTest: liveScopedTeeTestLogCommand.projectTest,
+      },
+      liveScopedOutsideStatusTestLogCommand: {
+        scopedTaskArtifactWrite:
+          liveScopedOutsideStatusTestLogCommand.scopedTaskArtifactWrite,
+        projectTest: liveScopedOutsideStatusTestLogCommand.projectTest,
+      },
+      conditionalTestResult: {
+        mutationRevision:
+          conditionalTestState.meta.projectVerification?.mutationRevision,
+        boundedReadOnlyTestWrapper:
+          conditionalTestResult.boundedReadOnlyTestWrapper,
+        projectTest: conditionalTestResult.projectTest,
+      },
+      mutatingConditionalTestResult: {
+        mutationRevision:
+          mutatingConditionalTestState.meta.projectVerification?.mutationRevision,
+        projectTest: mutatingConditionalTestResult.projectTest,
       },
       outsideScopedGroupTestLogCommand: {
         mutationRevision:
