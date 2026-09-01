@@ -4615,6 +4615,46 @@ try {
       mutatingPipedTestResult.nonAuthoritativeTestOutputPipeline !== true,
     "a source mutation appended to an unsafe test pipeline escaped revision tracking"
   );
+  const workspaceCdWrappedTestCommand =
+    `cd ${workspace} && PYTHONPATH=src python -m pytest tests/test_wechat_document_reader.py -v; echo "EXIT=$?"`;
+  assert(
+    isSubstantiveTestCommand(workspaceCdWrappedTestCommand, {
+      commandCwd: workspace,
+    }),
+    "a safe explicit-status test wrapper lost test identity behind a workspace cd"
+  );
+  const workspaceCdWrappedTestState = {
+    meta: { goalContract: { revision: 1 } },
+  };
+  const workspaceCdWrappedTestResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: { command: workspaceCdWrappedTestCommand },
+    stdout: "7 passed in 0.06s\nEXIT=0\n",
+    stderr: "",
+    projectMutationPaths: [],
+    commandPolicy: classifyCommand(workspaceCdWrappedTestCommand),
+  };
+  recordProjectVerificationOutcome(
+    workspaceCdWrappedTestState,
+    workspaceCdWrappedTestResult,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  assert(
+    workspaceCdWrappedTestResult.projectTest?.passed === true &&
+      workspaceCdWrappedTestState.meta.projectVerification?.testRuns?.length === 1,
+    `a successful workspace-cd status wrapper did not produce one passing test run: ${JSON.stringify({
+      projectTest: workspaceCdWrappedTestResult.projectTest,
+      testRuns:
+        workspaceCdWrappedTestState.meta.projectVerification?.testRuns,
+    })}`
+  );
   const pipedUnittestCommand =
     "python3 -m unittest discover -s tests -p 'test_wechat_document_reader.py' -v 2>&1 | tail -14; echo \"EXIT=${PIPESTATUS[0]}\"";
   assert(
