@@ -7471,6 +7471,212 @@ try {
       precommitDocumentQualityState.meta.completionEvidenceRepair === undefined,
     "a passing pre-commit document check did not clear its bounded repair marker"
   );
+  const currentGoalGeneratedDocumentState = {
+    goal:
+      "Read TASK.md, produce a verified PDF memo for the current task, and commit only the intentional work.",
+    messages: [],
+    meta: {
+      taskProfile: "writing",
+      goalContract: {
+        revision: 5,
+        activeGoalRevision: 5,
+        activeGoal:
+          "Read TASK.md, produce a verified PDF memo for the current task, and commit only the intentional work.",
+      },
+      projectVerification: {
+        mutationRevision: 12,
+        privateMutationRevision: 0,
+        mutationHistory: [
+          {
+            revision: 8,
+            at: "2026-09-01T09:00:00.000Z",
+            toolName: "run_command",
+            paths: ["stale-root.pdf"],
+            goalRevision: 4,
+          },
+          {
+            revision: 11,
+            at: "2026-09-01T09:05:00.000Z",
+            toolName: "write_file",
+            paths: ["daily_memo.tex"],
+            goalRevision: 5,
+          },
+          {
+            revision: 12,
+            at: "2026-09-01T09:06:00.000Z",
+            toolName: "run_command",
+            paths: [
+              "daily_memo.pdf",
+              "daily_memo.aux",
+              "/tmp/escape.pdf",
+              ".env.pdf",
+              "secrets/hidden.pdf",
+            ],
+            goalRevision: 5,
+          },
+        ],
+      },
+    },
+  };
+  let currentGoalDocumentValidatorInput = null;
+  const currentGoalDocumentAssessment = await documentQualityCommitAssessment(
+    currentGoalGeneratedDocumentState,
+    "run_command",
+    { command: "git add -- daily_memo.tex daily_memo.pdf && git commit -m memo" },
+    {
+      commandCwd: missingArtifactCommitWorkspace,
+      taskProfile: "writing",
+      documentArtifactValidator: async (input) => {
+        currentGoalDocumentValidatorInput = input;
+        return {
+          ok: true,
+          checked: true,
+          artifacts: [{ path: "daily_memo.pdf" }],
+          defects: [],
+          reason: "Independent document checks passed for daily_memo.pdf.",
+        };
+      },
+    }
+  );
+  assert(
+    currentGoalDocumentAssessment?.ok === true &&
+      currentGoalDocumentValidatorInput?.exactOutputPaths?.includes(
+        "daily_memo.pdf"
+      ) &&
+      !currentGoalDocumentValidatorInput.exactOutputPaths.includes(
+        "stale-root.pdf"
+      ) &&
+      !currentGoalDocumentValidatorInput.exactOutputPaths.includes(
+        "daily_memo.aux"
+      ) &&
+      !currentGoalDocumentValidatorInput.exactOutputPaths.includes(
+        "secrets/hidden.pdf"
+      ),
+    `a current-goal generated root PDF was not discovered safely for pre-commit validation: ${JSON.stringify(
+      currentGoalDocumentValidatorInput
+    )}`
+  );
+  const unrelatedRootWorkspace = path.join(
+    tempRoot,
+    "unrelated-root-document"
+  );
+  await fs.mkdir(unrelatedRootWorkspace, { recursive: true });
+  await fs.writeFile(
+    path.join(unrelatedRootWorkspace, "unrelated.pdf"),
+    "pre-existing root PDF that the current goal did not create",
+    "utf8"
+  );
+  const unrelatedRootDocumentState = {
+    goal:
+      "Produce a verified PDF artifact for this task and commit the intentional work.",
+    messages: [],
+    meta: {
+      taskProfile: "writing",
+      goalContract: {
+        revision: 6,
+        activeGoalRevision: 6,
+        activeGoal:
+          "Produce a verified PDF artifact for this task and commit the intentional work.",
+      },
+      projectVerification: {
+        mutationRevision: 4,
+        privateMutationRevision: 0,
+        mutationHistory: [
+          {
+            revision: 3,
+            at: "2026-09-01T09:10:00.000Z",
+            toolName: "run_command",
+            paths: ["unrelated.pdf"],
+            goalRevision: 5,
+          },
+          {
+            revision: 4,
+            at: "2026-09-01T09:12:00.000Z",
+            toolName: "write_file",
+            paths: ["notes.tex"],
+            goalRevision: 6,
+          },
+        ],
+      },
+    },
+  };
+  let unrelatedRootValidatorInput = null;
+  const unrelatedRootAssessment = await documentQualityCommitAssessment(
+    unrelatedRootDocumentState,
+    "run_command",
+    { command: "git add -- notes.tex && git commit -m notes" },
+    {
+      commandCwd: unrelatedRootWorkspace,
+      taskProfile: "writing",
+      documentArtifactValidator: async (input) => {
+        unrelatedRootValidatorInput = input;
+        return {
+          ok: false,
+          checked: true,
+          artifacts: [],
+          defects: [{ code: "missing-document-artifact" }],
+          reason: "No readable DOCX or PDF artifact was found for the completed document task.",
+        };
+      },
+    }
+  );
+  assert(
+    unrelatedRootAssessment?.ok === false &&
+      unrelatedRootAssessment.category === "document-quality-incomplete" &&
+      !unrelatedRootValidatorInput?.exactOutputPaths?.includes(
+        "unrelated.pdf"
+      ),
+    `an unrelated pre-existing root PDF was accepted as current-goal evidence: ${JSON.stringify(
+      unrelatedRootValidatorInput
+    )}`
+  );
+  const semanticGateDocumentState = structuredClone(
+    currentGoalGeneratedDocumentState
+  );
+  semanticGateDocumentState.meta.scs = {
+    taskContract: { exactInputPaths: ["TASK.md"] },
+  };
+  let semanticGateValidatorInput = null;
+  const semanticGateAssessment = await documentQualityCommitAssessment(
+    semanticGateDocumentState,
+    "run_command",
+    { command: "git add -- daily_memo.tex daily_memo.pdf && git commit -m memo" },
+    {
+      commandCwd: missingArtifactCommitWorkspace,
+      taskProfile: "writing",
+      documentArtifactValidator: async (input) => {
+        semanticGateValidatorInput = input;
+        return {
+          ok: false,
+          checked: true,
+          artifacts: [{ path: "daily_memo.pdf" }],
+          defects: [{
+            code: "source-topic-coverage-incomplete",
+            path: "daily_memo.pdf",
+            message: "The memo omitted current source-status facts.",
+          }],
+          reason: "daily_memo.pdf: The memo omitted current source-status facts.",
+        };
+      },
+    }
+  );
+  assert(
+    semanticGateAssessment?.ok === false &&
+      semanticGateAssessment.category === "document-quality-incomplete" &&
+      semanticGateDocumentState.meta.completionEvidenceRepair
+        ?.artifactQualityRepairRequired === true &&
+      semanticGateDocumentState.meta.completionEvidenceRepair
+        ?.documentArtifactGenerationRequired !== true &&
+      semanticGateValidatorInput?.exactOutputPaths?.includes(
+        "daily_memo.pdf"
+      ) &&
+      semanticGateValidatorInput?.exactInputPaths?.includes("TASK.md"),
+    `current-goal artifact discovery bypassed source/status quality gates or reopened the missing-artifact loop: ${JSON.stringify({
+      assessment: semanticGateAssessment,
+      input: semanticGateValidatorInput,
+      repair: semanticGateDocumentState.meta.completionEvidenceRepair,
+    })}`
+  );
   await fs.writeFile(
     path.join(missingArtifactCommitWorkspace, "TASK.md"),
     [

@@ -10257,6 +10257,7 @@ export async function documentQualityCommitAssessment(
       ? contract.exactOutputPaths
       : []),
     ...exactOutputPathsForState(state),
+    ...currentGoalDocumentArtifactPathsForState(state),
     ...(Array.isArray(config.taskOwnedCommitPaths)
       ? config.taskOwnedCommitPaths
       : []),
@@ -14183,6 +14184,46 @@ function exactOutputPathsForState(state = {}) {
     ...progressOutputPaths,
     ...verificationOutputPaths,
   ], exclusions).slice(0, 32);
+}
+
+function currentGoalDocumentArtifactPathsForState(state = {}) {
+  const verification = state.meta?.projectVerification || {};
+  const history = Array.isArray(verification.mutationHistory)
+    ? verification.mutationHistory
+    : [];
+  const currentGoalRevision = Math.max(
+    0,
+    Number(state.meta?.goalContract?.revision || 0)
+  );
+  if (currentGoalRevision <= 0) return [];
+  const candidates = [];
+  const seen = new Set();
+  for (const mutation of history) {
+    if (Number(mutation?.goalRevision || 0) !== currentGoalRevision) continue;
+    const paths = [
+      ...(Array.isArray(mutation?.paths) ? mutation.paths : []),
+      ...(Array.isArray(mutation?.projectMutationPaths)
+        ? mutation.projectMutationPaths
+        : []),
+      ...(Array.isArray(mutation?.verifiedGeneratedOutputPaths)
+        ? mutation.verifiedGeneratedOutputPaths
+        : []),
+    ];
+    for (const value of paths) {
+      const candidate = safeTaskOwnedCommitPath(value);
+      if (
+        !candidate ||
+        !/\.(?:docx|pdf)$/iu.test(candidate) ||
+        seen.has(candidate)
+      ) {
+        continue;
+      }
+      seen.add(candidate);
+      candidates.push(candidate);
+      if (candidates.length >= 16) return candidates;
+    }
+  }
+  return candidates;
 }
 
 function exactInputPathsForState(state = {}) {
@@ -21389,6 +21430,7 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   const documentExactOutputPaths = [
     ...(assessment.contract?.exactOutputPaths || []),
     ...exactOutputPathsForState(state),
+    ...currentGoalDocumentArtifactPathsForState(state),
   ];
   const documentContractText = `${completionContractGoal(config, state)}\n${candidateResult}`;
   const documentDeliverableRequested =
