@@ -2654,58 +2654,86 @@ function taskArtifactMutationPaths(state = {}) {
   return paths;
 }
 
-function collectRequestedArtifactCandidates(commandCwd = process.cwd(), state = {}) {
+function collectRequestedArtifactCandidates(
+  commandCwd = process.cwd(),
+  state = {},
+  artifactRoot = ""
+) {
   const root = path.resolve(commandCwd || process.cwd());
   const freshnessBoundary = taskArtifactFreshnessBoundary(state);
   const mutationPaths = taskArtifactMutationPaths(state);
   const candidates = [];
-  const queue = [{ absolutePath: root, depth: 0 }];
-  let visited = 0;
-  while (queue.length && candidates.length < 3000 && visited < 6000) {
-    const current = queue.shift();
-    visited += 1;
-    let entries = [];
+  const seenFiles = new Set();
+  const scanRoots = [];
+  const appendScanRoot = (rawPath = "") => {
+    const absolutePath = rawPath
+      ? resolveContractPath(root, rawPath)
+      : root;
+    if (!absolutePath || scanRoots.includes(absolutePath)) return;
     try {
-      entries = fs.readdirSync(current.absolutePath, { withFileTypes: true });
+      if (!fs.statSync(absolutePath).isDirectory()) return;
     } catch {
-      continue;
+      return;
     }
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
-      const absolutePath = path.join(current.absolutePath, entry.name);
-      if (entry.isDirectory()) {
-        if (
-          current.depth < 7 &&
-          !ARTIFACT_SCAN_IGNORED_DIRECTORIES.has(entry.name) &&
-          !entry.name.startsWith(".cache")
-        ) {
-          queue.push({ absolutePath, depth: current.depth + 1 });
-        }
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      let stat;
+    scanRoots.push(absolutePath);
+  };
+  // A host-declared task artifact root is authoritative and usually sits deep
+  // inside a large application workspace. Inspect it before the bounded broad
+  // workspace scan so unrelated files cannot exhaust the candidate limit and
+  // hide a valid task deliverable.
+  appendScanRoot(artifactRoot);
+  appendScanRoot();
+  let visited = 0;
+  for (const scanRoot of scanRoots) {
+    const queue = [{ absolutePath: scanRoot, depth: 0 }];
+    while (queue.length && candidates.length < 3000 && visited < 6000) {
+      const current = queue.shift();
+      visited += 1;
+      let entries = [];
       try {
-        stat = fs.statSync(absolutePath);
+        entries = fs.readdirSync(current.absolutePath, { withFileTypes: true });
       } catch {
         continue;
       }
-      if (!stat.size) continue;
-      const relativePath = path.relative(root, absolutePath).replace(/\\/g, "/");
-      const normalized = normalizedContractPath(relativePath).toLocaleLowerCase("en-US");
-      const fresh = Boolean(
-        mutationPaths.has(normalized) ||
-          freshnessBoundary === 0 ||
-          Number(stat.mtimeMs || 0) >= freshnessBoundary
-      );
-      candidates.push({
-        path: relativePath,
-        extension: path.extname(entry.name).toLocaleLowerCase("en-US"),
-        basename: entry.name.toLocaleLowerCase("en-US"),
-        bytes: stat.size,
-        mtimeMs: Number(stat.mtimeMs || 0),
-        fresh,
-      });
+      for (const entry of entries) {
+        if (entry.isSymbolicLink()) continue;
+        const absolutePath = path.join(current.absolutePath, entry.name);
+        if (entry.isDirectory()) {
+          if (
+            current.depth < 7 &&
+            !ARTIFACT_SCAN_IGNORED_DIRECTORIES.has(entry.name) &&
+            !entry.name.startsWith(".cache")
+          ) {
+            queue.push({ absolutePath, depth: current.depth + 1 });
+          }
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        if (seenFiles.has(absolutePath)) continue;
+        seenFiles.add(absolutePath);
+        let stat;
+        try {
+          stat = fs.statSync(absolutePath);
+        } catch {
+          continue;
+        }
+        if (!stat.size) continue;
+        const relativePath = path.relative(root, absolutePath).replace(/\\/g, "/");
+        const normalized = normalizedContractPath(relativePath).toLocaleLowerCase("en-US");
+        const fresh = Boolean(
+          mutationPaths.has(normalized) ||
+            freshnessBoundary === 0 ||
+            Number(stat.mtimeMs || 0) >= freshnessBoundary
+        );
+        candidates.push({
+          path: relativePath,
+          extension: path.extname(entry.name).toLocaleLowerCase("en-US"),
+          basename: entry.name.toLocaleLowerCase("en-US"),
+          bytes: stat.size,
+          mtimeMs: Number(stat.mtimeMs || 0),
+          fresh,
+        });
+      }
     }
   }
   return candidates;
@@ -2763,7 +2791,11 @@ export function evaluateRequestedArtifactRequirements(
       reason: "No semantic artifact-set contract was inferred.",
     };
   }
-  const candidates = collectRequestedArtifactCandidates(commandCwd, state);
+  const candidates = collectRequestedArtifactCandidates(
+    commandCwd,
+    state,
+    String(contract.artifactRoot || "")
+  );
   const requireFresh = contract.requiresFileMutation === true;
   const usableCandidates = requireFresh
     ? candidates.filter((candidate) => candidate.fresh)
