@@ -6030,13 +6030,86 @@ try {
       sandboxMode: "host",
     }
   );
+  const scopedCompoundTestLogCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command: [
+        `cd ${JSON.stringify(workspace)}`,
+        `LOG=${JSON.stringify(path.join(scopedTaskRoot, "document-reader-test.log"))}`,
+        'echo "RUN_MARKER=now" > "$LOG"',
+        'python3 -m unittest discover -s tests -p \'test_reader.py\' -v >> "$LOG" 2>&1',
+        'echo "EXIT=0" >> "$LOG"',
+        'cat "$LOG"',
+      ].join(" && "),
+    },
+    projectMutationPaths: [],
+    stdout: "Ran 7 tests\nOK\nEXIT=0\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    scopedCompoundTestLogCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "auto",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const nullRedirectValidationCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command: [
+        `cd ${JSON.stringify(workspace)}`,
+        `python3 -m json.tool ${JSON.stringify(
+          path.join(scopedTaskRoot, "agent-result.json")
+        )} > /dev/null`,
+        'echo "JSON_VALID"',
+        `grep -c '^## [0-9]' ${JSON.stringify(
+          path.join(scopedTaskRoot, "source-intake-audit.md")
+        )}`,
+      ].join(" && "),
+    },
+    projectMutationPaths: [],
+    stdout: "JSON_VALID\n5\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    nullRedirectValidationCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "auto",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
   assert(
     requestedOutputRevision === 1 &&
       scopedTaskState.meta.projectVerification?.mutationRevision === 1 &&
       readOnlyArtifactValidation.readOnlyArtifactValidation === true &&
       scopedManifestCommand.scopedTaskArtifactWrite === true &&
-      pythonScopedManifestCommand.scopedTaskArtifactWrite === true,
-    "task-scoped delivery bookkeeping invalidated requested artifact evidence"
+      pythonScopedManifestCommand.scopedTaskArtifactWrite === true &&
+      scopedCompoundTestLogCommand.scopedTaskArtifactWrite === true &&
+      nullRedirectValidationCommand.readOnlyArtifactValidation === true,
+    `task-scoped delivery bookkeeping invalidated requested artifact evidence: ${JSON.stringify({
+      requestedOutputRevision,
+      mutationRevision:
+        scopedTaskState.meta.projectVerification?.mutationRevision,
+      readOnlyArtifactValidation:
+        readOnlyArtifactValidation.readOnlyArtifactValidation,
+      scopedManifestCommand: scopedManifestCommand.scopedTaskArtifactWrite,
+      pythonScopedManifestCommand:
+        pythonScopedManifestCommand.scopedTaskArtifactWrite,
+      scopedCompoundTestLogCommand:
+        scopedCompoundTestLogCommand.scopedTaskArtifactWrite,
+      nullRedirectValidationCommand:
+        nullRedirectValidationCommand.readOnlyArtifactValidation,
+    })}`
   );
   const mutatingInlinePython = {
     toolName: "run_command",

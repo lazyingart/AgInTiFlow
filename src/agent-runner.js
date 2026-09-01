@@ -12762,31 +12762,85 @@ function safePatchContextEvidencePath(value = "", state = {}, config = {}) {
 function commandWritesOnlyEvidenceMatching(command = "", pathMatches = () => false) {
   const normalized = String(command || "").trim();
   if (!normalized) return false;
+  const assignments = new Map();
+  for (const match of normalized.matchAll(
+    /(?:^|[\s;&|])([A-Za-z_]\w*)\s*=\s*("[^"\n]+"|'[^'\n]+'|[^\s;&|]+)/g
+  )) {
+    assignments.set(
+      match[1],
+      String(match[2] || "").replace(/^["']|["']$/g, "")
+    );
+  }
+  const resolveTarget = (value = "") => {
+    const target = String(value || "")
+      .trim()
+      .replace(/^["']|["']$/g, "");
+    const variable = target.match(/^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))$/);
+    return variable
+      ? String(assignments.get(variable[1] || variable[2]) || "")
+      : target;
+  };
   const tokens = tokenizeShellWords(normalized);
   if (tokens[0] === "tee") {
     let index = 1;
     if (["-a", "--append"].includes(tokens[index])) index += 1;
     if (tokens[index] === "--") index += 1;
-    const targets = tokens.slice(index);
+    const targets = tokens.slice(index).map(resolveTarget);
     return targets.length > 0 && targets.every(pathMatches);
   }
   if (tokens[0] === "mkdir") {
-    const targets = tokens.slice(1).filter((token) => token !== "-p" && token !== "--");
+    const targets = tokens
+      .slice(1)
+      .filter((token) => token !== "-p" && token !== "--")
+      .map(resolveTarget);
     return targets.length > 0 && targets.every(pathMatches);
   }
 
   let strippedEvidenceRedirect = false;
+  let rejectedRedirect = false;
   const withoutEvidenceRedirects = normalized.replace(
     /(^|\s)(?:\d*>>?|&>>?)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/g,
     (match, prefix, target) => {
-      if (!pathMatches(target)) return match;
+      const resolvedTarget = resolveTarget(target);
+      if (/^(?:&\d+|\/dev\/null)$/u.test(resolvedTarget)) return prefix;
+      if (!resolvedTarget || !pathMatches(resolvedTarget)) {
+        rejectedRedirect = true;
+        return match;
+      }
       strippedEvidenceRedirect = true;
       return prefix;
     }
   ).trim();
-  if (!strippedEvidenceRedirect || !withoutEvidenceRedirects) return false;
-  const underlyingPolicy = classifyCommand(withoutEvidenceRedirects);
-  return underlyingPolicy.writesWorkspace !== true && underlyingPolicy.mayMutateProject !== true;
+  if (rejectedRedirect || !strippedEvidenceRedirect || !withoutEvidenceRedirects) {
+    return false;
+  }
+  const sequence = parseTopLevelShellSequence(withoutEvidenceRedirects);
+  if (sequence.openQuote || sequence.trailingEscape || sequence.trailingSeparator) {
+    return false;
+  }
+  return sequence.commands.every((segment) => {
+    const withoutAssignments = String(segment || "")
+      .trim()
+      .replace(
+        /^(?:[A-Za-z_]\w*=(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|]+)\s*)+/u,
+        ""
+      )
+      .trim();
+    if (!withoutAssignments) return true;
+    const commandTokens = tokenizeShellWords(withoutAssignments);
+    if (
+      ["cat", "cd", "head", "ls", "stat", "tail", "wc"].includes(
+        String(commandTokens[0] || "")
+      )
+    ) {
+      return true;
+    }
+    const underlyingPolicy = classifyCommand(withoutAssignments);
+    return (
+      underlyingPolicy.writesWorkspace !== true &&
+      underlyingPolicy.mayMutateProject !== true
+    );
+  });
 }
 
 function commandWritesOnlyPrivateVerificationEvidence(command = "") {
@@ -12833,15 +12887,20 @@ function commandIsBoundedReadOnlyArtifactValidation(command = "") {
   const normalized = String(command || "").trim();
   if (!normalized) return false;
   if (
-    !/\bassert\b|\bjson\.(?:load|loads)\s*\(|\bJSON\.parse\s*\(|\bjq\b|\bsha256sum\b|\bmd5sum\b|\b(?:valid|pass|verified?)\b/i.test(
+    !/\bassert\b|\bjson\.(?:load|loads|tool)\b|\bJSON\.parse\s*\(|\bjq\b|\bsha256sum\b|\bmd5sum\b|\b(?:valid|pass|verified?)\b/i.test(
       normalized
     )
   ) {
     return false;
   }
+  const withoutNullRedirects = normalized.replace(
+    /(^|\s)(?:\d*>>?|&>>?)\s*(?:"\/dev\/null"|'\/dev\/null'|\/dev\/null)/g,
+    "$1"
+  );
   // Heredoc input (`<<`) is compatible with read-only validation. Any output
-  // redirection or known mutator keeps conservative project revision tracking.
-  if (/(^|[^<])>{1,2}(?!=)/m.test(normalized)) return false;
+  // redirection outside /dev/null or known mutator keeps conservative project
+  // revision tracking.
+  if (/(^|[^<])>{1,2}(?!=)/m.test(withoutNullRedirects)) return false;
   if (
     /\b(?:cp|install|mkdir|mv|rm|rmdir|tee|touch|truncate)\b|\bsed\s+-i\b|\bperl\s+-pi\b/i.test(
       normalized
