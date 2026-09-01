@@ -13,6 +13,7 @@ import {
   validateIntegrationArtifactId,
 } from "./integration-policy.js";
 import { redactSensitiveText } from "./redaction.js";
+import { validateFileWorkerMimeAndFilename } from "./integration-file-worker-contract.js";
 
 export const MAX_INTEGRATION_PUBLIC_ARTIFACT_BYTES = 48 * 1024;
 export const MAX_INTEGRATION_FILE_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -229,34 +230,23 @@ export function validateIntegrationFileSpec(value) {
   if (spec.schemaVersion !== AGENT_WORKER_SCHEMA_VERSION) {
     integrationInvalid("file spec schemaVersion must be 1");
   }
-  const filename = integrationBoundedText(spec.filename, "file filename", 240, {
+  const filenameInput = integrationBoundedText(spec.filename, "file filename", 240, {
     minimum: 1,
     presentational: true,
   });
+  const mimeInput = integrationBoundedText(spec.mime, "file mime", 100, { minimum: 1 });
   if (
-    !filename ||
-    filename.trim() !== filename ||
-    filename === "." ||
-    filename === ".." ||
-    !filename.slice(0, -4) ||
-    filename.slice(0, -4) === "." ||
-    filename.slice(0, -4) === ".." ||
-    filename.includes("/") ||
-    filename.includes("\\") ||
-    /[\u0000-\u001f\u007f]/u.test(filename)
-  ) {
-    integrationInvalid("file filename must be one safe basename");
-  }
-  const mime = integrationBoundedText(spec.mime, "file mime", 100, { minimum: 1 });
-  if (mime !== mime.toLowerCase()) integrationInvalid("file mime must be lowercase");
-  if (!new Set(["application/pdf", "application/x-tex", "text/x-tex"]).has(mime)) {
-    integrationInvalid("file mime is unsupported");
-  }
-  if ((mime === "application/pdf") !== /\.pdf$/iu.test(filename)) {
-    integrationInvalid("file filename extension does not match mime");
-  }
-  if (mime !== "application/pdf" && !/\.tex$/iu.test(filename)) {
-    integrationInvalid("file filename extension does not match mime");
+    filenameInput.trim() !== filenameInput || filenameInput === "." || filenameInput === ".." ||
+    filenameInput.startsWith(".") || filenameInput.endsWith(".") ||
+    filenameInput.includes("/") || filenameInput.includes("\\")
+  ) integrationInvalid("file filename must be one safe basename");
+  if (mimeInput !== mimeInput.toLowerCase()) integrationInvalid("file mime must be lowercase");
+  let filename;
+  let mime;
+  try {
+    ({ filename, mime } = validateFileWorkerMimeAndFilename(mimeInput, filenameInput));
+  } catch {
+    integrationInvalid("file filename and mime are inconsistent or unsupported");
   }
   if (!Number.isSafeInteger(spec.bytes) || spec.bytes < 1 || spec.bytes > MAX_INTEGRATION_FILE_ARTIFACT_BYTES) {
     integrationInvalid("file bytes is outside its supported bound");

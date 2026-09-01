@@ -2016,14 +2016,14 @@ async function unsupportedMixedActionsDiscloseAndContinue() {
     ["Install numpy, then explain a median in one sentence.", /package installation is unavailable/u],
     ["Run a shell command, then explain a median in one sentence.", /shell and subprocess execution are unavailable/u],
     ["Search the web, then explain a median in one sentence.", /bounded web search was not enabled/u],
-    ["Create a CSV file, then explain a median in one sentence.", /arbitrary file creation, upload, and download are unavailable/u],
+    ["Create a CSV file, then explain a median in one sentence.", /outside the bounded verified local artifact broker/u],
     ["Deploy this answer, then explain a median in one sentence.", /external actions such as deployment/u],
     ["Explain a median, then install numpy.", /package installation is unavailable/u],
-    ["Create a PDF report, then explain a median.", /file route supports only verified paired TeX\/PDF artifacts/u],
-    ["Generate report.pdf, then explain a median.", /file route supports only verified paired TeX\/PDF artifacts/u],
-    ["Export this answer as PDF, then explain a median.", /file route supports only verified paired TeX\/PDF artifacts/u],
-    ["Produce TeX source only, then explain a median.", /file route supports only verified paired TeX\/PDF artifacts/u],
-    ["Compile this LaTeX into a PDF only, then explain a median.", /file route supports only verified paired TeX\/PDF artifacts/u],
+    ["Create a PDF report, then explain a median.", /outside the bounded verified local artifact broker/u],
+    ["Generate report.pdf, then explain a median.", /outside the bounded verified local artifact broker/u],
+    ["Export this answer as PDF, then explain a median.", /outside the bounded verified local artifact broker/u],
+    ["Produce TeX source only, then explain a median.", /outside the bounded verified local artifact broker/u],
+    ["Compile this LaTeX into a PDF only, then explain a median.", /outside the bounded verified local artifact broker/u],
   ];
   for (let index = 0; index < cases.length; index += 1) {
     const [prompt, expectedLimit] = cases[index];

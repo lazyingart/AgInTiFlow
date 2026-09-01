@@ -211,6 +211,12 @@ function sessionAuthority(activationProof, recoveryProof) {
     documentWorkerDeleteIntentBeforeBytes: true,
     documentContentPrincipalAndBrowserSessionBound: true,
     documentContentStreamedWithoutCloudBuffering: true,
+    fileWorkerOpaqueRefs: true,
+    fileWorkerReceiptBindings: true,
+    fileWorkerBundleCommitIntents: true,
+    fileWorkerTwoPhaseDelete: true,
+    fileBytesPersistedByCloud: false,
+    fileContentStreamedWithoutCloudBuffering: true,
     publicActivationLocksChanged: false,
     limitsDigest: contractDigest("limits"),
   });
@@ -835,6 +841,11 @@ assert.match(
   /const activatedDocumentWorkerClient = plannerActivation\.documentWorker === undefined[\s\S]*?documentWorkerClient:\s*activatedDocumentWorkerClient/u,
   "production sessions must receive the document client only when the optional role activated ready"
 );
+assert.match(
+  serverCompositionSource,
+  /const activatedFileWorkerClient = plannerActivation\.fileWorker === undefined[\s\S]*?fileWorkerClient:\s*activatedFileWorkerClient/u,
+  "production sessions must receive the general-file client only when its activation is ready"
+);
 assert.doesNotMatch(
   serverCompositionSource,
   /activationProof:\s*startupProof/u,
@@ -849,6 +860,11 @@ assert.match(
   serverCompositionSource,
   /createIntegrationDocumentWorkerClient\(\{[\s\S]*?endpoint:\s*config\.documentWorker\.endpoint,[\s\S]*?credential:\s*options\.documentWorkerCredential/u,
   "production document creation must use the fixed credentialed worker client"
+);
+assert.match(
+  serverCompositionSource,
+  /createIntegrationFileWorkerClient\(\{[\s\S]*?endpoint:\s*config\.documentWorker\.endpoint,[\s\S]*?credential:\s*options\.documentWorkerCredential/u,
+  "production general-file creation must use the same fixed credentialed artifact edge"
 );
 assert.doesNotMatch(
   serverCompositionSource,

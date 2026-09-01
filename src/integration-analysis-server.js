@@ -25,6 +25,7 @@ import {
 import { IntegrationServiceConfigError } from "./integration-config.js";
 import { createFileIntegrationIdempotencyStore } from "./integration-idempotency-store.js";
 import { createIntegrationDocumentWorkerClient } from "./integration-document-worker-client.js";
+import { createIntegrationFileWorkerClient } from "./integration-file-worker-client.js";
 import { INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES } from "./integration-analysis-state-persistence.js";
 import {
   INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS,
@@ -663,6 +664,13 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
           timeoutMs: config.documentWorker.timeoutMs,
         })
       : undefined;
+    const fileWorkerClient = documentCredentialPresent
+      ? createIntegrationFileWorkerClient({
+          endpoint: config.documentWorker.endpoint,
+          credential: options.documentWorkerCredential,
+          timeoutMs: config.documentWorker.timeoutMs,
+        })
+      : undefined;
     const planner = createIntegrationAnalysisPlanner({
       coordinator,
       localModelConfig: {
@@ -680,6 +688,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
           }
         : {}),
       ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
+      ...(fileWorkerClient === undefined ? {} : { fileWorkerClient }),
       configuredRoles: {
         groundedSearch: searchEnabled,
         documentWorker: documentWorkerEnabled,
@@ -689,6 +698,9 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
     const activatedDocumentWorkerClient = plannerActivation.documentWorker === undefined
       ? undefined
       : documentWorkerClient;
+    const activatedFileWorkerClient = plannerActivation.fileWorker === undefined
+      ? undefined
+      : fileWorkerClient;
     const startupProof = plannerActivation.readinessProof;
     const visionEligible = integrationAnalysisVisionEligibleForStatePersistenceMode(
       config.statePersistence.mode,
@@ -717,6 +729,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
       statePersistenceMode: config.statePersistence.mode,
       plannerActivation,
       ...(activatedDocumentWorkerClient === undefined ? {} : { documentWorkerClient: activatedDocumentWorkerClient }),
+      ...(activatedFileWorkerClient === undefined ? {} : { fileWorkerClient: activatedFileWorkerClient }),
       ...(visionActivation === undefined
         ? {}
         : { visionClient: visionClientCandidate, visionActivation }),

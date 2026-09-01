@@ -18,6 +18,17 @@ import {
   inspectIntegrationTexCompilerRuntime,
 } from "./integration-tex-compiler.js";
 import { contractDigest } from "./integration-policy.js";
+import {
+  FILE_WORKER_LIMITS,
+  FILE_WORKER_SCHEMA_VERSIONS,
+  validateFileWorkerCommitRequest,
+  validateFileWorkerContentRequest,
+  validateFileWorkerDeleteRequest,
+  validateFileWorkerIssueRequest,
+  validateFileWorkerPublishRequest,
+  validateFileWorkerReadinessRequest,
+} from "./integration-file-worker-contract.js";
+import { assertIntegrationFileWorkerStore } from "./integration-file-worker-store.js";
 
 export const DOCUMENT_WORKER_SERVICE_SCHEMA_VERSION = "aginti-document-worker-service-v1";
 export const DOCUMENT_WORKER_MAXIMUM_QUEUED_COMPILES = 4;
@@ -95,9 +106,10 @@ function readinessResponse(config, runtime, compileAuthorityEpoch) {
   return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
 }
 
-function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
+function createService({ config, store, fileStore, compileImpl, inspectRuntimeImpl }) {
   const normalizedConfig = validateIntegrationDocumentWorkerConfig(config);
   assertIntegrationDocumentWorkerStore(store);
+  if (fileStore !== undefined) assertIntegrationFileWorkerStore(fileStore);
   let activated = false;
   let closed = false;
   let readiness = null;
@@ -105,6 +117,41 @@ function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
   let compilerRuntimePromise = null;
   const compileWaiters = [];
   const inFlight = new Map();
+
+  async function fileReadiness(requestInput) {
+    assertActive();
+    validateFileWorkerReadinessRequest(requestInput);
+    if (!fileStore) {
+      documentWorkerFail("WORKER_UNAVAILABLE", "File artifact broker is unavailable.", { status: 503 });
+    }
+    const inventory = await fileStore.inspect();
+    const unsigned = Object.freeze({
+      schemaVersion: FILE_WORKER_SCHEMA_VERSIONS.readinessResponse,
+      ready: true,
+      creationEnabled: normalizedConfig.creation.enabled,
+      authorityEpoch: inventory.authorityEpoch,
+      protocols: Object.freeze({
+        issue: FILE_WORKER_SCHEMA_VERSIONS.issueRequest,
+        publish: FILE_WORKER_SCHEMA_VERSIONS.publishRequest,
+        commit: FILE_WORKER_SCHEMA_VERSIONS.commitRequest,
+        content: FILE_WORKER_SCHEMA_VERSIONS.contentRequest,
+        delete: FILE_WORKER_SCHEMA_VERSIONS.deleteRequest,
+      }),
+      limits: Object.freeze({
+        maximumFiles: FILE_WORKER_LIMITS.maximumFiles,
+        maximumFileBytes: FILE_WORKER_LIMITS.maximumFileBytes,
+        maximumBundleBytes: FILE_WORKER_LIMITS.maximumBundleBytes,
+      }),
+      storage: Object.freeze({
+        durable: true,
+        restartStableRefs: true,
+        rangeReads: true,
+        twoPhaseDelete: true,
+        cloudBytePersistence: false,
+      }),
+    });
+    return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+  }
 
   function releaseCompileSlot() {
     activeCompiles -= 1;
@@ -297,6 +344,36 @@ function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
       validateDocumentWorkerReadinessRequest(requestInput);
       return activateInternal(false);
     },
+    fileReadiness,
+    issueFiles(requestInput) {
+      assertActive();
+      if (!fileStore || !normalizedConfig.creation.enabled) {
+        documentWorkerFail("WORKER_CREATION_DISABLED", "File artifact creation is disabled.", { status: 503 });
+      }
+      return fileStore.issue(validateFileWorkerIssueRequest(requestInput));
+    },
+    publishFiles(requestInput) {
+      assertActive();
+      if (!fileStore || !normalizedConfig.creation.enabled) {
+        documentWorkerFail("WORKER_CREATION_DISABLED", "File artifact creation is disabled.", { status: 503 });
+      }
+      return fileStore.publish(validateFileWorkerPublishRequest(requestInput));
+    },
+    commitFiles(requestInput) {
+      assertActive();
+      if (!fileStore) documentWorkerFail("WORKER_UNAVAILABLE", "File artifact broker is unavailable.", { status: 503 });
+      return fileStore.commit(validateFileWorkerCommitRequest(requestInput));
+    },
+    fileContent(requestInput) {
+      assertActive();
+      if (!fileStore) documentWorkerFail("WORKER_UNAVAILABLE", "File artifact broker is unavailable.", { status: 503 });
+      return fileStore.openContent(validateFileWorkerContentRequest(requestInput));
+    },
+    deleteFiles(requestInput) {
+      assertActive();
+      if (!fileStore) documentWorkerFail("WORKER_UNAVAILABLE", "File artifact broker is unavailable.", { status: 503 });
+      return fileStore.delete(validateFileWorkerDeleteRequest(requestInput));
+    },
     issueCompile,
     compile,
     commit(requestInput) {
@@ -315,7 +392,7 @@ function createService({ config, store, compileImpl, inspectRuntimeImpl }) {
       if (closed) return;
       closed = true;
       await Promise.allSettled([...inFlight.values()].map(({ promise }) => promise));
-      await store.close();
+      await Promise.allSettled([store.close(), fileStore?.close()]);
     },
   };
   SERVICE_BRAND.add(service);
@@ -329,13 +406,14 @@ export function createIntegrationDocumentWorkerService(options = {}) {
     typeof options !== "object" ||
     Array.isArray(options) ||
     Object.getPrototypeOf(options) !== Object.prototype ||
-    keys.some((key) => typeof key !== "string" || !new Set(["config", "store"]).has(key)) ||
+    keys.some((key) => typeof key !== "string" || !new Set(["config", "store", "fileStore"]).has(key)) ||
     !Object.hasOwn(options, "config") ||
     !Object.hasOwn(options, "store")
   ) throw new TypeError("document worker service options are invalid");
   return createService({
     config: options.config,
     store: options.store,
+    fileStore: options.fileStore,
     compileImpl: compileIntegrationTexWorkerPayload,
     inspectRuntimeImpl: inspectIntegrationTexCompilerRuntime,
   });
@@ -350,7 +428,7 @@ export function createTestOnlyIntegrationDocumentWorkerService(options = {}) {
     Object.getPrototypeOf(options) !== Object.prototype ||
     keys.some((key) =>
       typeof key !== "string" ||
-      !new Set(["config", "store", "compileImpl", "inspectRuntimeImpl"]).has(key)
+      !new Set(["config", "store", "fileStore", "compileImpl", "inspectRuntimeImpl"]).has(key)
     ) ||
     !Object.hasOwn(options, "config") ||
     !Object.hasOwn(options, "store")
@@ -358,6 +436,7 @@ export function createTestOnlyIntegrationDocumentWorkerService(options = {}) {
   return createService({
     config: options.config,
     store: options.store,
+    fileStore: options.fileStore,
     compileImpl: options.compileImpl || compileIntegrationTexWorkerPayload,
     inspectRuntimeImpl: options.inspectRuntimeImpl || inspectIntegrationTexCompilerRuntime,
   });

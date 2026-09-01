@@ -42,6 +42,27 @@ import {
   validateIntegrationGroundedSearchArtifactAuthority,
 } from "./integration-grounded-search.js";
 import {
+  INTEGRATION_FILE_WORKER_INTENT_CANDIDATE_SCHEMA_VERSION,
+  INTEGRATION_FILE_WORKER_ISSUE_INTENT_SCHEMA_VERSION,
+  INTEGRATION_FILE_WORKER_TOOL_NAME,
+  IntegrationFileWorkerError,
+  assertIntegrationFileWorkerClient,
+  inspectIntegrationFileWorkerArtifact,
+  inspectIntegrationFileWorkerCommit,
+} from "./integration-file-worker-client.js";
+import {
+  FILE_WORKER_LIMITS,
+  FILE_WORKER_PATTERNS,
+  FILE_WORKER_SCHEMA_VERSIONS,
+  createFileWorkerIssuanceId,
+  digestFileWorkerContent,
+  digestFileWorkerPublishOperation,
+  fileWorkerDeletionManifestDigest,
+  fileWorkerManifestDigest,
+  publicFileWorkerPublishRequest,
+  validateFileWorkerPublishRequest,
+} from "./integration-file-worker-contract.js";
+import {
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACT_JSON_BYTES,
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACTS,
   INTEGRATION_ANALYSIS_MAX_PRIOR_CONTEXT_BYTES,
@@ -166,6 +187,7 @@ export const INTEGRATION_ANALYSIS_SESSION_LIMITS = Object.freeze({
 
 const ZERO_DIGEST = "0".repeat(64);
 const RECOVERED_DOCUMENT_SUCCESS_TEXT = "The TeX source and compiled PDF are ready below.";
+const RECOVERED_FILE_SUCCESS_TEXT = "The verified files are ready below.";
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 const TERMINAL_DOCUMENT_DELETION_STATUSES = new Set(["committed", "absent"]);
 const TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled"]);
@@ -207,6 +229,9 @@ const LEGACY_DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION = "aginti-document-commit-int
 const DOCUMENT_COMMIT_INTENT_MANIFEST_SCHEMA_VERSION = "aginti-document-commit-intent-manifest-v2";
 const DOCUMENT_REVISION_LINEAGE_SCHEMA_VERSION = "aginti-document-revision-lineage-v1";
 const DOCUMENT_DELETION_INTENT_SCHEMA_VERSION = "aginti-document-deletion-intent-v1";
+const FILE_PUBLISH_INTENT_SCHEMA_VERSION = "aginti-file-publish-intent-v1";
+const FILE_COMMIT_INTENT_SCHEMA_VERSION = "aginti-file-commit-intent-v1";
+const FILE_DELETION_INTENT_SCHEMA_VERSION = "aginti-file-deletion-intent-v1";
 const LEGACY_V2_STATE_KEYS = Object.freeze([
   "schemaVersion",
   "scope",
@@ -1844,6 +1869,7 @@ function validateRun(run, scope, threadIds) {
       "inputMessageId",
       "search",
       "documentCompileIntent",
+      "filePublishIntent",
       "events",
     ],
     [
@@ -1947,6 +1973,40 @@ function validateRun(run, scope, threadIds) {
       stateDigest(intent.sourceSha256, "document compile intent sourceSha256");
       stateDigest(intent.requirementsDigest, "document compile intent requirementsDigest");
       stateTimestamp(intent.createdAt, "document compile intent createdAt");
+    } catch (error) {
+      corrupt(error);
+    }
+  }
+  if (run.filePublishIntent !== undefined) {
+    try {
+      const intent = exactState(
+        run.filePublishIntent,
+        [
+          "schemaVersion", "issuanceId", "requestId", "authorityEpoch", "authorityTokenDigest",
+          "contentDigest", "operationDigest", "filesDigest", "createdAt",
+        ],
+        [
+          "schemaVersion", "issuanceId", "requestId", "authorityEpoch", "authorityTokenDigest",
+          "contentDigest", "operationDigest", "filesDigest", "createdAt",
+        ],
+        "file publish intent"
+      );
+      if (
+        intent.schemaVersion !== FILE_PUBLISH_INTENT_SCHEMA_VERSION ||
+        !FILE_WORKER_PATTERNS.issuanceId.test(intent.issuanceId) ||
+        !Number.isSafeInteger(intent.authorityEpoch) || intent.authorityEpoch < 1
+      ) corrupt();
+      const issued = intent.requestId !== null || intent.authorityTokenDigest !== null || intent.operationDigest !== null;
+      if (issued) {
+        if (!FILE_WORKER_PATTERNS.requestId.test(intent.requestId)) corrupt();
+        stateDigest(intent.authorityTokenDigest, "file publish authority token digest");
+        stateDigest(intent.operationDigest, "file publish operation digest");
+      } else if (intent.requestId !== null || intent.authorityTokenDigest !== null || intent.operationDigest !== null) {
+        corrupt();
+      }
+      stateDigest(intent.contentDigest, "file publish content digest");
+      stateDigest(intent.filesDigest, "file publish files digest");
+      stateTimestamp(intent.createdAt, "file publish intent createdAt");
     } catch (error) {
       corrupt(error);
     }
@@ -2070,6 +2130,8 @@ function validateArtifact(artifact, scope, runsById, state) {
       "createdAt",
       "workerRef",
       "compileReceiptDigest",
+      "workerProfile",
+      "bundleIndex",
       "documentRole",
       "companionSha256",
       "groundedSearchSourceArtifactId",
@@ -2107,15 +2169,24 @@ function validateArtifact(artifact, scope, runsById, state) {
   }
   if (artifact.kind === "file") {
     try {
-      validateIntegrationDocumentWorkerRef(artifact.workerRef);
       stateDigest(artifact.compileReceiptDigest, "state artifact compileReceiptDigest");
-      stateDigest(artifact.companionSha256, "state artifact companionSha256");
-      if (artifact.documentRole !== "source" && artifact.documentRole !== "pdf") corrupt();
-      if (
-        (artifact.documentRole === "source" && artifact.spec.mime === "application/pdf") ||
-        (artifact.documentRole === "pdf" && artifact.spec.mime !== "application/pdf")
-      ) {
-        corrupt();
+      if (artifact.workerProfile === "file-bundle-v1") {
+        if (!FILE_WORKER_PATTERNS.objectRef.test(artifact.workerRef)) corrupt();
+        integrationBoundedInteger(artifact.bundleIndex, "state artifact bundleIndex", {
+          maximum: FILE_WORKER_LIMITS.maximumFiles - 1,
+        });
+        if (artifact.documentRole !== undefined || artifact.companionSha256 !== undefined) corrupt();
+      } else {
+        if (artifact.workerProfile !== undefined || artifact.bundleIndex !== undefined) corrupt();
+        validateIntegrationDocumentWorkerRef(artifact.workerRef);
+        stateDigest(artifact.companionSha256, "state artifact companionSha256");
+        if (artifact.documentRole !== "source" && artifact.documentRole !== "pdf") corrupt();
+        if (
+          (artifact.documentRole === "source" && artifact.spec.mime === "application/pdf") ||
+          (artifact.documentRole === "pdf" && artifact.spec.mime !== "application/pdf")
+        ) {
+          corrupt();
+        }
       }
     } catch (error) {
       corrupt(error);
@@ -2123,6 +2194,8 @@ function validateArtifact(artifact, scope, runsById, state) {
   } else if (
     artifact.workerRef !== undefined ||
     artifact.compileReceiptDigest !== undefined ||
+    artifact.workerProfile !== undefined ||
+    artifact.bundleIndex !== undefined ||
     artifact.documentRole !== undefined ||
     artifact.companionSha256 !== undefined
   ) {
@@ -2272,7 +2345,9 @@ function committedPublicArtifactForPriorContext(state, artifact) {
     intent.eventsPublished === true &&
     intent.objects.some((object) =>
       object.ref === artifact.workerRef &&
-      object.role === artifact.documentRole &&
+      (artifact.workerProfile === "file-bundle-v1"
+        ? intent.schemaVersion === FILE_COMMIT_INTENT_SCHEMA_VERSION && object.index === artifact.bundleIndex
+        : object.role === artifact.documentRole) &&
       object.sha256 === artifact.spec.sha256 &&
       (intent.schemaVersion === LEGACY_DOCUMENT_COMMIT_INTENT_SCHEMA_VERSION || (
         object.filename === artifact.spec.filename &&
@@ -2393,7 +2468,95 @@ function documentWorkerCommitObjects(objects) {
   })));
 }
 
+function fileWorkerCommitObjects(objects) {
+  return Object.freeze(objects.map((object) => Object.freeze({
+    ref: object.ref,
+    index: object.index,
+    sha256: object.sha256,
+  })));
+}
+
+function isFileWorkerCommitIntent(intent) {
+  return intent.schemaVersion === FILE_COMMIT_INTENT_SCHEMA_VERSION;
+}
+
+function isFileWorkerDeletionIntent(intent) {
+  return intent.schemaVersion === FILE_DELETION_INTENT_SCHEMA_VERSION;
+}
+
+function deletionProfileKey(intent) {
+  return `${intent.threadId}:${isFileWorkerDeletionIntent(intent) ? "file" : "document"}`;
+}
+
+function validateFileCommitIntent(intent, scope, runsById, artifacts) {
+  exactState(
+    intent,
+    [
+      "schemaVersion", "receiptDigest", "threadId", "runId", "status", "createdAt", "updatedAt",
+      "objects", "manifestDigest", "workerAckDigest", "committedAt", "eventsPublished",
+    ],
+    [
+      "schemaVersion", "receiptDigest", "threadId", "runId", "status", "createdAt", "updatedAt",
+      "objects", "manifestDigest", "workerAckDigest", "committedAt", "eventsPublished",
+    ],
+    "file commit intent"
+  );
+  if (
+    intent.schemaVersion !== FILE_COMMIT_INTENT_SCHEMA_VERSION ||
+    !new Set(["pending", "committed"]).has(intent.status) ||
+    !Array.isArray(intent.objects) || intent.objects.length < 1 ||
+    intent.objects.length > FILE_WORKER_LIMITS.maximumFiles
+  ) corrupt();
+  stateDigest(intent.receiptDigest, "file commit receiptDigest");
+  stateDigest(intent.manifestDigest, "file commit manifestDigest");
+  stateTimestamp(intent.createdAt, "file commit createdAt");
+  stateTimestamp(intent.updatedAt, "file commit updatedAt");
+  try {
+    validateIntegrationThreadId(intent.threadId);
+    validateIntegrationRunId(intent.runId);
+  } catch (error) {
+    corrupt(error);
+  }
+  const run = runsById.get(intent.runId);
+  if (!run || run.threadId !== intent.threadId) corrupt();
+  const workerObjects = [];
+  for (let index = 0; index < intent.objects.length; index += 1) {
+    const object = exactState(
+      intent.objects[index],
+      ["ref", "index", "filename", "bytes", "sha256"],
+      ["ref", "index", "filename", "bytes", "sha256"],
+      "file commit object"
+    );
+    if (
+      object.index !== index || !FILE_WORKER_PATTERNS.objectRef.test(object.ref) ||
+      !Number.isSafeInteger(object.bytes) || object.bytes < 1 || object.bytes > FILE_WORKER_LIMITS.maximumFileBytes
+    ) corrupt();
+    stateDigest(object.sha256, "file commit object sha256");
+    integrationBoundedText(object.filename, "file commit object filename", 240, { minimum: 3 });
+    const artifact = artifacts.find((candidate) => candidate.workerRef === object.ref);
+    if (
+      !artifact || artifact.kind !== "file" || artifact.workerProfile !== "file-bundle-v1" ||
+      artifact.runId !== intent.runId || artifact.bundleIndex !== index ||
+      artifact.compileReceiptDigest !== intent.receiptDigest || artifact.spec.filename !== object.filename ||
+      artifact.spec.bytes !== object.bytes || artifact.spec.sha256 !== object.sha256
+    ) corrupt();
+    workerObjects.push(Object.freeze({ ref: object.ref, index, sha256: object.sha256 }));
+  }
+  if (intent.manifestDigest !== fileWorkerManifestDigest(workerObjects)) corrupt();
+  if (intent.status === "pending") {
+    if (intent.workerAckDigest !== null || intent.committedAt !== null || intent.eventsPublished !== false) corrupt();
+  } else {
+    stateDigest(intent.workerAckDigest, "file commit workerAckDigest");
+    stateTimestamp(intent.committedAt, "file commit committedAt");
+    if (typeof intent.eventsPublished !== "boolean") corrupt();
+  }
+}
+
 function validateDocumentCommitIntent(intent, scope, runsById, artifacts) {
+  if (intent?.schemaVersion === FILE_COMMIT_INTENT_SCHEMA_VERSION) {
+    validateFileCommitIntent(intent, scope, runsById, artifacts);
+    return;
+  }
   exactState(
     intent,
     [
@@ -2556,16 +2719,21 @@ function validateDocumentDeletionIntent(intent, scope, threadIds, runsById, arti
     ],
     "document deletion intent"
   );
+  const fileWorkerIntent = intent.schemaVersion === FILE_DELETION_INTENT_SCHEMA_VERSION;
   if (
-    intent.schemaVersion !== DOCUMENT_DELETION_INTENT_SCHEMA_VERSION ||
+    !new Set([DOCUMENT_DELETION_INTENT_SCHEMA_VERSION, FILE_DELETION_INTENT_SCHEMA_VERSION]).has(
+      intent.schemaVersion
+    ) ||
     typeof intent.deletionId !== "string" ||
-    !/^del_[a-f0-9]{64}$/u.test(intent.deletionId) ||
+    !(fileWorkerIntent ? FILE_WORKER_PATTERNS.deletionId : /^del_[a-f0-9]{64}$/u).test(intent.deletionId) ||
     !new Set(["thread-delete", "cancelled-run"]).has(intent.reason) ||
     !threadIds.has(intent.threadId) ||
     !new Set(["pending", "prepared", "committed", "absent"]).has(intent.status) ||
     !Array.isArray(intent.objects) ||
     intent.objects.length < 1 ||
-    intent.objects.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope
+    intent.objects.length > (fileWorkerIntent
+      ? FILE_WORKER_LIMITS.maximumDeleteObjects
+      : INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope)
   ) {
     corrupt();
   }
@@ -2591,7 +2759,11 @@ function validateDocumentDeletionIntent(intent, scope, threadIds, runsById, arti
   for (const object of intent.objects) {
     exactState(object, ["ref", "runId", "receiptDigest"], ["ref", "runId", "receiptDigest"], "document deletion object");
     try {
-      validateIntegrationDocumentWorkerRef(object.ref);
+      if (fileWorkerIntent) {
+        if (!FILE_WORKER_PATTERNS.objectRef.test(object.ref)) throw new Error("file worker ref is invalid");
+      } else {
+        validateIntegrationDocumentWorkerRef(object.ref);
+      }
       validateIntegrationRunId(object.runId);
       stateDigest(object.receiptDigest, "document deletion receiptDigest");
     } catch (error) {
@@ -2606,7 +2778,10 @@ function validateDocumentDeletionIntent(intent, scope, threadIds, runsById, arti
       run.threadId !== intent.threadId ||
       !artifact ||
       artifact.runId !== object.runId ||
-      artifact.compileReceiptDigest !== object.receiptDigest
+      artifact.compileReceiptDigest !== object.receiptDigest ||
+      (fileWorkerIntent
+        ? artifact.workerProfile !== "file-bundle-v1"
+        : artifact.workerProfile === "file-bundle-v1")
     ) {
       corrupt();
     }
@@ -2622,13 +2797,18 @@ function validateDocumentDeletionIntent(intent, scope, threadIds, runsById, arti
     browserSessionId: scope.browserSessionId,
     threadId: intent.threadId,
   };
-  if (
-    intent.manifestDigest !== integrationDocumentWorkerDeletionManifestDigest({
-      deletionId: intent.deletionId,
-      scope: workerScope,
-      objects: intent.objects,
-    })
-  ) {
+  const expectedManifestDigest = fileWorkerIntent
+    ? fileWorkerDeletionManifestDigest({
+        deletionId: intent.deletionId,
+        scope: workerScope,
+        objects: intent.objects,
+      })
+    : integrationDocumentWorkerDeletionManifestDigest({
+        deletionId: intent.deletionId,
+        scope: workerScope,
+        objects: intent.objects,
+      });
+  if (intent.manifestDigest !== expectedManifestDigest) {
     corrupt();
   }
   if (intent.status === "pending") {
@@ -2880,7 +3060,9 @@ function validateState(state, expectedScope) {
     artifactCounts.set(artifact.runId, (artifactCounts.get(artifact.runId) || 0) + 1);
     if (artifactCounts.get(artifact.runId) > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun) corrupt();
   }
-  for (const artifact of state.artifacts.filter(({ kind }) => kind === "file")) {
+  for (const artifact of state.artifacts.filter(
+    ({ kind, workerProfile }) => kind === "file" && workerProfile !== "file-bundle-v1"
+  )) {
     if (runsById.get(artifact.runId)?.status !== "completed") continue;
     const companion = state.artifacts.find((candidate) =>
       candidate.kind === "file" &&
@@ -2920,9 +3102,12 @@ function validateState(state, expectedScope) {
   }
   const deletionIds = new Set();
   const deletingThreads = new Set();
+  const deletionProfiles = new Set();
   for (const intent of state.documentDeletionIntents) {
-    if (deletionIds.has(intent.deletionId) || deletingThreads.has(intent.threadId)) corrupt();
+    const profileKey = deletionProfileKey(intent);
+    if (deletionIds.has(intent.deletionId) || deletionProfiles.has(profileKey)) corrupt();
     deletionIds.add(intent.deletionId);
+    deletionProfiles.add(profileKey);
     deletingThreads.add(intent.threadId);
     validateDocumentDeletionIntent(intent, expectedScope, threadIds, runsById, state.artifacts);
   }
@@ -3912,6 +4097,7 @@ function createService(options, { testOnly }) {
   const analysisRunner = options.analysisRunner;
   const plannerActivation = options.plannerActivation || null;
   const documentWorkerClient = options.documentWorkerClient;
+  const fileWorkerClient = options.fileWorkerClient;
   const visionClient = options.visionClient;
   const visionActivation = options.visionActivation;
   const attachmentBufferLifecycle = testOnly ? options.attachmentBufferLifecycle : undefined;
@@ -3986,8 +4172,21 @@ function createService(options, { testOnly }) {
       });
     }
   }
+  if (fileWorkerClient !== undefined) {
+    try {
+      assertIntegrationFileWorkerClient(fileWorkerClient, { allowTestOnly: testOnly });
+    } catch (error) {
+      fail("ANALYSIS_CONFIGURATION_INVALID", "The file worker client authority is invalid.", {
+        status: 500,
+        cause: error,
+      });
+    }
+  }
   if (!testOnly && plannerActivation?.documentWorker !== undefined && documentWorkerClient === undefined) {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Document worker activation has no bound client.", { status: 500 });
+  }
+  if (!testOnly && plannerActivation?.fileWorker !== undefined && fileWorkerClient === undefined) {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "File worker activation has no bound client.", { status: 500 });
   }
   if ((visionClient === undefined) !== (visionActivation === undefined)) {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Analysis vision client and activation must be bound together.", {
@@ -4034,9 +4233,16 @@ function createService(options, { testOnly }) {
   if (testOnly && options.documentWorkerEnabled !== undefined && typeof options.documentWorkerEnabled !== "boolean") {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Test document worker capability flag is invalid.", { status: 500 });
   }
+  const fileCreationEnabled = testOnly
+    ? options.fileWorkerEnabled === true
+    : plannerActivation?.fileWorker?.ready === true && plannerActivation?.fileWorker?.creationEnabled === true;
+  if (testOnly && options.fileWorkerEnabled !== undefined && typeof options.fileWorkerEnabled !== "boolean") {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Test file worker capability flag is invalid.", { status: 500 });
+  }
   if (
     statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 &&
-    (searchEnabled || documentCreationEnabled || documentWorkerClient !== undefined || visionClient !== undefined)
+    (searchEnabled || documentCreationEnabled || documentWorkerClient !== undefined ||
+      fileCreationEnabled || fileWorkerClient !== undefined || visionClient !== undefined)
   ) {
     fail(
       "ANALYSIS_CONFIGURATION_INVALID",
@@ -4046,6 +4252,9 @@ function createService(options, { testOnly }) {
   }
   if (documentCreationEnabled && documentWorkerClient === undefined) {
     fail("ANALYSIS_CONFIGURATION_INVALID", "Enabled document creation requires its worker client.", { status: 500 });
+  }
+  if (fileCreationEnabled && fileWorkerClient === undefined) {
+    fail("ANALYSIS_CONFIGURATION_INVALID", "Enabled file creation requires its worker client.", { status: 500 });
   }
   const fixedMutationRecoveryAuthority = mutationRecoveryAuthority();
   const fixedAttachmentAuthority = attachmentAuthority(visionActivation, stateRoot);
@@ -4431,8 +4640,7 @@ function createService(options, { testOnly }) {
           after.length !== before.length ||
           after.some((item, index) => item.digest !== before[index].digest) ||
           after.some((item) =>
-            item.nonterminalRuns !== 0 &&
-            (documentWorkerClient !== undefined || item.pendingDocumentIntents === 0)
+            item.nonterminalRuns !== 0 && item.pendingDocumentIntents === 0
           )
         ) {
           fail(
@@ -4610,27 +4818,32 @@ function createService(options, { testOnly }) {
   function completeRecoveredDocumentRun(state, run, completedAt) {
     const thread = state.threads.find((candidate) => candidate.id === run.threadId);
     if (!thread) corrupt();
-    closeOpenTools(run, completedAt, "TeX source and PDF compiled.", "tool.completed");
+    const fileBundle = state.documentCommitIntents.some(
+      (intent) => intent.runId === run.id && isFileWorkerCommitIntent(intent)
+    );
+    const publicSummary = fileBundle ? "Verified files committed." : "TeX source and PDF compiled.";
+    const successText = fileBundle ? RECOVERED_FILE_SUCCESS_TEXT : RECOVERED_DOCUMENT_SUCCESS_TEXT;
+    closeOpenTools(run, completedAt, publicSummary, "tool.completed");
     appendEvent(
       run,
       "plan.updated",
       { steps: planSteps("synthesizing").map((step) => ({ ...step, status: "completed" })) },
       completedAt
     );
-    for (const chunk of outputChunks(RECOVERED_DOCUMENT_SUCCESS_TEXT)) {
+    for (const chunk of outputChunks(successText)) {
       appendEvent(run, "output.delta", { text: chunk }, completedAt);
     }
     appendEvent(run, "output.completed", {}, completedAt);
     appendMessage(thread, {
       role: "assistant",
-      content: RECOVERED_DOCUMENT_SUCCESS_TEXT,
+      content: successText,
       runId: run.id,
       createdAt: completedAt,
     });
     run.status = "completed";
     run.schedulingState = "terminal";
     run.completedAt = completedAt;
-    run.output = RECOVERED_DOCUMENT_SUCCESS_TEXT;
+    run.output = successText;
     run.error = null;
     appendEvent(run, "run.completed", {}, completedAt);
     touchThread(thread, completedAt, { status: "idle", lastRunId: run.id });
@@ -4656,7 +4869,11 @@ function createService(options, { testOnly }) {
   }
 
   function isPendingOptionalDocumentRun(state, run) {
-    return documentWorkerClient === undefined && hasPendingOptionalDocumentWork(state, run);
+    if (documentWorkerClient === undefined && hasPendingDocumentCompileIntent(run)) return true;
+    return state.documentCommitIntents.some((intent) =>
+      intent.runId === run.id && intent.status === "pending" &&
+      (isFileWorkerCommitIntent(intent) ? fileWorkerClient === undefined : documentWorkerClient === undefined)
+    );
   }
 
   function recoverInterruptedRuns(state) {
@@ -4702,7 +4919,6 @@ function createService(options, { testOnly }) {
   }
 
   async function reconcileDocumentCommitIntents(scope, state, { signal } = {}) {
-    if (!documentWorkerClient) return false;
     let changed = false;
     const irrecoverableReceipts = new Set();
     const irrecoverableRefs = new Set();
@@ -4711,6 +4927,9 @@ function createService(options, { testOnly }) {
       error.status === 410 ||
       (error.status === 409 && error.workerCode === "IDEMPOTENCY_CONFLICT");
     for (const intent of state.documentCommitIntents.filter(({ status }) => status === "pending")) {
+      const fileWorkerIntent = isFileWorkerCommitIntent(intent);
+      const workerClient = fileWorkerIntent ? fileWorkerClient : documentWorkerClient;
+      if (!workerClient) continue;
       const run = state.runs.find((candidate) => candidate.id === intent.runId);
       // The live planner owns the normal authorize -> worker commit -> ACK
       // sequence. Reconciliation is only a crash/restart path; committing here
@@ -4726,9 +4945,14 @@ function createService(options, { testOnly }) {
         continue;
       }
       try {
-        const ack = await documentWorkerClient.commitArtifacts(
+        const ack = await workerClient.commitArtifacts(
           scopeWithRun(scope, intent.threadId, intent.runId),
-          { receiptDigest: intent.receiptDigest, objects: documentWorkerCommitObjects(intent.objects) },
+          {
+            receiptDigest: intent.receiptDigest,
+            objects: fileWorkerIntent
+              ? fileWorkerCommitObjects(intent.objects)
+              : documentWorkerCommitObjects(intent.objects),
+          },
           { signal }
         );
         intent.status = "committed";
@@ -4738,7 +4962,9 @@ function createService(options, { testOnly }) {
         publishCommittedDocumentEvents(state, intent, timestamp());
         changed = true;
       } catch (error) {
-        if (!(error instanceof IntegrationDocumentWorkerError)) throw error;
+        if (!(error instanceof IntegrationDocumentWorkerError) && !(error instanceof IntegrationFileWorkerError)) {
+          throw error;
+        }
         if (error.code === "ANALYSIS_CANCELLED") throw error;
         const transient =
           error.retryable === true &&
@@ -4761,14 +4987,22 @@ function createService(options, { testOnly }) {
         if (failedRun && !TERMINAL_RUN_STATUSES.has(failedRun.status)) {
           const thread = state.threads.find((candidate) => candidate.id === failedRun.threadId);
           if (!thread) corrupt();
-          closeOpenTools(failedRun, failedAt, "TeX document compilation could not be recovered.");
+          closeOpenTools(
+            failedRun,
+            failedAt,
+            fileWorkerIntent
+              ? "Verified file publication could not be recovered."
+              : "TeX document compilation could not be recovered."
+          );
           failedRun.status = "failed";
           failedRun.schedulingState = "terminal";
           failedRun.completedAt = failedAt;
           failedRun.output = "";
           failedRun.error = {
-            code: "ANALYSIS_DOCUMENT_COMMIT_LOST",
-            message: "The workstation no longer has the staged document pair. Resume this run to regenerate it.",
+            code: fileWorkerIntent ? "ANALYSIS_FILE_COMMIT_LOST" : "ANALYSIS_DOCUMENT_COMMIT_LOST",
+            message: fileWorkerIntent
+              ? "The workstation no longer has the staged file bundle. Resume this run to regenerate it."
+              : "The workstation no longer has the staged document pair. Resume this run to regenerate it.",
           };
           appendEvent(failedRun, "run.failed", {}, failedAt);
           touchThread(thread, failedAt, { status: "idle", lastRunId: failedRun.id });
@@ -4811,9 +5045,10 @@ function createService(options, { testOnly }) {
   }
 
   async function reconcileDocumentDeletionIntents(scope, state, { signal } = {}) {
-    if (!documentWorkerClient) return false;
     let changed = false;
     const exactManifestIsAbsent = async (intent) => {
+      const workerClient = isFileWorkerDeletionIntent(intent) ? fileWorkerClient : documentWorkerClient;
+      if (!workerClient) return false;
       let allObjectsAbsent = true;
       for (const object of intent.objects) {
         const artifact = state.artifacts.find((candidate) =>
@@ -4825,7 +5060,7 @@ function createService(options, { testOnly }) {
         if (!artifact) corrupt();
         let observation;
         try {
-          observation = await documentWorkerClient.content(
+          observation = await workerClient.content(
             Object.freeze({
               principalId: scope.principalId,
               browserSessionId: scope.browserSessionId,
@@ -4844,7 +5079,10 @@ function createService(options, { testOnly }) {
             { signal }
           );
         } catch (error) {
-          if (error instanceof IntegrationDocumentWorkerError && error.retryable) return false;
+          if (
+            (error instanceof IntegrationDocumentWorkerError || error instanceof IntegrationFileWorkerError) &&
+            error.retryable
+          ) return false;
           throw error;
         }
         if (
@@ -4859,6 +5097,8 @@ function createService(options, { testOnly }) {
     for (const intent of state.documentDeletionIntents.filter(
       ({ status }) => !TERMINAL_DOCUMENT_DELETION_STATUSES.has(status)
     )) {
+      const workerClient = isFileWorkerDeletionIntent(intent) ? fileWorkerClient : documentWorkerClient;
+      if (!workerClient) continue;
       const workerScope = Object.freeze({
         principalId: scope.principalId,
         browserSessionId: scope.browserSessionId,
@@ -4866,7 +5106,7 @@ function createService(options, { testOnly }) {
       });
       try {
         if (intent.status === "pending") {
-          const prepared = await documentWorkerClient.deleteObjects(
+          const prepared = await workerClient.deleteObjects(
             workerScope,
             {
               deletionId: intent.deletionId,
@@ -4883,7 +5123,7 @@ function createService(options, { testOnly }) {
           changed = true;
         }
         if (intent.status === "prepared") {
-          const committed = await documentWorkerClient.deleteObjects(
+          const committed = await workerClient.deleteObjects(
             workerScope,
             {
               deletionId: intent.deletionId,
@@ -4903,7 +5143,9 @@ function createService(options, { testOnly }) {
           changed = true;
         }
       } catch (error) {
-        if (!(error instanceof IntegrationDocumentWorkerError)) throw error;
+        if (!(error instanceof IntegrationDocumentWorkerError) && !(error instanceof IntegrationFileWorkerError)) {
+          throw error;
+        }
         if (
           (error.status === 404 && error.workerCode === "NOT_FOUND") ||
           (error.status === 410 && error.workerCode === "ARTIFACT_CONTENT_GONE")
@@ -4920,8 +5162,19 @@ function createService(options, { testOnly }) {
         }
       }
     }
+    const cancelledRunIds = new Set(
+      state.documentDeletionIntents
+        .filter((intent) => intent.reason === "cancelled-run")
+        .map(({ runId }) => runId)
+        .filter((runId) => {
+          const intents = state.documentDeletionIntents.filter(
+            (intent) => intent.reason === "cancelled-run" && intent.runId === runId
+          );
+          return intents.length > 0 && intents.every((intent) => TERMINAL_DOCUMENT_DELETION_STATUSES.has(intent.status));
+        })
+    );
     const cancelledCommitted = state.documentDeletionIntents.filter(
-      (intent) => intent.reason === "cancelled-run" && TERMINAL_DOCUMENT_DELETION_STATUSES.has(intent.status)
+      (intent) => intent.reason === "cancelled-run" && cancelledRunIds.has(intent.runId)
     );
     if (cancelledCommitted.length > 0) {
       const refs = new Set(cancelledCommitted.flatMap((intent) => intent.objects.map(({ ref }) => ref)));
@@ -5391,6 +5644,7 @@ function createService(options, { testOnly }) {
       !new Set([
         "execute_python_analysis",
         INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
+        INTEGRATION_FILE_WORKER_TOOL_NAME,
         INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
       ]).has(progress.toolName)
     ) {
@@ -5414,6 +5668,8 @@ function createService(options, { testOnly }) {
     const number = Number(progress.toolCallNumber || Math.max(1, progress.toolCallsCompleted || 1));
     const prefix = progress.toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME
       ? "tex-document"
+      : progress.toolName === INTEGRATION_FILE_WORKER_TOOL_NAME
+        ? "file-artifact"
       : progress.toolName === INTEGRATION_GROUNDED_SEARCH_TOOL_NAME
         ? "grounded-search"
         : "analysis";
@@ -5422,6 +5678,7 @@ function createService(options, { testOnly }) {
 
   function toolPresentation(toolName, executionState = "running") {
     const tex = toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME;
+    const file = toolName === INTEGRATION_FILE_WORKER_TOOL_NAME;
     const search = toolName === INTEGRATION_GROUNDED_SEARCH_TOOL_NAME;
     const terminalSuccess = new Set(["succeeded", "completed"]).has(executionState);
     const terminalFailure = new Set([
@@ -5435,16 +5692,16 @@ function createService(options, { testOnly }) {
       "worker_error",
     ]).has(executionState);
     return Object.freeze({
-      label: tex ? "TeX document compiler" : search ? "Grounded search" : "Python analysis",
+      label: tex ? "TeX document compiler" : file ? "Verified file builder" : search ? "Grounded search" : "Python analysis",
       terminalSuccess,
       terminalFailure,
       summary: terminalSuccess
-        ? tex ? "TeX source and PDF compiled." : search ? "Grounded sources retrieved." : "Bounded Python analysis completed."
+        ? tex ? "TeX source and PDF compiled." : file ? "Verified files committed." : search ? "Grounded sources retrieved." : "Bounded Python analysis completed."
         : terminalFailure
-          ? tex ? "TeX document compilation did not complete." : search ? "Grounded search did not complete." : "Bounded Python analysis did not complete."
+          ? tex ? "TeX document compilation did not complete." : file ? "Verified file creation did not complete." : search ? "Grounded search did not complete." : "Bounded Python analysis did not complete."
           : new Set(["starting", "queued"]).has(executionState)
-            ? tex ? "TeX document compilation is preparing." : search ? "Grounded search is preparing." : "Bounded Python analysis is preparing."
-            : tex ? "TeX document compilation is running." : search ? "Grounded search is running." : "Bounded Python analysis is running.",
+            ? tex ? "TeX document compilation is preparing." : file ? "Verified file creation is preparing." : search ? "Grounded search is preparing." : "Bounded Python analysis is preparing."
+            : tex ? "TeX document compilation is running." : file ? "Verified files are being sealed locally." : search ? "Grounded search is running." : "Bounded Python analysis is running.",
     });
   }
 
@@ -5531,13 +5788,14 @@ function createService(options, { testOnly }) {
       for (const callId of openCalls) {
         const started = run.events.find((event) => event.type === "tool.started" && event.payload.callId === callId);
         const tex = started?.payload?.publicLabel === "TeX document compiler";
+        const file = started?.payload?.publicLabel === "Verified file builder";
         appendEvent(
           run,
           "tool.completed",
           {
             callId,
-            publicLabel: tex ? "TeX document compiler" : "Python analysis",
-            publicSummary: tex ? "TeX source and PDF compiled." : "Bounded Python analysis completed.",
+            publicLabel: tex ? "TeX document compiler" : file ? "Verified file builder" : "Python analysis",
+            publicSummary: tex ? "TeX source and PDF compiled." : file ? "Verified files committed." : "Bounded Python analysis completed.",
             at: createdAt,
           },
           createdAt
@@ -5564,13 +5822,104 @@ function createService(options, { testOnly }) {
 
   async function recordArtifact(scope, threadId, runId, rawArtifact, revisionLineage = null) {
     const privateFile = inspectIntegrationDocumentWorkerFileArtifact(rawArtifact);
+    const privateBundleFile = inspectIntegrationFileWorkerArtifact(rawArtifact);
     const sourceArtifact = sanitizeIntegrationArtifact(rawArtifact);
     const artifact = normalizeOwnedArtifact(sourceArtifact, scope, threadId, runId);
     if (artifact.kind === "file") {
-      if (!privateFile) {
+      if (!privateFile && !privateBundleFile) {
         fail("ANALYSIS_FILE_ARTIFACT_UNSEALED", "File artifacts must originate from the bound workstation worker.", {
           status: 502,
         });
+      }
+      if (privateBundleFile) {
+        if (
+          privateBundleFile.scope.principalId !== scope.principalId ||
+          privateBundleFile.scope.browserSessionId !== scope.browserSessionId ||
+          privateBundleFile.scope.threadId !== threadId ||
+          privateBundleFile.scope.runId !== runId
+        ) {
+          fail("ANALYSIS_FILE_ARTIFACT_INVALID", "File worker scope disagrees with the active run.", {
+            status: 502,
+          });
+        }
+        const pending = pendingDocumentArtifacts.get(runId) || new Map();
+        const key = `file:${privateBundleFile.index}`;
+        const prior = pending.get(key);
+        if (prior && prior.artifact.id !== artifact.id) {
+          fail("ANALYSIS_FILE_ARTIFACT_INVALID", "File worker emitted conflicting artifacts for one index.", {
+            status: 502,
+          });
+        }
+        pending.set(key, Object.freeze({ artifact, privateFile: privateBundleFile }));
+        pendingDocumentArtifacts.set(runId, pending);
+        if (pending.size < privateBundleFile.receipt.fileCount) return artifact;
+        const bundle = [...pending.values()].sort((left, right) => left.privateFile.index - right.privateFile.index);
+        if (
+          bundle.length !== privateBundleFile.receipt.fileCount ||
+          bundle.some(({ privateFile: metadata }, index) => (
+            metadata.index !== index || metadata.receipt.digest !== privateBundleFile.receipt.digest
+          ))
+        ) {
+          fail("ANALYSIS_FILE_ARTIFACT_INVALID", "File worker artifacts are not one receipt-bound bundle.", {
+            status: 502,
+          });
+        }
+        const stored = await mutate(scope, (state) => {
+          const run = findRun(state, runId);
+          if (run.threadId !== threadId) notFound("Run");
+          if (TERMINAL_RUN_STATUSES.has(run.status)) {
+            fail("ANALYSIS_CANCELLED", "File capture lost its active run authority.", { status: 499 });
+          }
+          const existing = bundle.map(({ artifact: candidate }) => state.artifacts.find((item) => item.id === candidate.id));
+          if (existing.every(Boolean)) return { changed: false, result: ownedArtifact(existing.at(-1)) };
+          if (existing.some(Boolean)) corrupt();
+          const count = state.artifacts.filter((item) => item.runId === runId).length;
+          if (
+            count > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun - bundle.length ||
+            state.artifacts.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope - bundle.length ||
+            state.documentCommitIntents.length >= INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerScope / 2
+          ) fail("ANALYSIS_ARTIFACT_CAPACITY_EXHAUSTED", "Run artifact capacity is exhausted.", { status: 409 });
+          const createdAt = timestamp();
+          const records = bundle.map(({ artifact: candidate, privateFile: metadata }) => ({
+            ...candidate,
+            workerRef: metadata.workerRef,
+            compileReceiptDigest: metadata.receipt.digest,
+            workerProfile: "file-bundle-v1",
+            bundleIndex: metadata.index,
+            principalId: scope.principalId,
+            browserSessionId: scope.browserSessionId,
+            browserSessionPolicy: "same-browser-session",
+            threadId,
+            runId,
+            createdAt,
+          }));
+          const objects = records.map((record) => Object.freeze({
+            ref: record.workerRef,
+            index: record.bundleIndex,
+            filename: record.spec.filename,
+            bytes: record.spec.bytes,
+            sha256: record.spec.sha256,
+          }));
+          const workerObjects = objects.map(({ ref, index, sha256 }) => Object.freeze({ ref, index, sha256 }));
+          state.artifacts.push(...records);
+          state.documentCommitIntents.push({
+            schemaVersion: FILE_COMMIT_INTENT_SCHEMA_VERSION,
+            receiptDigest: privateBundleFile.receipt.digest,
+            threadId,
+            runId,
+            status: "pending",
+            createdAt,
+            updatedAt: createdAt,
+            objects,
+            manifestDigest: fileWorkerManifestDigest(workerObjects),
+            workerAckDigest: null,
+            committedAt: null,
+            eventsPublished: false,
+          });
+          return { changed: true, result: ownedArtifact(records.at(-1)) };
+        });
+        pendingDocumentArtifacts.delete(runId);
+        return stored;
       }
       if (
         privateFile.scope.principalId !== scope.principalId ||
@@ -6031,6 +6380,179 @@ function createService(options, { testOnly }) {
     });
   }
 
+  async function authorizeFilePublish(scope, threadId, runId, proposedRequest) {
+    let candidate = null;
+    let request = null;
+    let contentDigest;
+    let filesDigest;
+    try {
+      if (proposedRequest?.schemaVersion === INTEGRATION_FILE_WORKER_INTENT_CANDIDATE_SCHEMA_VERSION) {
+        candidate = integrationExactKeys(
+          proposedRequest,
+          ["schemaVersion", "authorityEpoch", "scope", "files", "contentDigest"],
+          "file publish intent candidate",
+          ["schemaVersion", "authorityEpoch", "scope", "files", "contentDigest"]
+        );
+        if (!Number.isSafeInteger(candidate.authorityEpoch) || candidate.authorityEpoch < 1) corrupt();
+        contentDigest = digestFileWorkerContent(candidate);
+        if (contentDigest !== candidate.contentDigest) corrupt();
+        filesDigest = contractDigest(candidate.files);
+      } else {
+        const normalized = validateFileWorkerPublishRequest(proposedRequest);
+        request = publicFileWorkerPublishRequest(normalized);
+        for (const file of normalized.files) file.bytesValue.fill(0);
+        contentDigest = digestFileWorkerContent({
+          scope: request.scope,
+          files: request.files.map(({ index, filename, mime, bytes, sha256 }) => ({
+            index, filename, mime, bytes, sha256,
+          })),
+        });
+        filesDigest = contractDigest(request.files.map(({ index, filename, mime, bytes, sha256 }) => ({
+          index, filename, mime, bytes, sha256,
+        })));
+      }
+    } catch (error) {
+      fail("ANALYSIS_FILE_PUBLISH_AUTHORITY_REQUIRED", "File publish intent is invalid.", {
+        status: 500,
+        cause: error,
+      });
+    }
+    return mutate(scope, (state) => {
+      const run = findRun(state, runId);
+      const authority = candidate || request;
+      if (run.threadId !== threadId || TERMINAL_RUN_STATUSES.has(run.status)) {
+        fail("ANALYSIS_CANCELLED", "File publish lost its active run authority.", { status: 499 });
+      }
+      if (
+        authority.scope.principalId !== scope.principalId ||
+        authority.scope.browserSessionId !== scope.browserSessionId ||
+        authority.scope.threadId !== threadId || authority.scope.runId !== runId
+      ) fail("ANALYSIS_FILE_PUBLISH_AUTHORITY_REQUIRED", "File publish scope is invalid.", { status: 500 });
+      const existing = run.filePublishIntent;
+      if (candidate) {
+        if (existing !== undefined) {
+          if (existing.contentDigest !== contentDigest || existing.filesDigest !== filesDigest) {
+            fail("ANALYSIS_FILE_PUBLISH_AUTHORITY_REQUIRED", "File publish intent conflicts with this run.", {
+              status: 409,
+            });
+          }
+          return {
+            changed: false,
+            result: Object.freeze({
+              schemaVersion: INTEGRATION_FILE_WORKER_ISSUE_INTENT_SCHEMA_VERSION,
+              issuanceId: existing.issuanceId,
+              authorityEpoch: existing.authorityEpoch,
+              contentDigest: existing.contentDigest,
+            }),
+          };
+        }
+        const issuanceId = createFileWorkerIssuanceId(candidate.authorityEpoch);
+        run.filePublishIntent = {
+          schemaVersion: FILE_PUBLISH_INTENT_SCHEMA_VERSION,
+          issuanceId,
+          requestId: null,
+          authorityEpoch: candidate.authorityEpoch,
+          authorityTokenDigest: null,
+          contentDigest,
+          operationDigest: null,
+          filesDigest,
+          createdAt: timestamp(),
+        };
+        return {
+          changed: true,
+          result: Object.freeze({
+            schemaVersion: INTEGRATION_FILE_WORKER_ISSUE_INTENT_SCHEMA_VERSION,
+            issuanceId,
+            authorityEpoch: candidate.authorityEpoch,
+            contentDigest,
+          }),
+        };
+      }
+      if (!existing) {
+        fail("ANALYSIS_FILE_PUBLISH_AUTHORITY_REQUIRED", "File issuance was not persisted.", { status: 503 });
+      }
+      const operationDigest = digestFileWorkerPublishOperation(request);
+      const tokenDigest = crypto.createHash("sha256").update(request.authorityToken, "utf8").digest("hex");
+      if (
+        existing.contentDigest !== contentDigest || existing.filesDigest !== filesDigest ||
+        existing.issuanceId !== request.issuanceId || existing.authorityEpoch !== request.authorityEpoch
+      ) fail("ANALYSIS_FILE_PUBLISH_AUTHORITY_REQUIRED", "File publish intent conflicts with this run.", { status: 409 });
+      if (existing.requestId !== null) {
+        if (
+          existing.requestId !== request.requestId || existing.operationDigest !== operationDigest ||
+          existing.authorityTokenDigest !== tokenDigest
+        ) fail("ANALYSIS_FILE_PUBLISH_AUTHORITY_REQUIRED", "File publish replay conflicts with this run.", { status: 409 });
+        return { changed: false, result: request };
+      }
+      existing.requestId = request.requestId;
+      existing.operationDigest = operationDigest;
+      existing.authorityTokenDigest = tokenDigest;
+      return { changed: true, result: request };
+    });
+  }
+
+  async function authorizeFileCommit(scope, threadId, runId, rawArtifacts) {
+    const files = Array.isArray(rawArtifacts)
+      ? rawArtifacts.map((artifact) => ({ artifact, metadata: inspectIntegrationFileWorkerArtifact(artifact) }))
+      : [];
+    if (
+      files.length < 1 || files.length > FILE_WORKER_LIMITS.maximumFiles || files.some(({ metadata }, index) => (
+        !metadata || metadata.index !== index || metadata.receipt.digest !== files[0]?.metadata?.receipt?.digest
+      ))
+    ) fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "File commit authorization bundle is invalid.", { status: 502 });
+    const receiptDigest = files[0].metadata.receipt.digest;
+    return mutate(scope, (state) => {
+      const run = findRun(state, runId);
+      if (run.threadId !== threadId || TERMINAL_RUN_STATUSES.has(run.status)) {
+        fail("ANALYSIS_CANCELLED", "File commit lost its active run authority.", { status: 499 });
+      }
+      const intent = state.documentCommitIntents.find((item) => (
+        item.schemaVersion === FILE_COMMIT_INTENT_SCHEMA_VERSION && item.runId === runId &&
+        item.receiptDigest === receiptDigest
+      ));
+      const expected = files.map(({ artifact, metadata }) => ({
+        ref: metadata.workerRef,
+        index: metadata.index,
+        filename: artifact.spec.filename,
+        bytes: artifact.spec.bytes,
+        sha256: artifact.spec.sha256,
+      }));
+      if (!intent || intent.threadId !== threadId || intent.status !== "pending" || canonicalJson(intent.objects) !== canonicalJson(expected)) {
+        fail("ANALYSIS_FILE_COMMIT_AUTHORITY_REQUIRED", "File commit intent is unavailable.", { status: 503 });
+      }
+      return { changed: false, result: true };
+    });
+  }
+
+  async function acknowledgeCommittedFileArtifacts(scope, threadId, runId, rawArtifacts) {
+    const files = Array.isArray(rawArtifacts)
+      ? rawArtifacts.filter((artifact) => inspectIntegrationFileWorkerArtifact(artifact))
+      : [];
+    if (files.length === 0) return;
+    const commits = files.map(inspectIntegrationFileWorkerCommit);
+    if (commits.some((commit) => !commit || commit.digest !== commits[0]?.digest)) {
+      fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner returned an uncommitted file bundle.", { status: 502 });
+    }
+    const receiptDigest = inspectIntegrationFileWorkerArtifact(files[0]).receipt.digest;
+    await mutate(scope, (state) => {
+      const intent = state.documentCommitIntents.find((candidate) => (
+        candidate.schemaVersion === FILE_COMMIT_INTENT_SCHEMA_VERSION && candidate.runId === runId &&
+        candidate.receiptDigest === receiptDigest
+      ));
+      if (!intent || intent.threadId !== threadId) corrupt();
+      if (intent.status === "committed") {
+        if (intent.workerAckDigest !== commits[0].digest) corrupt();
+        return { changed: false, result: null };
+      }
+      intent.status = "committed";
+      intent.updatedAt = timestamp();
+      intent.workerAckDigest = commits[0].digest;
+      intent.committedAt = commits[0].committedAt;
+      publishCommittedDocumentEvents(state, intent, intent.updatedAt);
+      return { changed: true, result: null };
+    });
+  }
+
   function normalizeRunnerResult(value, { searchExpected = false } = {}) {
     const result = exact(
       value,
@@ -6059,7 +6581,9 @@ function createService(options, { testOnly }) {
       // WeakMap authority attached to the exact returned object. Preserve that
       // object internally after validating its public projection; cloning it
       // here would turn a committed file into an unsealed public lookalike.
-      return publicArtifact.kind === "file" && inspectIntegrationDocumentWorkerFileArtifact(artifact)
+      return publicArtifact.kind === "file" && (
+        inspectIntegrationDocumentWorkerFileArtifact(artifact) || inspectIntegrationFileWorkerArtifact(artifact)
+      )
         ? artifact
         : publicArtifact;
     }));
@@ -6270,6 +6794,10 @@ function createService(options, { testOnly }) {
             authorizeDocumentCompile(scope, threadId, runId, request),
           onDocumentCommitIntent: async (fileArtifacts) =>
             authorizeDocumentCommit(scope, threadId, runId, fileArtifacts),
+          onFilePublishIntent: async (request) =>
+            authorizeFilePublish(scope, threadId, runId, request),
+          onFileCommitIntent: async (fileArtifacts) =>
+            authorizeFileCommit(scope, threadId, runId, fileArtifacts),
           onFinal: async (value) => {
             finalCallbackCount += 1;
             if (finalCallbackCount > 1) {
@@ -6278,6 +6806,7 @@ function createService(options, { testOnly }) {
               });
             }
             await acknowledgeCommittedDocumentArtifacts(scope, threadId, runId, value?.artifacts);
+            await acknowledgeCommittedFileArtifacts(scope, threadId, runId, value?.artifacts);
             finalCallbackDigest = contractDigest(normalizeRunnerResult(value, {
               searchExpected: input.search !== undefined,
             }));
@@ -6795,6 +7324,12 @@ function createService(options, { testOnly }) {
       documentWorkerDeleteIntentBeforeBytes: true,
       documentContentPrincipalAndBrowserSessionBound: true,
       documentContentStreamedWithoutCloudBuffering: true,
+      fileWorkerOpaqueRefs: true,
+      fileWorkerReceiptBindings: true,
+      fileWorkerBundleCommitIntents: true,
+      fileWorkerTwoPhaseDelete: true,
+      fileBytesPersistedByCloud: false,
+      fileContentStreamedWithoutCloudBuffering: true,
       publicActivationLocksChanged: false,
       limitsDigest: contractDigest(INTEGRATION_ANALYSIS_SESSION_LIMITS),
     });
@@ -6837,7 +7372,7 @@ function createService(options, { testOnly }) {
           ? {}
           : { attachments: true, attachmentAuthority: fixedAttachmentAuthority }),
         ...(searchEnabled ? { search: true } : {}),
-        ...(documentCreationEnabled ? { files: true } : {}),
+        ...(documentCreationEnabled || fileCreationEnabled ? { files: true } : {}),
         ...(plannerRoleStates === undefined ? {} : { roles: plannerRoleStates }),
       });
     },
@@ -7006,18 +7541,15 @@ function createService(options, { testOnly }) {
           if (thread.status === "running") conflict("ANALYSIS_THREAD_BUSY", "An active thread cannot be deleted.");
           const record = serviceOwnedThread(thread);
           const runIds = new Set(state.runs.filter((run) => run.threadId === thread.id).map((run) => run.id));
-          const objects = state.artifacts
+          const artifactObjects = state.artifacts
             .filter((artifact) => runIds.has(artifact.runId) && artifact.kind === "file")
             .map((artifact) => Object.freeze({
+              profile: artifact.workerProfile === "file-bundle-v1" ? "file" : "document",
               ref: artifact.workerRef,
               runId: artifact.runId,
               receiptDigest: artifact.compileReceiptDigest,
-            }))
-            .sort((left, right) =>
-              compareIntegrationDocumentWorkerCodeUnits(left.ref, right.ref) ||
-                compareIntegrationDocumentWorkerCodeUnits(left.runId, right.runId)
-            );
-          if (objects.length === 0) {
+            }));
+          if (artifactObjects.length === 0) {
             state.threads = state.threads.filter((item) => item.id !== thread.id);
             state.runs = state.runs.filter((run) => !runIds.has(run.id));
             state.artifacts = state.artifacts.filter((artifact) => !runIds.has(artifact.runId));
@@ -7029,8 +7561,25 @@ function createService(options, { testOnly }) {
               receiptResult: result,
             };
           }
-          if (!documentWorkerClient) {
+          const groups = ["document", "file"]
+            .map((profile) => Object.freeze({
+              profile,
+              objects: Object.freeze(artifactObjects
+                .filter((object) => object.profile === profile)
+                .map(({ profile: _profile, ...object }) => Object.freeze(object))
+                .sort((left, right) =>
+                  compareIntegrationDocumentWorkerCodeUnits(left.ref, right.ref) ||
+                    compareIntegrationDocumentWorkerCodeUnits(left.runId, right.runId)
+                )),
+            }))
+            .filter(({ objects }) => objects.length > 0);
+          if (groups.some(({ profile }) => profile === "document") && !documentWorkerClient) {
             fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "Document deletion requires the private workstation worker.", {
+              status: 503,
+            });
+          }
+          if (groups.some(({ profile }) => profile === "file") && !fileWorkerClient) {
+            fail("ANALYSIS_FILE_WORKER_UNAVAILABLE", "File deletion requires the private workstation worker.", {
               status: 503,
             });
           }
@@ -7039,18 +7588,22 @@ function createService(options, { testOnly }) {
           )) {
             conflict("ANALYSIS_THREAD_DELETE_PENDING", "Cancelled document cleanup must finish before thread deletion.");
           }
-          const existing = state.documentDeletionIntents.find(
+          const existing = state.documentDeletionIntents.filter(
             (intent) => intent.threadId === thread.id && intent.reason === "thread-delete"
           );
-          if (existing) {
+          if (existing.length > 0) {
             return {
               changed: false,
               deferReceipt: true,
-              result: Object.freeze({ direct: false, deletionId: existing.deletionId, thread: record }),
+              result: Object.freeze({
+                direct: false,
+                deletionIds: Object.freeze(existing.map(({ deletionId }) => deletionId)),
+                thread: record,
+              }),
             };
           }
           if (
-            state.documentDeletionIntents.length >=
+            state.documentDeletionIntents.length + groups.length >
             INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumDocumentDeletionIntentsPerScope
           ) {
             conflict("ANALYSIS_DOCUMENT_DELETE_CAPACITY_EXHAUSTED", "Document deletion capacity is exhausted.");
@@ -7060,36 +7613,42 @@ function createService(options, { testOnly }) {
             browserSessionId: scope.browserSessionId,
             threadId: thread.id,
           });
-          const deletionId = `del_${contractDigest({
-            schemaVersion: "aginti-document-deletion-id-v1",
-            reason: "thread-delete",
-            scope: workerScope,
-            objects,
-          })}`;
           const createdAt = timestamp();
-          state.documentDeletionIntents.push({
-            schemaVersion: DOCUMENT_DELETION_INTENT_SCHEMA_VERSION,
-            deletionId,
-            reason: "thread-delete",
-            runId: null,
-            threadId: thread.id,
-            status: "pending",
-            createdAt,
-            updatedAt: createdAt,
-            objects,
-            manifestDigest: integrationDocumentWorkerDeletionManifestDigest({
-              deletionId,
+          const deletionIds = groups.map(({ profile, objects }) => {
+            const fileProfile = profile === "file";
+            const deletionId = `${fileProfile ? "fdel_" : "del_"}${contractDigest({
+              schemaVersion: fileProfile
+                ? "aginti-file-deletion-id-v1"
+                : "aginti-document-deletion-id-v1",
+              reason: "thread-delete",
               scope: workerScope,
               objects,
-            }),
-            workerAckDigest: null,
-            tombstoneDigest: null,
-            completedAt: null,
+            })}`;
+            state.documentDeletionIntents.push({
+              schemaVersion: fileProfile
+                ? FILE_DELETION_INTENT_SCHEMA_VERSION
+                : DOCUMENT_DELETION_INTENT_SCHEMA_VERSION,
+              deletionId,
+              reason: "thread-delete",
+              runId: null,
+              threadId: thread.id,
+              status: "pending",
+              createdAt,
+              updatedAt: createdAt,
+              objects,
+              manifestDigest: fileProfile
+                ? fileWorkerDeletionManifestDigest({ deletionId, scope: workerScope, objects })
+                : integrationDocumentWorkerDeletionManifestDigest({ deletionId, scope: workerScope, objects }),
+              workerAckDigest: null,
+              tombstoneDigest: null,
+              completedAt: null,
+            });
+            return deletionId;
           });
           return {
             changed: true,
             deferReceipt: true,
-            result: Object.freeze({ direct: false, deletionId, thread: record }),
+            result: Object.freeze({ direct: false, deletionIds: Object.freeze(deletionIds), thread: record }),
           };
         },
         { receipt: { pathname: INTEGRATION_RPC_PATHS.threadsDelete, payload, context } }
@@ -7098,10 +7657,14 @@ function createService(options, { testOnly }) {
         return Object.freeze({ deleted: true, thread: prepared.thread, threadId: prepared.threadId });
       }
       const acknowledged = await inspect(scope, (state) => {
-        const intent = state.documentDeletionIntents.find(({ deletionId }) => deletionId === prepared.deletionId);
-        return intent ? Object.freeze({ status: intent.status }) : null;
+        const intents = prepared.deletionIds.map((deletionId) =>
+          state.documentDeletionIntents.find((intent) => intent.deletionId === deletionId)
+        );
+        return Object.freeze({
+          complete: intents.every((intent) => intent && TERMINAL_DOCUMENT_DELETION_STATUSES.has(intent.status)),
+        });
       });
-      if (!TERMINAL_DOCUMENT_DELETION_STATUSES.has(acknowledged?.status)) {
+      if (!acknowledged.complete) {
         fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "Document deletion is durably pending workstation acknowledgement.", {
           status: 503,
         });
@@ -7110,8 +7673,12 @@ function createService(options, { testOnly }) {
         scope,
         (state) => {
           const thread = findThread(state, payload.threadId);
-          const intent = state.documentDeletionIntents.find(({ deletionId }) => deletionId === prepared.deletionId);
-          if (!intent || intent.threadId !== thread.id || !TERMINAL_DOCUMENT_DELETION_STATUSES.has(intent.status)) {
+          const intents = prepared.deletionIds.map((deletionId) =>
+            state.documentDeletionIntents.find((intent) => intent.deletionId === deletionId)
+          );
+          if (intents.some((intent) =>
+            !intent || intent.threadId !== thread.id || !TERMINAL_DOCUMENT_DELETION_STATUSES.has(intent.status)
+          )) {
             corrupt();
           }
           const record = serviceOwnedThread(thread);
@@ -7120,8 +7687,9 @@ function createService(options, { testOnly }) {
           state.runs = state.runs.filter((run) => !runIds.has(run.id));
           state.artifacts = state.artifacts.filter((artifact) => !runIds.has(artifact.runId));
           state.documentCommitIntents = state.documentCommitIntents.filter((commit) => !runIds.has(commit.runId));
+          const deletionIds = new Set(prepared.deletionIds);
           state.documentDeletionIntents = state.documentDeletionIntents.filter(
-            ({ deletionId }) => deletionId !== intent.deletionId
+            ({ deletionId }) => !deletionIds.has(deletionId)
           );
           const result = Object.freeze({ deleted: true, thread: record, threadId: thread.id });
           return { changed: true, result, receiptResult: result };
@@ -7234,49 +7802,69 @@ function createService(options, { testOnly }) {
               receiptResult: Object.freeze({ run: completed }),
             };
           }
-          const objects = state.artifacts
+          const artifactObjects = state.artifacts
             .filter((artifact) => artifact.runId === run.id && artifact.kind === "file")
             .map((artifact) => Object.freeze({
+              profile: artifact.workerProfile === "file-bundle-v1" ? "file" : "document",
               ref: artifact.workerRef,
               runId: run.id,
               receiptDigest: artifact.compileReceiptDigest,
             }))
             .sort((left, right) => compareIntegrationDocumentWorkerCodeUnits(left.ref, right.ref));
-          if (objects.length !== 0 && objects.length !== 2) corrupt();
-          if (objects.length > 0) {
-            if (!documentWorkerClient) {
+          if (artifactObjects.length > 0) {
+            const groups = ["document", "file"]
+              .map((profile) => Object.freeze({
+                profile,
+                objects: Object.freeze(artifactObjects
+                  .filter((object) => object.profile === profile)
+                  .map(({ profile: _profile, ...object }) => Object.freeze(object))),
+              }))
+              .filter(({ objects }) => objects.length > 0);
+            if (groups.some(({ profile }) => profile === "document") && !documentWorkerClient) {
               fail(
                 "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE",
                 "Document cancellation cleanup requires the private workstation worker.",
                 { status: 503 }
               );
             }
+            if (groups.some(({ profile }) => profile === "file") && !fileWorkerClient) {
+              fail(
+                "ANALYSIS_FILE_WORKER_UNAVAILABLE",
+                "File cancellation cleanup requires the private workstation worker.",
+                { status: 503 }
+              );
+            }
+            const missingGroups = groups.filter(({ profile }) => !state.documentDeletionIntents.some(
+              (intent) => intent.reason === "cancelled-run" && intent.runId === run.id &&
+                (isFileWorkerDeletionIntent(intent) ? "file" : "document") === profile
+            ));
             if (
-              state.documentDeletionIntents.length >=
+              state.documentDeletionIntents.length + missingGroups.length >
                 INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumDocumentDeletionIntentsPerScope &&
-              !state.documentDeletionIntents.some(
-                (intent) => intent.reason === "cancelled-run" && intent.runId === run.id
-              )
+              missingGroups.length > 0
             ) {
               conflict("ANALYSIS_DOCUMENT_DELETE_CAPACITY_EXHAUSTED", "Document cancellation cleanup is full.");
             }
-            if (!state.documentDeletionIntents.some(
-              (intent) => intent.reason === "cancelled-run" && intent.runId === run.id
-            )) {
+            for (const { profile, objects } of missingGroups) {
               const workerScope = Object.freeze({
                 principalId: scope.principalId,
                 browserSessionId: scope.browserSessionId,
                 threadId: thread.id,
               });
-              const deletionId = `del_${contractDigest({
-                schemaVersion: "aginti-document-deletion-id-v1",
+              const fileProfile = profile === "file";
+              const deletionId = `${fileProfile ? "fdel_" : "del_"}${contractDigest({
+                schemaVersion: fileProfile
+                  ? "aginti-file-deletion-id-v1"
+                  : "aginti-document-deletion-id-v1",
                 reason: "cancelled-run",
                 runId: run.id,
                 scope: workerScope,
                 objects,
               })}`;
               state.documentDeletionIntents.push({
-                schemaVersion: DOCUMENT_DELETION_INTENT_SCHEMA_VERSION,
+                schemaVersion: fileProfile
+                  ? FILE_DELETION_INTENT_SCHEMA_VERSION
+                  : DOCUMENT_DELETION_INTENT_SCHEMA_VERSION,
                 deletionId,
                 reason: "cancelled-run",
                 runId: run.id,
@@ -7285,11 +7873,9 @@ function createService(options, { testOnly }) {
                 createdAt: cancelledAt,
                 updatedAt: cancelledAt,
                 objects,
-                manifestDigest: integrationDocumentWorkerDeletionManifestDigest({
-                  deletionId,
-                  scope: workerScope,
-                  objects,
-                }),
+                manifestDigest: fileProfile
+                  ? fileWorkerDeletionManifestDigest({ deletionId, scope: workerScope, objects })
+                  : integrationDocumentWorkerDeletionManifestDigest({ deletionId, scope: workerScope, objects }),
                 workerAckDigest: null,
                 tombstoneDigest: null,
                 completedAt: null,
@@ -7471,7 +8057,12 @@ function createService(options, { testOnly }) {
           intent.receiptDigest === artifact.compileReceiptDigest && intent.runId === artifact.runId
         );
         if (!commit || commit.status !== "committed" || commit.eventsPublished !== true) notFound("Artifact");
-        const deletion = state.documentDeletionIntents.find((intent) => intent.threadId === artifact.threadId);
+        const fileProfile = artifact.workerProfile === "file-bundle-v1";
+        const deletion = state.documentDeletionIntents.find((intent) =>
+          intent.threadId === artifact.threadId &&
+          isFileWorkerDeletionIntent(intent) === fileProfile &&
+          intent.objects.some(({ ref }) => ref === artifact.workerRef)
+        );
         if (deletion?.status === "committed") {
           fail("ARTIFACT_CONTENT_GONE", "Artifact content was durably deleted.", { status: 410 });
         }
@@ -7484,10 +8075,12 @@ function createService(options, { testOnly }) {
           mime: artifact.spec.mime,
           bytes: artifact.spec.bytes,
           sha256: artifact.spec.sha256,
+          workerProfile: artifact.workerProfile,
         });
       });
-      if (!documentWorkerClient) {
-        fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "The private workstation document worker is unavailable.", {
+      const workerClient = record.workerProfile === "file-bundle-v1" ? fileWorkerClient : documentWorkerClient;
+      if (!workerClient) {
+        fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "The private workstation artifact worker is unavailable.", {
           status: 503,
         });
       }
@@ -7507,7 +8100,7 @@ function createService(options, { testOnly }) {
       }
       let content;
       try {
-        content = await documentWorkerClient.content(
+        content = await workerClient.content(
           scopeWithRun(scope, record.threadId, record.runId),
           {
             ref: record.workerRef,
@@ -7522,7 +8115,7 @@ function createService(options, { testOnly }) {
           { signal: context?.abortSignal }
         );
       } catch (error) {
-        if (error instanceof IntegrationDocumentWorkerError) {
+        if (error instanceof IntegrationDocumentWorkerError || error instanceof IntegrationFileWorkerError) {
           fail(error.code, error.message, { status: error.status, cause: error });
         }
         throw error;
@@ -7572,7 +8165,7 @@ export function createIntegrationAnalysisSessionService(value = {}) {
     value,
     [
       "analysisRunner", "plannerActivation", "stateRoot", "statePersistenceMode", "documentWorkerClient",
-      "visionClient", "visionActivation",
+      "fileWorkerClient", "visionClient", "visionActivation",
     ],
     ["analysisRunner", "plannerActivation", "statePersistenceMode"],
     "analysis session service configuration"
@@ -7586,6 +8179,7 @@ export function createTestOnlyIntegrationAnalysisSessionService(value = {}) {
     [
       "analysisRunner", "stateRoot", "statePersistenceMode", "now", "activationProof", "searchEnabled",
       "documentWorkerClient", "documentWorkerEnabled", "visionClient", "visionActivation",
+      "fileWorkerClient", "fileWorkerEnabled",
       "attachmentBufferLifecycle", "beforeAttachmentRetryCreate", "attachmentStoragePolicy",
       "attachmentStatfs", "beforeStartupRecoveryScope",
     ],

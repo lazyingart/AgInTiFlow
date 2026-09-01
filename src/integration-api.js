@@ -1129,6 +1129,12 @@ export function assertIntegrationAnalysisSessionAuthority(
     "documentWorkerDeleteIntentBeforeBytes",
     "documentContentPrincipalAndBrowserSessionBound",
     "documentContentStreamedWithoutCloudBuffering",
+    "fileWorkerOpaqueRefs",
+    "fileWorkerReceiptBindings",
+    "fileWorkerBundleCommitIntents",
+    "fileWorkerTwoPhaseDelete",
+    "fileBytesPersistedByCloud",
+    "fileContentStreamedWithoutCloudBuffering",
     "publicActivationLocksChanged",
     "limitsDigest",
     "digest",
@@ -1242,6 +1248,12 @@ export function assertIntegrationAnalysisSessionAuthority(
     proof.documentWorkerDeleteIntentBeforeBytes !== true ||
     proof.documentContentPrincipalAndBrowserSessionBound !== true ||
     proof.documentContentStreamedWithoutCloudBuffering !== true ||
+    proof.fileWorkerOpaqueRefs !== true ||
+    proof.fileWorkerReceiptBindings !== true ||
+    proof.fileWorkerBundleCommitIntents !== true ||
+    proof.fileWorkerTwoPhaseDelete !== true ||
+    proof.fileBytesPersistedByCloud !== false ||
+    proof.fileContentStreamedWithoutCloudBuffering !== true ||
     proof.publicActivationLocksChanged !== false
   ) {
     throw new IntegrationApiError("AGENT_UNAVAILABLE", "Analysis session authority is unavailable.", { status: 503 });

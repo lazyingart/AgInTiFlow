@@ -11,6 +11,7 @@ import { createIntegrationDocumentWorkerServer } from "./integration-document-wo
 import { createIntegrationDocumentWorkerService } from "./integration-document-worker-service.js";
 import { openIntegrationDocumentWorkerStore } from "./integration-document-worker-store.js";
 import { assertIntegrationDocumentWorkerRuntimeActivation } from "./integration-document-worker-runtime.js";
+import { openIntegrationFileWorkerStore } from "./integration-file-worker-store.js";
 
 const FORBIDDEN_SECRET_ENVIRONMENT = Object.freeze([
   "AGINTI_DOCUMENT_WORKER_TOKEN",
@@ -110,14 +111,17 @@ export function createIntegrationDocumentWorkerCliFailStop(processLike = process
 
 export async function composeProductionIntegrationDocumentWorker({ config, bearerToken, onFailStop }) {
   let store;
+  let fileStore;
   let service;
   try {
     await assertIntegrationDocumentWorkerRuntimeActivation();
     store = await openIntegrationDocumentWorkerStore({ stateRoot: config.stateRoot });
-    service = createIntegrationDocumentWorkerService({ config, store });
+    fileStore = await openIntegrationFileWorkerStore({ stateRoot: path.join(config.stateRoot, "file-broker-v1") });
+    service = createIntegrationDocumentWorkerService({ config, store, fileStore });
     return createIntegrationDocumentWorkerServer({ config, service, bearerToken, onFailStop });
   } catch (error) {
     await service?.close().catch(() => {});
+    await fileStore?.close().catch(() => {});
     await store?.close().catch(() => {});
     throw error;
   }

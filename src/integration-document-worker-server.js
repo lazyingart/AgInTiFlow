@@ -17,13 +17,14 @@ import {
   validateIntegrationDocumentWorkerConfig,
 } from "./integration-document-worker-config.js";
 import { assertIntegrationDocumentWorkerService } from "./integration-document-worker-service.js";
+import { FILE_WORKER_ROUTE_LIST, FILE_WORKER_ROUTES } from "./integration-file-worker-contract.js";
 
 export const DOCUMENT_WORKER_SERVER_SCHEMA_VERSION = "aginti-document-worker-server-v1";
 export const DOCUMENT_WORKER_FAIL_STOP_SCHEMA_VERSION = "aginti-document-worker-fail-stop-v1";
 
 const SERVER_BRAND = new WeakSet();
 const CONTENT_TYPE = /^application\/json(?:\s*;\s*charset=utf-8)?$/iu;
-const ROUTES = new Set(DOCUMENT_WORKER_ROUTE_LIST);
+const ROUTES = new Set([...DOCUMENT_WORKER_ROUTE_LIST, ...FILE_WORKER_ROUTE_LIST]);
 
 function rawHeaderCount(req, expected) {
   let count = 0;
@@ -407,17 +408,30 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
       const body = await readJson(req);
       if (target === DOCUMENT_WORKER_ROUTES.readiness) {
         writeJson(res, 200, await service.readiness(body));
+      } else if (target === FILE_WORKER_ROUTES.readiness) {
+        writeJson(res, 200, await service.fileReadiness(body));
       } else if (target === DOCUMENT_WORKER_ROUTES.compileIssue) {
         writeJson(res, 200, await service.issueCompile(body));
+      } else if (target === FILE_WORKER_ROUTES.issue) {
+        writeJson(res, 200, await service.issueFiles(body));
       } else if (target === DOCUMENT_WORKER_ROUTES.compile) {
         writeJson(res, 200, await service.compile(body, { signal: controller.signal }));
+      } else if (target === FILE_WORKER_ROUTES.publish) {
+        writeJson(res, 200, await service.publishFiles(body));
       } else if (target === DOCUMENT_WORKER_ROUTES.commit) {
         writeJson(res, 200, await service.commit(body));
+      } else if (target === FILE_WORKER_ROUTES.commit) {
+        writeJson(res, 200, await service.commitFiles(body));
       } else if (target === DOCUMENT_WORKER_ROUTES.content) {
         const content = await service.content(body);
         await writeContent(req, res, content, controller.signal);
+      } else if (target === FILE_WORKER_ROUTES.content) {
+        const content = await service.fileContent(body);
+        await writeContent(req, res, content, controller.signal);
       } else if (target === DOCUMENT_WORKER_ROUTES.delete) {
         writeJson(res, 200, await service.delete(body));
+      } else if (target === FILE_WORKER_ROUTES.delete) {
+        writeJson(res, 200, await service.deleteFiles(body));
       } else {
         throw badRequest("NOT_FOUND", 404);
       }
