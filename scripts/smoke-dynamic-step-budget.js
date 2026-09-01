@@ -6132,6 +6132,164 @@ try {
       sandboxMode: "host",
     }
   );
+  const scopedRelativeTaskRoot = path.relative(workspace, scopedTaskRoot).replace(/\\/g, "/");
+  const liveScopedGroupTestLogCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        `cd ${JSON.stringify(workspace)} && ` +
+        `TASK=${scopedRelativeTaskRoot} && LOG="$TASK/document-reader-test.log" && ` +
+        `{ echo "=== focused test ==="; python3 -m unittest discover -s tests -p 'test_reader.py' -v; RC=$?; echo "EXIT=$RC"; } ` +
+        `> "$LOG" 2>&1; tail -n 6 "$LOG"; echo "LOG_OK=$([ -s "$LOG" ] && echo yes || echo no)"`,
+    },
+    projectMutationPaths: [],
+    stdout: "Ran 7 tests in 0.01s\nOK\nEXIT=0\nLOG_OK=yes\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    liveScopedGroupTestLogCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const liveScopedTeeTestLogCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        `cd ${JSON.stringify(workspace)} && ` +
+        `TASK=${scopedRelativeTaskRoot} && LOG="$TASK/document-reader-test.log" && ` +
+        `{ echo "=== focused test ==="; python3 -m unittest discover -s tests -p 'test_reader.py' -v 2>&1; RC=$?; echo "EXIT=$RC"; } ` +
+        `| tee "$LOG"; grep -q '^OK$' "$LOG"; echo "DONE_EXIT=$?"`,
+    },
+    projectMutationPaths: [],
+    stdout: "Ran 7 tests in 0.01s\nOK\nEXIT=0\nDONE_EXIT=0\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    scopedTaskState,
+    liveScopedTeeTestLogCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const unsafeScopedLogState = {
+    goal: scopedTaskGoal,
+    commandCwd: workspace,
+    meta: {
+      goalContract: {
+        revision: 1,
+        taskGoal: scopedTaskGoal,
+        currentRequest: "Create and verify output/result.json.",
+      },
+    },
+  };
+  const outsideScopedGroupTestLogCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        `cd ${JSON.stringify(workspace)} && LOG="source-tree-test.log" && ` +
+        `{ python3 -m unittest discover -s tests -p 'test_reader.py' -v; RC=$?; echo "EXIT=$RC"; } ` +
+        `> "$LOG" 2>&1; tail -n 6 "$LOG"`,
+    },
+    projectMutationPaths: [],
+    stdout: "Ran 7 tests in 0.01s\nOK\nEXIT=0\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    unsafeScopedLogState,
+    outsideScopedGroupTestLogCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const sourceWriteAfterScopedLogState = {
+    goal: scopedTaskGoal,
+    commandCwd: workspace,
+    meta: {
+      goalContract: {
+        revision: 1,
+        taskGoal: scopedTaskGoal,
+        currentRequest: "Create and verify output/result.json.",
+      },
+    },
+  };
+  const sourceWriteAfterScopedLogCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        `cd ${JSON.stringify(workspace)} && ` +
+        `TASK=${scopedRelativeTaskRoot} && LOG="$TASK/document-reader-test.log" && ` +
+        `{ python3 -m unittest discover -s tests -p 'test_reader.py' -v; RC=$?; echo "EXIT=$RC"; } ` +
+        `> "$LOG" 2>&1; touch src/agent-runner.js; tail -n 6 "$LOG"`,
+    },
+    projectMutationPaths: [],
+    stdout: "Ran 7 tests in 0.01s\nOK\nEXIT=0\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    sourceWriteAfterScopedLogState,
+    sourceWriteAfterScopedLogCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
+  const spoofedCapturedStatusState = {
+    goal: scopedTaskGoal,
+    commandCwd: workspace,
+    meta: {
+      goalContract: {
+        revision: 1,
+        taskGoal: scopedTaskGoal,
+        currentRequest: "Create and verify output/result.json.",
+      },
+    },
+  };
+  const spoofedCapturedStatusCommand = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        `cd ${JSON.stringify(workspace)} && ` +
+        `TASK=${scopedRelativeTaskRoot} && LOG="$TASK/document-reader-test.log" && ` +
+        `{ python3 -m unittest discover -s tests -p 'test_reader.py' -v; RC=$?; echo "EXIT=$RC"; } ` +
+        `> "$LOG" 2>&1; tail -n 6 "$LOG"; echo "EXIT=0"`,
+    },
+    projectMutationPaths: [],
+    stdout: "FAILED (failures=1)\nEXIT=1\nEXIT=0\n",
+    stderr: "",
+  };
+  recordProjectVerificationOutcome(
+    spoofedCapturedStatusState,
+    spoofedCapturedStatusCommand,
+    {
+      commandCwd: workspace,
+      taskProfile: "qa",
+      allowShellTool: true,
+      sandboxMode: "host",
+    }
+  );
   const nullRedirectValidationCommand = {
     toolName: "run_command",
     ok: true,
@@ -6169,6 +6327,17 @@ try {
       scopedManifestCommand.scopedTaskArtifactWrite === true &&
       pythonScopedManifestCommand.scopedTaskArtifactWrite === true &&
       scopedCompoundTestLogCommand.scopedTaskArtifactWrite === true &&
+      liveScopedGroupTestLogCommand.scopedTaskArtifactWrite === true &&
+      liveScopedGroupTestLogCommand.projectTest?.passed === true &&
+      liveScopedGroupTestLogCommand.projectTest?.explicitExitStatus === 0 &&
+      liveScopedTeeTestLogCommand.scopedTaskArtifactWrite === true &&
+      liveScopedTeeTestLogCommand.projectTest?.passed === true &&
+      liveScopedTeeTestLogCommand.projectTest?.explicitExitStatus === 0 &&
+      unsafeScopedLogState.meta.projectVerification?.mutationRevision === 1 &&
+      outsideScopedGroupTestLogCommand.scopedTaskArtifactWrite !== true &&
+      sourceWriteAfterScopedLogState.meta.projectVerification?.mutationRevision === 1 &&
+      sourceWriteAfterScopedLogCommand.scopedTaskArtifactWrite !== true &&
+      spoofedCapturedStatusCommand.projectTest === undefined &&
       nullRedirectValidationCommand.readOnlyArtifactValidation === true,
     `task-scoped delivery bookkeeping invalidated requested artifact evidence: ${JSON.stringify({
       requestedOutputRevision,
@@ -6181,6 +6350,29 @@ try {
         pythonScopedManifestCommand.scopedTaskArtifactWrite,
       scopedCompoundTestLogCommand:
         scopedCompoundTestLogCommand.scopedTaskArtifactWrite,
+      liveScopedGroupTestLogCommand: {
+        scopedTaskArtifactWrite: liveScopedGroupTestLogCommand.scopedTaskArtifactWrite,
+        projectTest: liveScopedGroupTestLogCommand.projectTest,
+      },
+      liveScopedTeeTestLogCommand: {
+        scopedTaskArtifactWrite: liveScopedTeeTestLogCommand.scopedTaskArtifactWrite,
+        projectTest: liveScopedTeeTestLogCommand.projectTest,
+      },
+      outsideScopedGroupTestLogCommand: {
+        mutationRevision:
+          unsafeScopedLogState.meta.projectVerification?.mutationRevision,
+        scopedTaskArtifactWrite:
+          outsideScopedGroupTestLogCommand.scopedTaskArtifactWrite,
+      },
+      sourceWriteAfterScopedLogCommand: {
+        mutationRevision:
+          sourceWriteAfterScopedLogState.meta.projectVerification?.mutationRevision,
+        scopedTaskArtifactWrite:
+          sourceWriteAfterScopedLogCommand.scopedTaskArtifactWrite,
+      },
+      spoofedCapturedStatusCommand: {
+        projectTest: spoofedCapturedStatusCommand.projectTest,
+      },
       nullRedirectValidationCommand:
         nullRedirectValidationCommand.readOnlyArtifactValidation,
     })}`
