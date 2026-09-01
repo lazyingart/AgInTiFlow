@@ -11089,6 +11089,20 @@ try {
     })?.category === "repeated-no-progress-call",
     "a third identical failed shell command was not blocked"
   );
+  const repeatedChangingFailureState = structuredClone(repeatedFailureState);
+  repeatedChangingFailureState.meta.toolLoop.recent[0].outcomeFingerprint =
+    "failure-with-first-dynamic-log";
+  repeatedChangingFailureState.meta.toolLoop.recent[1].outcomeFingerprint =
+    "failure-with-second-dynamic-log";
+  assert(
+    repeatedNoProgressToolBlock(
+      repeatedChangingFailureState,
+      "run_command",
+      repeatedProbeArgs,
+      { commandCwd: workspace }
+    )?.category === "repeated-no-progress-call",
+    "dynamic failure output allowed an unchanged failing command to loop"
+  );
   const newlyAuthoritativeVerificationState = structuredClone(repeatedFailureState);
   newlyAuthoritativeVerificationState.meta.projectVerification = {
     mutationRevision: 6,

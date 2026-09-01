@@ -11094,6 +11094,26 @@ export function repeatedNoProgressToolBlock(state, toolName, args = {}, config =
       Boolean(entry?.outcomeFingerprint)
   );
   if (matches.length < 2) return null;
+  const repeatedFailures = matches.slice(-2).every((entry) => entry?.ok === false);
+  if (repeatedFailures) {
+    return {
+      reason:
+        "The same command already failed twice without an intervening file, artifact, browser, or task-state change.",
+      category: "repeated-no-progress-call",
+      permissionAdvice: {
+        category: "repeated-no-progress-call",
+        autoRecover: true,
+        summary: "This is a failed-command convergence guard, not a permission blocker.",
+        instruction:
+          "Do not rerun the command or a cosmetically equivalent form. Use the retained failure evidence, change the command or repair the implicated source, then run the smallest relevant validation.",
+        options: [
+          "Choose the correct compiler, interpreter, working directory, or command flags from the observed failure.",
+          "Apply one bounded source repair that addresses the failure, then rerun validation.",
+          "Finish with a concrete external blocker only when no enabled tool can make progress.",
+        ],
+      },
+    };
+  }
   const recentFingerprints = matches.slice(-2).map((entry) => entry.outcomeFingerprint);
   if (new Set(recentFingerprints).size !== 1) return null;
   return {
