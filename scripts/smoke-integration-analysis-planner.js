@@ -2350,14 +2350,53 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
   const prompt = "Calculate svm algorithm on a test sample and show the plot and write a paper with the figure? Then convert to pdf from text";
   let modelStep = 0;
   const documentWorker = createDocumentWorkerFixture();
-  const compound = fixture(async () => {
+  const analysisSource = [
+    "model_selected_sample = True",
+    "class_a = [(0.5, 1.5), (1.5, 2.5)]",
+    "class_b = [(5.5, 5.5), (6.5, 6.5)]",
+    "boundary = [{'x': 0, 'y': 8}, {'x': 8, 'y': 0}]",
+    "supports = [class_a[-1], class_b[0]]",
+    "series = [",
+    "  {'name':'Class 0 Points','points':[{'x':x,'y':y} for x,y in class_a]},",
+    "  {'name':'Class 1 Points','points':[{'x':x,'y':y} for x,y in class_b]},",
+    "  {'name':'Decision Boundary','points':boundary},",
+    "  {'name':'Support Vectors','points':[{'x':x,'y':y} for x,y in supports]},",
+    "]",
+    "emit_plot('Model-generated SVM fit', {'schemaVersion':'1','type':'scatter','xLabel':'x1','yLabel':'x2','series':series})",
+  ].join("\n");
+  const documentSource = [
+    "\\documentclass{article}",
+    "\\usepackage{tikz}",
+    "\\begin{document}",
+    "\\section*{Model-generated SVM analysis}",
+    "This report was composed from trusted current-run execution evidence.",
+    "\\begin{figure}[htbp]",
+    "\\centering",
+    "\\begin{tikzpicture}\\draw[thick] (0,2) -- (2,0);\\end{tikzpicture}",
+    "\\caption{Verified decision-boundary geometry from the current run.}",
+    "\\end{figure}",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  const compound = fixture(async (_client, payload) => {
     modelStep += 1;
-    throw new Error("the deterministic SVM paper route must not invoke LocalLLM");
+    if (modelStep === 1) {
+      assert.equal(payload.tool_choice, "required");
+      assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_ANALYSIS_TOOL_NAME]);
+      assert.equal(payload.messages.at(-1).content, prompt);
+      return toolResponse(analysisSource);
+    }
+    assert.equal(modelStep, 2);
+    assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]);
+    assert.match(JSON.stringify(payload.messages), /aginti-compound-document-execution-evidence-v1/u);
+    assert.match(JSON.stringify(payload.messages), /Server-verified linear classifier values/u);
+    assert.doesNotMatch(JSON.stringify(payload.messages), /QAOA|prior-qaoa/iu);
+    return texToolResponse("svm-model-result.tex", documentSource);
   }, {
     documentWorkerClient: documentWorker.client(),
     worker: fakeWorker((request, signal) => {
-      assert.match(request.source, /hard_margin_fit_verified=true/u);
-      assert.match(request.source, /for left in class0/u);
+      assert.equal(request.source, analysisSource, "the planner replaced the model-selected calculation");
+      assert.doesNotMatch(request.source, /class0 = \[\(1\.0, 2\.0\)/u);
       const rawArtifact = {
         title: "Untrusted worker SVM geometry",
         kind: "plot",
@@ -2394,7 +2433,7 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
     },
     documentRunOptions({ onProgress: (value) => progress.push(value) })
   );
-  assert.equal(modelStep, 0);
+  assert.equal(modelStep, 2, "both calculation and document composition must be model-driven");
   assert.equal(result.text, "The requested analysis artifacts, TeX document, and compiled PDF are ready below.");
   assert.equal(result.toolCalls, 2);
   assert.equal(result.executionStatus, "succeeded");
@@ -2402,14 +2441,14 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
   assert.equal(result.artifacts[0].title, "Server-verified linear SVM decision boundary");
   assert.equal(result.artifacts[1].title, "Server-verified linear classifier values");
   assert.deepEqual(result.artifacts.slice(2).map(({ spec }) => spec.filename), [
-    "verified_linear_svm.tex",
-    "verified_linear_svm.pdf",
+    "svm-model-result.tex",
+    "svm-model-result.pdf",
   ]);
   const compileCall = documentWorker.calls.find(({ pathname }) => pathname === "/artifact/v1/compile");
   assert(compileCall, "compound task did not reach the document compiler");
   assert.equal(compileCall.request.requirements.minimumFigureCount, 1);
-  assert.match(compileCall.request.source, /Server-Verified Linear Support Vector Machine/u);
-  assert.match(compileCall.request.source, /Server-verified linear SVM decision boundary/u);
+  assert.equal(compileCall.request.source, documentSource);
+  assert.match(compileCall.request.source, /Model-generated SVM analysis/u);
   assert.match(compileCall.request.source, /\\begin\{tikzpicture\}/u);
   assert.doesNotMatch(compileCall.request.source, /QAOA|prior-qaoa/iu);
   assert.equal(
@@ -2525,6 +2564,30 @@ async function requestedPlotSeriesAreValidatedBeforePublication() {
 async function linearClassifierGeometryIsValidatedBeforePublication() {
   const prompt =
     "Run Python to fit a linear SVM on a two-class sample and expose a decision-boundary plot with sample points and support vectors.";
+  const analysisSource = [
+    "model_generated_fit = True",
+    "series = [",
+    "  {'name':'Class 0 Points','points':[{'x':1,'y':1},{'x':2,'y':2}]},",
+    "  {'name':'Class 1 Points','points':[{'x':6,'y':6},{'x':7,'y':7}]},",
+    "  {'name':'Decision Boundary','points':[{'x':0,'y':8},{'x':8,'y':0}]},",
+    "  {'name':'Support Vectors','points':[{'x':2,'y':2},{'x':6,'y':6}]},",
+    "]",
+    "emit_plot('Linear SVM', {'schemaVersion':'1','type':'scatter','xLabel':'x','yLabel':'y','series':series})",
+  ].join("\n");
+  const documentSource = [
+    "\\documentclass{article}",
+    "\\usepackage{tikz}",
+    "\\begin{document}",
+    "\\section*{SVM result from immediate verified evidence}",
+    "The current-run geometric margin and fitted parameters are reported from the supplied evidence.",
+    "\\begin{figure}[htbp]",
+    "\\centering",
+    "\\begin{tikzpicture}\\draw[thick] (0,2) -- (2,0);\\end{tikzpicture}",
+    "\\caption{Current-run verified SVM geometry.}",
+    "\\end{figure}",
+    "\\end{document}",
+    "",
+  ].join("\n");
   const artifactFor = (request, valid) => {
     const artifact = Object.freeze({
       title: "Linear SVM",
@@ -2555,15 +2618,24 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
   const documentWorker = createDocumentWorkerFixture();
   const published = [];
   const progress = [];
-  const validated = fixture(async () => {
+  const validated = fixture(async (_client, payload) => {
     modelStep += 1;
-    throw new Error("deterministic SVM route must not invoke LocalLLM");
+    if (modelStep === 1) {
+      assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_ANALYSIS_TOOL_NAME]);
+      return toolResponse(analysisSource);
+    }
+    assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]);
+    assert.match(JSON.stringify(payload.messages), /Server-verified linear classifier values/u);
+    assert.doesNotMatch(JSON.stringify(payload.messages), /QAOA/u);
+    return texToolResponse(
+      modelStep === 2 ? "svm-verified-result.tex" : "svm-provided-result.tex",
+      documentSource
+    );
   }, {
     documentWorkerClient: documentWorker.client(),
     worker: fakeWorker((request, signal) => {
       workerCalls += 1;
-      assert.match(request.source, /hard_margin_fit_verified=true/u);
-      assert.match(request.source, /for left in class0/u);
+      assert.equal(request.source, analysisSource, "the planner injected an SVM calculation instead of using LocalLLM");
       assert.match(request.source, /Decision Boundary/u);
       return terminalResult(
         request,
@@ -2581,7 +2653,7 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
       onProgress: (value) => progress.push(value),
     }
   );
-  assert.equal(modelStep, 0);
+  assert.equal(modelStep, 1);
   assert.equal(workerCalls, 1);
   assert.equal(result.toolCalls, 1);
   assert.equal(published.length, 2, "only the valid plot and its server-derived table may be published");
@@ -2625,16 +2697,16 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
     { prompt: "Compile it to PDF", priorArtifacts: result.artifacts },
     documentRunOptions()
   );
-  assert.equal(modelStep, 0, "verified SVM document conversion must not invoke LocalLLM");
+  assert.equal(modelStep, 2, "document conversion must compose from verified evidence through LocalLLM");
   assert.equal(workerCalls, 1, "document conversion must not recompute the SVM");
   assert.equal(compiled.toolCalls, 1);
   assert.deepEqual(compiled.artifacts.map(({ spec }) => spec.filename), [
-    "verified_linear_svm.tex",
-    "verified_linear_svm.pdf",
+    "svm-verified-result.tex",
+    "svm-verified-result.pdf",
   ]);
   const compileRequest = documentWorker.calls.find(({ pathname }) => pathname === "/artifact/v1/compile").request;
   assert.equal(compileRequest.requirements.minimumFigureCount, 1);
-  assert.match(compileRequest.source, /Server-Verified Linear Support Vector Machine/u);
+  assert.equal(compileRequest.source, documentSource);
   assert.match(compileRequest.source, /geometric margin/iu);
   assert.match(compileRequest.source, /\\begin\{tikzpicture\}/u);
   assert.doesNotMatch(compileRequest.source, /QAOA/iu);
@@ -2643,10 +2715,10 @@ async function linearClassifierGeometryIsValidatedBeforePublication() {
     { prompt: "Provide tex and compile", priorArtifacts: result.artifacts },
     documentRunOptions()
   );
-  assert.equal(modelStep, 0);
+  assert.equal(modelStep, 3);
   assert.deepEqual(provided.artifacts.map(({ spec }) => spec.filename), [
-    "verified_linear_svm.tex",
-    "verified_linear_svm.pdf",
+    "svm-provided-result.tex",
+    "svm-provided-result.pdf",
   ]);
   assert.equal(
     documentWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length,

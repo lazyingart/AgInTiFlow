@@ -1850,7 +1850,7 @@ function requestedLinearClassifierEvidence(value, requirements) {
     );
 }
 
-function deterministicLinearSvmRequest(value, plotRequired) {
+function linearSvmExampleNeedsVerifiedGeometry(value, plotRequired) {
   const prompt = String(value || "").normalize("NFKC");
   if (plotRequired !== true) return false;
   if (!/\b(?:linear\s+)?(?:svm|support[-\s]+vector[-\s]+machine)\b/iu.test(prompt)) return false;
@@ -1864,65 +1864,6 @@ function deterministicLinearSvmRequest(value, plotRequired) {
     /\b(?:given|provided|following|these)\s+(?:samples?|points?|data)\b/iu.test(prompt)
   ) return false;
   return true;
-}
-
-function deterministicLinearSvmSource(value, requirements) {
-  const prompt = String(value || "").normalize("NFKC");
-  if (!deterministicLinearSvmRequest(prompt, true)) return null;
-  if (!requestedLinearClassifierEvidence(prompt, requirements)) return null;
-  return [
-    "import math",
-    "class0 = [(1.0, 2.0), (2.0, 3.0), (3.0, 1.0)]",
-    "class1 = [(4.0, 2.0), (5.0, 4.0), (6.0, 5.0)]",
-    "directions = []",
-    "def add_direction(x, y):",
-    "    length = math.hypot(x, y)",
-    "    if length <= 1e-12:",
-    "        return",
-    "    nx, ny = x / length, y / length",
-    "    if not any(abs(abs(cx * nx + cy * ny) - 1.0) <= 1e-10 for cx, cy in directions):",
-    "        directions.append((nx, ny))",
-    "for left in class0:",
-    "    for right in class1:",
-    "        add_direction(right[0] - left[0], right[1] - left[1])",
-    "for points in (class0, class1):",
-    "    for i in range(len(points)):",
-    "        for j in range(i + 1, len(points)):",
-    "            ex, ey = points[j][0] - points[i][0], points[j][1] - points[i][1]",
-    "            add_direction(-ey, ex)",
-    "best = None",
-    "for nx, ny in directions:",
-    "    p0 = [nx * x + ny * y for x, y in class0]",
-    "    p1 = [nx * x + ny * y for x, y in class1]",
-    "    options = [(min(p1) - max(p0), nx, ny, max(p0), min(p1)),",
-    "               (min(p0) - max(p1), -nx, -ny, -min(p0), -max(p1))]",
-    "    candidate = max(options, key=lambda item: item[0])",
-    "    if candidate[0] > 0 and (best is None or candidate[0] > best[0]):",
-    "        best = candidate",
-    "assert best is not None, 'sample is not linearly separable'",
-    "gap, nx, ny, low, high = best",
-    "threshold = (low + high) / 2.0",
-    "margin = gap / 2.0",
-    "tx, ty = -ny, nx",
-    "all_points = class0 + class1",
-    "tv = [tx * x + ty * y for x, y in all_points]",
-    "padding = max(0.5, (max(tv) - min(tv)) * 0.15)",
-    "def line(offset):",
-    "    return [{'x': nx * (threshold + offset) + tx * t, 'y': ny * (threshold + offset) + ty * t}",
-    "            for t in (min(tv) - padding, max(tv) + padding)]",
-    "tolerance = max(1e-7, gap * 1e-7)",
-    "supports = [(x, y) for x, y in class0 if abs(nx * x + ny * y - low) <= tolerance]",
-    "supports += [(x, y) for x, y in class1 if abs(nx * x + ny * y - high) <= tolerance]",
-    "assert supports and any(point in class0 for point in supports) and any(point in class1 for point in supports)",
-    "series = [",
-    "    {'name': 'Class 0', 'points': [{'x': x, 'y': y} for x, y in class0]},",
-    "    {'name': 'Class 1', 'points': [{'x': x, 'y': y} for x, y in class1]},",
-    "    {'name': 'Decision Boundary', 'points': line(0.0)},",
-    "    {'name': 'Support Vectors', 'points': [{'x': x, 'y': y} for x, y in supports]},",
-    "]",
-    "emit_plot('Linear SVM decision boundary', {'schemaVersion':'1','type':'scatter','xLabel':'X1','yLabel':'X2','series':series})",
-    "print('hard_margin_fit_verified=true')",
-  ].join("\n");
 }
 
 function canonicalLinearClassifierPlot(prompt, requirements, artifacts) {
@@ -2245,157 +2186,6 @@ function hasVerifiedLinearClassifierTable(artifacts) {
   return artifacts.some(({ kind, title }) =>
     kind === "table" && title === VERIFIED_LINEAR_CLASSIFIER_TABLE_TITLE
   );
-}
-
-function verifiedLinearClassifierArtifacts(artifacts) {
-  if (!Array.isArray(artifacts)) return null;
-  const plot = artifacts.find(({ kind, title, spec }) =>
-    kind === "plot" && title === "Server-verified linear SVM decision boundary" &&
-    spec?.type === "scatter"
-  );
-  const table = artifacts.find(({ kind, title }) =>
-    kind === "table" && title === VERIFIED_LINEAR_CLASSIFIER_TABLE_TITLE
-  );
-  if (!plot || !table || invalidLinearClassifierPlotEvidence([plot]).length > 0) return null;
-  const evidencePrompt = "linear SVM decision boundary with support vectors";
-  const requirements = requestedPlotElements(evidencePrompt, true);
-  const derived = derivedLinearClassifierTable(evidencePrompt, requirements, [plot]);
-  if (!derived || canonicalJson(derived.spec) !== canonicalJson(table.spec)) return null;
-  return Object.freeze({ plot, table });
-}
-
-function texDisplayNumber(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return null;
-  const text = Number(number.toPrecision(8)).toString();
-  if (!/[eE]/u.test(text)) return text;
-  const [mantissa, exponent] = text.toLowerCase().split("e");
-  return `${mantissa}\\times 10^{${Number(exponent)}}`;
-}
-
-function deterministicVerifiedLinearSvmDocument(artifacts) {
-  const verified = verifiedLinearClassifierArtifacts(artifacts);
-  if (!verified) return null;
-  const { plot, table } = verified;
-  const excluded = /\b(?:boundary|separator|separating|hyperplane|support|margin)\b/iu;
-  const classes = plot.spec.series.filter(({ name, points }) =>
-    !excluded.test(name) && Array.isArray(points) && points.length > 0
-  );
-  const boundary = plot.spec.series.find(({ name }) =>
-    /\b(?:boundary|separator|separating|hyperplane)\b/iu.test(name)
-  );
-  const supports = plot.spec.series.find(({ name }) =>
-    /\bsupport\b.*\bvectors?\b|\bvectors?\b.*\bsupport\b/iu.test(name)
-  );
-  if (classes.length !== 2 || !boundary || !supports) return null;
-  const allPoints = [...classes.flatMap(({ points }) => points), ...boundary.points, ...supports.points];
-  const xValues = allPoints.map(({ x }) => x);
-  const yValues = allPoints.map(({ y }) => y);
-  const xMinimum = Math.min(...xValues);
-  const xMaximum = Math.max(...xValues);
-  const yMinimum = Math.min(...yValues);
-  const yMaximum = Math.max(...yValues);
-  const xSpan = Math.max(1e-9, xMaximum - xMinimum);
-  const ySpan = Math.max(1e-9, yMaximum - yMinimum);
-  const project = ({ x, y }) => Object.freeze({
-    x: Number((0.5 + 8 * (x - xMinimum) / xSpan).toFixed(5)),
-    y: Number((0.5 + 5 * (y - yMinimum) / ySpan).toFixed(5)),
-  });
-  const classCommands = classes.flatMap(({ points }, classIndex) =>
-    points.map((point) => {
-      const projected = project(point);
-      const color = classIndex === 0 ? "blue!70!black" : "red!75!black";
-      return `\\fill[${color}] (${projected.x},${projected.y}) circle (2.4pt);`;
-    })
-  );
-  const boundaryPoints = boundary.points.map(project);
-  const boundaryCommand = `\\draw[very thick,purple!80!black] ` +
-    boundaryPoints.map(({ x, y }) => `(${x},${y})`).join(" -- ") + ";";
-  const supportCommands = supports.points.map((point) => {
-    const projected = project(point);
-    return `\\draw[very thick,orange!85!black] (${projected.x},${projected.y}) circle (5pt);`;
-  });
-  const modelRows = new Map(table.spec.rows
-    .filter(({ kind }) => kind === "Model")
-    .map(({ label, value }) => [label, texDisplayNumber(value)]));
-  if (["Weight x", "Weight y", "Intercept", "Geometric margin"].some((label) => !modelRows.get(label))) {
-    return null;
-  }
-  const sampleRows = classes.flatMap(({ points }, classIndex) =>
-    points.map((point, index) => {
-      const x = texDisplayNumber(point.x);
-      const y = texDisplayNumber(point.y);
-      return `${index + 1} & Class ${classIndex} & $${x}$ & $${y}$ \\\\`;
-    })
-  );
-  const source = [
-    "\\documentclass[11pt]{article}",
-    "\\usepackage[T1]{fontenc}",
-    "\\usepackage[margin=1in]{geometry}",
-    "\\usepackage{amsmath}",
-    "\\usepackage{booktabs}",
-    "\\usepackage{tikz}",
-    "\\title{A Server-Verified Linear Support Vector Machine Example}",
-    "\\author{Local Agent Analysis}",
-    "\\date{}",
-    "\\begin{document}",
-    "\\maketitle",
-    "\\begin{abstract}",
-    "This note reports a bounded hard-margin linear support vector machine calculation on a small two-class test sample. The plotted samples, separating boundary, support vectors, coefficients, intercept, and geometric margin were independently derived and geometrically verified by the Agent before document compilation.",
-    "\\end{abstract}",
-    "\\section{Method}",
-    "For a sample $x=(x_1,x_2)$, the fitted classifier uses $f(x)=w_1x_1+w_2x_2+b$. The maximum-margin separator is $f(x)=0$, and the support vectors are the observed samples nearest to that separator on both class sides.",
-    "\\section{Verified result}",
-    `The verified parameters are $w_1=${modelRows.get("Weight x")}$, $w_2=${modelRows.get("Weight y")}$, $b=${modelRows.get("Intercept")}$, with geometric margin $${modelRows.get("Geometric margin")}$.`,
-    "\\begin{figure}[htbp]",
-    "\\centering",
-    "\\begin{tikzpicture}[x=1cm,y=1cm]",
-    "\\draw[->] (0,0) -- (9,0) node[right] {$x_1$};",
-    "\\draw[->] (0,0) -- (0,6) node[above] {$x_2$};",
-    ...classCommands,
-    boundaryCommand,
-    ...supportCommands,
-    "\\node[blue!70!black,anchor=west] at (0.3,5.8) {Class 0};",
-    "\\node[red!75!black,anchor=west] at (2.1,5.8) {Class 1};",
-    "\\node[purple!80!black,anchor=west] at (3.9,5.8) {Decision boundary};",
-    "\\node[orange!85!black,anchor=west] at (6.8,5.8) {Support vectors};",
-    "\\end{tikzpicture}",
-    "\\caption{Server-verified linear SVM decision boundary. Filled points are the two sample classes; orange rings identify support vectors.}",
-    "\\label{fig:svm-boundary}",
-    "\\end{figure}",
-    "\\begin{table}[htbp]",
-    "\\centering",
-    "\\caption{Test samples used by the verified fit.}",
-    "\\begin{tabular}{rrrr}",
-    "\\toprule",
-    "Index & Class & $x_1$ & $x_2$ \\\\ ",
-    "\\midrule",
-    ...sampleRows,
-    "\\bottomrule",
-    "\\end{tabular}",
-    "\\end{table}",
-    "\\section{Interpretation}",
-    "The decision boundary separates the two emitted sample classes. Every highlighted support vector is an actual sample, both classes are represented, and the boundary is centered between the nearest samples. These postconditions prevent a decorative or stale plot from being presented as fitted SVM evidence.",
-    "\\end{document}",
-    "",
-  ].join("\n");
-  return Object.freeze({ filename: "verified_linear_svm.tex", source });
-}
-
-function deterministicTexDocumentToolCall(args) {
-  const id = `tex-call-${contractDigest(args).slice(0, 24)}`;
-  return Object.freeze({
-    id,
-    args,
-    messageCall: Object.freeze({
-      id,
-      type: "function",
-      function: Object.freeze({
-        name: INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
-        arguments: JSON.stringify(args),
-      }),
-    }),
-  });
 }
 
 function rejectedPlotExecution(result, missingElements, { preflight = false } = {}) {
@@ -3186,9 +2976,9 @@ function createPlanner({
       plotElementRequirements = requestedPlotElements(input.prompt, explicitPlotArtifact);
       executionForbidden = false;
     }
-    const deterministicSvmRequested = explicitPython.kind === "none" &&
-      deterministicLinearSvmRequest(input.prompt, explicitPlotArtifact);
-    if (deterministicSvmRequested) {
+    const linearSvmGeometryRequired = explicitPython.kind === "none" &&
+      linearSvmExampleNeedsVerifiedGeometry(input.prompt, explicitPlotArtifact);
+    if (linearSvmGeometryRequired) {
       plotElementRequirements = requestedPlotElements(
         `${input.prompt}\nDecision Boundary\nSupport Vectors`,
         true
@@ -3479,10 +3269,6 @@ function createPlanner({
         const documentRequestMessages = Object.freeze([...messages]);
         const compoundExecutionFeedbacks = [];
         let deterministicExplicitExecutionUsed = false;
-        const deterministicCompoundSvm = deterministicSvmRequested
-          ? deterministicLinearSvmSource(input.prompt, plotElementRequirements)
-          : null;
-        let deterministicCompoundSvmUsed = false;
         while (
           !executionObligationsSatisfied(
             executionObligations,
@@ -3497,14 +3283,6 @@ function createPlanner({
             if (deterministicExplicitExecutionUsed) break;
             deterministicExplicitExecutionUsed = true;
             executionInput = explicitPython.execution;
-          } else if (deterministicCompoundSvm !== null) {
-            if (deterministicCompoundSvmUsed) break;
-            deterministicCompoundSvmUsed = true;
-            executionInput = Object.freeze({
-              source: deterministicCompoundSvm,
-              stdin: "",
-              timeoutMs: Math.min(15_000, EXECUTION_LIMITS.maximumWallTimeMs),
-            });
           } else {
             const inferenceMessages = pendingRequiredToolFormationCorrection === null
               ? messages
@@ -3666,72 +3444,58 @@ function createPlanner({
           });
         }
         const documentToolCallOffset = toolCalls;
-        const deterministicDocumentArgs = !documentArtifactRevision
-          ? deterministicVerifiedLinearSvmDocument(
-              compoundDocumentExecution
-                ? artifacts
-                : priorArtifactDocumentConversion
-                  ? input.priorArtifacts
-                  : []
-            )
-          : null;
         let compiled;
         let toolCall;
         let successfulAttempt = 0;
-        const maximumDocumentAttempts = deterministicDocumentArgs === null ? 2 : 1;
-        for (let attempt = 1; attempt <= maximumDocumentAttempts; attempt += 1) {
-          if (deterministicDocumentArgs !== null) {
-            toolCall = deterministicTexDocumentToolCall(deterministicDocumentArgs);
-          } else {
-            const compilePayload = Object.freeze({
-              model: modelConfig.model,
-              temperature: 0,
-              messages,
-              tools: Object.freeze([TEX_DOCUMENT_TOOL]),
-              tool_choice: "required",
-              parallel_tool_calls: false,
-              max_tokens: modelConfig.maxOutputTokens,
-            });
-            try {
-              assertWithinModelContext(compilePayload, modelConfig);
-            } catch (error) {
-              if (documentArtifactRevision && error?.code === "ANALYSIS_CONTEXT_BUDGET_EXCEEDED") {
-                fail(
-                  "ANALYSIS_CONTEXT_BUDGET_EXCEEDED",
-                  INTEGRATION_DOCUMENT_REVISION_CONTEXT_BUDGET_MESSAGE,
-                  { status: 413, cause: error }
-                );
-              }
-              throw error;
-            }
-            const toolResponse = await complete(
-              modelClient,
-              compilePayload,
-              config,
-              `bounded TeX document model step ${attempt}`
-            );
-            assertNotAborted(signal);
-            try {
-              toolCall = bindExactTexToolSource(
-                normalizeTexToolMessage(toolResponse),
-                exactDocumentSource
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          const compilePayload = Object.freeze({
+            model: modelConfig.model,
+            temperature: 0,
+            messages,
+            tools: Object.freeze([TEX_DOCUMENT_TOOL]),
+            tool_choice: "required",
+            parallel_tool_calls: false,
+            max_tokens: modelConfig.maxOutputTokens,
+          });
+          try {
+            assertWithinModelContext(compilePayload, modelConfig);
+          } catch (error) {
+            if (documentArtifactRevision && error?.code === "ANALYSIS_CONTEXT_BUDGET_EXCEEDED") {
+              fail(
+                "ANALYSIS_CONTEXT_BUDGET_EXCEEDED",
+                INTEGRATION_DOCUMENT_REVISION_CONTEXT_BUDGET_MESSAGE,
+                { status: 413, cause: error }
               );
-            } catch (error) {
-              const retryableMalformed = new Set([
-                "ANALYSIS_TEX_TOOL_CALL_INVALID",
-                "ANALYSIS_TEX_TOOL_REQUIRED",
-              ]).has(error?.code);
-              await emitProgress("executing", {
-                toolName: INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
-                toolCallNumber: documentToolCallOffset + attempt,
-                executionState: "failed",
-              });
-              if (attempt === 1 && retryableMalformed) {
-                messages.push(Object.freeze({ role: "user", content: TEX_TOOL_RETRY_INSTRUCTIONS.malformed }));
-                continue;
-              }
-              throw error;
             }
+            throw error;
+          }
+          const toolResponse = await complete(
+            modelClient,
+            compilePayload,
+            config,
+            `bounded TeX document model step ${attempt}`
+          );
+          assertNotAborted(signal);
+          try {
+            toolCall = bindExactTexToolSource(
+              normalizeTexToolMessage(toolResponse),
+              exactDocumentSource
+            );
+          } catch (error) {
+            const retryableMalformed = new Set([
+              "ANALYSIS_TEX_TOOL_CALL_INVALID",
+              "ANALYSIS_TEX_TOOL_REQUIRED",
+            ]).has(error?.code);
+            await emitProgress("executing", {
+              toolName: INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
+              toolCallNumber: documentToolCallOffset + attempt,
+              executionState: "failed",
+            });
+            if (attempt === 1 && retryableMalformed) {
+              messages.push(Object.freeze({ role: "user", content: TEX_TOOL_RETRY_INSTRUCTIONS.malformed }));
+              continue;
+            }
+            throw error;
           }
           await emitProgress("executing", {
             toolName: INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
@@ -3751,7 +3515,6 @@ function createPlanner({
               executionState: "failed",
             });
             if (
-              deterministicDocumentArgs === null &&
               attempt === 1 &&
               error?.code === "ANALYSIS_TEX_COMPILE_FAILED"
             ) {
@@ -3994,40 +3757,6 @@ function createPlanner({
         }
         if (successfulExecutions < executionObligations.minimumSuccessfulExecutions) {
           fail("ANALYSIS_TOOL_LIMIT", "The bounded explicit-code route did not complete every requested execution.", {
-            status: 502,
-          });
-        }
-        return await finalize({
-          text: explicitPythonResultText(execution, artifacts),
-          toolCalls,
-          executionStatus,
-        });
-      }
-      const deterministicSvm = explicitPython.kind === "none" &&
-        explicitPlotArtifact && !explicitTableArtifact && !explicitMarkdownArtifact &&
-        executionObligations.minimumSuccessfulExecutions === 1
-        ? deterministicLinearSvmSource(input.prompt, plotElementRequirements)
-        : null;
-      if (deterministicSvm !== null) {
-        const execution = await executeOnce(Object.freeze({
-          source: deterministicSvm,
-          stdin: "",
-          timeoutMs: Math.min(15_000, EXECUTION_LIMITS.maximumWallTimeMs),
-        }), 1);
-        toolCalls = 1;
-        executionStatus = execution.status;
-        recordSuccessfulExecution(execution);
-        await emitProgress("synthesizing", {
-          executionSucceeded: execution.ok === true,
-          artifactCount: artifacts.length,
-        });
-        if (!execution.ok) {
-          fail("ANALYSIS_EXECUTION_FAILED", "The deterministic linear SVM fit did not complete successfully.", {
-            status: 502,
-          });
-        }
-        if (!successfulArtifactKinds.has("plot") || !hasVerifiedLinearClassifierTable(artifacts)) {
-          fail("ANALYSIS_PLOT_ARTIFACT_REQUIRED", "The verified linear SVM evidence was not produced.", {
             status: 502,
           });
         }
