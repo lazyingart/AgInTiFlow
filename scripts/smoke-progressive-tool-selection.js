@@ -7238,6 +7238,54 @@ assert(
   ).ok,
   "valid offered tool call did not satisfy its exact schema"
 );
+const strictInspectDescriptor = {
+  type: "function",
+  function: {
+    name: "inspect_project",
+    description: "Inspect the project.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        maxDepth: { type: "integer" },
+        limit: { type: "integer" },
+        includeFiles: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+  },
+};
+const recoveredInspectReason = resolveDispatchableToolCallBatch(
+  [
+    contractCall("inspect-with-reason", "inspect_project", {
+      reason: "Orient before answering the user's project question.",
+      limit: 120,
+    }),
+  ],
+  createToolContract([strictInspectDescriptor])
+);
+assert(
+  recoveredInspectReason.ok && recoveredInspectReason.recoveredToolCallAnnotations,
+  "a harmless inspect_project reason annotation was not stripped before schema validation"
+);
+assertStrict.deepEqual(
+  JSON.parse(recoveredInspectReason.acceptedToolCalls[0].function.arguments),
+  { limit: 120 },
+  "inspect_project reason annotation recovery changed executable arguments"
+);
+const rejectedStructuredInspectReason = resolveDispatchableToolCallBatch(
+  [
+    contractCall("inspect-structured-reason", "inspect_project", {
+      reason: { intent: "orient" },
+      limit: 120,
+    }),
+  ],
+  createToolContract([strictInspectDescriptor])
+);
+assert(
+  !rejectedStructuredInspectReason.ok,
+  "a structured inspect_project reason annotation was stripped even though it is not a bounded text note"
+);
 
 const safeReadDescriptors = [
   {
@@ -7875,6 +7923,73 @@ assert(
       )
   ),
   "authoritative routine flow still dispatched private/raw exploratory commands"
+);
+
+let annotatedInspectStep = 0;
+const annotatedInspectRun = await runToolContractCase({
+  id: "inspect-project-reason-annotation",
+  provider: "deepseek",
+  profile: "code",
+  goal: "Please look over this little repo and tell me whether it has a README. Keep it short.",
+  toolCalls: [
+    contractCall("unused-annotated-inspect", "finish", { result: "unused" }),
+  ],
+  expectSuccess: true,
+  expectedContractFailures: 0,
+  setupWorkspace: async (workspace) => {
+    await fs.writeFile(
+      path.join(workspace, "README.md"),
+      "# Demo\nThis workspace has a README.\n",
+      "utf8"
+    );
+  },
+  responseFactory: ({ payload }) => {
+    annotatedInspectStep += 1;
+    const offered = Array.isArray(payload.tools) ? names(payload.tools) : [];
+    if (annotatedInspectStep === 1) {
+      assert(
+        offered.includes("inspect_project"),
+        "normal repository orientation did not offer inspect_project"
+      );
+      return assistantWithToolCalls([
+        contractCall("inspect-with-natural-reason", "inspect_project", {
+          reason: "Orient before answering the user's project question.",
+          limit: 120,
+        }),
+      ]);
+    }
+    return assistantWithToolCalls([
+      contractCall("finish-after-annotated-inspect", "finish", {
+        result: "README.md is present.",
+      }),
+    ]);
+  },
+});
+assertStrict.equal(
+  annotatedInspectRun.requests.length,
+  2,
+  "annotated inspect_project recovery used extra model turns"
+);
+assert(
+  annotatedInspectRun.events.some(
+    (event) =>
+      event.type === "tool.completed" &&
+      event.data?.toolName === "inspect_project" &&
+      event.data?.ok === true
+  ),
+  "annotated inspect_project call was not dispatched through the real runtime"
+);
+assert(
+  !annotatedInspectRun.events.some(
+    (event) =>
+      event.type === "tool.failed" &&
+      event.data?.category === "tool-contract-violation"
+  ),
+  "annotated inspect_project still produced a tool-contract violation"
+);
+assert(
+  /README\.md is present/.test(String(annotatedInspectRun.result?.result || "")),
+  "annotated inspect_project run did not finish with the promised repository status"
 );
 
 const hiddenDryRun = await runToolContractCase({

@@ -30,7 +30,7 @@ const MAX_VALIDATION_ERRORS = 8;
 const MAX_VALIDATION_NODES = 50_000;
 const MAX_SAFE_SEQUENTIAL_READ_CALLS = 4;
 const MAX_REPORTED_SEQUENTIAL_CALLS = 12;
-const BENIGN_TOOL_CALL_ANNOTATION_KEYS = new Set(["description"]);
+const BENIGN_TOOL_CALL_ANNOTATION_KEYS = new Set(["description", "reason"]);
 
 function cloneValue(value) {
   return structuredClone(value);

@@ -700,3 +700,24 @@ status" prompt, triggers a DeepSeek quota handoff, and verifies that LocalLLM is
 called only after compaction. The run completes without `session.failed`, keeps
 the provider handoff active on the same session, and records the compaction
 events as durable evidence.
+
+### Harmless tool-call annotations during repository discovery
+
+`inspect-project-annotation-093` covers a DeepSeek-first tool-loop boundary
+that was still under-tested after the provider handoff work. Recent runtime
+evidence showed ordinary project-inspection tasks stopping with
+`tool_contract_violation` before dispatch because the model included a
+non-executable `reason` field in an otherwise valid `inspect_project` call.
+The strict per-turn schema correctly rejected unknown executable fields, but
+the existing benign-annotation normalizer only recognized `description`.
+
+AgInTiFlow now treats a bounded string `reason` exactly like `description`: it
+is removed before schema validation only when the offered tool schema forbids
+additional properties and the schema does not define that field. Structured,
+non-string, oversized, or executable unknown fields still fail closed.
+
+The regression uses a normal weak prompt asking the agent to look over a small
+repository and report whether a README exists. The scripted DeepSeek-shaped
+response calls `inspect_project` with `reason` plus a real `limit`; the persisted
+runtime dispatches the inspection, records zero tool-contract failures, and
+finishes with the verified README status without mutating the workspace.
