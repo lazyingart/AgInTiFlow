@@ -421,6 +421,7 @@ More detail:
 | AgentLink | [docs/agentlink.md](docs/agentlink.md) |
 | Model selection and roles | [docs/model-selection.md](docs/model-selection.md) |
 | Local-first provider and agent boundary | [docs/local-first-agent-runtime.md](docs/local-first-agent-runtime.md) |
+| Replaceable integration worker coordination | [docs/integration-worker-directory.md](docs/integration-worker-directory.md) |
 | SCS mode | [docs/student-committee-supervisor.md](docs/student-committee-supervisor.md) |
 | Large-codebase engineering | [docs/large-codebase-engineering.md](docs/large-codebase-engineering.md) |
 | Runtime modes and autonomy | [docs/runtime-modes-and-autonomy.md](docs/runtime-modes-and-autonomy.md) |
