@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import {
   EXECUTION_WORKER_API_SCHEMA_VERSION,
@@ -21,10 +24,19 @@ import {
   INTEGRATION_ANALYSIS_MAX_INVOCATION_ORDINAL,
   INTEGRATION_ANALYSIS_TOOL_NAME,
   createTestOnlyIntegrationAnalysisCoordinator,
+  createTestOnlyRoutedIntegrationAnalysisCoordinator,
 } from "../src/integration-analysis-coordinator.js";
 import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import { projectCoreEvent } from "../src/integration-core-event-projector.js";
+import {
+  createIntegrationExecutionWorkerRouter,
+  createTestOnlyExecutionWorkerBindingAuthority,
+} from "../src/integration-execution-worker-router.js";
 import { contractDigest } from "../src/integration-policy.js";
+import {
+  createIntegrationWorkerDirectory,
+  createWorkerAdmission,
+} from "../src/integration-worker-directory.js";
 
 const PRINCIPAL_ID = "principal_analysis_smoke_001";
 const BROWSER_SESSION_ID = "a".repeat(64);
@@ -559,6 +571,152 @@ async function awaitsProgressDeliveryAndPropagatesRejections() {
   }
 }
 
+async function routedLeasePinsCutover() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-analysis-routed-worker-"));
+  const nodeA = Object.freeze({
+    nodeId: "node_analysis_workstation_01",
+    bindingId: "binding_analysis_workstation_01",
+    platform: "workstation",
+    roles: Object.freeze(["execution"]),
+  });
+  const nodeB = Object.freeze({
+    nodeId: "node_analysis_jetson_0001",
+    bindingId: "binding_analysis_jetson_0001",
+    platform: "jetson",
+    roles: Object.freeze(["execution"]),
+  });
+  const callsA = [];
+  const callsB = [];
+  const clientA = createTestOnlyExecutionWorkerClient(rpcForManager(
+    createExecutionJobManager({ worker: fakeWorker({ delayMs: 300 }) }),
+    null,
+    callsA
+  ));
+  const clientB = createTestOnlyExecutionWorkerClient(rpcForManager(
+    createExecutionJobManager({ worker: fakeWorker({ delayMs: 20 }) }),
+    null,
+    callsB
+  ));
+  const [capabilitiesA, capabilitiesB] = await Promise.all([
+    clientA.capabilities(),
+    clientB.capabilities(),
+  ]);
+  const capabilityDigests = new Map([
+    [nodeA.nodeId, capabilitiesA.capabilityDigest],
+    [nodeB.nodeId, capabilitiesB.capabilityDigest],
+  ]);
+  let randomCounter = 0;
+  const now = () => new Date("2026-09-02T09:00:00.000Z");
+  const directory = await createIntegrationWorkerDirectory({
+    rootDir,
+    now,
+    randomHex(bytes) {
+      randomCounter += 1;
+      return randomCounter.toString(16).padStart(bytes * 2, "0");
+    },
+    async probe(candidate) {
+      const observedAt = now();
+      return createWorkerAdmission(candidate, {
+        transport: "lazyedge-private-http-v1",
+        releaseId: "analysis-worker-r1",
+        releaseDigest: contractDigest({ release: candidate.nodeId }),
+        capabilitiesDigest: capabilityDigests.get(candidate.nodeId),
+        canaryDigest: contractDigest({ canary: candidate.nodeId }),
+        protocols: ["aginti-execution-worker-v1"],
+        observedAt: observedAt.toISOString(),
+        expiresAt: new Date(observedAt.valueOf() + 5 * 60_000).toISOString(),
+      });
+    },
+  });
+  const bindingAuthority = createTestOnlyExecutionWorkerBindingAuthority([
+    { bindingId: nodeA.bindingId, client: clientA },
+    { bindingId: nodeB.bindingId, client: clientB },
+  ]);
+  const router = createIntegrationExecutionWorkerRouter({ directory, bindingAuthority });
+  const coordinator = createTestOnlyRoutedIntegrationAnalysisCoordinator(router, { pollMs: 25 });
+
+  try {
+    assert.equal(coordinator.attestation.callerSelectableBinding, false);
+    assert.equal(coordinator.attestation.fixedWorkerClientDigest, null);
+    assert.match(coordinator.attestation.workerRouterDigest, /^[a-f0-9]{64}$/u);
+    await assert.rejects(
+      coordinator.readiness(),
+      (error) => error?.code === "WORKER_ASSIGNMENT_UNAVAILABLE"
+    );
+    const cancelledReadiness = new AbortController();
+    cancelledReadiness.abort();
+    await assert.rejects(
+      coordinator.readiness({ signal: cancelledReadiness.signal }),
+      (error) => error?.code === "EXECUTION_CANCELLED"
+    );
+    assert.throws(
+      () => createIntegrationExecutionWorkerRouter({
+        directory,
+        bindingAuthority,
+        endpoint: "http://attacker.invalid",
+      }),
+      (error) => error?.code === "EXECUTION_ROUTER_INVALID"
+    );
+    await directory.enroll(nodeA);
+    await directory.switchRole("execution", nodeA.nodeId, { expectedGeneration: 0 });
+
+    const firstProgress = deferred();
+    const first = coordinator.execute(scope(), { source: "print('pinned-a')", timeoutMs: 1_000 }, {
+      onProgress(progress) {
+        if (progress.state === "running") firstProgress.resolve();
+      },
+    });
+    await firstProgress.promise;
+    await directory.enroll(nodeB);
+    await directory.switchRole("execution", nodeB.nodeId, { expectedGeneration: 1 });
+    assert.equal((await directory.resolve("execution")).nodeId, nodeB.nodeId);
+    const activeLease = (await directory.status()).leases[0];
+    assert.equal(activeLease.nodeId, nodeA.nodeId);
+    await assert.rejects(
+      directory.finalizeRole("execution", { expectedGeneration: 2 }),
+      (error) => error?.code === "WORKER_DRAIN_INCOMPLETE"
+    );
+
+    assert.equal((await first).status, "succeeded");
+    assert.equal((await directory.status()).leases.length, 0);
+    await directory.finalizeRole("execution", { expectedGeneration: 2 });
+    assert.equal(
+      callsA.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      1
+    );
+    assert.equal(
+      callsB.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      0
+    );
+
+    const second = await coordinator.execute(
+      scope(),
+      { source: "print('routed-b')", timeoutMs: 1_000 },
+      { invocationOrdinal: 2 }
+    );
+    assert.equal(second.status, "succeeded");
+    assert.equal(
+      callsB.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      1
+    );
+
+    capabilityDigests.set(nodeB.nodeId, "9".repeat(64));
+    await directory.renew(nodeB.nodeId);
+    await assert.rejects(
+      coordinator.execute(
+        scope(),
+        { source: "print('capability-mismatch')", timeoutMs: 1_000 },
+        { invocationOrdinal: 3 }
+      ),
+      (error) => error?.code === "EXECUTION_BINDING_DIVERGED"
+    );
+    assert.equal((await directory.status()).leases.length, 0);
+  } finally {
+    coordinator.close();
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+}
+
 await successfulExecution();
 await publicActivationGates();
 await rejectsCallerTransportFields();
@@ -567,5 +725,6 @@ await rejectsArtifactTamper();
 await rejectsEventTamper();
 await cancellationPropagates();
 await awaitsProgressDeliveryAndPropagatesRejections();
+await routedLeasePinsCutover();
 
 console.log("integration analysis coordinator smoke passed");

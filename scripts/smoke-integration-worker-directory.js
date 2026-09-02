@@ -131,6 +131,14 @@ async function smokeLifecycle(rootDir) {
   assert.equal(switched.generation, 2);
   assert.equal(switched.previousNodeId, NODE_A.nodeId);
   assert.equal((await directory.resolve("execution")).nodeId, NODE_B.nodeId);
+  const leasedRoute = await directory.resolveLease(leaseA.leaseId, OWNER_DIGEST);
+  assert.equal(leasedRoute.nodeId, NODE_A.nodeId);
+  assert.equal(leasedRoute.bindingId, NODE_A.bindingId);
+  assert.equal(leasedRoute.assignmentGeneration, 1);
+  await expectCode(
+    () => directory.resolveLease(leaseA.leaseId, contractDigest({ owner: "another-job" })),
+    "WORKER_LEASE_NOT_FOUND"
+  );
   await expectCode(
     () => directory.finalizeRole("execution", { expectedGeneration: 2 }),
     "WORKER_DRAIN_INCOMPLETE"

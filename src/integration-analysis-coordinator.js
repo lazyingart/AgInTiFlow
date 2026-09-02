@@ -12,6 +12,10 @@ import {
   assertExecutionWorkerClient,
   createSystemdExecutionWorkerClient,
 } from "./execution-worker-client.js";
+import {
+  IntegrationExecutionWorkerRouterError,
+  assertIntegrationExecutionWorkerRouter,
+} from "./integration-execution-worker-router.js";
 import { contractDigest, validateIntegrationRunId, validateIntegrationThreadId } from "./integration-policy.js";
 
 export const INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION = "aginti-integration-analysis-coordinator-v1";
@@ -197,6 +201,12 @@ function translateError(error) {
       cause: error,
     });
   }
+  if (error instanceof IntegrationExecutionWorkerRouterError) {
+    return new IntegrationAnalysisError(error.code, "Python analysis execution route was unavailable.", {
+      status: error.status,
+      cause: error,
+    });
+  }
   return new IntegrationAnalysisError("EXECUTION_UNAVAILABLE", "Python analysis execution was unavailable.", {
     cause: error,
   });
@@ -248,8 +258,9 @@ function publicResult(status, artifacts) {
   });
 }
 
-function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = {}) {
-  assertExecutionWorkerClient(client, { requireSystemdCredential });
+function createCoordinator(clientOrRouter, { requireSystemdCredential, pollMs = 100, routed = false } = {}) {
+  const router = routed ? assertIntegrationExecutionWorkerRouter(clientOrRouter) : null;
+  const client = routed ? null : assertExecutionWorkerClient(clientOrRouter, { requireSystemdCredential });
   if (!Number.isSafeInteger(pollMs) || pollMs < 25 || pollMs > INTEGRATION_ANALYSIS_MAX_POLL_MS) {
     throw new TypeError("pollMs must be an integer between 25 and 250");
   }
@@ -258,10 +269,12 @@ function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = 
     owner: "aginti",
     authority: "aginti",
     toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
-    fixedWorkerClientDigest: client.attestation.digest,
-    credentialSource: client.attestation.credentialSource,
+    fixedWorkerClientDigest: client?.attestation.digest ?? null,
+    workerRouterDigest: router?.attestation.digest ?? null,
+    credentialSource: client?.attestation.credentialSource ?? "system-owned-binding-authority",
     publicActivationGated: true,
     aggregateContainmentGated: true,
+    callerSelectableBinding: false,
     callerSelectableEndpoint: false,
     callerSelectableCredential: false,
     idempotentRunScopedJobs: true,
@@ -271,8 +284,7 @@ function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = 
   });
   const attestation = Object.freeze({ ...proofUnsigned, digest: contractDigest(proofUnsigned) });
 
-  async function readiness(options = {}) {
-    const capabilities = await client.capabilities(options);
+  function readinessResponse(capabilities) {
     const unsigned = Object.freeze({
       schemaVersion: INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION,
       ready: true,
@@ -289,6 +301,21 @@ function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = 
     return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
   }
 
+  async function readiness(options = {}) {
+    if (router) {
+      const owner = contractDigest({
+        schemaVersion: INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION,
+        operation: "readiness",
+      });
+      return router.withClient(
+        owner,
+        async (_client, _route, capabilities) => readinessResponse(capabilities),
+        { signal: options.signal }
+      );
+    }
+    return readinessResponse(await client.capabilities(options));
+  }
+
   async function execute(scopeInput, inputValue, options = {}) {
     const scope = scopeFor(scopeInput);
     const input = analysisInput(inputValue);
@@ -303,84 +330,100 @@ function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = 
     }
     if (signal?.aborted) throw abortError(signal.reason);
     const request = executionRequest(scope, input, ordinal);
-    const reference = Object.freeze({ jobId: request.jobId, attempt: request.attempt });
-    let started = false;
-    let terminal = false;
-    let cursor = Object.freeze({ seq: 0, hash: EXECUTION_ZERO_EVENT_HASH });
-    let lastEvent = null;
-    const startedAt = Date.now();
-    const coordinatorDeadlineMs = request.timeoutMs + 5_000;
-    let cancellationSent = false;
+    async function executeWithClient(workerClient, _route = null, prevalidatedCapabilities = null) {
+      const reference = Object.freeze({ jobId: request.jobId, attempt: request.attempt });
+      let started = false;
+      let terminal = false;
+      let cursor = Object.freeze({ seq: 0, hash: EXECUTION_ZERO_EVENT_HASH });
+      let lastEvent = null;
+      const startedAt = Date.now();
+      const coordinatorDeadlineMs = request.timeoutMs + 5_000;
+      let cancellationSent = false;
 
-    async function cancelBestEffort() {
-      if (!started || terminal || cancellationSent) return;
-      cancellationSent = true;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2_000);
-      timer.unref?.();
-      try {
-        await client.cancel(reference, { signal: controller.signal });
-      } catch {
-        // The original error remains authoritative. A failed cancellation is
-        // never presented as success and the worker has its own wall timeout.
-      } finally {
-        clearTimeout(timer);
+      async function cancelBestEffort() {
+        if (!started || terminal || cancellationSent) return;
+        cancellationSent = true;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 2_000);
+        timer.unref?.();
+        try {
+          await workerClient.cancel(reference, { signal: controller.signal });
+        } catch {
+          // The original error remains authoritative. A failed cancellation is
+          // never presented as success and the worker has its own wall timeout.
+        } finally {
+          clearTimeout(timer);
+        }
       }
-    }
 
-    try {
-      await readiness({ signal });
-      let status = await client.start(request, { signal });
-      started = true;
-      await options.onProgress?.(Object.freeze({ state: status.state }));
+      try {
+        const capabilities = prevalidatedCapabilities ?? await workerClient.capabilities({ signal });
+        readinessResponse(capabilities);
+        let status = await workerClient.start(request, { signal });
+        started = true;
+        await options.onProgress?.(Object.freeze({ state: status.state }));
 
-      while (!status.terminal) {
-        if (signal?.aborted) {
-          await cancelBestEffort();
-          throw abortError(signal.reason);
+        while (!status.terminal) {
+          if (signal?.aborted) {
+            await cancelBestEffort();
+            throw abortError(signal.reason);
+          }
+          if (Date.now() - startedAt > coordinatorDeadlineMs) {
+            await cancelBestEffort();
+            fail("EXECUTION_TIMEOUT", "Python analysis coordinator deadline expired.", { status: 504 });
+          }
+          const replay = await workerClient.events({
+            ...reference,
+            afterSeq: cursor.seq,
+            afterHash: cursor.hash,
+          }, { signal });
+          cursor = replay.cursor;
+          if (replay.events.length) lastEvent = replay.events.at(-1);
+          await delay(pollMs, signal);
+          status = await workerClient.status(reference, { signal });
+          await options.onProgress?.(Object.freeze({ state: status.state }));
         }
-        if (Date.now() - startedAt > coordinatorDeadlineMs) {
-          await cancelBestEffort();
-          fail("EXECUTION_TIMEOUT", "Python analysis coordinator deadline expired.", { status: 504 });
-        }
-        const replay = await client.events({
+        terminal = true;
+        const finalEvents = await workerClient.events({
           ...reference,
           afterSeq: cursor.seq,
           afterHash: cursor.hash,
         }, { signal });
-        cursor = replay.cursor;
-        if (replay.events.length) lastEvent = replay.events.at(-1);
-        await delay(pollMs, signal);
-        status = await client.status(reference, { signal });
-        await options.onProgress?.(Object.freeze({ state: status.state }));
-      }
-      terminal = true;
-      const finalEvents = await client.events({
-        ...reference,
-        afterSeq: cursor.seq,
-        afterHash: cursor.hash,
-      }, { signal });
-      cursor = finalEvents.cursor;
-      if (finalEvents.events.length) lastEvent = finalEvents.events.at(-1);
-      validateTerminalEvidence(finalEvents, status, lastEvent);
+        cursor = finalEvents.cursor;
+        if (finalEvents.events.length) lastEvent = finalEvents.events.at(-1);
+        validateTerminalEvidence(finalEvents, status, lastEvent);
 
-      const artifacts = status.state === "succeeded"
-        ? await client.listArtifacts(reference, status.result, { signal })
-        : Object.freeze([]);
-      for (const artifact of artifacts) {
-        const exact = await client.getArtifact({ ...reference, artifactId: artifact.id }, { signal });
-        if (contractDigest(exact) !== contractDigest(artifact)) {
-          fail("EXECUTION_PROTOCOL_INVALID", "execution artifact detail diverged from its validated list.");
+        const artifacts = status.state === "succeeded"
+          ? await workerClient.listArtifacts(reference, status.result, { signal })
+          : Object.freeze([]);
+        for (const artifact of artifacts) {
+          const exact = await workerClient.getArtifact({ ...reference, artifactId: artifact.id }, { signal });
+          if (contractDigest(exact) !== contractDigest(artifact)) {
+            fail("EXECUTION_PROTOCOL_INVALID", "execution artifact detail diverged from its validated list.");
+          }
+          await options.onArtifact?.(exact);
         }
-        await options.onArtifact?.(exact);
-      }
-      return publicResult(status, artifacts);
-    } catch (error) {
-      if (signal?.aborted) {
+        return publicResult(status, artifacts);
+      } catch (error) {
+        if (signal?.aborted) {
+          await cancelBestEffort();
+          throw abortError(signal.reason || error);
+        }
         await cancelBestEffort();
-        throw abortError(signal.reason || error);
+        throw translateError(error);
       }
-      await cancelBestEffort();
+    }
+
+    if (!router) return executeWithClient(client);
+    const owner = contractDigest({
+      schemaVersion: INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION,
+      jobId: request.jobId,
+      attempt: request.attempt,
+      sourceSha256: request.sourceSha256,
+    });
+    try {
+      return await router.withClient(owner, executeWithClient, { signal });
+    } catch (error) {
       throw translateError(error);
     }
   }
@@ -390,7 +433,8 @@ function createCoordinator(client, { requireSystemdCredential, pollMs = 100 } = 
     readiness,
     execute,
     close() {
-      client.close();
+      if (router) router.close();
+      else client.close();
     },
   });
   COORDINATOR_BRAND.add(coordinator);
@@ -431,4 +475,12 @@ export async function createSystemdIntegrationAnalysisCoordinator(...args) {
 
 export function createTestOnlyIntegrationAnalysisCoordinator(client, options = {}) {
   return createCoordinator(client, { ...options, requireSystemdCredential: false });
+}
+
+export function createTestOnlyRoutedIntegrationAnalysisCoordinator(router, options = {}) {
+  return createCoordinator(router, {
+    ...options,
+    requireSystemdCredential: false,
+    routed: true,
+  });
 }

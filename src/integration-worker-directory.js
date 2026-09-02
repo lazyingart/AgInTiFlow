@@ -833,6 +833,35 @@ export async function createIntegrationWorkerDirectory(options = {}) {
       }));
     },
 
+    async resolveLease(leaseId, ownerDigestValue) {
+      if (typeof leaseId !== "string" || !LEASE_ID.test(leaseId)) {
+        fail("WORKER_DIRECTORY_INVALID", "worker leaseId is invalid.", { status: 400 });
+      }
+      const ownerDigest = safeDigest(ownerDigestValue, "worker lease ownerDigest");
+      return locked(async (state, at) => {
+        const lease = state.leases.find((candidate) =>
+          candidate.leaseId === leaseId &&
+          candidate.ownerDigest === ownerDigest &&
+          Date.parse(candidate.expiresAt) > at.valueOf()
+        );
+        if (!lease) fail("WORKER_LEASE_NOT_FOUND", "worker lease is unavailable.", { status: 404 });
+        const node = freshNode(
+          state.nodes.find((candidate) => candidate.nodeId === lease.nodeId),
+          at.valueOf()
+        );
+        return Object.freeze({
+          leaseId: lease.leaseId,
+          role: lease.role,
+          nodeId: node.nodeId,
+          bindingId: node.bindingId,
+          assignmentGeneration: lease.assignmentGeneration,
+          admissionDigest: node.admission.digest,
+          capabilitiesDigest: node.admission.capabilitiesDigest,
+          expiresAt: lease.expiresAt,
+        });
+      });
+    },
+
     async renewLease(leaseId, ownerDigestValue, optionsValue = {}) {
       if (typeof leaseId !== "string" || !LEASE_ID.test(leaseId)) fail("WORKER_DIRECTORY_INVALID", "worker leaseId is invalid.", { status: 400 });
       const ownerDigest = safeDigest(ownerDigestValue, "worker lease ownerDigest");
