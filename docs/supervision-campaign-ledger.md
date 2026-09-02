@@ -675,3 +675,28 @@ demonstrated evidence from inferred recommendations, and finished normally.
 The retained trace contains no completion-evidence rejection or forced
 source-mutation loop. Focused completion, evidence, progressive-tool, runtime,
 and dynamic-budget suites plus the full npm suite pass for `0.20.303`.
+
+### Response-only context compaction after provider handoff
+
+`response-only-context-handoff-092` exercises a high-risk continuation boundary
+for DeepSeek-first operation with LocalLLM fallback. Recent same-session
+response-only evidence showed DeepSeek quota failures followed by LocalLLM
+resume attempts that failed before inference because the retained transcript
+exceeded the LocalLLM context window. Normal agent-step requests already had a
+local context-budget compaction retry, but the explicit response-only branch
+called the direct-response client without that recovery path.
+
+AgInTiFlow now catches only `LOCALLLM_CONTEXT_BUDGET_EXCEEDED` in the
+response-only branch, compacts the authoritative retained goal/evidence once,
+persists `model.local_context_budget_exceeded` and
+`history.compacted_for_local_context_retry`, and retries the same response-only
+request with a bounded output reserve. The source-free evidence guard remains
+active after compaction, so unsupported publication, validation, forecast,
+benchmark, or metric claims still retry once and then fail closed.
+
+The focused regression seeds a DeepSeek-owned response-only session, inflates
+retained same-session context, resumes with a normal "answer from the saved
+status" prompt, triggers a DeepSeek quota handoff, and verifies that LocalLLM is
+called only after compaction. The run completes without `session.failed`, keeps
+the provider handoff active on the same session, and records the compaction
+events as durable evidence.

@@ -4155,6 +4155,72 @@ function responseOnlySourceFreeStopResult(assessment = {}) {
 }
 
 async function finishWithResponseOnlyModelTurn({ client, config, state, store, observers, sessionId }) {
+  async function requestWithResponseOnlyLocalContextRecovery({ step, mode }) {
+    try {
+      return await requestDirectResponse(client, config, state.messages);
+    } catch (error) {
+      if (!isLocalContextBudgetError(error)) throw error;
+      state.meta = state.meta || {};
+      const retried = state.meta.localContextBudgetRetries || {};
+      const retryKey = `response-only:${mode}`;
+      if (retried[retryKey]) throw error;
+
+      const requestMessages = Array.isArray(state.messages) ? state.messages : [];
+      const currentOutputTokens = Math.max(0, Number(config.maxOutputTokens || 0));
+      const retryOutputTokens = currentOutputTokens
+        ? Math.min(currentOutputTokens, 4096)
+        : 4096;
+      const retryRuntimeConfig = {
+        ...config,
+        maxOutputTokens: retryOutputTokens,
+      };
+      const compactMessages = buildContextBudgetCompactionMessages(
+        state,
+        retryRuntimeConfig,
+        null,
+        step,
+        {
+          heading: "A response-only LocalLLM request exceeded the local context window.",
+          detail: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+          recoveryInstruction:
+            "Answer the current response-only request directly from the compacted authoritative context above. Do not claim fresh external evidence unless the compacted context contains a current evidence manifest or scoped tool evidence.",
+        }
+      );
+      const detail = {
+        step,
+        mode,
+        provider: config.provider,
+        model: config.model,
+        messageCharsBefore: countMessageChars(requestMessages),
+        messageCharsAfter: countMessageChars(compactMessages),
+        messageTokensBefore: estimateMessageTokens(requestMessages),
+        messageTokensAfter: estimateMessageTokens(compactMessages),
+        maxOutputTokens: retryOutputTokens,
+        error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+      };
+      state.messages = compactMessages;
+      resetStaticDiscoveryAfterContextLoss(state, "response-only-local-context-budget-retry", {
+        preserveStaticEvidence: true,
+      });
+      state.meta.localContextBudgetRetries = {
+        ...retried,
+        [retryKey]: true,
+      };
+      state.meta.lastResponseOnlyContextBudgetRecovery = detail;
+      await store.appendEvent("model.local_context_budget_exceeded", detail);
+      await store.appendEvent("history.compacted_for_local_context_retry", detail);
+      observers.event("model.local_context_budget_exceeded", detail);
+      observers.event("history.compacted_for_local_context_retry", detail);
+      emitConsole(
+        config,
+        "Local provider context exceeded its configured window for a response-only turn; compacted authoritative context and retrying once.",
+        { kind: "meta" }
+      );
+      await store.saveState(state);
+      return await requestDirectResponse(client, retryRuntimeConfig, state.messages);
+    }
+  }
+
   await store.appendEvent("model.requested", {
     step: 1,
     provider: config.provider,
@@ -4168,7 +4234,10 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     mode: "response-only",
   });
 
-  const response = await requestDirectResponse(client, config, state.messages);
+  const response = await requestWithResponseOnlyLocalContextRecovery({
+    step: 1,
+    mode: "response-only",
+  });
   const rawAssistantMessage = response.choices[0]?.message;
   let result = responseOnlyResultFromMessage(rawAssistantMessage);
   let finalAssistantMessage = rawAssistantMessage;
@@ -4208,7 +4277,10 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       model: config.model,
       mode: "response-only-repair",
     });
-    const repairResponse = await requestDirectResponse(client, config, state.messages);
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: 2,
+      mode: "response-only-repair",
+    });
     finalAssistantMessage = repairResponse.choices[0]?.message;
     result = responseOnlyResultFromMessage(finalAssistantMessage);
     sourceFreeAssessment = await assessResponseOnlySourceFreeClaims({

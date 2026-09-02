@@ -496,6 +496,183 @@ assert.equal(
   1
 );
 
+async function runResponseOnlyContextBudgetHandoffScenario() {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-response-only-context-handoff-"));
+  const workspace = path.join(tempRoot, "workspace");
+  const sessionsDir = path.join(tempRoot, "sessions");
+  const projectSessionsDir = path.join(workspace, ".aginti-sessions");
+  const sessionId = "response-only-context-handoff";
+  await fs.mkdir(workspace, { recursive: true });
+
+  const requests = [];
+  let phase = "seed";
+  const clientFactory = async (config) => ({
+    chat: {
+      completions: {
+        create: async (payload) => {
+          requests.push({
+            phase,
+            provider: config.provider,
+            model: payload.model,
+            messages: payload.messages.length,
+          });
+          if (phase === "resume" && config.provider === "deepseek") {
+            throw Object.assign(new Error("402 Insufficient Balance"), { status: 402 });
+          }
+          return assistant(
+            phase === "seed"
+              ? "Seed response-only status saved."
+              : "No fresh evidence is available; I can only give an unverified local summary of the saved status."
+          );
+        },
+      },
+    },
+  });
+  clientFactory.agintiDeterministicTest = true;
+
+  const buildConfig = ({ goal, provider, model, resume = false }) => {
+    const config = resolveRuntimeConfig(
+      {
+        goal,
+        provider,
+        model,
+        routeProvider: provider,
+        routeModel: model,
+        mainProvider: provider,
+        mainModel: model,
+        spareProvider: provider,
+        spareModel: model,
+        routingMode: "smart",
+        taskProfile: "research",
+        commandCwd: workspace,
+      },
+      {
+        baseDir: workspace,
+        packageDir: repoRoot,
+        sessionId,
+        clientFactory,
+        providerReadinessMode: "deterministic-test",
+        sandboxMode: "host",
+        useDockerSandbox: false,
+        allowShellTool: false,
+        allowFileTools: false,
+        allowWrapperTools: false,
+        allowAuxiliaryTools: false,
+        allowWebSearch: false,
+        allowMcpTools: false,
+        allowParallelScouts: false,
+        enableScs: "off",
+      }
+    );
+    Object.assign(config, {
+      apiKey: "deterministic-hosted-test",
+      clientFactory,
+      providerReadinessMode: "deterministic-test",
+      sessionsDir,
+      projectSessionsDir,
+      useDockerSandbox: false,
+      sandboxMode: "host",
+      allowShellTool: false,
+      allowFileTools: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowParallelScouts: false,
+      enableScs: "off",
+      scsActive: false,
+      dynamicSteps: "off",
+      maxSteps: 4,
+      modelTimeoutMs: 1_000,
+      resume: resume ? sessionId : "",
+      sessionId,
+    });
+    return config;
+  };
+
+  try {
+    await runAgent(buildConfig({
+      goal: [
+        "Save a short response-only seed for a later same-session fallback test.",
+        `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+          mode: "host-managed-response",
+          request: "Save a short response-only seed for a later same-session fallback test.",
+        })}`,
+      ].join("\n"),
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+    }));
+
+    const store = new SessionStore(sessionsDir, sessionId, {
+      projectRoot: workspace,
+      commandCwd: workspace,
+      projectSessionsDir,
+    });
+    const state = await store.loadState();
+    const retainedBulk = "Retained same-session status evidence from earlier work. ".repeat(4500);
+    state.messages.push({ role: "assistant", content: retainedBulk });
+    state.chat.push({
+      role: "assistant",
+      content: retainedBulk,
+      at: new Date().toISOString(),
+    });
+    state.updatedAt = new Date().toISOString();
+    await store.saveState(state);
+
+    phase = "resume";
+    const request =
+      "Can you just answer from the saved status in this same session? Keep it short; no tools needed.";
+    const result = await runAgent(buildConfig({
+      goal: [
+        request,
+        `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+          mode: "host-managed-response",
+          request,
+        })}`,
+      ].join("\n"),
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      resume: true,
+    }));
+    return {
+      result,
+      state: await store.loadState(),
+      events: await store.loadEvents(),
+      requests,
+    };
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+const responseOnlyContextHandoff = await runResponseOnlyContextBudgetHandoffScenario();
+assert.equal(responseOnlyContextHandoff.result.stopped, undefined);
+assert.deepEqual(
+  responseOnlyContextHandoff.requests.map((item) => `${item.phase}:${item.provider}`),
+  ["seed:deepseek", "resume:deepseek", "resume:localllm"],
+  "response-only same-session handoff did not compact and retry on LocalLLM"
+);
+assert.equal(responseOnlyContextHandoff.state.provider, "localllm");
+assert.equal(responseOnlyContextHandoff.state.model, "localllm-deep");
+assert.equal(responseOnlyContextHandoff.state.meta.providerHandoff.status, "active");
+assert.equal(
+  responseOnlyContextHandoff.events.filter((event) => event.type === "provider.handoff_activated").length,
+  1
+);
+assert.equal(
+  responseOnlyContextHandoff.events.filter((event) => event.type === "model.local_context_budget_exceeded").length,
+  1
+);
+assert.equal(
+  responseOnlyContextHandoff.events.filter((event) => event.type === "history.compacted_for_local_context_retry").length,
+  1
+);
+assert.equal(
+  responseOnlyContextHandoff.events.filter((event) => event.type === "session.failed").length,
+  0,
+  "response-only context recovery still failed the session before completion"
+);
+
 const manual = await runScenario({ routingMode: "manual", sessionId: "manual-provider-exact" });
 assert(manual.error);
 assert.equal(manual.factoryConfigs.length, 1);
