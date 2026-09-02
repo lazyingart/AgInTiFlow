@@ -10,7 +10,7 @@ export const INTEGRATION_EXECUTION_WORKER_BINDING_CONFIG_SCHEMA_VERSION =
 export const INTEGRATION_EXECUTION_WORKER_BINDING_SCHEMA_VERSION =
   "aginti-integration-execution-worker-binding-v1";
 export const INTEGRATION_EXECUTION_WORKER_BINDING_CONFIG_PATH =
-  "/etc/agintiflow/execution-worker-bindings.json";
+  "/etc/agintiflow-integration/execution-worker-bindings.json";
 export const INTEGRATION_EXECUTION_WORKER_FIXED_CREDENTIAL_NAME = "execution-worker-token";
 export const INTEGRATION_EXECUTION_WORKER_MAXIMUM_BINDINGS = 16;
 export const INTEGRATION_EXECUTION_WORKER_LAZYEDGE_PORT_RANGE = Object.freeze({

@@ -42,7 +42,7 @@ The router revalidates the worker capability digest against the admitted node ev
 
 ## Current limitation and next integration step
 
-Production composition prefers the routed coordinator when `/etc/agintiflow/execution-worker-bindings.json` exists. It falls back to the fixed loopback client only when that file is absent. An unsafe, malformed, changed, or internally conflicting manifest fails startup; it never causes a silent downgrade. Activation still requires an initial directory assignment and real restart/cutover evidence.
+Production composition prefers the routed coordinator when `/etc/agintiflow-integration/execution-worker-bindings.json` exists. It falls back to the fixed loopback client only when that file is absent. An unsafe, malformed, changed, or internally conflicting manifest fails startup; it never causes a silent downgrade. Activation still requires an initial directory assignment and real restart/cutover evidence.
 
 The manifest is secret-free but security-sensitive and must be a canonical, non-symlinked, single-link `0600` file in a trusted, non-writable directory. Each binding contains only:
 

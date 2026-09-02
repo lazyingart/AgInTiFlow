@@ -50,7 +50,10 @@ assert.deepEqual(validated.bindings.map(({ bindingId }) => bindingId), [edge.bin
 assert.match(validated.digest, /^[a-f0-9]{64}$/u);
 assert.equal(Object.isFrozen(validated), true);
 assert.equal(Object.isFrozen(validated.bindings), true);
-assert.equal(INTEGRATION_EXECUTION_WORKER_BINDING_CONFIG_PATH, "/etc/agintiflow/execution-worker-bindings.json");
+assert.equal(
+  INTEGRATION_EXECUTION_WORKER_BINDING_CONFIG_PATH,
+  "/etc/agintiflow-integration/execution-worker-bindings.json"
+);
 
 reject((candidate) => { candidate.endpoint = "http://attacker.invalid"; });
 reject((candidate) => { candidate.bindings[0].url = "http://attacker.invalid"; });
