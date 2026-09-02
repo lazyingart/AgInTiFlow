@@ -1,9 +1,14 @@
 import { types as utilTypes } from "node:util";
 
-import { assertExecutionWorkerClient } from "./execution-worker-client.js";
+import {
+  assertExecutionWorkerClient,
+  createSystemdBoundExecutionWorkerClient,
+} from "./execution-worker-client.js";
+import { loadIntegrationExecutionWorkerBindingConfig } from "./integration-execution-worker-binding-config.js";
 import {
   IntegrationWorkerDirectoryError,
   assertIntegrationWorkerDirectory,
+  createWorkerAdmission,
 } from "./integration-worker-directory.js";
 import { contractDigest } from "./integration-policy.js";
 
@@ -129,6 +134,74 @@ export function createTestOnlyExecutionWorkerBindingAuthority(entriesValue) {
   return authority;
 }
 
+export async function createSystemdExecutionWorkerBindingAuthority(...args) {
+  if (args.length !== 0) {
+    fail("EXECUTION_BINDING_CONFIG_SOURCE_FORBIDDEN", "production binding authority accepts no overrides.");
+  }
+  const config = await loadIntegrationExecutionWorkerBindingConfig();
+  const bindings = new Map(config.bindings.map((binding) => [binding.bindingId, binding]));
+  const clients = new Map();
+  const proofUnsigned = Object.freeze({
+    schemaVersion: INTEGRATION_EXECUTION_WORKER_BINDING_AUTHORITY_SCHEMA_VERSION,
+    owner: "aginti",
+    authority: "systemd-loadcredential-manifest",
+    systemOwnedBindings: true,
+    callerSelectableBinding: false,
+    callerSelectableEndpoint: false,
+    callerSelectableCredential: false,
+    bindingConfigDigest: config.digest,
+    bindingSetDigest: contractDigest([...bindings.keys()].sort()),
+  });
+  async function open(route) {
+    const id = bindingId(route?.bindingId);
+    const binding = bindings.get(id);
+    if (!binding) fail("EXECUTION_BINDING_UNAVAILABLE", "execution worker binding is unavailable.");
+    let client = clients.get(id);
+    if (!client) {
+      client = assertExecutionWorkerClient(await createSystemdBoundExecutionWorkerClient(binding), {
+        requireSystemdCredential: true,
+      });
+      clients.set(id, client);
+    }
+    return client;
+  }
+  const authority = Object.freeze({
+    attestation: Object.freeze({ ...proofUnsigned, digest: contractDigest(proofUnsigned) }),
+    open,
+    async probe(candidate) {
+      if (!candidate?.roles || contractDigest(candidate.roles) !== contractDigest(["execution"])) {
+        fail("EXECUTION_BINDING_INVALID", "execution binding probe requires the exact execution role.");
+      }
+      const binding = bindings.get(bindingId(candidate.bindingId));
+      if (!binding) fail("EXECUTION_BINDING_UNAVAILABLE", "execution worker binding is unavailable.");
+      const client = await open({ bindingId: binding.bindingId });
+      const capabilities = await client.capabilities();
+      const observedAt = new Date();
+      return createWorkerAdmission(candidate, {
+        transport: binding.transport,
+        releaseId: `${capabilities.implementation}-${capabilities.implementationVersion}`,
+        releaseDigest: contractDigest({
+          workerId: capabilities.workerId,
+          implementation: capabilities.implementation,
+          implementationVersion: capabilities.implementationVersion,
+          runtimeBundleRootDigest: capabilities.runtime.runtimeBundleRootDigest,
+        }),
+        capabilitiesDigest: capabilities.capabilityDigest,
+        canaryDigest: capabilities.healthDigest,
+        protocols: ["aginti-execution-worker-api-v1", capabilities.coordinatorProtocol.schemaVersion],
+        observedAt: observedAt.toISOString(),
+        expiresAt: new Date(observedAt.valueOf() + 5 * 60_000).toISOString(),
+      });
+    },
+    close() {
+      for (const client of clients.values()) client.close();
+      clients.clear();
+    },
+  });
+  BINDING_AUTHORITY_BRAND.add(authority);
+  return authority;
+}
+
 export function createIntegrationExecutionWorkerRouter(optionsValue) {
   const options = exactObject(
     optionsValue,
@@ -146,6 +219,7 @@ export function createIntegrationExecutionWorkerRouter(optionsValue) {
     leaseTtlMs: INTEGRATION_EXECUTION_WORKER_LEASE_TTL_MS,
     directoryAttestationDigest: directory.attestation.stateRootDigest,
     bindingAuthorityAttestationDigest: bindingAuthority.attestation.digest,
+    credentialSource: bindingAuthority.attestation.authority,
     leasePinsWorkerForEntireOperation: true,
     assignmentSwitchAffectsNewLeasesOnly: true,
     capabilityDigestRevalidated: true,

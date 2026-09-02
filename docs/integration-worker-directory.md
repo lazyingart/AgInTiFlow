@@ -1,6 +1,6 @@
 # Integration worker directory
 
-Status: the durable directory and leased execution-router path are implemented and smoke-tested. The binding authority is test-only; production still uses the fixed execution client.
+Status: the durable directory, leased execution router, fixed-manifest binding authority, and production preference path are implemented and smoke-tested. Production remains on the fixed client until a manifest and initial assignment are installed and accepted.
 
 AgInTi owns durable worker identity, role assignment, migration, rollback, drain, retirement, and removal. LazyEdge owns only authenticated transport and admission checks. LocalLLM and other worker services own their role-specific model or tool execution. Callers cannot choose a URL or credential.
 
@@ -42,7 +42,24 @@ The router revalidates the worker capability digest against the admitted node ev
 
 ## Current limitation and next integration step
 
-Production routing is intentionally unchanged. The production execution client still uses one fixed loopback worker. The next slice must load an owner-only binding manifest, resolve each opaque binding to a fixed loopback/LazyEdge transport plus a systemd credential, and construct a binding-attested execution client without accepting caller transport fields. Activation still requires restart and real two-worker cutover evidence.
+Production composition prefers the routed coordinator when `/etc/agintiflow/execution-worker-bindings.json` exists. It falls back to the fixed loopback client only when that file is absent. An unsafe, malformed, changed, or internally conflicting manifest fails startup; it never causes a silent downgrade. Activation still requires an initial directory assignment and real restart/cutover evidence.
+
+The manifest is secret-free but security-sensitive and must be a canonical, non-symlinked, single-link `0600` file in a trusted, non-writable directory. Each binding contains only:
+
+```json
+{
+  "schemaVersion": "aginti-integration-execution-worker-binding-v1",
+  "bindingId": "binding_local_workstation_01",
+  "transport": "local-loopback-http-v1",
+  "host": "127.0.0.1",
+  "port": 18130,
+  "credentialName": "execution-worker-token"
+}
+```
+
+The local binding is locked to `127.0.0.1:18130` and the existing fixed credential. LazyEdge bindings are also loopback-only from AgInTi's perspective and use reserved relay ports `18131` through `18194`, with distinct `execution-worker-binding-*` systemd credential names. Binding IDs, ports, and credential names must all be unique. Remote hosts, URLs, arbitrary ports, inline tokens, and caller-supplied credential names are rejected.
+
+The service unit must install every named credential with `LoadCredential=`. The binding client reads only the credential selected by a branded manifest record, validates the read-only systemd credential mount and file identity, then attests the binding ID, transport, manifest digest, and exact loopback endpoint. A manifest change requires a controlled service restart.
 
 The transition ledger currently refuses further transitions after its conservative capacity is reached rather than truncating audit history. Durable ledger segmentation is required before treating this coordinator as an unattended long-lived fleet registry.
 
@@ -55,3 +72,5 @@ npm run smoke:integration-worker-directory
 The directory smoke covers workstation-to-Jetson migration, live-lease drain blocking, two-way rollback, finalization, retirement/removal, persisted restart recovery, expired-lease sweeping, stale and mismatched admission rejection, caller endpoint/credential rejection, invalid randomness, and fail-closed corruption, symlink, and hardlink cases.
 
 `npm run smoke:integration-analysis-coordinator` additionally proves that an in-flight job stays pinned to worker A during a switch, finalization waits for its lease, the next job uses worker B, and capability/admission divergence fails closed without leaking a lease.
+
+`npm run smoke:integration-execution-worker-binding-config` covers manifest canonicalization, local and LazyEdge port policy, uniqueness, fixed-path loading, branded bindings, and rejection of URL/token/endpoint injection.

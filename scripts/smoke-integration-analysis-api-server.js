@@ -818,8 +818,8 @@ assert.match(
 );
 assert.match(
   serverCompositionSource,
-  /createSystemdIntegrationAnalysisCoordinator\(\{[\s\S]*?executionWorkerCredential:\s*options\.executionWorkerCredential/u,
-  "production composition must bind the already-validated execution-worker credential into the coordinator"
+  /createSystemdPreferredIntegrationAnalysisCoordinator\(\{[\s\S]*?executionWorkerCredential:\s*options\.executionWorkerCredential/u,
+  "production composition must bind the already-validated execution-worker credential into preferred routed-or-fixed coordination"
 );
 assert.match(
   serverCompositionSource,

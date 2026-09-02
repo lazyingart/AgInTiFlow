@@ -15,7 +15,10 @@ import {
 import {
   IntegrationExecutionWorkerRouterError,
   assertIntegrationExecutionWorkerRouter,
+  createIntegrationExecutionWorkerRouter,
+  createSystemdExecutionWorkerBindingAuthority,
 } from "./integration-execution-worker-router.js";
+import { createIntegrationWorkerDirectory } from "./integration-worker-directory.js";
 import { contractDigest, validateIntegrationRunId, validateIntegrationThreadId } from "./integration-policy.js";
 
 export const INTEGRATION_ANALYSIS_COORDINATOR_SCHEMA_VERSION = "aginti-integration-analysis-coordinator-v1";
@@ -271,7 +274,7 @@ function createCoordinator(clientOrRouter, { requireSystemdCredential, pollMs = 
     toolName: INTEGRATION_ANALYSIS_TOOL_NAME,
     fixedWorkerClientDigest: client?.attestation.digest ?? null,
     workerRouterDigest: router?.attestation.digest ?? null,
-    credentialSource: client?.attestation.credentialSource ?? "system-owned-binding-authority",
+    credentialSource: client?.attestation.credentialSource ?? router.attestation.credentialSource,
     publicActivationGated: true,
     aggregateContainmentGated: true,
     callerSelectableBinding: false,
@@ -447,7 +450,8 @@ export function assertIntegrationAnalysisCoordinator(value, { requireSystemdCred
   }
   if (
     requireSystemdCredential &&
-    value.attestation.credentialSource !== "systemd-loadcredential-fixed"
+    !new Set(["systemd-loadcredential-fixed", "systemd-loadcredential-manifest"])
+      .has(value.attestation.credentialSource)
   ) {
     throw new TypeError("integration analysis coordinator lacks its fixed worker-client binding");
   }
@@ -471,6 +475,43 @@ export async function createSystemdIntegrationAnalysisCoordinator(...args) {
     client = await createSystemdExecutionWorkerClient({ token: options.executionWorkerCredential });
   }
   return createCoordinator(client, { requireSystemdCredential: true });
+}
+
+export async function createSystemdRoutedIntegrationAnalysisCoordinator(...args) {
+  if (args.length !== 0) {
+    fail("EXECUTION_BINDING_CONFIG_SOURCE_FORBIDDEN", "production routed analysis coordinator accepts no overrides.");
+  }
+  const bindingAuthority = await createSystemdExecutionWorkerBindingAuthority();
+  try {
+    const directory = await createIntegrationWorkerDirectory({
+      probe: (candidate) => bindingAuthority.probe(candidate),
+    });
+    const router = createIntegrationExecutionWorkerRouter({ directory, bindingAuthority });
+    return createCoordinator(router, { requireSystemdCredential: true, routed: true });
+  } catch (error) {
+    bindingAuthority.close();
+    throw error;
+  }
+}
+
+export async function createSystemdPreferredIntegrationAnalysisCoordinator(...args) {
+  if (args.length !== 1) {
+    fail("EXECUTION_CREDENTIAL_SOURCE_FORBIDDEN", "production preferred analysis coordinator requires one fixed credential binding.");
+  }
+  const options = exactObject(
+    args[0],
+    ["executionWorkerCredential"],
+    ["executionWorkerCredential"],
+    "production preferred analysis coordinator credential binding"
+  );
+  try {
+    return await createSystemdRoutedIntegrationAnalysisCoordinator();
+  } catch (error) {
+    if (error?.code !== "EXECUTION_BINDING_CONFIG_MISSING") throw error;
+    return createSystemdIntegrationAnalysisCoordinator({
+      executionWorkerCredential: options.executionWorkerCredential,
+    });
+  }
 }
 
 export function createTestOnlyIntegrationAnalysisCoordinator(client, options = {}) {

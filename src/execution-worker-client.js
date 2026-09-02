@@ -27,6 +27,7 @@ import {
 import {
   INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY,
 } from "./integration-config.js";
+import { assertIntegrationExecutionWorkerBinding } from "./integration-execution-worker-binding-config.js";
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
 import { contractDigest } from "./integration-policy.js";
 
@@ -630,12 +631,8 @@ function sameFileSnapshot(before, after) {
   );
 }
 
-export async function loadExecutionWorkerSystemdCredential(...args) {
-  if (args.length !== 0) {
-    fail("EXECUTION_CREDENTIAL_SOURCE_FORBIDDEN", "execution worker credential source is fixed by systemd LoadCredential.");
-  }
+async function loadExecutionWorkerSystemdCredentialPath(credentialPath) {
   const directory = INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY;
-  const credentialPath = EXECUTION_WORKER_CREDENTIAL_PATH;
   let handle;
   try {
     if (path.resolve(directory) !== directory || path.resolve(credentialPath) !== credentialPath) {
@@ -720,7 +717,16 @@ export async function loadExecutionWorkerSystemdCredential(...args) {
   }
 }
 
-function createHttpRpc(token, agent) {
+export async function loadExecutionWorkerSystemdCredential(...args) {
+  if (args.length !== 0) {
+    fail("EXECUTION_CREDENTIAL_SOURCE_FORBIDDEN", "execution worker credential source is fixed by systemd LoadCredential.");
+  }
+  return loadExecutionWorkerSystemdCredentialPath(EXECUTION_WORKER_CREDENTIAL_PATH);
+}
+
+function createHttpRpc(token, agent, endpoint = {}) {
+  const host = endpoint.host ?? EXECUTION_WORKER_LISTEN_HOST;
+  const port = endpoint.port ?? EXECUTION_WORKER_LISTEN_PORT;
   return function requestRpc(pathname, body, { signal } = {}) {
     if (!Object.values(EXECUTION_WORKER_RPC_PATHS).includes(pathname)) {
       fail("EXECUTION_REQUEST_INVALID", "execution worker RPC path is not allowed.", { status: 400 });
@@ -758,8 +764,8 @@ function createHttpRpc(token, agent) {
       const cleanup = () => signal?.removeEventListener?.("abort", abort);
       const request = http.request({
         agent,
-        host: EXECUTION_WORKER_LISTEN_HOST,
-        port: EXECUTION_WORKER_LISTEN_PORT,
+        host,
+        port,
         method: "POST",
         path: pathname,
         headers: {
@@ -847,15 +853,21 @@ function unwrapApiEnvelope(value) {
   return envelope.response;
 }
 
-function createClient(requestRpc, credentialSource, closeTransport = () => {}) {
+function createClient(requestRpc, credentialSource, closeTransport = () => {}, binding = null) {
   if (typeof requestRpc !== "function") throw new TypeError("requestRpc must be a function");
+  const endpoint = binding
+    ? `http://${binding.host}:${binding.port}`
+    : `http://${EXECUTION_WORKER_LISTEN_HOST}:${EXECUTION_WORKER_LISTEN_PORT}`;
   const proofUnsigned = Object.freeze({
     schemaVersion: EXECUTION_WORKER_CLIENT_SCHEMA_VERSION,
     owner: "aginti",
     authority: "aginti",
-    endpoint: `http://${EXECUTION_WORKER_LISTEN_HOST}:${EXECUTION_WORKER_LISTEN_PORT}`,
+    endpoint,
     apiPrefix: "/executor/v1",
     credentialSource,
+    bindingId: binding?.bindingId ?? null,
+    transport: binding?.transport ?? "local-loopback-http-v1",
+    bindingConfigDigest: binding?.configDigest ?? null,
     browserConfigurable: false,
     modelConfigurable: false,
   });
@@ -934,8 +946,12 @@ function createClient(requestRpc, credentialSource, closeTransport = () => {}) {
 
 export function assertExecutionWorkerClient(value, { requireSystemdCredential = false } = {}) {
   if (!value || !CLIENT_BRAND.has(value)) throw new TypeError("execution worker client is not an AgInTi-owned client");
-  if (requireSystemdCredential && value.attestation.credentialSource !== "systemd-loadcredential-fixed") {
-    throw new TypeError("execution worker client does not use the fixed systemd credential");
+  if (
+    requireSystemdCredential &&
+    !new Set(["systemd-loadcredential-fixed", "systemd-loadcredential-binding"])
+      .has(value.attestation.credentialSource)
+  ) {
+    throw new TypeError("execution worker client does not use a systemd credential");
   }
   return value;
 }
@@ -966,6 +982,25 @@ export async function createSystemdExecutionWorkerClient(...args) {
   }
   const agent = new http.Agent({ keepAlive: true, maxSockets: 2, maxFreeSockets: 1, timeout: 5_000 });
   return createClient(createHttpRpc(token, agent), "systemd-loadcredential-fixed", () => agent.destroy());
+}
+
+export async function createSystemdBoundExecutionWorkerClient(bindingValue) {
+  const binding = assertIntegrationExecutionWorkerBinding(bindingValue);
+  const credentialPath = path.join(INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY, binding.credentialName);
+  if (
+    path.dirname(credentialPath) !== INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY ||
+    path.basename(credentialPath) !== binding.credentialName
+  ) {
+    fail("EXECUTION_CREDENTIAL_INVALID", "execution worker binding credential path is invalid.");
+  }
+  const token = await loadExecutionWorkerSystemdCredentialPath(credentialPath);
+  const agent = new http.Agent({ keepAlive: true, maxSockets: 2, maxFreeSockets: 1, timeout: 5_000 });
+  return createClient(
+    createHttpRpc(token, agent, binding),
+    "systemd-loadcredential-binding",
+    () => agent.destroy(),
+    binding
+  );
 }
 
 export function createTestOnlyExecutionWorkerClient(requestRpc) {

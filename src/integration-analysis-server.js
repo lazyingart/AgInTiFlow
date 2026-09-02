@@ -12,7 +12,7 @@ import {
   createActivatedIntegrationAnalysisRouter,
   createIntegrationAnalysisRouterActivation,
 } from "./integration-api.js";
-import { createSystemdIntegrationAnalysisCoordinator } from "./integration-analysis-coordinator.js";
+import { createSystemdPreferredIntegrationAnalysisCoordinator } from "./integration-analysis-coordinator.js";
 import { createIntegrationAnalysisPlanner } from "./integration-analysis-planner.js";
 import { createIntegrationAnalysisSessionService } from "./integration-analysis-session-service.js";
 import { createIntegrationAnalysisVisionClient } from "./integration-analysis-vision.js";
@@ -654,7 +654,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
   let sessionService;
   let server;
   try {
-    coordinator = await createSystemdIntegrationAnalysisCoordinator({
+    coordinator = await createSystemdPreferredIntegrationAnalysisCoordinator({
       executionWorkerCredential: options.executionWorkerCredential,
     });
     const documentWorkerClient = documentCredentialPresent
