@@ -80,6 +80,7 @@ import {
   recordAlreadyCommittedRepositoryRepair,
   recordDurableEvidenceCategories,
   recordProjectVerificationOutcome,
+  recordFailedCommandAttempt,
   repositoryStateInspectionCommand,
   recordExactOutputProgress,
   recordStaticDiscoveryProgress,
@@ -94,6 +95,7 @@ import {
   forbiddenCurrentTestRerunBlock,
   unchangedFailedTestRerunBlock,
   repeatedNoProgressToolBlock,
+  runCommandResultHasDurableProgress,
   redundantCadValidationAliasPatchBlock,
   regressiveInversePatchBlock,
   repeatedSuccessfulMutationBlock,
@@ -11158,6 +11160,74 @@ try {
       { commandCwd: workspace }
     )?.category === "repeated-no-progress-call",
     "dynamic failure output allowed an unchanged failing command to loop"
+  );
+  assertStrict.equal(
+    runCommandResultHasDurableProgress({
+      toolName: "run_command",
+      ok: true,
+      commandPolicy: {
+        category: "general-shell",
+        writesWorkspace: true,
+      },
+    }),
+    false,
+    "a conservatively broad shell policy fabricated durable workspace progress"
+  );
+  assertStrict.equal(
+    runCommandResultHasDurableProgress({
+      toolName: "run_command",
+      ok: true,
+      commandPolicy: {
+        category: "general-shell",
+        writesWorkspace: true,
+      },
+      projectMutationPaths: ["src/example.js"],
+    }),
+    true,
+    "an observed shell mutation did not count as durable workspace progress"
+  );
+  const compactedFailureLoop = {
+    stagnationEpoch: 4,
+    recent: [],
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    recordFailedCommandAttempt(compactedFailureLoop, {
+      signature: repeatedProbeState.meta.toolLoop.recent[0].signature,
+      toolName: "run_command",
+      ok: false,
+      blocked: false,
+      noProgressProbe: true,
+      outcomeFingerprint: `failure-${attempt}`,
+      stagnationEpoch: 4,
+      goalRevision: 1,
+      mutationRevision: 0,
+    });
+  }
+  const compactedRepeatedFailureState = {
+    meta: {
+      toolLoop: compactedFailureLoop,
+    },
+  };
+  assert(
+    repeatedNoProgressToolBlock(
+      compactedRepeatedFailureState,
+      "run_command",
+      repeatedProbeArgs,
+      { commandCwd: workspace }
+    )?.category === "repeated-no-progress-call",
+    "bounded failed-command history was lost after recent tool history rolled off"
+  );
+  const compactedFailureAfterMutation = structuredClone(compactedRepeatedFailureState);
+  compactedFailureAfterMutation.meta.toolLoop.stagnationEpoch = 5;
+  assertStrict.equal(
+    repeatedNoProgressToolBlock(
+      compactedFailureAfterMutation,
+      "run_command",
+      repeatedProbeArgs,
+      { commandCwd: workspace }
+    ),
+    null,
+    "a verified later state change did not release retained failed-command history"
   );
   const newlyAuthoritativeVerificationState = structuredClone(repeatedFailureState);
   newlyAuthoritativeVerificationState.meta.projectVerification = {
