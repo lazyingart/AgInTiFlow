@@ -11017,13 +11017,83 @@ function noProgressOutcomeFingerprint(toolResult = {}) {
   }));
 }
 
+function canvasNoProgressTarget(args = {}, config = {}) {
+  const rawPath = String(args?.path || "").trim();
+  if (rawPath) {
+    const normalized = comparableOutputPath(
+      rawPath,
+      config.commandCwd || process.cwd()
+    );
+    return `path:${normalized}`;
+  }
+  const content = String(args?.content || "");
+  if (content) return `content:${hashForLog(content)}`;
+  return "";
+}
+
+function canvasNoProgressTargetFromEntry(entry = {}, config = {}) {
+  if (entry?.semanticSignature) return String(entry.semanticSignature);
+  const error = String(entry?.error || "");
+  const match = error.match(/Canvas path does not exist or is not a file:\s*(.+)$/i);
+  if (!match?.[1]) return "";
+  return `path:${comparableOutputPath(
+    match[1].trim(),
+    config.commandCwd || process.cwd()
+  )}`;
+}
+
+function canvasTargetExists(args = {}, config = {}) {
+  const rawPath = String(args?.path || "").trim();
+  if (!rawPath) return false;
+  const candidates = path.isAbsolute(rawPath)
+    ? [rawPath]
+    : [path.resolve(config.commandCwd || process.cwd(), rawPath)];
+  return candidates.some((candidate) => {
+    try {
+      return fsSync.statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function repeatedNoProgressToolBlock(state, toolName, args = {}, config = {}) {
-  if (toolName !== "run_command" || expectedRepeatedObservationCommand(args.command)) return null;
   const toolLoop = state.meta?.toolLoop || {};
+  const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
+  if (toolName === "send_to_canvas") {
+    if (canvasTargetExists(args, config)) return null;
+    const target = canvasNoProgressTarget(args, config);
+    if (!target) return null;
+    const matches = (Array.isArray(toolLoop.recent) ? toolLoop.recent : []).filter(
+      (entry) =>
+        entry?.toolName === "send_to_canvas" &&
+        entry?.ok === false &&
+        Number(entry?.stagnationEpoch || 0) === stagnationEpoch &&
+        canvasNoProgressTargetFromEntry(entry, config) === target
+    );
+    if (matches.length < 2) return null;
+    return {
+      reason:
+        "The same canvas artifact target already failed twice without an intervening file, artifact, browser, or task-state change.",
+      category: "repeated-no-progress-call",
+      permissionAdvice: {
+        category: "repeated-no-progress-call",
+        autoRecover: true,
+        summary: "This is a missing-artifact convergence guard, not a permission blocker.",
+        instruction:
+          "Do not retry the same missing path with a different title or note. Create or repair the exact artifact with an offered tool, return its durable source path for host processing, or finish with the concrete missing-artifact blocker.",
+        options: [
+          "Create the exact file before sending it to canvas.",
+          "Return a complete editable source so the host can compile the derived artifact.",
+          "Finish with the exact missing path when no enabled tool can create it.",
+        ],
+      },
+    };
+  }
+  if (toolName !== "run_command" || expectedRepeatedObservationCommand(args.command)) return null;
   const signature = staticToolCallSignature(toolName, args || {}, {
     commandCwd: config.commandCwd,
   });
-  const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
   const requestedCommand = projectTestCommandKey(
     normalizeLeadingWorkspaceCd(args.command, config)
   );
@@ -19751,6 +19821,11 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
     staticDiscovery: isStaticDiscoveryToolResult(toolResult),
     successfulMutation: successfulToolStateProgress(toolResult),
     noProgressProbe: Boolean(outcomeFingerprint),
+    semanticSignature:
+      toolResult.toolName === "send_to_canvas"
+        ? canvasNoProgressTarget(toolResult.args || {}, config) ||
+          canvasNoProgressTargetFromEntry(toolResult, config)
+        : "",
     generatedArtifactProducerAttempt: Boolean(
       toolResult.toolName === "run_command" &&
         config.generatedArtifactProducerPending === true &&
@@ -21428,6 +21503,8 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
             blocked: true,
             reason: normalized.reason,
             toolName: "send_to_canvas",
+            args: safeArgs,
+            category: "canvas",
           };
         }
 
@@ -21450,6 +21527,8 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
             blocked: true,
             reason: persisted.reason,
             toolName: "send_to_canvas",
+            args: safeArgs,
+            category: "canvas",
           };
         }
 
