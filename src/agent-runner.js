@@ -5058,6 +5058,58 @@ export function normalizeNoMatchQueryResult(result = {}, policy = {}) {
   };
 }
 
+function runtimeFlagDisabled(value) {
+  if (value === false || value === 0) return true;
+  return /^(false|off|no|0)$/i.test(String(value ?? "").trim());
+}
+
+function exactTmuxListSessionsShellAlias(command = "") {
+  const canonical = canonicalizeShellCommand(command);
+  if (!canonical || canonical.includes("\n")) return null;
+  const sequence = parseTopLevelShellSequence(canonical);
+  if (
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator ||
+    sequence.commands.length !== 1
+  ) {
+    return null;
+  }
+  const tokens = tokenizeShellWords(sequence.commands[0]).map((token) =>
+    String(token || "")
+  );
+  if (tokens.length === 1 && tokens[0] === "tmux_list_sessions") {
+    return { command: canonical, alias: "tool-name-as-shell-command" };
+  }
+  if (
+    tokens.length === 2 &&
+    tokens[0] === "tmux" &&
+    (tokens[1] === "list-sessions" || tokens[1] === "ls")
+  ) {
+    return { command: canonical, alias: "tmux-readonly-list-command" };
+  }
+  return null;
+}
+
+function recoverRunCommandTmuxListAlias(requestedToolName, args = {}, config = {}) {
+  if (requestedToolName !== "run_command") return null;
+  if (
+    runtimeFlagDisabled(config.allowShellTool) ||
+    runtimeFlagDisabled(config.allowTmuxTools) ||
+    runtimeFlagDisabled(config.allowCoordinationTools)
+  ) {
+    return null;
+  }
+  const alias = exactTmuxListSessionsShellAlias(args.command);
+  if (!alias) return null;
+  return {
+    requestedToolName,
+    toolName: "tmux_list_sessions",
+    reason: alias.alias,
+    originalCommand: alias.command,
+  };
+}
+
 function hashForLog(value) {
   return crypto.createHash("sha256").update(String(value ?? "")).digest("hex");
 }
@@ -20505,6 +20557,14 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           path: imagePath,
           prompt: "Inspect this exact generated image as verification evidence. Describe the visible content, readability, clipping, labels, scale, and any defects that require repair.",
         };
+  }
+  const tmuxListAliasCorrection = !autoCorrection
+    ? recoverRunCommandTmuxListAlias(requestedToolName, args, config)
+    : null;
+  if (tmuxListAliasCorrection) {
+    toolName = tmuxListAliasCorrection.toolName;
+    args = { includePanes: true };
+    autoCorrection = tmuxListAliasCorrection;
   }
   const repositoryCommitPaths = [
     ...(Array.isArray(config.repositoryStateRepairCommitPaths)

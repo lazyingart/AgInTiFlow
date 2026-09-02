@@ -19,6 +19,7 @@ import {
   evaluateSourceFreeResponseClaims,
   finishResultClaimsIncompleteWork,
 } from "../src/scs-evidence.js";
+import { tmuxAvailable } from "../src/tmux-tools.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-truthful-completion-"));
@@ -859,6 +860,118 @@ try {
     ),
     "permission blocker triggered an SCS replan instead of waiting for approval"
   );
+
+  if (await tmuxAvailable()) {
+    const tmuxAliasRecovery = await runCase({
+      id: "tmux-shell-alias-recovery",
+      goal: "Check durable host tmux sessions and report whether any sessions exist.",
+      taskProfile: "auto",
+      executionTier: "focused",
+      allowShellTool: true,
+      responses: [
+        assistant("", [toolCall("tmux-as-shell", "run_command", { command: "tmux_list_sessions" })]),
+        assistant("", [
+          toolCall("finish-tmux-alias", "finish", {
+            result: "Checked durable host tmux sessions through the native tmux listing tool.",
+          }),
+        ]),
+      ],
+    });
+    assert.equal(tmuxAliasRecovery.calls.length, 2);
+    assert.equal(tmuxAliasRecovery.result.stopped, undefined);
+    assert(
+      tmuxAliasRecovery.events.some(
+        (event) =>
+          event.type === "tool.auto_corrected" &&
+          event.data?.requestedToolName === "run_command" &&
+          event.data?.toolName === "tmux_list_sessions" &&
+          event.data?.originalCommand === "tmux_list_sessions"
+      ),
+      "run_command tmux_list_sessions alias was not recovered to the native tmux tool"
+    );
+    assert(
+      tmuxAliasRecovery.events.some(
+        (event) =>
+          event.type === "tool.started" &&
+          event.data?.toolName === "tmux_list_sessions" &&
+          event.data?.requestedToolName === "run_command"
+      ),
+      "native tmux listing was not started with original requested tool evidence"
+    );
+    assert(
+      tmuxAliasRecovery.events.some(
+        (event) =>
+          event.type === "tool.completed" &&
+          event.data?.toolName === "tmux_list_sessions"
+      ),
+      "native tmux listing did not complete after alias recovery"
+    );
+    assert(
+      !tmuxAliasRecovery.events.some(
+        (event) => event.type === "tool.started" && event.data?.toolName === "run_command"
+      ),
+      "tmux alias recovery still dispatched the generic shell command"
+    );
+    assert(
+      !tmuxAliasRecovery.events.some(
+        (event) => event.type === "session.stopped" && event.data?.reason === "permission_required"
+      ),
+      "tmux alias recovery still paused on shell permission"
+    );
+
+    const tmuxReadonlyCommandRecovery = await runCase({
+      id: "tmux-readonly-command-recovery",
+      goal: "List durable host tmux sessions using the available coordination tool.",
+      taskProfile: "auto",
+      executionTier: "focused",
+      allowShellTool: true,
+      responses: [
+        assistant("", [toolCall("tmux-command-as-shell", "run_command", { command: "tmux list-sessions" })]),
+        assistant("", [
+          toolCall("finish-tmux-command", "finish", {
+            result: "Checked durable host tmux sessions through the native tmux listing tool.",
+          }),
+        ]),
+      ],
+    });
+    assert.equal(tmuxReadonlyCommandRecovery.result.stopped, undefined);
+    assert(
+      tmuxReadonlyCommandRecovery.events.some(
+        (event) =>
+          event.type === "tool.auto_corrected" &&
+          event.data?.toolName === "tmux_list_sessions" &&
+          event.data?.originalCommand === "tmux list-sessions"
+      ),
+      "exact tmux list-sessions shell command was not recovered"
+    );
+    assert(
+      !tmuxReadonlyCommandRecovery.events.some(
+        (event) => event.type === "tool.started" && event.data?.toolName === "run_command"
+      ),
+      "exact tmux list-sessions recovery still dispatched run_command"
+    );
+
+    const tmuxMutationStillBlocked = await runCase({
+      id: "tmux-mutating-command-still-blocked",
+      goal: "Try to create a tmux session through the generic shell.",
+      taskProfile: "auto",
+      executionTier: "focused",
+      allowShellTool: true,
+      responses: [
+        assistant("", [
+          toolCall("tmux-mutating-shell", "run_command", {
+            command: "tmux new-session -d -s should-not-autocorrect",
+          }),
+        ]),
+      ],
+    });
+    assert.equal(tmuxMutationStillBlocked.result.stopped, true);
+    assert.equal(tmuxMutationStillBlocked.result.reason, "permission_required");
+    assert(
+      !tmuxMutationStillBlocked.events.some((event) => event.type === "tool.auto_corrected"),
+      "mutating tmux shell command was incorrectly auto-corrected"
+    );
+  }
 
   const reasoningTruncation = await runCase({
     id: "reasoning-only-tool-continuation",

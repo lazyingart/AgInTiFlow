@@ -721,3 +721,22 @@ repository and report whether a README exists. The scripted DeepSeek-shaped
 response calls `inspect_project` with `reason` plus a real `limit`; the persisted
 runtime dispatches the inspection, records zero tool-contract failures, and
 finishes with the verified README status without mutating the workspace.
+
+### Native tmux recovery from generic shell aliases
+
+`tmux-run-command-native-recovery-094` covers a reusable coordination-tool
+handoff gap seen in recent retained runtime evidence. A normal supervision
+prompt selected the host tmux tool bundle, but the provider tried the native
+tool name `tmux_list_sessions` and later `tmux list-sessions` through
+`run_command`. AgInTiFlow treated those as generic shell commands, producing a
+host permission pause or shell failure instead of using the already offered
+native tmux listing tool.
+
+The runtime now auto-corrects only exact read-only tmux session-list aliases
+from `run_command` to `tmux_list_sessions` before shell guardrails run. It
+records `tool.auto_corrected`, preserves the original requested tool in
+`tool.started`, dispatches no generic shell command, and leaves arbitrary tmux
+startup/send/mutation shell commands blocked by the existing permission policy.
+The focused persisted-runtime regression verifies both exact aliases and the
+negative mutating command case; the tmux guardrail, progressive-tool,
+provider-handoff, syntax, package-audit, dry-pack, and full npm suites pass.
