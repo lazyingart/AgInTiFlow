@@ -10956,11 +10956,12 @@ function expectedRepeatedObservationCommand(command = "") {
   );
 }
 
-function runCommandResultHasDurableProgress(toolResult = {}) {
+export function runCommandResultHasDurableProgress(toolResult = {}) {
   const policy = toolResult.commandPolicy || {};
   const policyAllowsMutation =
-    policy.mayMutateProject === true ||
-    (policy.mayMutateProject === undefined && policy.writesWorkspace === true);
+    policy.semanticMayMutateProject !== false &&
+    (policy.mayMutateProject === true ||
+      (policy.mayMutateProject === undefined && policy.writesWorkspace === true));
   return Boolean(
     policyAllowsMutation ||
       policy.substantiveTest === true ||
@@ -10969,6 +10970,54 @@ function runCommandResultHasDurableProgress(toolResult = {}) {
       (Array.isArray(toolResult.verifiedGeneratedOutputPaths) &&
         toolResult.verifiedGeneratedOutputPaths.length > 0)
   );
+}
+
+function failedCommandAttempt(toolLoop = {}, signature = "", stagnationEpoch = 0) {
+  return (Array.isArray(toolLoop.failedCommandAttempts)
+    ? toolLoop.failedCommandAttempts
+    : []
+  ).find(
+    (entry) =>
+      entry?.signature === signature &&
+      Number(entry?.stagnationEpoch || 0) === Number(stagnationEpoch || 0)
+  );
+}
+
+export function recordFailedCommandAttempt(toolLoop = {}, entry = {}) {
+  if (
+    entry?.toolName !== "run_command" ||
+    entry?.ok !== false ||
+    entry?.blocked === true ||
+    entry?.noProgressProbe !== true ||
+    !entry?.signature
+  ) {
+    return null;
+  }
+  toolLoop.failedCommandAttempts = Array.isArray(toolLoop.failedCommandAttempts)
+    ? toolLoop.failedCommandAttempts
+    : [];
+  const prior = failedCommandAttempt(
+    toolLoop,
+    entry.signature,
+    entry.stagnationEpoch
+  );
+  if (prior) {
+    prior.count = Math.max(0, Number(prior.count || 0)) + 1;
+    prior.lastOutcomeFingerprint = String(entry.outcomeFingerprint || "");
+    prior.lastAt = String(entry.at || new Date().toISOString());
+  } else {
+    toolLoop.failedCommandAttempts.push({
+      signature: entry.signature,
+      count: 1,
+      stagnationEpoch: Math.max(0, Number(entry.stagnationEpoch || 0)),
+      goalRevision: Math.max(0, Number(entry.goalRevision || 0)),
+      mutationRevision: Math.max(0, Number(entry.mutationRevision || 0)),
+      lastOutcomeFingerprint: String(entry.outcomeFingerprint || ""),
+      lastAt: String(entry.at || new Date().toISOString()),
+    });
+  }
+  toolLoop.failedCommandAttempts = toolLoop.failedCommandAttempts.slice(-40);
+  return prior || toolLoop.failedCommandAttempts.at(-1);
 }
 
 function isStaticDiscoveryToolResult(toolResult = {}) {
@@ -11163,6 +11212,30 @@ export function repeatedNoProgressToolBlock(state, toolName, args = {}, config =
       Number(entry?.stagnationEpoch || 0) === stagnationEpoch &&
       Boolean(entry?.outcomeFingerprint)
   );
+  const retainedFailure = failedCommandAttempt(
+    toolLoop,
+    signature,
+    stagnationEpoch
+  );
+  if (Number(retainedFailure?.count || 0) >= 2) {
+    return {
+      reason:
+        "The same command already failed twice without an intervening verified workspace, artifact, browser, or task-state change.",
+      category: "repeated-no-progress-call",
+      permissionAdvice: {
+        category: "repeated-no-progress-call",
+        autoRecover: true,
+        summary: "This is a failed-command convergence guard, not a permission blocker.",
+        instruction:
+          "Do not rerun the command or a cosmetically equivalent form. Use the retained failure evidence, change the command or repair the implicated source, then run the smallest relevant validation.",
+        options: [
+          "Choose the correct compiler, interpreter, working directory, or command flags from the observed failure.",
+          "Apply one bounded source repair that addresses the failure, then rerun validation.",
+          "Finish with a concrete external blocker only when no enabled tool can make progress.",
+        ],
+      },
+    };
+  }
   if (matches.length < 2) return null;
   const repeatedFailures = matches.slice(-2).every((entry) => entry?.ok === false);
   if (repeatedFailures) {
@@ -19847,6 +19920,7 @@ async function applyToolLoopGuard(state, toolResult, store, observers, config = 
   };
   state.meta.toolLoop.recent.push(entry);
   state.meta.toolLoop.recent = state.meta.toolLoop.recent.slice(-20);
+  recordFailedCommandAttempt(state.meta.toolLoop, entry);
 
   const activeRefresh = activePatchContextRefresh(state);
   if (requiredPatchContextRefresh && !activeRefresh) {

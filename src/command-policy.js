@@ -137,6 +137,25 @@ function isReadOnlyDiffCommand(command = "") {
   );
 }
 
+function isReadOnlyXargsListFilter(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (hasActiveShellExpansion(normalized)) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (!tokens.length || tokens[0] !== "xargs") return false;
+  let index = 1;
+  while (
+    ["-0", "--null", "-r", "--no-run-if-empty"].includes(tokens[index])
+  ) {
+    index += 1;
+  }
+  if (tokens[index] !== "ls") return false;
+  return tokens.slice(index + 1).every((token) =>
+    /^(?:-[A-Za-z0-9]+|--(?:all|almost-all|directory|inode|long|numeric-uid-gid|reverse|size|human-readable))$/.test(
+      token
+    )
+  );
+}
+
 function isReadOnlyFindCommand(command = "") {
   const normalized = stripBenignRedirections(command);
   if (!/^find\s+/.test(normalized)) return false;
@@ -207,6 +226,16 @@ function isReadOnlyFindCommand(command = "") {
     return false;
   }
   return parenthesisDepth === 0 && maxDepth !== null;
+}
+
+function isNonMutatingFindCommand(command = "") {
+  const normalized = stripBenignRedirections(command);
+  if (!/^find\s+/.test(normalized)) return false;
+  if (/(^|\s)(-delete|-exec|-execdir|-ok|-okdir|-fprint|-fprintf|-fls)\b/.test(normalized)) {
+    return false;
+  }
+  const unquoted = stripQuotedSegments(normalized);
+  return !/[|<>;&`$]/.test(unquoted) && !hasActiveShellExpansion(normalized);
 }
 
 function isUnboundedRecursiveGrep(command = "") {
@@ -1860,6 +1889,7 @@ function classifySimpleCommand(normalized) {
     isReadOnlyUniqFilter(commandForPatternMatching) ||
     isReadOnlyDigestCommand(commandForPatternMatching) ||
     isReadOnlyDiffCommand(commandForPatternMatching) ||
+    isReadOnlyXargsListFilter(commandForPatternMatching) ||
     isReadOnlyFindCommand(normalized) ||
     (!hasActiveShellExpansion(benignRedirectCommand) && isReadOnlyShellCondition(benignRedirectCommand))
   ) {
@@ -1919,6 +1949,17 @@ function classifySimpleCommand(normalized) {
   }
   if (matchAny(ENV_SETUP_PATTERNS, commandForPatternMatching)) {
     return { category: "env-setup", needsNetwork: false, writesWorkspace: true };
+  }
+
+  if (isNonMutatingFindCommand(commandForPatternMatching)) {
+    return {
+      category: "general-shell",
+      needsNetwork: false,
+      writesWorkspace: true,
+      semanticMayMutateProject: false,
+      reason:
+        "Unbounded find inspection remains under trusted shell policy but cannot mutate project state.",
+    };
   }
 
   return {
@@ -2770,6 +2811,13 @@ function classifyPipelineSequence(normalized) {
     category: "general-shell",
     needsNetwork: classifications.some((classification) => classification.needsNetwork),
     writesWorkspace: classifications.some((classification) => classification.writesWorkspace),
+    ...(classifications.every(
+      (classification) =>
+        classification.category === "read-only" ||
+        classification.semanticMayMutateProject === false
+    )
+      ? { semanticMayMutateProject: false }
+      : {}),
     reason: `Shell pipeline includes a broad segment and requires trusted shell policy: ${normalized}`,
   };
 }
