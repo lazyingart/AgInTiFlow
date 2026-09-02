@@ -341,6 +341,161 @@ assert.equal(smart.events.filter((event) => event.type === "provider.handoff_req
 assert.equal(smart.events.filter((event) => event.type === "provider.handoff_activated").length, 1);
 assert.equal(smart.events.filter((event) => event.type === "session.failed").length, 0);
 
+async function runSourceFreeResponseOnlyHandoffScenario({
+  sessionId,
+  localResponses,
+}) {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-source-free-handoff-"));
+  const workspace = path.join(tempRoot, "workspace");
+  const sessionsDir = path.join(tempRoot, "sessions");
+  const projectSessionsDir = path.join(workspace, ".aginti-sessions");
+  await fs.mkdir(workspace, { recursive: true });
+
+  const requests = [];
+  const clientFactory = async (config) => ({
+    chat: {
+      completions: {
+        create: async (payload) => {
+          requests.push({ provider: config.provider, model: payload.model });
+          if (config.provider === "deepseek") {
+            throw Object.assign(new Error("402 Insufficient Balance"), { status: 402 });
+          }
+          const content = localResponses.shift();
+          assert.notEqual(content, undefined, "source-free handoff scenario exhausted scripted LocalLLM responses");
+          return assistant(content);
+        },
+      },
+    },
+  });
+  clientFactory.agintiDeterministicTest = true;
+
+  const request =
+    "Correct the prior research response using the host-managed evidence scope. No tools are available in this run.";
+  const goal = [
+    request,
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "host-managed-response",
+      request,
+    })}`,
+  ].join("\n");
+  const config = resolveRuntimeConfig(
+    {
+      goal,
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      routeProvider: "deepseek",
+      routeModel: "deepseek-v4-flash",
+      mainProvider: "deepseek",
+      mainModel: "deepseek-v4-pro",
+      spareProvider: "deepseek",
+      spareModel: "deepseek-v4-pro",
+      routingMode: "smart",
+      taskProfile: "research",
+      commandCwd: workspace,
+    },
+    {
+      baseDir: workspace,
+      packageDir: repoRoot,
+      sessionId,
+      clientFactory,
+      providerReadinessMode: "deterministic-test",
+      sandboxMode: "host",
+      useDockerSandbox: false,
+      allowShellTool: false,
+      allowFileTools: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowParallelScouts: false,
+      enableScs: "off",
+    }
+  );
+  Object.assign(config, {
+    apiKey: "deterministic-hosted-test",
+    clientFactory,
+    providerReadinessMode: "deterministic-test",
+    sessionsDir,
+    projectSessionsDir,
+    useDockerSandbox: false,
+    sandboxMode: "host",
+    enableScs: "off",
+    scsActive: false,
+    dynamicSteps: "off",
+    maxSteps: 4,
+    modelTimeoutMs: 1000,
+  });
+
+  try {
+    const result = await runAgent(config);
+    const store = new SessionStore(sessionsDir, sessionId, {
+      projectRoot: workspace,
+      commandCwd: workspace,
+      projectSessionsDir,
+    });
+    return {
+      result,
+      state: await store.loadState(),
+      events: await store.loadEvents(),
+      requests,
+    };
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+const unsafeSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-handoff-fail-closed",
+  localResponses: [
+    "2025年Nature子刊预印本未公开，已有初步验证，响应延迟低于100ms，并预测2026年底前上线。",
+    "This is unverified. The Nature publication was validated in 2025 on a 12,000-case benchmark with 94.2% accuracy.",
+  ],
+});
+assert.equal(unsafeSourceFreeHandoff.result.stopped, true);
+assert.equal(unsafeSourceFreeHandoff.result.reason, "source_free_evidence_required");
+assert.deepEqual(
+  unsafeSourceFreeHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "source-free response-only handoff did not retry exactly once on LocalLLM"
+);
+assert.equal(unsafeSourceFreeHandoff.state.meta.providerHandoff.status, "active");
+assert.equal(
+  unsafeSourceFreeHandoff.events.filter((event) => event.type === "response_only.source_free_claim_rejected").length,
+  1
+);
+assert.equal(
+  unsafeSourceFreeHandoff.events.filter((event) => event.type === "response_only.source_free_claim_failed_closed").length,
+  1
+);
+assert.equal(
+  unsafeSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
+  0,
+  "unsafe source-free response-only claim was persisted as a finished session"
+);
+assert.equal(
+  /Nature|94\.2%|100ms|2025年/.test(unsafeSourceFreeHandoff.result.result),
+  false,
+  "fail-closed response leaked the unsupported source-free claim text"
+);
+
+const repairedSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-handoff-repaired",
+  localResponses: [
+    "The paper was published in 2025 and validated on a 12,000-case benchmark with 94.2% accuracy.",
+    "No fresh evidence is available, so this is an unverified hypothesis only: I cannot verify any publication, benchmark, validation, or forecast claim from this run.",
+  ],
+});
+assert.equal(repairedSourceFreeHandoff.result.stopped, undefined);
+assert.match(repairedSourceFreeHandoff.result.result, /cannot verify/i);
+assert.equal(
+  repairedSourceFreeHandoff.events.filter((event) => event.type === "response_only.source_free_claim_repaired").length,
+  1
+);
+assert.equal(
+  repairedSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
 const manual = await runScenario({ routingMode: "manual", sessionId: "manual-provider-exact" });
 assert(manual.error);
 assert.equal(manual.factoryConfigs.length, 1);

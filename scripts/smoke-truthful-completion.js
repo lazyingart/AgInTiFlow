@@ -14,7 +14,11 @@ import {
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { SessionStore } from "../src/session-store.js";
-import { deriveScsTaskContract, finishResultClaimsIncompleteWork } from "../src/scs-evidence.js";
+import {
+  deriveScsTaskContract,
+  evaluateSourceFreeResponseClaims,
+  finishResultClaimsIncompleteWork,
+} from "../src/scs-evidence.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-truthful-completion-"));
@@ -178,6 +182,114 @@ assert.equal(
   ),
   true,
   "agent-owned pending validation was accepted as a completed result"
+);
+
+const sourceFreeResearchGoal = [
+  "Correct the research status from the host-managed response context.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Correct the research status from the host-managed response context.",
+  })}`,
+].join("\n");
+const unsafeSourceFreeClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "The publication appeared in 2025 and was validated on a 12,000-case benchmark with 94.2% accuracy.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  unsafeSourceFreeClaim.ok,
+  false,
+  "source-free response-only output accepted unsupported external factual claims"
+);
+assert(unsafeSourceFreeClaim.categories.includes("publication"));
+assert(unsafeSourceFreeClaim.categories.includes("benchmark_or_metric"));
+const unsafeChineseSourceFreeClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "这是未验证的背景说明。2025年Nature子刊预印本未公开，已有初步验证，响应延迟低于100ms，并预测2026年底前上线。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  unsafeChineseSourceFreeClaim.ok,
+  false,
+  "Chinese source-free response-only output accepted publication, validation, metric, or forecast claims"
+);
+assert(unsafeChineseSourceFreeClaim.categories.includes("publication"));
+assert(unsafeChineseSourceFreeClaim.categories.includes("validation"));
+assert(unsafeChineseSourceFreeClaim.categories.includes("benchmark_or_metric"));
+assert(unsafeChineseSourceFreeClaim.categories.includes("forecast"));
+const unsafeJapaneseSourceFreeClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "2026年末までに公開される見込みで、査読済み研究によりレイテンシ80ms未満が検証済みです。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  unsafeJapaneseSourceFreeClaim.ok,
+  false,
+  "Japanese source-free response-only output accepted publication, validation, metric, or forecast claims"
+);
+assert(unsafeJapaneseSourceFreeClaim.categories.includes("forecast"));
+assert(unsafeJapaneseSourceFreeClaim.categories.includes("validation"));
+assert(unsafeJapaneseSourceFreeClaim.categories.includes("benchmark_or_metric"));
+const framedHypothesisClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "Without fresh evidence, this is an unverified hypothesis only: the result may need a new literature check before any publication or benchmark claim is trusted.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  framedHypothesisClaim.ok,
+  true,
+  "explicit unverified hypothesis framing was rejected for source-free response-only output"
+);
+const locallyDeniedChineseClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "没有本次新证据，这只是未验证假设：无法验证Nature子刊、2025年发表、已有验证或100ms延迟等说法。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  locallyDeniedChineseClaim.ok,
+  true,
+  "local Chinese unverifiable/hypothesis framing was rejected"
+);
+const separatedUnverifiedClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "This paragraph is unverified. The Nature publication appeared in 2025 and validation reached 94.2% accuracy.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  separatedUnverifiedClaim.ok,
+  false,
+  "a generic unverified phrase in one sentence governed a separate unsupported factual claim"
+);
+const ordinaryPureChat = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "A recursive function needs a base case so it can stop.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  ordinaryPureChat.ok,
+  true,
+  "ordinary source-free pure chat was incorrectly rejected"
+);
+const sourcedResponseOnlyClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "The retained manifest says the benchmark accuracy is 94.2%.",
+  evidenceLedger: {
+    itemCount: 1,
+    categories: ["command"],
+    items: [{ category: "command", verified: true }],
+  },
+});
+assert.equal(
+  sourcedResponseOnlyClaim.ok,
+  true,
+  "response-only output with current scoped evidence was rejected"
 );
 
 const staleCompletionRepair =

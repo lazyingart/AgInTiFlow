@@ -1825,6 +1825,191 @@ export function isResponseOnlyEvidenceScope(goal = "") {
   return ["chat-response", "host-managed-response", "plan-response", "read-only-answer"].includes(mode);
 }
 
+function responseOnlyScopeHasFreshEvidenceManifest(goal = "") {
+  const payload = parseAgintiEvidenceScope(goal);
+  if (!payload || typeof payload !== "object") return false;
+  const manifestCandidates = [
+    payload.evidenceManifest,
+    payload.evidence_manifest,
+    payload.freshEvidenceManifest,
+    payload.fresh_evidence_manifest,
+    payload.sourceManifest,
+    payload.source_manifest,
+    payload.manifestDigest,
+    payload.manifest_digest,
+    payload.evidenceDigest,
+    payload.evidence_digest,
+    payload.sourceDigest,
+    payload.source_digest,
+  ];
+  return manifestCandidates.some((item) => {
+    if (typeof item === "string") return item.trim().length >= 12;
+    if (item && typeof item === "object") return Object.keys(item).length > 0;
+    return Array.isArray(item) && item.length > 0;
+  });
+}
+
+function sourceFreeResponseHasEvidence(ledger = {}) {
+  if (!ledger || typeof ledger !== "object") return false;
+  if (Number(ledger.itemCount || 0) > 0) return true;
+  if (Array.isArray(ledger.items) && ledger.items.some((item) => item?.verified !== false)) return true;
+  if (Array.isArray(ledger.categories) && ledger.categories.length > 0) return true;
+  return false;
+}
+
+function sourceFreeClaimSegments(text = "") {
+  return String(text || "")
+    .split(/(?:[\n\r]+|(?<=[.!?。！？;；]))/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function sourceFreeClaimSegmentHasExplicitUnverifiedFraming(text = "") {
+  const value = String(text || "");
+  const admitsNoEvidence =
+    /\b(?:unverified|not\s+verified|cannot\s+verify|can't\s+verify|could\s+not\s+verify|no\s+(?:fresh\s+)?(?:evidence|sources?|manifest)|without\s+(?:fresh\s+)?(?:evidence|sources?|manifest))\b/iu.test(
+      value
+    ) ||
+    /(?:没有|沒有|无|無|缺少|未获得|未取得|未取得到)(?:新鲜|新鮮|当前|當前|本次|新的)?(?:证据|證據|来源|來源|资料|資料|文献|文獻|检索|檢索|材料)/u.test(
+      value
+    ) ||
+    /(?:无法|無法|不能|未能|没法|沒法)(?:在本次|从本次|從本次)?(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明|支持)/u.test(
+      value
+    ) ||
+    /(?:証拠|出典|根拠|資料|ソース)(?:が)?(?:ない|ありません|不足)|(?:検証|確認|裏付け)(?:できない|されていない|できません)|未検証/u.test(
+      value
+    );
+  const framesAsHypothesis =
+    /\b(?:hypothesis|hypotheses|speculative|speculation|not\s+(?:a\s+)?(?:verified|evidence-backed|source-backed)\s+claim)\b/iu.test(
+      value
+    ) ||
+    /(?:假设|假說|推测|推測|猜测|猜測|臆测|臆測|未验证|未經驗證|未经验证|未核实|未核實)/u.test(
+      value
+    ) ||
+    /(?:仮説|推測|憶測|未検証|未確認)/u.test(value);
+  return admitsNoEvidence && framesAsHypothesis;
+}
+
+function sourceFreeClaimSegmentDeniesVerification(text = "") {
+  const value = String(text || "");
+  return (
+    /\b(?:cannot|can't|could\s+not|do\s+not|don't|unable\s+to|not\s+able\s+to|no\s+(?:fresh\s+)?(?:evidence|source|manifest)\s+to|without\s+(?:fresh\s+)?(?:evidence|sources?|manifest),?\s+(?:i\s+)?(?:cannot|can't|could\s+not)?)\b[^.!?;。！？；\n]{0,140}\b(?:verify|confirm|substantiate|support|validate|prove|claim)\b/iu.test(
+      value
+    ) ||
+    /(?:无法|無法|不能|未能|没法|沒法|不应|不應|不能够|不能夠|没有证据|沒有證據|无证据|無證據)[^。！？；\n]{0,80}(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明|支持|声称|聲稱|断言|斷言)/u.test(
+      value
+    ) ||
+    /(?:検証|確認|裏付け|断言|主張)(?:できない|できません|されていない)|(?:証拠|出典|根拠)(?:が)?(?:ない|ありません)[^。！？；\n]{0,60}(?:検証|確認|主張|断言)/u.test(
+      value
+    )
+  );
+}
+
+function sourceFreeExternalClaimCategoriesForSegment(text = "") {
+  const value = String(text || "");
+  if (!value.trim()) return [];
+  const categories = [];
+  const add = (category, pattern) => {
+    pattern.lastIndex = 0;
+    if (pattern.test(value)) categories.push(category);
+  };
+  add(
+    "publication",
+    /\b(?:paper|study|article|preprint|publication|manuscript|dataset|trial|journal|conference|arxiv|doi|nature|science|cell)\b[^.!?;。！？；\n]{0,140}\b(?:published|appeared|released|accepted|reported|found|showed|demonstrated|validated)\b|\b(?:published|accepted|released)\b[^.!?;。！？；\n]{0,80}\b(?:paper|study|article|preprint|publication|manuscript|dataset|trial|journal|conference|arxiv|doi|nature|science|cell)\b|(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|数据集|資料集|データセット|論文|研究|プレプリント|ジャーナル)[^.!?;。！？；\n]{0,80}(?:发表|發表|刊登|出版|公开|公開|收录|收録|发布|發布|掲載|発表|公開|出版)|(?:发表|發表|刊登|出版|公开|公開|收录|收録|发布|發布|掲載|発表|公開|出版)[^.!?;。！？；\n]{0,80}(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|数据集|資料集|データセット|論文|研究|プレプリント|ジャーナル)/iu
+  );
+  add(
+    "year",
+    /\b(?:published|released|announced|accepted|reported|validated|verified|evaluated|benchmarked|forecast(?:ed)?|projected|predicted)\b[^.!?;。！？；\n]{0,100}\b(?:19|20)\d{2}\b|\b(?:19|20)\d{2}\b[^.!?;。！？；\n]{0,100}\b(?:publication|paper|study|article|benchmark|forecast|projection|dataset|trial|validation|release)\b|(?:19|20)\d{2}\s*年?[^.!?;。！？；\n]{0,80}(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|发表|發表|发布|發布|预测|預測|预计|預計|验证|驗證|基准|基準|指标|指標|論文|研究|発表|公開|掲載|予測|検証|ベンチマーク)|(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|发表|發表|发布|發布|预测|預測|预计|預計|验证|驗證|基准|基準|指标|指標|論文|研究|発表|公開|掲載|予測|検証|ベンチマーク)[^.!?;。！？；\n]{0,80}(?:19|20)\d{2}\s*年?/iu
+  );
+  add(
+    "validation",
+    /\b(?:validated|verified|proven|confirmed|replicated|peer-reviewed|source-backed|evidence-backed|grounded\s+in\s+(?:sources?|evidence)|the\s+evidence\s+(?:shows|confirms|validates|proves))\b|(?:已有|已经|已經|已经有|已經有|已|初步|经过|經過|得到|获得|獲得)[^。！？；\n]{0,20}(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明)|(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明)(?:通过|通過|完成|成功|结果|結果)|(?:検証済み|確認済み|実証済み|裏付けられた|査読済み)/iu
+  );
+  add(
+    "forecast",
+    /\b(?:forecast|forecasted|predict(?:s|ed|ion)?|project(?:s|ed|ion)?|expected\s+to|will\s+(?:reach|increase|decrease|grow|decline|outperform|underperform)|cagr)\b|(?:预测|預測|预计|預計|估计|估計|推算|推測|到\s*(?:19|20)\d{2}\s*年?(?:底|末)?(?:前|之前)?|(?:19|20)\d{2}\s*年?(?:底|末)?(?:前|之前)?[^。！？；\n]{0,40}(?:将|將|会|會|预计|預計|预测|預測))|(?:予測|予想|見込み|推定|年末まで|までに)/iu
+  );
+  add(
+    "benchmark_or_metric",
+    /\b(?:benchmark(?:ed|s)?|metric|score|accuracy|precision|recall|f1|auc|bleu|rouge|latency|throughput|validated\s+on|evaluated\s+on)\b[^.!?;。！？；\n]{0,100}\b\d[\d,.]*(?:\s*(?:%|percent|cases?|subjects?|participants?|patients?|samples?|records?|tokens?\/s|requests?\/s|ms|seconds?|x))?\b|\b\d[\d,.]*(?:\.\d+)?\s*(?:%|percent|cases?|subjects?|participants?|patients?|samples?|records?|benchmarks?|tokens?\/s|requests?\/s|ms|seconds?)\b[^.!?;。！？；\n]{0,100}\b(?:accuracy|validated|verified|benchmark|forecast|prediction|projection|reliable|better|improved|increase|decrease)\b|(?:响应延迟|響應延遲|响应时间|響應時間|延迟|延遲|准确率|準確率|精度|召回|吞吐|基准|基準|指标|指標|分数|分數|反応遅延|レイテンシ|精度|ベンチマーク|指標|スコア)[^。！？；\n]{0,60}\d[\d,.]*(?:\s*(?:%|％|ms|毫秒|秒|例|个|個|件|倍|x))?|\d[\d,.]*(?:\.\d+)?\s*(?:%|％|ms|毫秒|秒|例|个|個|件|倍|x)[^。！？；\n]{0,60}(?:响应延迟|響應延遲|响应时间|響應時間|延迟|延遲|准确率|準確率|精度|召回|吞吐|基准|基準|指标|指標|分数|分數|反応遅延|レイテンシ|精度|ベンチマーク|指標|スコア)/iu
+  );
+  add(
+    "external_evidence",
+    /\b(?:according\s+to|as\s+reported\s+by|sources?\s+(?:show|say|indicate|confirm|report)|cit(?:e|ation|ed)|doi\s*[:/]|arxiv\s*[:/]|the\s+(?:paper|study|source|evidence)\s+(?:shows|states|reports|confirms|validates))\b|(?:根据|根據|据|據|来源|來源|资料|資料|证据|證據|文献|文獻|论文|論文|引用)[^。！？；\n]{0,50}(?:显示|顯示|表明|指出|报道|報道|证明|證明|验证|驗證|确认|確認)|(?:によると|出典|証拠|根拠|引用|論文|研究)[^。！？；\n]{0,50}(?:示す|示した|報告|確認|検証)/iu
+  );
+  return unique(categories);
+}
+
+function sourceFreeExternalClaimAssessment(text = "") {
+  const segments = sourceFreeClaimSegments(text);
+  const categories = [];
+  const unsupported = [];
+  for (const segment of segments) {
+    const segmentCategories = sourceFreeExternalClaimCategoriesForSegment(segment);
+    if (!segmentCategories.length) continue;
+    categories.push(...segmentCategories);
+    const deniesVerification = sourceFreeClaimSegmentDeniesVerification(segment);
+    const explicitlyUnverified = sourceFreeClaimSegmentHasExplicitUnverifiedFraming(segment);
+    const assertsEvidence = segmentCategories.some((category) =>
+      ["validation", "external_evidence"].includes(category)
+    );
+    if (!deniesVerification && (assertsEvidence || !explicitlyUnverified)) {
+      unsupported.push({
+        categories: segmentCategories,
+        preview: compact(segment, 240),
+      });
+    }
+  }
+  return {
+    categories: unique(categories),
+    unsupported,
+    explicitlyUnverified:
+      categories.length > 0 &&
+      unsupported.length === 0 &&
+      segments.some((segment) => sourceFreeClaimSegmentHasExplicitUnverifiedFraming(segment)),
+  };
+}
+
+export function evaluateSourceFreeResponseClaims({
+  goal = "",
+  candidateResult = "",
+  evidenceLedger = {},
+} = {}) {
+  if (!isResponseOnlyEvidenceScope(goal)) {
+    return {
+      checked: false,
+      ok: true,
+      reason: "Not a response-only evidence scope.",
+      categories: [],
+      hasEvidence: false,
+      explicitlyUnverified: false,
+    };
+  }
+  const hasEvidence =
+    responseOnlyScopeHasFreshEvidenceManifest(goal) ||
+    sourceFreeResponseHasEvidence(evidenceLedger);
+  const claimAssessment = sourceFreeExternalClaimAssessment(candidateResult);
+  const categories = claimAssessment.categories;
+  const unsupportedClaims = claimAssessment.unsupported;
+  const explicitlyUnverified = claimAssessment.explicitlyUnverified;
+  const ok = hasEvidence || categories.length === 0 || unsupportedClaims.length === 0;
+  return {
+    checked: true,
+    ok,
+    reason: ok
+      ? hasEvidence
+        ? "Current scoped evidence is available for response-only factual claims."
+        : explicitlyUnverified
+          ? "Every source-free external claim is locally framed as unverified hypothesis or unverifiable."
+          : "No source-grounded external claim was detected."
+      : `Source-free response-only output claimed external facts without current evidence: ${categories.join(", ")}.`,
+    categories,
+    unsupportedClaims,
+    hasEvidence,
+    explicitlyUnverified,
+  };
+}
+
 export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
   const payload = parseAgintiEvidenceScope(goal);
   if (!payload) {

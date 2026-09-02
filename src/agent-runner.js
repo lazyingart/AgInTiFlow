@@ -140,6 +140,7 @@ import {
   evaluateScsSemanticContract,
   evaluateRequestedArtifactRequirements,
   augmentScsTaskContractWithProjectVerification,
+  evaluateSourceFreeResponseClaims,
   agintiEvidenceScopeLine,
   filterExplicitlyExcludedOutputPaths,
   extractMarkdownCommandEvidence,
@@ -4099,6 +4100,60 @@ async function finishWithDirectAnswer({ config, state, store, observers, session
   };
 }
 
+function responseOnlyResultFromMessage(message = {}) {
+  if (!message) {
+    throw new Error("Response-only model request returned no assistant message.");
+  }
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+    throw new Error("Response-only model request returned an unexpected tool call.");
+  }
+  const result = redactSensitiveText(message.content || "").trim();
+  if (!result) {
+    throw new Error("Response-only model request returned empty content.");
+  }
+  return result;
+}
+
+async function assessResponseOnlySourceFreeClaims({ config, state, store, result }) {
+  const scoped = currentContinuationEvidence(state, await store.loadEvents());
+  const ledger = buildScsEvidenceLedger({
+    state: scoped.state,
+    context: {
+      events: scoped.events,
+      taskProfile: config.taskProfile,
+      goal: config.goal,
+    },
+  });
+  return evaluateSourceFreeResponseClaims({
+    goal: completionContractGoal(config, state),
+    candidateResult: result,
+    evidenceLedger: ledger,
+  });
+}
+
+function responseOnlySourceFreeRepairInstruction(assessment = {}) {
+  const categories = Array.isArray(assessment.categories) && assessment.categories.length
+    ? assessment.categories.join(", ")
+    : "external factual claims";
+  return [
+    "No fresh AgInTi evidence manifest or scoped tool evidence is available for this response-only turn.",
+    `Your previous answer asserted unsupported external facts (${categories}).`,
+    "Do not claim publications, years, validation, forecasts, benchmarks, quantitative metrics, citations, or source-backed conclusions.",
+    "This includes multilingual claim wording such as 已有验证, 预测, 検証済み, or 予測.",
+    "Return a concise answer that is explicitly framed as an unverified hypothesis, or state that the requested external claim cannot be verified from this run.",
+  ].join(" ");
+}
+
+function responseOnlySourceFreeStopResult(assessment = {}) {
+  const categories = Array.isArray(assessment.categories) && assessment.categories.length
+    ? assessment.categories.join(", ")
+    : "external factual claims";
+  return [
+    "No result: this response-only turn has no fresh AgInTi evidence manifest or scoped tool evidence.",
+    `I cannot verify the requested ${categories} from this run. Resume with an evidence-producing research/tool scope or provide a fresh evidence manifest.`,
+  ].join(" ");
+}
+
 async function finishWithResponseOnlyModelTurn({ client, config, state, store, observers, sessionId }) {
   await store.appendEvent("model.requested", {
     step: 1,
@@ -4115,15 +4170,108 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
 
   const response = await requestDirectResponse(client, config, state.messages);
   const rawAssistantMessage = response.choices[0]?.message;
-  if (!rawAssistantMessage) {
-    throw new Error("Response-only model request returned no assistant message.");
-  }
-  if (Array.isArray(rawAssistantMessage.tool_calls) && rawAssistantMessage.tool_calls.length) {
-    throw new Error("Response-only model request returned an unexpected tool call.");
-  }
-  const result = redactSensitiveText(rawAssistantMessage.content || "").trim();
-  if (!result) {
-    throw new Error("Response-only model request returned empty content.");
+  let result = responseOnlyResultFromMessage(rawAssistantMessage);
+  let finalAssistantMessage = rawAssistantMessage;
+  let sourceFreeAssessment = await assessResponseOnlySourceFreeClaims({
+    config,
+    state,
+    store,
+    result,
+  });
+  if (!sourceFreeAssessment.ok) {
+    const detail = {
+      step: 1,
+      mode: "response-only",
+      reason: sourceFreeAssessment.reason,
+      categories: sourceFreeAssessment.categories,
+      hasEvidence: sourceFreeAssessment.hasEvidence,
+      explicitlyUnverified: sourceFreeAssessment.explicitlyUnverified,
+      preview: publicCompletionText(result, 300),
+      unsupportedClaims: sourceFreeAssessment.unsupportedClaims || [],
+    };
+    await store.appendEvent("response_only.source_free_claim_rejected", detail);
+    observers.event("response_only.source_free_claim_rejected", detail);
+    state.messages.push({
+      role: "user",
+      content: responseOnlySourceFreeRepairInstruction(sourceFreeAssessment),
+    });
+    await store.saveState(state);
+    await store.appendEvent("model.requested", {
+      step: 2,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-repair",
+    });
+    observers.event("model.requested", {
+      step: 2,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-repair",
+    });
+    const repairResponse = await requestDirectResponse(client, config, state.messages);
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    sourceFreeAssessment = await assessResponseOnlySourceFreeClaims({
+      config,
+      state,
+      store,
+      result,
+    });
+    if (sourceFreeAssessment.ok) {
+      const repaired = {
+        step: 2,
+        mode: "response-only-repair",
+        reason: sourceFreeAssessment.reason,
+        categories: sourceFreeAssessment.categories,
+        explicitlyUnverified: sourceFreeAssessment.explicitlyUnverified,
+        unsupportedClaims: sourceFreeAssessment.unsupportedClaims || [],
+      };
+      await store.appendEvent("response_only.source_free_claim_repaired", repaired);
+      observers.event("response_only.source_free_claim_repaired", repaired);
+    } else {
+      result = responseOnlySourceFreeStopResult(sourceFreeAssessment);
+      const fallback = {
+        step: 2,
+        mode: "response-only-fail-closed",
+        reason: sourceFreeAssessment.reason,
+        categories: sourceFreeAssessment.categories,
+        unsupportedClaims: sourceFreeAssessment.unsupportedClaims || [],
+        result: publicCompletionText(result, 500),
+      };
+      state.meta = state.meta || {};
+      state.meta.responseOnly = {
+        stoppedAt: new Date().toISOString(),
+        provider: config.provider,
+        model: config.model,
+        sourceFreeClaimBlocked: true,
+      };
+      state.updatedAt = state.meta.responseOnly.stoppedAt;
+      state.messages.push({ role: "assistant", content: result });
+      appendChatEntry(state, "assistant", result);
+      updateGoalStatus(state, "paused", "source_free_evidence_required", state.updatedAt);
+      await store.saveState(state);
+      await store.appendEvent("response_only.source_free_claim_failed_closed", fallback);
+      await store.appendEvent("session.stopped", {
+        reason: "source_free_evidence_required",
+        result,
+        mode: "response-only",
+      });
+      observers.event("response_only.source_free_claim_failed_closed", fallback);
+      observers.event("session.stopped", {
+        reason: "source_free_evidence_required",
+        result,
+        sessionId,
+        mode: "response-only",
+      });
+      emitConsole(config, result, { kind: "assistant", markdown: true });
+      return {
+        sessionId,
+        stopped: true,
+        reason: "source_free_evidence_required",
+        result,
+        ...goalRunMetadata(state),
+      };
+    }
   }
 
   state.meta = state.meta || {};
@@ -4135,7 +4283,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   state.stepsCompleted = 1;
   state.updatedAt = state.meta.responseOnly.completedAt;
   state.messages.push(preserveAssistantMessage({
-    ...rawAssistantMessage,
+    ...finalAssistantMessage,
     role: "assistant",
     content: result,
     tool_calls: undefined,
