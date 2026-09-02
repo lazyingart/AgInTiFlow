@@ -147,6 +147,7 @@ import {
   finishResultClaimsBlocker,
   finishResultClaimsIncompleteWork,
   hasScsBlockerEvidence,
+  hostManagedDocumentCompilationRequested,
   buildTmuxGitIntent,
   inferAuthoritativeReadOnlyRoutine,
   inferGitActionsFromCommand,
@@ -1412,6 +1413,22 @@ export function successfulReadFileEvidencePaths(messages = []) {
   return [...readsByPath.values()]
     .sort((left, right) => left.ordinal - right.ordinal)
     .map(({ path: sourcePath, complete }) => ({ path: sourcePath, complete }));
+}
+
+export function authoritativeDocumentInputPaths(state = {}, contract = {}) {
+  const normalize = (value = "") =>
+    String(value || "").replace(/\\/gu, "/").replace(/^\.\//u, "").trim();
+  const declared = [
+    ...(Array.isArray(contract?.exactInputPaths) ? contract.exactInputPaths : []),
+    ...exactInputPathsForState(state),
+  ]
+    .map(normalize)
+    .filter(Boolean);
+  if (declared.length > 0) return [...new Set(declared)].slice(0, 32);
+  return successfulReadFileEvidencePaths(state.messages || [])
+    .map((item) => normalize(item.path))
+    .filter(Boolean)
+    .slice(-32);
 }
 
 function writingRequestNeedsSourceGrounding(args = {}) {
@@ -3238,7 +3255,9 @@ async function createInitialState(config, sessionId) {
           isRetainedWorkspaceProfile(config)
             ? "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files and run bounded checks when useful."
             : "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files, run available build/compile/test commands, and surface artifacts through the canvas when useful.",
-          "For LaTeX/PDF tasks, check existing latexmk/pdflatex first and compile with the available host or Docker TeX toolchain before installing packages or rebuilding the sandbox.",
+          hostManagedDocumentCompilationRequested(config.goal)
+            ? "For this host-managed document task, create and verify the requested editable sources only. Do not invoke LaTeX, make, package managers, or document compilers; the host stage owns compilation and derived-PDF validation."
+            : "For LaTeX/PDF tasks, check existing latexmk/pdflatex first and compile with the available host or Docker TeX toolchain before installing packages or rebuilding the sandbox.",
           "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
           completionRequirementCoverageInstruction(),
           repositorySourcePrecedenceInstruction(),
@@ -10816,12 +10835,19 @@ export async function documentQualityCommitAssessment(
   const requestedArtifactKinds = Array.isArray(contract.requiredArtifactKinds)
     ? contract.requiredArtifactKinds
     : [];
+  const hostManagedCompilation = Boolean(
+    contract.hostManagedDocumentCompilation ||
+      hostManagedDocumentCompilationRequested(completionContractGoal(config, state))
+  );
   const documentRequested = Boolean(
-    exactOutputPaths.some((item) => /\.(?:docx|pdf)$/iu.test(String(item || ""))) ||
+    exactOutputPaths.some((item) =>
+      /\.docx$/iu.test(String(item || "")) ||
+      (!hostManagedCompilation && /\.pdf$/iu.test(String(item || "")))
+    ) ||
       requestedArtifactKinds.some((item) =>
-        [".docx", ".pdf"].includes(
-          String(item?.format || item?.extension || item || "").toLowerCase()
-        )
+        String(item?.format || item?.extension || item || "").toLowerCase() === ".docx" ||
+        (!hostManagedCompilation &&
+          String(item?.format || item?.extension || item || "").toLowerCase() === ".pdf")
       )
   );
   if (!documentRequested) return null;
@@ -10837,15 +10863,7 @@ export async function documentQualityCommitAssessment(
       candidateResult: "",
       goal: completionContractGoal(config, state),
       exactOutputPaths,
-      exactInputPaths: [
-        ...(Array.isArray(contract.exactInputPaths)
-          ? contract.exactInputPaths
-          : []),
-        ...exactInputPathsForState(state),
-        ...successfulReadFileEvidencePaths(state.messages || []).map(
-          (item) => item.path
-        ),
-      ],
+      exactInputPaths: authoritativeDocumentInputPaths(state, contract),
       requireVersioned: false,
     });
   } catch (error) {
@@ -10887,7 +10905,8 @@ export async function documentQualityCommitAssessment(
   );
   const documentArtifactProducerCommand = inferredLatexArtifactProducerCommand(
     state,
-    config
+    config,
+    contract
   );
   const repair = completionRepairMutationRequirement({
     contract,
@@ -16495,7 +16514,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         (item) => String(item?.id || "").toLowerCase() === "format:.tex"
       )
   )
-    ? inferredLatexArtifactProducerCommand(state, config)
+    ? inferredLatexArtifactProducerCommand(state, config, groundingExecutionContract)
     : "";
   const retainedRepairPacket = state.meta?.failedTestRecoveryPacket;
   const repairedRetainedFailure = Boolean(
@@ -22450,7 +22469,13 @@ export function completionRepairMutationRequirement({
   };
 }
 
-function inferredLatexArtifactProducerCommand(state = {}, config = {}) {
+function inferredLatexArtifactProducerCommand(state = {}, config = {}, contract = {}) {
+  if (
+    contract?.hostManagedDocumentCompilation === true ||
+    hostManagedDocumentCompilationRequested(completionContractGoal(config, state))
+  ) {
+    return "";
+  }
   const verification = state.meta?.projectVerification || {};
   const sourcePath = [...(verification.mutationHistory || [])]
     .reverse()
@@ -22539,13 +22564,21 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     ...currentGoalDocumentArtifactPathsForState(state, config),
   ];
   const documentContractText = `${completionContractGoal(config, state)}\n${candidateResult}`;
+  const hostManagedCompilation = Boolean(
+    assessment.contract?.hostManagedDocumentCompilation ||
+      hostManagedDocumentCompilationRequested(completionContractGoal(config, state))
+  );
   const documentDeliverableRequested =
     documentProfile === "word" ||
-    documentExactOutputPaths.some((item) => /\.(?:docx|pdf)$/iu.test(String(item || ""))) ||
+    documentExactOutputPaths.some((item) =>
+      /\.docx$/iu.test(String(item || "")) ||
+      (!hostManagedCompilation && /\.pdf$/iu.test(String(item || "")))
+    ) ||
     (["book", "latex", "paper", "writing"].includes(documentProfile) &&
-      /(?:\b(?:docx|pdf|word document)\b|可编辑.*(?:文档|文件)|(?:文档|文件).*可编辑)/iu.test(
+      (/(?:\b(?:docx|word document)\b|可编辑.*(?:文档|文件)|(?:文档|文件).*可编辑)/iu.test(
         documentContractText
-      ));
+      ) ||
+        (!hostManagedCompilation && /\bpdf\b/iu.test(documentContractText))));
   if (documentDeliverableRequested) {
     try {
       documentQuality = await validateWordDocumentArtifacts({
@@ -22553,11 +22586,7 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
         candidateResult,
         goal: completionContractGoal(config, state),
         exactOutputPaths: documentExactOutputPaths,
-        exactInputPaths: [
-          ...(assessment.contract?.exactInputPaths || []),
-          ...exactInputPathsForState(state),
-          ...successfulReadFileEvidencePaths(state.messages || []).map((item) => item.path),
-        ],
+        exactInputPaths: authoritativeDocumentInputPaths(state, assessment.contract),
         requireVersioned: (assessment.contract?.requiredGitActions || []).includes("commit"),
       });
     } catch (error) {
@@ -22838,7 +22867,8 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     : "";
   const documentArtifactProducerCommand = inferredLatexArtifactProducerCommand(
     state,
-    config
+    config,
+    assessment.contract
   );
   const freshMutationRequirement = completionRepairMutationRequirement({
     contract: assessment.contract,

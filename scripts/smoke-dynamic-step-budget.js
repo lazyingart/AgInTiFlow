@@ -8546,6 +8546,29 @@ try {
   const semanticGateDocumentState = structuredClone(
     currentGoalGeneratedDocumentState
   );
+  semanticGateDocumentState.messages = [
+    {
+      role: "assistant",
+      tool_calls: [{
+        id: "read-unrelated-root-policy",
+        type: "function",
+        function: {
+          name: "read_file",
+          arguments: JSON.stringify({ path: "AGENTS.md" }),
+        },
+      }],
+    },
+    {
+      role: "tool",
+      tool_call_id: "read-unrelated-root-policy",
+      content: JSON.stringify({
+        ok: true,
+        path: "AGENTS.md",
+        content: "WeChat PYTHONPATH LazyEdit STEP WeCom CAD PCB OpenHI",
+        contentTruncated: false,
+      }),
+    },
+  ];
   semanticGateDocumentState.meta.scs = {
     taskContract: { exactInputPaths: ["TASK.md"] },
   };
@@ -8583,7 +8606,8 @@ try {
       semanticGateValidatorInput?.exactOutputPaths?.includes(
         "daily_memo.pdf"
       ) &&
-      semanticGateValidatorInput?.exactInputPaths?.includes("TASK.md"),
+      JSON.stringify(semanticGateValidatorInput?.exactInputPaths) ===
+        JSON.stringify(["TASK.md"]),
     `current-goal artifact discovery bypassed source/status quality gates or reopened the missing-artifact loop: ${JSON.stringify({
       assessment: semanticGateAssessment,
       input: semanticGateValidatorInput,

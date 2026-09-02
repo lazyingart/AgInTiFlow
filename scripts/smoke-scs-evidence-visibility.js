@@ -240,6 +240,28 @@ const pageSafeReportContract = deriveScsTaskContract({
   taskProfile: "auto",
 });
 
+const hostCompiledReportContract = deriveScsTaskContract({
+  goal: [
+    "Create report.md and report.tex for the requested evidence-grounded report.",
+    "Do not invoke LaTeX, latexmk, pdflatex, make, package managers, or document compiler commands; the LabCanvas host compiler owns PDF compilation and validation.",
+    "The host will create output/report.pdf after the agent turn.",
+  ].join(" "),
+  taskProfile: "research",
+});
+
+const agentCompiledReportContract = deriveScsTaskContract({
+  goal: "Create report.tex, compile output/report.pdf, inspect it, and return the PDF.",
+  taskProfile: "research",
+});
+
+const fallbackHostCompilationContract = deriveScsTaskContract({
+  goal: [
+    "Create report.tex and compile output/report.pdf.",
+    "If compilation is unavailable in the sandbox, the LabCanvas host recovery stage owns PDF compilation.",
+  ].join(" "),
+  taskProfile: "research",
+});
+
 const forbiddenOutputContract = deriveScsTaskContract({
   goal: "Continue the task. verification_suite.py does not exist and must not be rerun or created. Preserve smoke_test.py and finish from current evidence.",
   taskProfile: "devops",
@@ -542,6 +564,29 @@ assert(
 assert(
   !pageSafeReportContract.requiredEvidence.some((item) => item.category === "browser"),
   "the editorial phrase page-safe incorrectly required browser evidence"
+);
+assert.equal(
+  hostCompiledReportContract.hostManagedDocumentCompilation,
+  true,
+  "an explicit host-only compilation contract was not retained"
+);
+assert(
+  hostCompiledReportContract.requiredArtifactKinds.some((item) => item.id === "format:.tex") &&
+    !hostCompiledReportContract.requiredArtifactKinds.some((item) => item.id === "format:.pdf"),
+  "host-managed PDF compilation did not preserve editable source while deferring PDF production"
+);
+assert(
+  !hostCompiledReportContract.exactOutputPaths.some((item) => item.endsWith(".pdf")),
+  "a host-managed PDF path remained an agent-owned exact output"
+);
+assert(
+  agentCompiledReportContract.requiredArtifactKinds.some((item) => item.id === "format:.pdf") &&
+    agentCompiledReportContract.exactOutputPaths.some((item) => item.endsWith("output/report.pdf")),
+  "ordinary agent-owned PDF compilation was weakened by the host-managed exception"
+);
+assert(
+  fallbackHostCompilationContract.hostManagedDocumentCompilation === false,
+  "a conditional host recovery fallback was mistaken for an explicit host-only compilation contract"
 );
 
 const noEvidenceProgress = {

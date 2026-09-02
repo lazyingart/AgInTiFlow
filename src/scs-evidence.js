@@ -670,9 +670,40 @@ function artifactRequestHasOutputIntent(goal = "", taskProfile = "") {
   );
 }
 
+export function hostManagedDocumentCompilationRequested(goal = "") {
+  const source = String(goal || "").replace(/\s+/gu, " ").trim();
+  if (!source) return false;
+  if (
+    /\bdo\s+not\s+(?:invoke|run|use)\b[^.!?;。！？；]{0,180}\b(?:document\s+compiler|latexmk|pdflatex|xelatex|lualatex|latex|pandoc|make)\b[^.!?;。！？；]{0,180}\b(?:labcanvas\s+)?host\b/iu.test(
+      source
+    ) ||
+    /(?:不要|不得|无需|不需要)(?:调用|运行|使用).{0,80}(?:LaTeX|latexmk|pdflatex|xelatex|文档编译器).{0,100}(?:由|交给)(?:\s*LabCanvas)?(?:主机|宿主)(?:编译|构建|渲染|验证)/u.test(
+      source
+    )
+  ) {
+    return true;
+  }
+
+  const ownershipPattern =
+    /\b(?:the\s+)?(?:labcanvas\s+)?host(?:\s+(?:compiler|recovery|stage)){0,2}\s+(?:alone\s+)?(?:owns|handles?|performs?|will\s+(?:build|compile|handle|perform|render|validate))\b[^.!?;。！？；]{0,120}\b(?:compil(?:ation|e)|document|latex|pdf|render|validation)\b/giu;
+  for (const match of source.matchAll(ownershipPattern)) {
+    const prefix = source.slice(Math.max(0, Number(match.index || 0) - 180), Number(match.index || 0));
+    if (
+      /\b(?:if|when)\b[^.!?;。！？；]{0,140}\b(?:cannot|can't|fails?|failure|unavailable|unsupported)\b/iu.test(
+        prefix
+      )
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") {
   const source = stripForbiddenLanguage(String(goal || ""));
   if (!artifactRequestHasOutputIntent(source, taskProfile)) return [];
+  const hostManagedCompilation = hostManagedDocumentCompilationRequested(goal);
 
   const requirements = [];
   const add = (requirement) => {
@@ -681,6 +712,7 @@ export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") 
   };
 
   for (const format of REQUESTED_ARTIFACT_FORMATS) {
+    if (hostManagedCompilation && format.extension === ".pdf") continue;
     if (!requestedArtifactFormatHasOutputIntent(source, format)) continue;
     add({
       id: `format:${format.extension}`,
@@ -702,6 +734,7 @@ export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") 
   }
 
   if (
+    !hostManagedCompilation &&
     /\bprintable\b/i.test(source) &&
     /\b(?:answer|deck|document|handout|material|practice|sheet|slides?|worksheet)\b/i.test(source)
   ) {
@@ -2170,9 +2203,16 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     inferExactOutputPaths(positiveEvidenceGoal),
     excludedOutputPaths
   );
+  const hostManagedDocumentCompilation = hostManagedDocumentCompilationRequested(
+    evidenceGoal
+  );
   const exactOutputPaths = filterExplicitlyExcludedOutputPaths(
     applyScopedArtifactRoot(inferredOutputPaths, artifactRoot),
     excludedOutputPaths
+  ).filter(
+    (item) =>
+      !hostManagedDocumentCompilation ||
+      path.extname(String(item || "")).toLocaleLowerCase("en-US") !== ".pdf"
   );
   const exactInputPaths = filterExplicitlyExcludedOutputPaths(
     inferExactInputPaths(positiveEvidenceGoal),
@@ -2198,6 +2238,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
     requiredArtifactKinds,
+    hostManagedDocumentCompilation,
     scopedArtifactDeliverable,
     scopedArtifactOperation,
     excludedOutputPaths,
