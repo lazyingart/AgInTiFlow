@@ -74,3 +74,26 @@ The directory smoke covers workstation-to-Jetson migration, live-lease drain blo
 `npm run smoke:integration-analysis-coordinator` additionally proves that an in-flight job stays pinned to worker A during a switch, finalization waits for its lease, the next job uses worker B, and capability/admission divergence fails closed without leaking a lease.
 
 `npm run smoke:integration-execution-worker-binding-config` covers manifest canonicalization, local and LazyEdge port policy, uniqueness, fixed-path loading, branded bindings, and rejection of URL/token/endpoint injection.
+
+## Local operator commands
+
+Directory changes are local operator actions. The CLI exposes no transport or credential flags:
+
+```bash
+aginti-worker-directory status
+aginti-worker-directory enroll \
+  --node-id node_local_workstation_01 \
+  --binding-id binding_local_workstation_01 \
+  --platform workstation \
+  --roles execution
+aginti-worker-directory switch \
+  --role execution \
+  --node-id node_local_workstation_01 \
+  --expected-generation 0
+aginti-worker-directory rollback --role execution --expected-generation 2
+aginti-worker-directory finalize --role execution --expected-generation 2
+aginti-worker-directory retire --node-id node_old_workstation_01
+aginti-worker-directory remove --node-id node_old_workstation_01
+```
+
+Every switch and rollback requires the exact current generation. Enrollment, renewal, switching, and rollback load the fixed manifest and probe the selected worker through its branded systemd binding. Read-only status and event inspection do not require a credential. CLI output contains state and digests but no secrets.
