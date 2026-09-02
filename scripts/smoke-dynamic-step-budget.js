@@ -11165,13 +11165,12 @@ try {
     runCommandResultHasDurableProgress({
       toolName: "run_command",
       ok: true,
-      commandPolicy: {
-        category: "general-shell",
-        writesWorkspace: true,
-      },
+      commandPolicy: classifyCommand(
+        'find /aginti-env -type f -name "pdflatex" | xargs ls -la | grep -v "not found"'
+      ),
     }),
     false,
-    "a conservatively broad shell policy fabricated durable workspace progress"
+    "a bounded find/xargs/grep probe fabricated durable workspace progress"
   );
   assertStrict.equal(
     runCommandResultHasDurableProgress({

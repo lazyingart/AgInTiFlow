@@ -10957,8 +10957,14 @@ function expectedRepeatedObservationCommand(command = "") {
 }
 
 export function runCommandResultHasDurableProgress(toolResult = {}) {
+  const policy = toolResult.commandPolicy || {};
+  const policyAllowsMutation =
+    policy.semanticMayMutateProject !== false &&
+    (policy.mayMutateProject === true ||
+      (policy.mayMutateProject === undefined && policy.writesWorkspace === true));
   return Boolean(
-    toolResult.commandPolicy?.substantiveTest === true ||
+    policyAllowsMutation ||
+      policy.substantiveTest === true ||
       (Array.isArray(toolResult.projectMutationPaths) &&
         toolResult.projectMutationPaths.length > 0) ||
       (Array.isArray(toolResult.verifiedGeneratedOutputPaths) &&
