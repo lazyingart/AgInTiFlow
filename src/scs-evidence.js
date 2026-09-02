@@ -1378,6 +1378,12 @@ function stripHostManagedResponseNarration(goal = "") {
   return String(goal || "").replace(
     /\b(?:and\s+)?(?:write|return|provide)\s+(?:(?:a|the)\s+)?(?:(?:concise|final|normal|structured)\s+)?(?:(?:agent|task)\s+)?(?:answer|response|result)\b(?!\s+(?:as|at|file|in|into|json|markdown|pdf|text|to|under)\b)/gi,
     ""
+  ).replace(
+    /\b(?:create|draft|generate|produce|prepare)\s+(?:(?:a|an|the|one)\s+)?[^.\n;]{0,120}?\b(?:answer|response|reply|message|inspiration(?:\s+point)?|summary|chat\s+text)\b/gi,
+    ""
+  ).replace(
+    /\b(?:correct|fix|repair|replace|revise|rewrite|regenerate|update)\s+(?:(?:a|an|the)\s+)?(?:(?:prior|previous|earlier|last|current|invalid|incorrect|bad|old|failed)\s+)*(?:answer|response|reply|message|inspiration|summary|chat\s+text)\b/gi,
+    ""
   );
 }
 
@@ -1734,6 +1740,10 @@ function inferRequiredToolCalls(goal = "") {
 
 function stripForbiddenLanguage(goal = "") {
   return normalizeSoftLineWraps(goal)
+    .replace(
+      /\b(?:create|attach|return|send|write|generate|produce)(?:\s*,?\s*(?:and|or)\s*(?:create|attach|return|send|write|generate|produce))*\s+no\s+(?:files?|attachments?|artifacts?)\b/gi,
+      ""
+    )
     .replace(/\b(do not|don't|dont|must not|should not|never|no need to)\s+([^.\n;]+)/gi, "")
     .replace(/\bwithout\s+([^.,:\uFF1A\n;]+)/gi, "")
     .replace(/不要([^。\n；]+)/g, "")

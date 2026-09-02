@@ -139,6 +139,44 @@ assert.equal(
 );
 assert.equal(completedResearchContract.requiredFreshMutationRevision, 0);
 
+const messageOnlyRepairRequest =
+  "Create one concise, genuinely useful inspiration point after a quiet period. Replace the prior invalid inspiration. Return exactly one concise natural Chinese group message with one useful connection, a clear evidence boundary, and one actionable experiment. Use only a source actually opened in this turn; if source verification is unavailable, omit literature claims and label the idea as a hypothesis. Create no files or attachments. Return only the corrected natural chat response. Do not create, attach, or return any file or artifact.";
+const messageOnlyRepairGoal = `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+  mode: "task",
+  request: messageOnlyRepairRequest,
+  artifact_root: `/workspace/${artifactRoot}`,
+})}`;
+const messageOnlyRepairContract = deriveScsTaskContract({
+  goal: messageOnlyRepairGoal,
+  taskProfile: "auto",
+});
+assert.equal(
+  messageOnlyRepairContract.requiresWorkspaceMutation,
+  false,
+  "correcting a prior chat reply must not become a workspace mutation"
+);
+assert.equal(
+  messageOnlyRepairContract.requiresFileMutation,
+  false,
+  "correcting a prior chat reply must not become a source-file mutation"
+);
+assert.deepEqual(
+  messageOnlyRepairContract.requiredEvidence.map((item) => item.category),
+  [],
+  "a message-only repair with an explicit no-file contract must not demand file, artifact, or browser evidence"
+);
+const completedMessageOnlyRepairContract = completionTaskContract(
+  { goal: messageOnlyRepairGoal, taskProfile: "auto", commandCwd: "/workspace" },
+  currentTurnState(messageOnlyRepairGoal, {
+    requiresWorkspaceMutation: false,
+    requiresFileMutation: false,
+    requiresSourceGrounding: false,
+    scopedArtifactDeliverable: false,
+  })
+);
+assert.equal(completedMessageOnlyRepairContract.requiredFreshMutationRevision, 0);
+assert.equal(completedMessageOnlyRepairContract.requiresFileMutation, false);
+
 const codeRequest =
   "Fix the stale browser recovery logic in src/agent-runner.js and save a short report.";
 const codeGoal = `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
