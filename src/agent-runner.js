@@ -6489,6 +6489,7 @@ const HOST_MANAGED_DOCUMENT_COMPILERS = new Set([
   "pandoc",
   "pdflatex",
   "tectonic",
+  "xetex",
   "xelatex",
 ]);
 
@@ -23041,6 +23042,24 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       return result;
     }
   }
+  const hostDocumentCompilerBlock = hostManagedDocumentCompilerInvocationBlock(
+    state,
+    toolName,
+    args,
+    config
+  );
+  if (hostDocumentCompilerBlock) {
+    const result = {
+      ok: false,
+      toolName,
+      args: safeArgs,
+      ...hostDocumentCompilerBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
   const guard = isRetainedVisionWorkspaceProfile(config) && toolName === "read_image"
     ? Object.freeze({ allowed: true, reason: "", category: "integration-retained-vision-reference" })
     : checkToolUse({
@@ -23084,24 +23103,6 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       toolName,
       args: safeArgs,
     };
-  }
-
-  const hostDocumentCompilerBlock = hostManagedDocumentCompilerInvocationBlock(
-    state,
-    toolName,
-    args,
-    config
-  );
-  if (hostDocumentCompilerBlock) {
-    const result = {
-      ok: false,
-      toolName,
-      args: safeArgs,
-      ...hostDocumentCompilerBlock,
-    };
-    await store.appendEvent("tool.blocked", result);
-    observers.event("tool.blocked", result);
-    return result;
   }
 
   const documentCompilerSourceBlock = incompatibleDocumentCompilerSourceBlock(

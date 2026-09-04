@@ -2146,3 +2146,28 @@ the output contract or outward outcome. The shared JSON parser keeps its
 existing perception and response-envelope behavior under focused checks. No
 live provider or LocalLLM inference, LabCanvas runtime change, queue action,
 schedule, transport operation, or external side effect is involved.
+
+### Host-owned compilation cannot hide behind compiler aliases
+
+`labcanvas-host-compiler-alias-boundary-158` follows retained LabCanvas session
+`web-agent-labcanvas-756f4598-34c1-4139-bb48-94673a0fac76`. Its contract
+assigned Unicode PDF compilation and inspection to the trusted host stage, but
+the fallback tried to recover an unavailable `xelatex` binary through
+`xetex -fmt=xelatex`. That compile was bundled after a scratch-directory
+deletion, so generic shell policy stopped the task for destructive approval
+before the host-ownership contract could redirect it.
+
+Host-owned document compilation is now recognized before ordinary shell
+permission classification, and direct `xetex` invocation is covered alongside
+the existing LaTeX engines and build wrappers. The complete command remains
+unexecuted and receives the existing bounded instruction to finish the editable
+source for the host stage. Agent-owned document builds still use their normal
+policy, and destructive commands without an exclusive host-compile contract
+still require approval.
+
+The production-shaped regression includes the retained scratch reset and
+`xetex -fmt=xelatex` alias, plus direct, environment-prefixed, shell-wrapped,
+ordinary agent-owned, conditional-host-fallback, and non-compiling source-check
+controls. No live provider or LocalLLM inference, LabCanvas runtime change,
+queue action, schedule, transport operation, or external side effect is
+involved.

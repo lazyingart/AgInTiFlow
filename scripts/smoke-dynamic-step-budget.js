@@ -14561,6 +14561,7 @@ try {
   for (const command of [
     `cd ${researchArtifactRoot} && latexmk -pdf -pdflatex='pdflatex -interaction=nonstopmode' -synctex=1 -quiet research-briefing.tex`,
     "env TEXINPUTS=. xelatex -interaction=nonstopmode research-briefing.tex",
+    "kpsewhich xelatex.fmt; rm -rf /tmp/texprobe && mkdir -p /tmp/texprobe && cd /tmp/texprobe && xetex -fmt=xelatex -interaction=nonstopmode -halt-on-error research-briefing.tex",
     "bash -lc 'cd output/research-task-134 && tectonic research-briefing.tex'",
     "make report",
     "pandoc research-briefing.tex -o research-briefing.pdf",
