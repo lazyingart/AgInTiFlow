@@ -497,6 +497,34 @@ assert.equal(
   1
 );
 
+const requestedFalsifiablePrediction = [
+  "Create one concise inspiration message from the supplied conceptual context.",
+  "Include one clearly labeled, falsifiable 3/5/10-year prediction as your own hypothesis.",
+  "Do not claim a publication, citation, validation result, benchmark, or external source.",
+].join("\n");
+const speculativeSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-falsifiable-prediction-handoff",
+  request: requestedFalsifiablePrediction,
+  localResponses: [
+    "高风险预测：3年内可形成可测试原型；5年内若不能跨样本复现就应收缩假设；10年内若仍不能跨实验室迁移，就应否定这条路线。",
+  ],
+});
+assert.equal(speculativeSourceFreeHandoff.result.stopped, undefined);
+assert.deepEqual(
+  speculativeSourceFreeHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm"],
+  "a requested falsifiable prediction triggered an unnecessary source-free repair"
+);
+assert.equal(
+  speculativeSourceFreeHandoff.events.filter((event) => event.type === "response_only.source_free_claim_rejected").length,
+  0,
+  "a clearly labeled assistant-owned prediction was rejected as external evidence"
+);
+assert.equal(
+  speculativeSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
 const routerClassification = JSON.stringify({
   route_kind: "research_or_summary",
   project: "labcanvas",

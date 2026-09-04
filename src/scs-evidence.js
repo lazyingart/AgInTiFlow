@@ -1907,6 +1907,55 @@ function sourceFreeClaimSegmentHasExplicitUnverifiedFraming(text = "") {
   return admitsNoEvidence && framesAsHypothesis;
 }
 
+function sourceFreeClaimSegmentIsExplicitSpeculation(text = "") {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const attributedForecast =
+    /\b(?:the|this|a|an)\s+(?:report|paper|study|article|source|dataset|trial|company|government|analyst|author)s?\s+(?:forecast|forecasted|predict|predicts|predicted|project|projects|projected|expect|expects|expected|estimate|estimates|estimated|say|says|said|state|states|stated|claim|claims|claimed|indicate|indicates|indicated|suggest|suggests|suggested)\b/iu.test(
+      value
+    ) ||
+    /(?:报告|報告|论文|論文|研究|文章|来源|來源|数据集|資料集|公司|政府|分析师|分析師|作者)[^。！？；\n]{0,28}(?:预测|預測|预计|預計|推测|推測|估计|估計)/u.test(
+      value
+    ) ||
+    /(?:報告|論文|研究|記事|出典|データセット|企業|政府|アナリスト|著者)[^。！？；\n]{0,28}(?:予測|予想|推定|見込)/u.test(
+      value
+    );
+  if (attributedForecast) return false;
+  return (
+    /(?:^|[.!?;]\s*)(?:(?:this|the\s+following)\s+is\s+|(?:my|our|a)\s+)?(?:working\s+|high[-\s]?risk\s+|falsifiable\s+|speculative\s+)?(?:hypothesis|prediction|forecast|speculation|inference)\s*[:：-]/iu.test(
+      value
+    ) ||
+    /\b(?:i|we)\s+(?:hypothesi[sz]e|predict|speculate|infer|would\s+test\s+the\s+hypothesis)\b/iu.test(
+      value
+    ) ||
+    /(?:^|[。！？；]\s*)(?:(?:这是|這是|以下是|这里是|這裡是|我的|我们的|我們的|本回答的)\s*)?(?:(?:工作|高风险|高風險|可证伪|可證偽|推断|推斷)\s*)?(?:假设|假說|预测|預測|推测|推測|猜测|猜測)\s*[:：]/u.test(
+      value
+    ) ||
+    /(?:我|我们|我們)(?:的)?(?:假设|假說|预测|預測|推测|推測|猜测|猜測|认为|認為)[：:]?/u.test(
+      value
+    ) ||
+    /(?:^|[。！？；]\s*)(?:(?:これは|以下は|私の|私たちの)\s*)?(?:(?:作業|高リスク|反証可能な|推論)\s*)?(?:仮説|予測|予想|推測|憶測)\s*[:：]/u.test(
+      value
+    ) ||
+    /(?:私|私たち)(?:は|の)?(?:仮説|予測|予想|推測|と考える)/u.test(value)
+  );
+}
+
+function sourceFreeRequestExplicitlyAsksForSpeculation(goal = "") {
+  const value = String(goal || "");
+  return (
+    /\b(?:ask|asks|asked|include|provide|write|give|create|make|state|add|need|needs|require|requires|request|requests|requested)\b[^.!?;\n]{0,100}\b(?:falsifiable\s+|high[-\s]?risk\s+|working\s+)?(?:hypothesis|prediction|forecast|speculation)\b/iu.test(
+      value
+    ) ||
+    /(?:请|請|要求|需要|加入|包括|包含|提供|给出|給出|写出|寫出|生成|提出)[^。！？；\n]{0,80}(?:可证伪|可證偽|高风险|高風險|工作)?(?:假设|假說|预测|預測|推测|推測)/u.test(
+      value
+    ) ||
+    /(?:求める|必要|含める|追加|提供|作成|提示|予測して)[^。！？；\n]{0,80}(?:反証可能な|高リスク|作業)?(?:仮説|予測|予想|推測)/u.test(
+      value
+    )
+  );
+}
+
 function sourceFreeClaimSegmentDeniesVerification(text = "") {
   const value = String(text || "");
   return (
@@ -1957,7 +2006,7 @@ function sourceFreeExternalClaimCategoriesForSegment(text = "") {
   return unique(categories);
 }
 
-function sourceFreeExternalClaimAssessment(text = "") {
+function sourceFreeExternalClaimAssessment(text = "", { allowExplicitSpeculation = false } = {}) {
   const segments = sourceFreeClaimSegments(text);
   const categories = [];
   const unsupported = [];
@@ -1967,10 +2016,15 @@ function sourceFreeExternalClaimAssessment(text = "") {
     categories.push(...segmentCategories);
     const deniesVerification = sourceFreeClaimSegmentDeniesVerification(segment);
     const explicitlyUnverified = sourceFreeClaimSegmentHasExplicitUnverifiedFraming(segment);
+    const explicitlySpeculative =
+      allowExplicitSpeculation && sourceFreeClaimSegmentIsExplicitSpeculation(segment);
     const assertsEvidence = segmentCategories.some((category) =>
       ["validation", "external_evidence"].includes(category)
     );
-    if (!deniesVerification && (assertsEvidence || !explicitlyUnverified)) {
+    if (
+      !deniesVerification &&
+      (assertsEvidence || (!explicitlyUnverified && !explicitlySpeculative))
+    ) {
       unsupported.push({
         categories: segmentCategories,
         preview: compact(segment, 240),
@@ -1984,6 +2038,11 @@ function sourceFreeExternalClaimAssessment(text = "") {
       categories.length > 0 &&
       unsupported.length === 0 &&
       segments.some((segment) => sourceFreeClaimSegmentHasExplicitUnverifiedFraming(segment)),
+    explicitlySpeculative:
+      allowExplicitSpeculation &&
+      categories.length > 0 &&
+      unsupported.length === 0 &&
+      segments.some((segment) => sourceFreeClaimSegmentIsExplicitSpeculation(segment)),
   };
 }
 
@@ -2000,15 +2059,20 @@ export function evaluateSourceFreeResponseClaims({
       categories: [],
       hasEvidence: false,
       explicitlyUnverified: false,
+      explicitlySpeculative: false,
     };
   }
   const hasEvidence =
     responseOnlyScopeHasFreshEvidenceManifest(goal) ||
     sourceFreeResponseHasEvidence(evidenceLedger);
-  const claimAssessment = sourceFreeExternalClaimAssessment(candidateResult);
+  const allowExplicitSpeculation = sourceFreeRequestExplicitlyAsksForSpeculation(goal);
+  const claimAssessment = sourceFreeExternalClaimAssessment(candidateResult, {
+    allowExplicitSpeculation,
+  });
   const categories = claimAssessment.categories;
   const unsupportedClaims = claimAssessment.unsupported;
   const explicitlyUnverified = claimAssessment.explicitlyUnverified;
+  const explicitlySpeculative = claimAssessment.explicitlySpeculative;
   const ok = hasEvidence || categories.length === 0 || unsupportedClaims.length === 0;
   return {
     checked: true,
@@ -2018,12 +2082,15 @@ export function evaluateSourceFreeResponseClaims({
         ? "Current scoped evidence is available for response-only factual claims."
         : explicitlyUnverified
           ? "Every source-free external claim is locally framed as unverified hypothesis or unverifiable."
+          : explicitlySpeculative
+            ? "Source-free projections are locally framed as the assistant's own falsifiable speculation."
           : "No source-grounded external claim was detected."
       : `Source-free response-only output claimed external facts without current evidence: ${categories.join(", ")}.`,
     categories,
     unsupportedClaims,
     hasEvidence,
     explicitlyUnverified,
+    explicitlySpeculative,
   };
 }
 

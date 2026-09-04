@@ -245,6 +245,76 @@ assert.equal(
   true,
   "explicit unverified hypothesis framing was rejected for source-free response-only output"
 );
+const sourceFreePredictionGoal = [
+  "Provide one clearly labeled, falsifiable 3/5/10-year prediction as your own hypothesis.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Provide one clearly labeled, falsifiable 3/5/10-year prediction as your own hypothesis.",
+  })}`,
+].join("\n");
+const explicitFalsifiablePrediction = evaluateSourceFreeResponseClaims({
+  goal: sourceFreePredictionGoal,
+  candidateResult:
+    "高风险预测：3年内可能出现无损年龄评分；5年内可能成为质控候选；10年内若仍不能跨实验室迁移，这一假设应被否定。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  explicitFalsifiablePrediction.ok,
+  true,
+  "an explicitly labeled falsifiable prediction was rejected as an external fact"
+);
+assert.equal(explicitFalsifiablePrediction.explicitlySpeculative, true);
+const explicitJapanesePrediction = evaluateSourceFreeResponseClaims({
+  goal: sourceFreePredictionGoal,
+  candidateResult:
+    "反証可能な予測：2030年までにこの仮説を再現できなければ、採用しない。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  explicitJapanesePrediction.ok,
+  true,
+  "an explicitly labeled Japanese falsifiable prediction was rejected"
+);
+const attributedPrediction = evaluateSourceFreeResponseClaims({
+  goal: sourceFreePredictionGoal,
+  candidateResult: "该报告预测2030年底前产品将上线。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  attributedPrediction.ok,
+  false,
+  "an attributed source-free forecast was mistaken for the assistant's own speculation"
+);
+const attributedEnglishPrediction = evaluateSourceFreeResponseClaims({
+  goal: sourceFreePredictionGoal,
+  candidateResult: "High-risk prediction: the report says demand will reach a new peak next year.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  attributedEnglishPrediction.ok,
+  false,
+  "an English report attribution was mistaken for assistant-owned speculation"
+);
+const speculativeEvidenceClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreePredictionGoal,
+  candidateResult: "高风险预测：某研究已验证该方法，并预测2030年达到94.2%准确率。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  speculativeEvidenceClaim.ok,
+  false,
+  "a speculation label laundered an unsupported validation or source claim"
+);
+const unsolicitedPrediction = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "高风险预测：2030年前该路线将成为主流。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  unsolicitedPrediction.ok,
+  false,
+  "a model-added prediction bypassed the source-free guard without a matching request"
+);
 const locallyDeniedChineseClaim = evaluateSourceFreeResponseClaims({
   goal: sourceFreeResearchGoal,
   candidateResult:

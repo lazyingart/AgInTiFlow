@@ -904,3 +904,32 @@ The provider-handoff regression reproduces the wrong nested candidate object,
 repairs it to the outer audit contract, and separately proves the fail-closed
 path. Existing plain-text, router, source-free-claim, and context-recovery
 response-only paths remain covered.
+
+### Requested falsifiable predictions remain useful without becoming evidence
+
+`labcanvas-source-free-falsifiable-prediction-106` comes from retained
+production session `web-agent-labcanvas-acfafa25-d3c5-4a4e-9e12-1813973211a2`.
+The response-only LabAgent prompt explicitly requested one evidence-aware
+inspiration point, an actionable experiment, and clearly falsifiable 3-, 5-,
+and 10-year predictions. It did not ask the fallback model to claim a source or
+present the predictions as established facts. After the DeepSeek quota
+handoff, however, the source-free claim guard rejected every LocalLLM answer
+that contained a forecast. Bounded repair eventually removed the useful task
+content and returned unrelated generic career advice.
+
+When the authoritative request explicitly asks for it, source-free
+response-only execution now distinguishes an assistant's own clearly labeled
+hypothesis or prediction from a forecast attributed to a
+report, paper, study, source, company, or authority. The exception remains
+narrow: a speculation label cannot legalize claimed validation, external
+evidence, citations, publications, benchmarks, or asserted quantitative
+results. The repair prompt explains the same boundary in multilingual terms
+instead of prohibiting all forecasts even when the authoritative task requires
+one. An unsolicited model-added prediction remains rejected.
+
+Regressions cover English guidance, Chinese and Japanese falsifiable
+predictions, attributed Chinese forecasts, and a prediction label that attempts
+to conceal unsupported validation and accuracy claims. The production-shaped
+provider handoff forces DeepSeek `402`, accepts the requested LocalLLM
+prediction in one fallback request, emits no source-free rejection, and records
+one terminal finish.

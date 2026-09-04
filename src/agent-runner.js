@@ -4230,9 +4230,10 @@ function responseOnlySourceFreeRepairInstruction(assessment = {}) {
   return [
     "No fresh AgInTi evidence manifest or scoped tool evidence is available for this response-only turn.",
     `Your previous answer asserted unsupported external facts (${categories}).`,
-    "Do not claim publications, years, validation, forecasts, benchmarks, quantitative metrics, citations, or source-backed conclusions.",
-    "This includes multilingual claim wording such as 已有验证, 预测, 検証済み, or 予測.",
-    "Return a concise answer that is explicitly framed as an unverified hypothesis, or state that the requested external claim cannot be verified from this run.",
+    "Do not claim publications, years, validation, benchmarks, quantitative metrics, citations, attributed forecasts, or source-backed conclusions.",
+    "If the current request explicitly asks for a forecast, you may provide only your own clearly labeled, falsifiable hypothesis or prediction; do not attribute it to a report, paper, study, source, company, or authority.",
+    "This rule applies equally to multilingual wording such as 已有验证, 高风险预测, 検証済み, or 反証可能な予測.",
+    "Return a concise locally framed hypothesis, or state that the requested external claim cannot be verified from this run.",
   ].join(" ");
 }
 
