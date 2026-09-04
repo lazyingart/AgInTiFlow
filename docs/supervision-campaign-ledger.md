@@ -1788,3 +1788,24 @@ repair, exact JSON-envelope preservation, repeated-empty fail-closed behavior,
 and absence of `session.finished` after failure. No live model, LocalLLM
 inference, LabCanvas runtime change, queue action, schedule, or transport
 operation is involved.
+
+### Later repairs cannot reintroduce an empty envelope
+
+`labcanvas-response-only-post-repair-empty-envelope-142` closes a validator-order
+gap exposed while reviewing the retained empty-envelope path. A nonempty answer
+with unsupported named evidence correctly entered source-free repair. Its
+replacement preserved the JSON schema but emptied every outward field; because
+the initial payload check had already passed, the replacement could still reach
+`session.finished`.
+
+Response-only completion now repeats the semantic outward-payload check at the
+final acceptance boundary, after every bounded evidence, transcript, context,
+and scaffold repair. A later repair that erases the answer fails closed using
+the caller's exact JSON envelope. The runtime does not spend a third model call
+after a weak backend already failed the requested correction.
+
+The production-shaped regression proves the before-fix successful finish,
+retains the source-free rejection event, confirms exactly two model calls,
+checks the schema-valid stopped result, and proves there is no
+`session.finished` event. No live model, LocalLLM inference, LabCanvas runtime
+change, queue action, schedule, or transport operation is involved.

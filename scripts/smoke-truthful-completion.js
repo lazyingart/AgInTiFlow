@@ -1940,6 +1940,12 @@ try {
       knowledge_items: [],
       upstream_feedback: [],
     }),
+    "Exact task packet:",
+    JSON.stringify({
+      id: "wecom-inspiration-source-free-example",
+      current_request:
+        "Create one concise research inspiration point with a falsifiable prediction and experiment.",
+    }),
   ].join("\n");
   const repairedNamedInspirationEvidence = await runCase({
     id: "response-only-named-inspiration-evidence-repair",
@@ -2038,6 +2044,43 @@ try {
     ),
     "repeated unsupported named evidence was persisted as a successful finish"
   );
+
+  const emptyAfterSourceFreeRepair = await runCase({
+    id: "response-only-empty-after-source-free-repair",
+    taskProfile: "chatops",
+    goal: sourceFreeInspirationJsonGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message:
+          "Nature Biomedical Engineering provides evidence for this route; use the open-source NeuroSync toolkit.",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+      assistant(JSON.stringify({
+        message: "",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+    ],
+  });
+  assert.equal(emptyAfterSourceFreeRepair.calls.length, 2);
+  assert.equal(
+    emptyAfterSourceFreeRepair.result.stopped,
+    true,
+    "an empty envelope introduced by source-free repair was accepted as finished"
+  );
+  assert.equal(emptyAfterSourceFreeRepair.result.reason, "empty_response_only_payload");
+  assert(
+    emptyAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the cross-validator fixture did not exercise source-free repair"
+  );
+  assert(!emptyAfterSourceFreeRepair.events.some((event) => event.type === "session.finished"));
 
   const staleEchoAfterSourceFreeRepair = await runCase({
     id: "response-only-stale-echo-after-source-free-repair",

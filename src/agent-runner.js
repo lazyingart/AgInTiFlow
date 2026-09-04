@@ -5599,6 +5599,18 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     }
   }
 
+  emptyEnvelopeAssessment = assessResponseOnlyEmptyEnvelope({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!emptyEnvelopeAssessment.ok) {
+    return await stopForEmptyResponseOnlyEnvelope({
+      step: finalResponseStep,
+      assessment: emptyEnvelopeAssessment,
+      contract: outputContract,
+    });
+  }
+
   contextEchoAssessment = assessResponseOnlyContextEcho({
     goal: completionContractGoal(config, state),
     result,
