@@ -1960,3 +1960,29 @@ it isolates direct reader-source editing while leaving validation and build
 commands available. No live provider, LocalLLM inference, LabCanvas runtime
 change, queue action, schedule, transport operation, or external side effect is
 involved.
+
+### Truthful response stops remain human-facing
+
+`labcanvas-response-only-natural-source-free-stop-150` follows retained
+sessions `web-agent-labcanvas-a2400822-729d-400b-8a70-2842e3dcefe8` and
+`web-agent-labcanvas-d99fc736-db3a-4310-bbe5-c939a779ffca`. Their underlying
+numeric-classification false positive is already fixed by the earlier numeric
+boundary, but the traces exposed a separate fallback defect: a genuine
+twice-rejected source-free claim would still return AgInTi evidence-manifest,
+tool-scope, and resume instructions as the outward chat answer.
+
+The fail-closed result now states only the truthful user-facing limitation in
+English, Chinese, or Japanese. It retains a requested `CHAT:` protocol and is
+still embedded into the caller's exact strict JSON contract when one exists.
+The private repair prompt also tells a weaker provider not to expose runtime
+mechanics. Claim detection, the single bounded repair, paused-session state,
+and the absence of `session.finished` after repeated unsupported claims are
+unchanged.
+
+The deterministic provider-handoff regression forces repeated unsupported
+publication, year, validation, benchmark, and forecast claims. It checks all
+three language forms, the chat protocol, the full router schema, and absence of
+private runtime vocabulary while retaining the existing negative evidence
+controls. No live provider or LocalLLM inference, LabCanvas runtime change,
+queue action, schedule, transport operation, or external side effect is
+involved.

@@ -4684,21 +4684,25 @@ function responseOnlySourceFreeRepairInstruction(assessment = {}, outputContract
     "Do not claim publications, named journals or sources, years, validation, benchmarks, quantitative metrics, citations, attributed forecasts, named research resources or tool availability, or source-backed conclusions.",
     "If the current request explicitly asks for a forecast, you may provide only your own clearly labeled, falsifiable hypothesis or prediction; do not attribute it to a report, paper, study, source, company, or authority.",
     "This rule applies equally to multilingual wording such as 已有验证, 高风险预测, 検証済み, or 反証可能な予測.",
-    "Return a concise locally framed hypothesis, or state that the requested external claim cannot be verified from this run.",
+    "Return a concise locally framed hypothesis, or state naturally that the external claim cannot be verified from the information available here.",
+    "Keep the outward answer human-facing: do not mention AgInTi, evidence manifests, tool scopes, providers, runtime state, or resume mechanics.",
     outputContract
       ? `Preserve the explicit output contract exactly. Return one JSON object with these required top-level key types and no prose: ${responseOnlyJsonKeyContractText(outputContract)}.`
       : "Preserve the authoritative request's output shape exactly.",
   ].join(" ");
 }
 
-function responseOnlySourceFreeStopResult(assessment = {}) {
-  const categories = Array.isArray(assessment.categories) && assessment.categories.length
-    ? assessment.categories.join(", ")
-    : "external factual claims";
-  return [
-    "No result: this response-only turn has no fresh AgInTi evidence manifest or scoped tool evidence.",
-    `I cannot verify the requested ${categories} from this run. Resume with an evidence-producing research/tool scope or provide a fresh evidence manifest.`,
-  ].join(" ");
+function responseOnlySourceFreeStopResult(goal = "") {
+  const source = String(goal || "");
+  const message = /[\u3040-\u30ff]/u.test(source)
+    ? "現在の情報だけではこの主張を確認できないため、事実として扱いません。"
+    : /\p{Script=Han}/u.test(source)
+      ? "现有信息不足以核实这项说法，我不会把它当作事实。"
+      : "I cannot verify that claim from the information currently available, so I will not present it as fact.";
+  const usesChatProtocol = /Choose\s+one\s+response\s+shape\s*:[\s\S]{0,500}\bCHAT\s*:/iu.test(
+    source
+  );
+  return `${usesChatProtocol ? "CHAT: " : ""}${message}`;
 }
 
 function applyLocalContextOutputAdaptation(config = {}, state = {}) {
@@ -5058,7 +5062,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   }) {
     const stoppedResult = responseOnlyContractFallbackResult(
       contract,
-      responseOnlySourceFreeStopResult(assessment)
+      responseOnlySourceFreeStopResult(completionContractGoal(config, state))
     );
     const fallback = {
       step,

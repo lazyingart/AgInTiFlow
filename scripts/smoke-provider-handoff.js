@@ -478,6 +478,63 @@ assert.equal(
   false,
   "fail-closed response leaked the unsupported source-free claim text"
 );
+assert.doesNotMatch(
+  unsafeSourceFreeHandoff.result.result,
+  /AgInTi|evidence manifest|response-only|tool scope|resume with|provider|runtime/iu,
+  "fail-closed response exposed private response-only recovery terminology"
+);
+
+const chineseChatSourceFreeStop = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-natural-chinese-chat-stop",
+  request: [
+    "Choose one response shape:",
+    "1. CHAT: <one concise helpful chat message>",
+    "2. NO_REPLY",
+    "Current coalesced request:",
+    "用户: 这项研究可靠吗？",
+  ].join("\n"),
+  localResponses: [
+    "CHAT: 该研究已于2025年发表，并在一万例样本中得到验证。",
+    "CHAT: 2025年的论文已经证实这项研究可靠。",
+  ],
+});
+assert.equal(chineseChatSourceFreeStop.result.stopped, true);
+assert.match(
+  chineseChatSourceFreeStop.result.result,
+  /^CHAT:\s*现有信息不足以核实/u,
+  "Chinese chat fail-closed result did not preserve its human-facing CHAT protocol"
+);
+assert.doesNotMatch(
+  chineseChatSourceFreeStop.result.result,
+  /AgInTi|证据清单|工具|运行时|恢复会话|response-only|manifest/iu,
+  "Chinese chat fail-closed result exposed private runtime instructions"
+);
+
+const japaneseChatSourceFreeStop = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-natural-japanese-chat-stop",
+  request: [
+    "Choose one response shape:",
+    "1. CHAT: <one concise helpful chat message>",
+    "2. NO_REPLY",
+    "Current coalesced request:",
+    "ユーザー: この研究は信頼できますか？",
+  ].join("\n"),
+  localResponses: [
+    "CHAT: この研究は2025年に発表され、一万件の標本で検証済みです。",
+    "CHAT: 2025年の論文ですでに有効性が確認されています。",
+  ],
+});
+assert.equal(japaneseChatSourceFreeStop.result.stopped, true);
+assert.match(
+  japaneseChatSourceFreeStop.result.result,
+  /^CHAT:\s*現在の情報だけでは/u,
+  "Japanese chat fail-closed result did not preserve its human-facing CHAT protocol"
+);
+assert.doesNotMatch(
+  japaneseChatSourceFreeStop.result.result,
+  /AgInTi|エビデンスマニフェスト|ツール|ランタイム|再開|response-only|manifest/iu,
+  "Japanese chat fail-closed result exposed private runtime instructions"
+);
 
 const repairedSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
   sessionId: "source-free-handoff-repaired",
@@ -776,6 +833,11 @@ assert.equal(
   "a fail-closed fallback overwrote a declared route enum with diagnostic prose"
 );
 assert.match(sourceFreeRouterFallback.reason, /cannot verify/i);
+assert.doesNotMatch(
+  sourceFreeRouterFallback.reason,
+  /AgInTi|evidence manifest|response-only|tool scope|resume with|provider|runtime/iu,
+  "schema-preserving source-free stop exposed private runtime terminology"
+);
 assert.equal(
   sourceFreeRouterFailClosed.events.filter((event) => event.type === "session.finished").length,
   0
