@@ -4810,6 +4810,40 @@ try {
       externalReadOnlyValidatorResult.projectMutationRevision === 0,
     "an absolute-interpreter acceptance validator forced a post-validation commit"
   );
+  const observedNoOpShellState = {
+    meta: {
+      goalContract: { revision: 1 },
+      projectVerification: { mutationRevision: 5 },
+    },
+  };
+  const observedNoOpShellResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        "for t in xelatex pdftotext; do command -v $t >/dev/null 2>&1; done; pdftotext report.pdf - | wc -c",
+    },
+    stdout: "20833\n",
+    stderr: "",
+    commandPolicy: {
+      category: "general-shell",
+      writesWorkspace: true,
+      substantiveTest: false,
+    },
+    mutationObservationComplete: true,
+    projectMutationPaths: [],
+    verifiedGeneratedOutputPaths: [],
+  };
+  recordProjectVerificationOutcome(observedNoOpShellState, observedNoOpShellResult, {
+    commandCwd: workspace,
+    taskProfile: "writing",
+  });
+  assert(
+    observedNoOpShellState.meta.projectVerification?.mutationRevision === 5 &&
+      observedNoOpShellResult.projectMutationRevision === 5,
+    "an observed byte-identical shell inspection fabricated project mutation progress"
+  );
   const shellMutationState = { meta: { goalContract: { revision: 1 } } };
   const shellMutationResult = {
     toolName: "run_command",

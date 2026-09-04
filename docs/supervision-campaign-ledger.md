@@ -2093,3 +2093,31 @@ and value-type preservation, bounded retry count, and schema-valid fail-closed
 behavior. No live provider or LocalLLM inference, LabCanvas runtime change,
 queue action, schedule, transport operation, or external side effect is
 involved.
+
+### Shell authorization is not mutation evidence
+
+`labcanvas-observed-shell-noop-mutation-156` follows retained LabCanvas session
+`web-agent-labcanvas-8d2d6b21-e027-4028-950d-1e090e185083`. A successful shell
+loop only checked installed document tools and extracted PDF text, but its
+conservative `writesWorkspace: true` policy advanced the project mutation
+revision. Similar read-only inspections raised the revision repeatedly even
+though the trace contained only one actual file patch. This could make a
+rejected artifact repair appear to have received the required fresh source
+correction.
+
+The command executor now records when non-Git before/after worktree observation
+completed. When that evidence is available, the completion recorder advances
+the revision only for observed changed worktree paths or verified changed exact
+outputs. Conservative command classification still controls authorization and
+sandbox selection. Legacy retained results without the observation marker keep
+their previous conservative replay behavior, and Git workflows retain their
+special handling because a clean-to-clean commit or pull can change repository
+history or content without leaving a dirty worktree.
+
+The production-shaped regression proves that a successful broadly classified
+inspection with empty observed path sets preserves revision 5, while existing
+shell-edit, generated-output, failed-command, Git, no-op workspace-write, and
+verification cases remain covered. The focused mutation suite, all 207 syntax
+checks, and the complete deterministic `npm test` gate pass. No live provider
+or LocalLLM inference, LabCanvas runtime change, queue action, schedule,
+transport operation, or external side effect is involved.

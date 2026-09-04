@@ -9114,6 +9114,18 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
           ),
         ].slice(0, 64)
       : [];
+    const generatedOutputMutationPaths = Array.isArray(
+      toolResult.verifiedGeneratedOutputPaths
+    )
+      ? toolResult.verifiedGeneratedOutputPaths
+          .map(safeTaskOwnedCommitPath)
+          .filter(Boolean)
+      : [];
+    const observedCommandMutationPaths = [
+      ...new Set([...commandMutationPaths, ...generatedOutputMutationPaths]),
+    ].slice(0, 64);
+    const mutationObservationComplete =
+      toolResult.mutationObservationComplete === true;
     const exactHeadRestoreCommand = Boolean(
       config.completionFreshMutationRestorePending === true &&
         projectCommandsEquivalent(
@@ -9161,10 +9173,12 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         !scopedTaskArtifactWrite &&
         !readOnlyArtifactValidation &&
         !nonMutatingTestOutputPipeline &&
-        (commandSucceeded || commandMutationPaths.length > 0) &&
+        (commandSucceeded || observedCommandMutationPaths.length > 0) &&
         (
-          commandCanMutateProjectContent(mutationCommand, commandPolicy) ||
-          generatedArtifactProducer
+          observedCommandMutationPaths.length > 0 ||
+          (!mutationObservationComplete &&
+            (commandCanMutateProjectContent(mutationCommand, commandPolicy) ||
+              generatedArtifactProducer))
         )
     );
     if (disposableGeneratedCleanup) {
@@ -9241,7 +9255,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         revision: verification.mutationRevision,
         at: now,
         toolName,
-        paths: commandMutationPaths,
+        paths: observedCommandMutationPaths,
         commandCategory: String(commandPolicy.category || "general-shell"),
       }, config);
       if (
@@ -9278,13 +9292,13 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
             generatedArtifactProducer,
           ]),
         ].slice(0, 12);
-        if (commandMutationPaths.length) {
+        if (observedCommandMutationPaths.length) {
           activeExecutionContract.materialMutationPaths = [
             ...new Set([
               ...(Array.isArray(activeExecutionContract.materialMutationPaths)
                 ? activeExecutionContract.materialMutationPaths
                 : []),
-              ...commandMutationPaths,
+              ...observedCommandMutationPaths,
             ]),
           ].slice(0, 24);
         }
@@ -23902,6 +23916,11 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           gitWorktreeBefore,
           gitWorktreeAfter
         );
+        const mutationObservationComplete = Boolean(
+          gitWorktreeBefore &&
+            gitWorktreeAfter &&
+            !["git-workflow", "git-remote"].includes(String(policy.category || ""))
+        );
         const generatedOutputPaths = commandResult.ok !== false
           ? await verifiedGeneratedOutputPaths(state, exactOutputSnapshotsBefore, config)
           : [];
@@ -23938,6 +23957,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
             : {}),
           ...(projectMutationPaths.length
             ? { projectMutationPaths }
+            : {}),
+          ...(mutationObservationComplete
+            ? { mutationObservationComplete: true }
             : {}),
           ...(repositoryStateInspectionSnapshot
             ? {
