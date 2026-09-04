@@ -7,6 +7,7 @@ import {
   parseTopLevelShellSequence,
   tokenizeShellWords,
 } from "./shell-syntax.js";
+import { firstJsonObject } from "./json-extraction.js";
 
 const CATEGORY_LABELS = {
   file: "file or workspace change",
@@ -1852,6 +1853,92 @@ export function hasAgintiEvidenceScope(goal = "") {
   return Boolean(parseAgintiEvidenceScope(goal));
 }
 
+function exactTaskPacket(goal = "") {
+  const source = String(goal || "");
+  const matches = [
+    ...source.matchAll(/(?:^|\n)\s*(?:Exact task packet|Task packet):\s*/giu),
+  ];
+  for (const match of matches.reverse()) {
+    const packet = firstJsonObject(source.slice((match.index || 0) + match[0].length));
+    if (
+      packet &&
+      typeof packet === "object" &&
+      /^labcanvas-agent-task-v\d+$/iu.test(String(packet.schema || ""))
+    ) {
+      return packet;
+    }
+  }
+  return null;
+}
+
+function sameFilesystemPath(left = "", right = "") {
+  const leftValue = String(left || "").trim();
+  const rightValue = String(right || "").trim();
+  if (!leftValue || !rightValue) return false;
+  return path.resolve(leftValue) === path.resolve(rightValue);
+}
+
+function exactTaskScopedPath(value = "", artifactRoot = "") {
+  const rawValue = String(value || "").trim();
+  const rawRoot = String(artifactRoot || "").trim();
+  if (!rawValue || !rawRoot) return "";
+  const resolvedRoot = path.resolve(rawRoot);
+  const resolvedValue = path.isAbsolute(rawValue)
+    ? path.resolve(rawValue)
+    : path.resolve(resolvedRoot, rawValue);
+  const relative = path.relative(resolvedRoot, resolvedValue);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return resolvedValue;
+  }
+  return "";
+}
+
+function scopedTaskPacketContract(goal = "") {
+  const scope = parseAgintiEvidenceScope(goal);
+  const artifactRoot = String(scope?.artifact_root || "").trim();
+  if (String(scope?.mode || "").trim().toLowerCase() !== "task" || !artifactRoot) {
+    return { exactOutputPaths: [], repairRequirements: [], qualityIssues: [] };
+  }
+  const packet = exactTaskPacket(goal);
+  if (!packet || packet.repair_packet_focused !== true) {
+    return { exactOutputPaths: [], repairRequirements: [], qualityIssues: [] };
+  }
+  const packetRoots = [
+    packet.artifact_dir,
+    packet.worker_retry_context?.artifact_dir,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  if (packetRoots.length && packetRoots.some((item) => !sameFilesystemPath(item, artifactRoot))) {
+    return { exactOutputPaths: [], repairRequirements: [], qualityIssues: [] };
+  }
+
+  const exactOutputPaths = [];
+  const qualityIssues = [];
+  for (const rejection of Array.isArray(packet.pdf_quality_rejections)
+    ? packet.pdf_quality_rejections
+    : []) {
+    const scopedPath = exactTaskScopedPath(rejection?.path, artifactRoot);
+    if (!scopedPath) continue;
+    exactOutputPaths.push(scopedPath);
+    qualityIssues.push(
+      ...(Array.isArray(rejection?.issues) ? rejection.issues : [])
+        .map((item) => compact(item, 180))
+        .filter(Boolean)
+    );
+  }
+  const repairRequirements = (Array.isArray(packet.coverage_followup?.missing)
+    ? packet.coverage_followup.missing
+    : [])
+    .map((item) => compact(item?.requirement || "", 240))
+    .filter(Boolean);
+  return {
+    exactOutputPaths: uniquePathList(exactOutputPaths, 16),
+    repairRequirements: uniqueLimited(repairRequirements, 8),
+    qualityIssues: uniqueLimited(qualityIssues, 12),
+  };
+}
+
 export function isResponseOnlyEvidenceScope(goal = "") {
   const payload = parseAgintiEvidenceScope(goal);
   if (!payload) return false;
@@ -2285,7 +2372,13 @@ export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
     return "Answer the current chat turn directly without external execution.";
   }
   const request = String(payload.request || "").trim();
-  return request || String(goal || "");
+  const packetContract = scopedTaskPacketContract(goal);
+  const repairOutputInstructions = packetContract.exactOutputPaths.map(
+    (item) => `Rebuild and replace the exact output at \`${item}\`.`
+  );
+  return [request || String(goal || ""), ...repairOutputInstructions]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function scopedArtifactRoot(goal = "") {
@@ -2630,6 +2723,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   const positiveEvidenceGoal = stripForbiddenLanguage(evidenceGoal);
   const authoritativeRoutine = inferAuthoritativeReadOnlyRoutine(goal);
   const artifactRoot = scopedArtifactRoot(goal);
+  const packetContract = scopedTaskPacketContract(goal);
   const requirementCategories = inferRequirementCategories(evidenceGoal, taskProfile, acceptanceCriteria);
   const requiredToolCalls = inferRequiredToolCalls(evidenceGoal);
   const requiredGitActions = inferRequiredGitActions(evidenceGoal);
@@ -2703,6 +2797,8 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
     requiredArtifactKinds,
+    artifactRepairRequirements: packetContract.repairRequirements,
+    artifactQualityIssues: packetContract.qualityIssues,
     hostManagedDocumentCompilation,
     scopedArtifactDeliverable,
     scopedArtifactOperation,
@@ -5226,6 +5322,8 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       forbiddenActions: contract.forbiddenActions || [],
       exactOutputPaths: contract.exactOutputPaths || [],
       requiredArtifactKinds: contract.requiredArtifactKinds || [],
+      artifactRepairRequirements: contract.artifactRepairRequirements || [],
+      artifactQualityIssues: contract.artifactQualityIssues || [],
       exactInputPaths: contract.exactInputPaths || [],
       requiredToolCalls: contract.requiredToolCalls || [],
       requiredGitActions: contract.requiredGitActions || [],

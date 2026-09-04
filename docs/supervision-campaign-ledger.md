@@ -2121,3 +2121,28 @@ verification cases remain covered. The focused mutation suite, all 207 syntax
 checks, and the complete deterministic `npm test` gate pass. No live provider
 or LocalLLM inference, LabCanvas runtime change, queue action, schedule,
 transport operation, or external side effect is involved.
+
+### Focused repair packets preserve exact artifact contracts
+
+`labcanvas-focused-repair-packet-contract-157` continues retained LabCanvas
+session `web-agent-labcanvas-8d2d6b21-e027-4028-950d-1e090e185083`. Its active
+scope correctly requested a material PDF repair, while the appended exact task
+packet named the two rejected PDFs, the missing reader-facing requirement, and
+the concrete quality defect. Scope narrowing kept only the short request, so
+SCS saw no exact output path and could accept a nearby or unchanged artifact.
+
+AgInTi now parses a recognized focused `labcanvas-agent-task-vN` packet through
+the shared balanced JSON extractor. It projects only bounded repair fields into
+the internal hard contract: rejected output paths below the active artifact
+root, remaining artifact requirements, and quality issue identifiers. Packet
+IDs, retained chat history, route state, scheduler state, and sibling artifact
+paths are not projected. Packet and retry roots must agree with the active
+scope; otherwise the projection fails closed.
+
+The production-shaped regression proves exact-path and quality-defect retention
+both directly and after the long completion context is compacted. It also
+injects a sibling PDF and private packet identifier and proves neither enters
+the output contract or outward outcome. The shared JSON parser keeps its
+existing perception and response-envelope behavior under focused checks. No
+live provider or LocalLLM inference, LabCanvas runtime change, queue action,
+schedule, transport operation, or external side effect is involved.
