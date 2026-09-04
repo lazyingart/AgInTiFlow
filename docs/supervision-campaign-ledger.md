@@ -1592,3 +1592,29 @@ turn with a schema-compatible limitation and no `session.finished` event. The
 test uses deterministic provider responses only; no live DeepSeek or LocalLLM
 inference, LabCanvas host change, queue action, schedule, or transport
 operation is involved.
+
+### Research mutations require their declared evidence manifest
+
+`labcanvas-research-manifest-grounding-134` follows retained production session
+`web-agent-labcanvas-d4fc28d0-2a19-488e-8610-5e34eb5172ab`. A report-repair task
+declared one task-local research evidence manifest as authoritative. The fallback
+read only the TeX report, introduced a new citation identifier that was absent
+from the manifest, and described the result as evidence-verified without ever
+reading the manifest.
+
+Reader-facing research source mutations now stop before dispatch when the current
+task explicitly binds them to an evidence, source, citation, or reference
+manifest that has not been read completely. A bare manifest filename is resolved
+under the declared artifact root. After the manifest is read, newly introduced
+LaTeX citation keys, source IDs, DOI values, arXiv identifiers, and URLs must be
+present in that manifest. Editing the manifest itself remains possible, and
+ordinary document work without an explicit authoritative-manifest contract is
+unchanged.
+
+The production-shaped regression proves the exact unread-manifest block, permits
+a supported source identifier after a complete read, rejects an unsupported
+identifier, and preserves both non-contract document edits and direct manifest
+maintenance. The earlier unrelated-anchor contamination in document validation
+was already fixed by `84f488f`; this scenario adds only the missing evidence-use
+boundary. No live DeepSeek or LocalLLM inference, LabCanvas host change, queue
+action, schedule, or transport operation is involved.

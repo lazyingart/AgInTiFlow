@@ -15400,6 +15400,307 @@ export function documentSourceMaterialMutationBlock(
   };
 }
 
+const RESEARCH_EVIDENCE_MANIFEST_NAME_PATTERN =
+  /(?:research[-_ ]*)?(?:evidence|source|citation|reference)[-_ ]*manifest\.(?:json|jsonl|ya?ml|md|bib)$/iu;
+const RESEARCH_READER_SOURCE_EXTENSIONS = new Set([
+  ".html",
+  ".markdown",
+  ".md",
+  ".qmd",
+  ".rmd",
+  ".rst",
+  ".tex",
+  ".typ",
+]);
+
+function researchEvidenceContractText(state = {}, config = {}) {
+  const goalContract = state.meta?.goalContract || {};
+  const currentContract = [
+    goalContract.activeGoal,
+    goalContract.currentRequest,
+    goalContract.taskGoal,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return (currentContract.length
+    ? currentContract
+    : [state.goal, config.goal].map((item) => String(item || "").trim()).filter(Boolean)
+  )
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .join("\n\n");
+}
+
+function researchEvidenceManifestContractRequired(text = "") {
+  const source = String(text || "");
+  if (!/(?:evidence|source|citation|reference)[-_ ]*manifest/iu.test(source)) {
+    return false;
+  }
+  return Boolean(
+    /["']?research_evidence_contract["']?\s*:\s*\{[\s\S]{0,320}?["']?required["']?\s*:\s*true/iu.test(source) ||
+    /\buse\s+only\b[\s\S]{0,240}\b(?:evidence|source|citation|reference)[-_ ]*manifest\b/iu.test(source) ||
+    /\b(?:authoritative|required|exact(?:-task)?)\b[\s\S]{0,120}\b(?:evidence|source|citation|reference)[-_ ]*manifest\b/iu.test(source) ||
+    /\b(?:evidence|source|citation|reference)[-_ ]*manifest\b[\s\S]{0,120}\b(?:authoritative|required|must|only)\b/iu.test(source) ||
+    /(?:仅|只)(?:能|可|使用|依据|根据)[^。！？；\n]{0,120}(?:证据|來源|来源|引用)(?:清单|清單|清冊|manifest)/u.test(source)
+  );
+}
+
+function researchEvidenceManifestTokens(text = "") {
+  const values = [];
+  const add = (value = "") => {
+    const candidate = String(value || "")
+      .trim()
+      .replace(/^[([{<]+|[\])}>.,;:]+$/gu, "");
+    if (
+      candidate &&
+      RESEARCH_EVIDENCE_MANIFEST_NAME_PATTERN.test(
+        path.posix.basename(candidate.replace(/\\/gu, "/"))
+      ) &&
+      !values.includes(candidate)
+    ) {
+      values.push(candidate);
+    }
+  };
+  const quoted = /["'`]([^"'`\r\n]+\.(?:json|jsonl|ya?ml|md|bib))["'`]/giu;
+  for (const match of String(text || "").matchAll(quoted)) add(match[1]);
+  const unquoted = /(?:^|[\s([{<,:])((?:\.{0,2}\/|\/)?[^\s"'`<>()[\]{},;:]*?(?:evidence|source|citation|reference)[-_A-Za-z0-9.]*manifest\.(?:json|jsonl|ya?ml|md|bib))(?=$|[\s)\]}>.,;:])/gimu;
+  for (const match of String(text || "").matchAll(unquoted)) add(match[1]);
+  return values;
+}
+
+function comparableResearchEvidencePath(value = "", commandCwd = process.cwd()) {
+  const raw = String(value || "").trim().replace(/^['"]|['"]$/gu, "");
+  if (!raw) return "";
+  const workspaceRelative = raw === "/workspace"
+    ? ""
+    : raw.startsWith("/workspace/")
+      ? raw.slice("/workspace/".length)
+      : raw;
+  const absolutePath = path.resolve(commandCwd, workspaceRelative);
+  return process.platform === "win32"
+    ? absolutePath.toLocaleLowerCase("en-US")
+    : absolutePath;
+}
+
+export function requiredResearchEvidenceManifestPaths(
+  state = {},
+  config = {}
+) {
+  const text = researchEvidenceContractText(state, config);
+  if (!researchEvidenceManifestContractRequired(text)) return [];
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const artifactRoot = scopedArtifactRoot(text);
+  return [...new Set(
+    researchEvidenceManifestTokens(text).map((candidate) => {
+      const resolved = path.isAbsolute(candidate)
+        ? path.normalize(candidate)
+        : path.resolve(
+            artifactRoot && !candidate.includes("/") && !candidate.includes("\\")
+              ? artifactRoot
+              : commandCwd,
+            candidate
+          );
+      const relative = path.relative(commandCwd, resolved);
+      return relative && !relative.startsWith("..") && !path.isAbsolute(relative)
+        ? relative.replace(/\\/gu, "/")
+        : resolved.replace(/\\/gu, "/");
+    })
+  )].slice(0, 8);
+}
+
+function researchReaderMutationPaths(toolName = "", args = {}) {
+  const candidates = [];
+  if (["write_file", "apply_patch"].includes(toolName)) {
+    candidates.push(args.path || args.file || "");
+  }
+  if (toolName === "apply_patch" && typeof args.patch === "string") {
+    try {
+      for (const operation of parsePatchDocument(args.patch)) {
+        candidates.push(operation.path || "", operation.newPath || "");
+      }
+    } catch {
+      // The workspace executor reports malformed patches separately.
+    }
+  }
+  return [...new Set(candidates.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function researchEvidenceIdentifiers(value = "") {
+  const text = String(value || "");
+  const identifiers = new Set();
+  const add = (candidate = "") => {
+    const normalized = String(candidate || "")
+      .trim()
+      .replace(/^[{[(]+|[}\])},.;:]+$/gu, "")
+      .toLocaleLowerCase("en-US");
+    if (normalized) identifiers.add(normalized);
+  };
+  for (const match of text.matchAll(/\\cite[a-z*]*\s*(?:\[[^\]]*\]\s*)*\{([^}]+)\}/giu)) {
+    for (const item of String(match[1] || "").split(/[,;]/gu)) add(item);
+  }
+  for (const match of text.matchAll(/\bS\d+(?:-C\d+)?\b/gu)) add(match[0]);
+  for (const match of text.matchAll(/\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+/giu)) add(match[0]);
+  for (const match of text.matchAll(/\barXiv:\s*\d{4}\.\d{4,5}(?:v\d+)?\b/giu)) add(match[0]);
+  for (const match of text.matchAll(/https?:\/\/[^\s<>"'`}\]]+/giu)) add(match[0]);
+  return identifiers;
+}
+
+function newlyIntroducedResearchEvidenceIdentifiers(args = {}) {
+  let proposed = String(args.content || args.replace || "");
+  let prior = String(args.search || "");
+  if (typeof args.patch === "string" && args.patch.trim()) {
+    const added = [];
+    const removed = [];
+    for (const line of args.patch.split(/\r?\n/gu)) {
+      if (line.startsWith("+++") || line.startsWith("---")) continue;
+      if (line.startsWith("+")) added.push(line.slice(1));
+      if (line.startsWith("-")) removed.push(line.slice(1));
+    }
+    proposed = added.join("\n");
+    prior = removed.join("\n");
+  }
+  const priorIdentifiers = researchEvidenceIdentifiers(prior);
+  return [...researchEvidenceIdentifiers(proposed)].filter(
+    (item) => !priorIdentifiers.has(item)
+  );
+}
+
+function readResearchEvidenceManifestText(requiredPaths = [], commandCwd = process.cwd()) {
+  const contents = [];
+  for (const candidate of requiredPaths) {
+    const absolutePath = path.isAbsolute(candidate)
+      ? candidate
+      : path.resolve(commandCwd, candidate);
+    try {
+      const stat = fsSync.statSync(absolutePath);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > 2 * 1024 * 1024) return "";
+      contents.push(fsSync.readFileSync(absolutePath, "utf8"));
+    } catch {
+      return "";
+    }
+  }
+  return contents.join("\n").toLocaleLowerCase("en-US");
+}
+
+function researchEvidenceManifestSupportsIdentifier(manifestText = "", identifier = "") {
+  const source = String(manifestText || "").toLocaleLowerCase("en-US");
+  const candidate = String(identifier || "").trim().toLocaleLowerCase("en-US");
+  if (!source || !candidate) return false;
+  if (researchEvidenceIdentifiers(source).has(candidate)) return true;
+  if (/^https?:\/\//u.test(candidate)) return source.includes(candidate);
+  const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(
+    `(?:^|[^a-z0-9_.:-])${escaped}(?=$|[^a-z0-9_.:-])`,
+    "u"
+  ).test(source);
+}
+
+export function researchEvidenceManifestMutationBlock(
+  state = {},
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (!["write_file", "apply_patch"].includes(toolName)) return null;
+  const requiredPaths = requiredResearchEvidenceManifestPaths(state, config);
+  if (!requiredPaths.length) return null;
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const requiredKeys = new Set(
+    requiredPaths.map((item) => comparableResearchEvidencePath(item, commandCwd))
+  );
+  const mutationPaths = researchReaderMutationPaths(toolName, args);
+  const readerFacingTargets = mutationPaths.filter((candidate) => {
+    const key = comparableResearchEvidencePath(candidate, commandCwd);
+    return (
+      key &&
+      !requiredKeys.has(key) &&
+      RESEARCH_READER_SOURCE_EXTENSIONS.has(
+        path.extname(candidate).toLocaleLowerCase("en-US")
+      )
+    );
+  });
+  if (!readerFacingTargets.length) return null;
+  const readKeys = new Set(
+    successfulReadFileEvidencePaths(state.messages || [])
+      .filter((item) => item.complete === true)
+      .map((item) => comparableResearchEvidencePath(item.path, commandCwd))
+      .filter(Boolean)
+  );
+  const unreadPaths = requiredPaths.filter(
+    (item) => !readKeys.has(comparableResearchEvidencePath(item, commandCwd))
+  );
+  if (unreadPaths.length) {
+    return {
+      reason:
+        `The current research contract makes ${unreadPaths.join(", ")} authoritative, but it has not been completely read in this task state. ` +
+        "Read the exact evidence manifest before changing reader-facing research prose or citations.",
+      category: "research-evidence-manifest-unread",
+      requiredPaths,
+      unreadPaths,
+      targetPaths: readerFacingTargets,
+      permissionAdvice: {
+        category: "research-evidence-manifest-unread",
+        autoRecover: true,
+        summary:
+          "The proposed report mutation is not yet grounded in its explicitly required evidence manifest.",
+        instruction:
+          `Read ${unreadPaths[0]} completely, then revise the requested report using only claims and citations supported there.`,
+        options: [
+          "Read the exact authoritative evidence manifest.",
+          "After that read, apply a bounded report repair with traceable claims.",
+        ],
+      },
+    };
+  }
+  const introducedIdentifiers = newlyIntroducedResearchEvidenceIdentifiers(args);
+  if (!introducedIdentifiers.length) return null;
+  const manifestText = readResearchEvidenceManifestText(requiredPaths, commandCwd);
+  if (!manifestText) {
+    return {
+      reason:
+        "The authoritative research evidence manifest is no longer readable, so newly cited reader-facing claims cannot be checked before mutation.",
+      category: "research-evidence-manifest-unavailable",
+      requiredPaths,
+      targetPaths: readerFacingTargets,
+      permissionAdvice: {
+        category: "research-evidence-manifest-unavailable",
+        autoRecover: true,
+        summary: "The evidence source changed or disappeared after it was read.",
+        instruction:
+          `Restore and reread ${requiredPaths[0]} before adding citations or evidence identifiers.`,
+        options: ["Restore the exact task evidence manifest and read it again."],
+      },
+    };
+  }
+  const unsupportedIdentifiers = introducedIdentifiers.filter(
+    (item) => !researchEvidenceManifestSupportsIdentifier(manifestText, item)
+  );
+  if (!unsupportedIdentifiers.length) return null;
+  return {
+    reason:
+      `The proposed research edit introduces identifiers absent from the authoritative evidence manifest: ${unsupportedIdentifiers.join(", ")}. ` +
+      "Use only traceable identifiers present in that manifest, or clearly label uncited analysis without fabricating attribution.",
+    category: "research-evidence-identifier-unsupported",
+    requiredPaths,
+    unsupportedIdentifiers,
+    targetPaths: readerFacingTargets,
+    permissionAdvice: {
+      category: "research-evidence-identifier-unsupported",
+      autoRecover: true,
+      summary: "The proposed report edit adds ungrounded citation or source identifiers.",
+      instruction:
+        "Revise the bounded passage using only citation keys, DOI values, URLs, arXiv IDs, and evidence IDs present in the authoritative manifest.",
+      options: [
+        "Use a supported manifest identifier.",
+        "Remove the unsupported attribution and state the claim as a bounded hypothesis when appropriate.",
+      ],
+    },
+  };
+}
+
 function artifactValidationShellMutationBlock(state = {}, args = {}, config = {}) {
   const command = String(args.command || "").trim();
   if (!command) return null;
@@ -21765,6 +22066,27 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       toolName,
       args: safeArgs,
       ...testSpecificationMutationBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
+  const researchManifestMutationBlock = researchEvidenceManifestMutationBlock(
+    state,
+    toolName,
+    args,
+    config
+  );
+  if (researchManifestMutationBlock) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      ...researchManifestMutationBlock,
     };
     await store.appendEvent("tool.blocked", result);
     observers.event("tool.blocked", result);

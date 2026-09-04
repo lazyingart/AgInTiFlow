@@ -74,6 +74,7 @@ import {
   projectTestVerificationFinishBlock,
   prospectivePythonExactPatchSyntaxBlock,
   preservesCurrentTaskBoundary,
+  researchEvidenceManifestMutationBlock,
   completionExternalBlockerCanClose,
   pythonTopLevelDefinitionDuplicates,
   recordCanonicalGeneratedOutputProgress,
@@ -14163,6 +14164,182 @@ try {
       { commandCwd: workspace, taskProfile: "code" }
     ) === null,
     "document-source immutability leaked into a coding profile"
+  );
+  const researchArtifactRoot = path.join(workspace, "output", "research-task-134");
+  const researchManifestPath = path.join(
+    researchArtifactRoot,
+    "research-evidence-manifest.json"
+  );
+  await fs.mkdir(researchArtifactRoot, { recursive: true });
+  await fs.writeFile(
+    researchManifestPath,
+    JSON.stringify({
+      sources: [
+        { id: "S1", title: "Verified primary source" },
+        { id: "S30", title: "Different numbered source" },
+      ],
+    }),
+    "utf8"
+  );
+  const researchReportPath = "output/research-task-134/research-briefing.tex";
+  const researchManifestGoal = [
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request:
+        "Revise the existing report using only verified claims and sources in research-evidence-manifest.json.",
+      artifact_root: researchArtifactRoot,
+    })}`,
+    '"research_evidence_contract":{"required":true}',
+    "Use only sources and verified claims in the exact-task research-evidence-manifest.json; do not invent citations or DOI values.",
+  ].join("\n");
+  const ungroundedResearchState = {
+    goal: researchManifestGoal,
+    messages: [],
+    meta: {
+      taskProfile: "research",
+      goalContract: {
+        revision: 1,
+        activeGoal: researchManifestGoal,
+        currentRequest: researchManifestGoal,
+      },
+    },
+  };
+  const attributedResearchPatch = {
+    path: researchReportPath,
+    search: "The evidence remains limited.",
+    replace:
+      "Chen et al. (2026) proved organoid self-repair under stress \\\\citep{S3}.",
+  };
+  const unreadResearchManifestBlock = researchEvidenceManifestMutationBlock(
+    ungroundedResearchState,
+    "apply_patch",
+    attributedResearchPatch,
+    { commandCwd: workspace, taskProfile: "research" }
+  );
+  assert(
+    unreadResearchManifestBlock?.category ===
+      "research-evidence-manifest-unread" &&
+      unreadResearchManifestBlock.requiredPaths?.includes(
+        "output/research-task-134/research-evidence-manifest.json"
+      ),
+    "a reader-facing research mutation used an explicit evidence manifest without reading it"
+  );
+  const groundedResearchState = structuredClone(ungroundedResearchState);
+  groundedResearchState.messages = [
+    {
+      role: "assistant",
+      tool_calls: [{
+        id: "read-research-evidence-manifest",
+        type: "function",
+        function: {
+          name: "read_file",
+          arguments: JSON.stringify({
+            path: "output/research-task-134/research-evidence-manifest.json",
+          }),
+        },
+      }],
+    },
+    {
+      role: "tool",
+      tool_call_id: "read-research-evidence-manifest",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "output/research-task-134/research-evidence-manifest.json",
+        content: JSON.stringify({
+          sources: [
+            { id: "S1", title: "Verified primary source" },
+            { id: "S30", title: "Different numbered source" },
+          ],
+        }),
+        contentTruncated: false,
+        contentTruncatedByLines: false,
+      }),
+    },
+  ];
+  const supportedResearchPatch = {
+    ...attributedResearchPatch,
+    replace:
+      "The verified primary source documents the bounded result \\\\citep{S1}.",
+  };
+  assert(
+    researchEvidenceManifestMutationBlock(
+      groundedResearchState,
+      "apply_patch",
+      supportedResearchPatch,
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "a complete read of the authoritative evidence manifest did not unlock the report repair"
+  );
+  const unsupportedResearchIdentifierBlock =
+    researchEvidenceManifestMutationBlock(
+      groundedResearchState,
+      "apply_patch",
+      attributedResearchPatch,
+      { commandCwd: workspace, taskProfile: "research" }
+    );
+  assert(
+    unsupportedResearchIdentifierBlock?.category ===
+      "research-evidence-identifier-unsupported" &&
+      unsupportedResearchIdentifierBlock.unsupportedIdentifiers?.includes("s3"),
+    "a completed manifest read still allowed an unlisted citation identifier"
+  );
+  assert(
+    researchEvidenceManifestMutationBlock(
+      {
+        ...ungroundedResearchState,
+        goal: "Fix the typography in research-briefing.tex.",
+        meta: {
+          ...ungroundedResearchState.meta,
+          goalContract: {
+            revision: 2,
+            activeGoal: "Fix the typography in research-briefing.tex.",
+            currentRequest: "Fix the typography in research-briefing.tex.",
+          },
+        },
+      },
+      "apply_patch",
+      attributedResearchPatch,
+      {
+        commandCwd: workspace,
+        taskProfile: "research",
+        goal: researchManifestGoal,
+      }
+    ) === null,
+    "a stale config goal reactivated an obsolete research-manifest contract"
+  );
+  assert(
+    researchEvidenceManifestMutationBlock(
+      {
+        ...ungroundedResearchState,
+        goal: "Fix the typography in research-briefing.tex.",
+        meta: {
+          ...ungroundedResearchState.meta,
+          goalContract: {
+            revision: 1,
+            activeGoal: "Fix the typography in research-briefing.tex.",
+            currentRequest: "Fix the typography in research-briefing.tex.",
+          },
+        },
+      },
+      "apply_patch",
+      attributedResearchPatch,
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "a report edit with no explicit evidence-manifest contract was overblocked"
+  );
+  assert(
+    researchEvidenceManifestMutationBlock(
+      ungroundedResearchState,
+      "write_file",
+      {
+        path: "output/research-task-134/research-evidence-manifest.json",
+        content: JSON.stringify({ sources: [] }),
+        mode: "overwrite",
+      },
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "the report evidence boundary blocked an explicitly targeted manifest edit"
   );
   for (const patch of [
     '*** Begin Patch\n*** Delete File: "report.md"\n*** End Patch',
