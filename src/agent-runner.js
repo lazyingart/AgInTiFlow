@@ -4612,6 +4612,17 @@ function responseOnlyJsonStopResult(goal = "") {
   return "I could not produce a reliable response in the required format for this message.";
 }
 
+function responseOnlyEmptyStopResult(goal = "") {
+  const source = String(goal || "");
+  if (/[\u3040-\u30ff]/u.test(source)) {
+    return "このメッセージには、信頼できる回答を作成できませんでした。";
+  }
+  if (/\p{Script=Han}/u.test(source)) {
+    return "这条消息暂时没有生成可靠的答复。";
+  }
+  return "I could not produce a reliable response for this message.";
+}
+
 function responseOnlyContractFallbackResult(contract, message) {
   if (!contract) return message;
   const value = {};
@@ -4799,7 +4810,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   async function stopForEmptyResponseOnlyEnvelope({ step, assessment, contract }) {
     const stoppedResult = responseOnlyContractFallbackResult(
       contract,
-      "The model did not provide a usable task response after one repair attempt. The session is saved and can be resumed with another provider."
+      responseOnlyEmptyStopResult(completionContractGoal(config, state))
     );
     const detail = {
       step,

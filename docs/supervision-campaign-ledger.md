@@ -2009,3 +2009,19 @@ text, private diagnostic retention, and zero `session.finished` events after
 failure. No live provider or LocalLLM inference, LabCanvas runtime change,
 queue action, schedule, transport operation, or external side effect is
 involved.
+
+### Empty response stops are human-facing
+
+`labcanvas-response-only-natural-empty-stop-152` covers the adjacent case in
+which a response-only backend returns the exact JSON shape but leaves every
+reader-facing field empty twice. The bounded repair and fail-closed stop were
+already correct, but the synthesized chat field exposed the model, retry,
+session, provider, and resume mechanism.
+
+The outward fallback is now a short localized statement that a reliable reply
+was not produced. Empty-payload classification, response keys, provider/model
+state, and stop reason remain in private state and events. The deterministic
+English and Chinese regressions preserve the exact caller schema, one repair,
+paused state, and absence of `session.finished`. No live provider or LocalLLM
+inference, LabCanvas runtime change, queue action, schedule, transport
+operation, or external side effect is involved.

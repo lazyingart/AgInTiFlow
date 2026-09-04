@@ -1763,7 +1763,12 @@ try {
   );
   assert.match(
     JSON.parse(repeatedEmptyResponseOnlyEnvelope.result.result).message,
-    /did not provide a usable task response/
+    /could not produce a reliable response for this message/i
+  );
+  assert.doesNotMatch(
+    JSON.parse(repeatedEmptyResponseOnlyEnvelope.result.result).message,
+    /response-only|model|session|provider|runtime|resume|repair attempt/iu,
+    "empty-envelope stop exposed private runtime diagnostics"
   );
   assert(
     repeatedEmptyResponseOnlyEnvelope.events.some(
@@ -1771,6 +1776,45 @@ try {
     )
   );
   assert(!repeatedEmptyResponseOnlyEnvelope.events.some((event) => event.type === "session.finished"));
+
+  const chineseEmptyResponseOnlyGoal = [
+    "You are the response-only reasoning backend for a chat host.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "host-managed-response",
+      request: "用户希望得到一个简短可靠的答复。",
+    })}`,
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({ message: "", files: [], confirmation: "" }),
+    "Exact task packet:",
+    JSON.stringify({
+      id: "wecom-chat-20260905-example",
+      current_request: "用户希望得到一个简短可靠的答复。",
+    }),
+  ].join("\n");
+  const chineseRepeatedEmptyResponseOnlyEnvelope = await runCase({
+    id: "response-only-empty-envelope-repeated-chinese",
+    taskProfile: "chatops",
+    goal: chineseEmptyResponseOnlyGoal,
+    responses: [
+      assistant(JSON.stringify(emptyResponseOnlyEnvelope)),
+      assistant(JSON.stringify(emptyResponseOnlyEnvelope)),
+    ],
+  });
+  assert.equal(chineseRepeatedEmptyResponseOnlyEnvelope.calls.length, 2);
+  assert.equal(chineseRepeatedEmptyResponseOnlyEnvelope.result.stopped, true);
+  const chineseEmptyStop = JSON.parse(chineseRepeatedEmptyResponseOnlyEnvelope.result.result);
+  assert.deepEqual(Object.keys(chineseEmptyStop), ["message", "files", "confirmation"]);
+  assert.equal(chineseEmptyStop.message, "这条消息暂时没有生成可靠的答复。");
+  assert.doesNotMatch(
+    chineseEmptyStop.message,
+    /response-only|模型|会话|提供商|运行时|恢复|重试/iu,
+    "Chinese empty-envelope stop exposed private runtime diagnostics"
+  );
+  assert(
+    !chineseRepeatedEmptyResponseOnlyEnvelope.events.some(
+      (event) => event.type === "session.finished"
+    )
+  );
 
   const revisedAudit = {
     ...blanketPerfectAudit,
