@@ -965,3 +965,33 @@ compaction, proves recovery to the exact user-facing answer on the next model
 turn, and separately proves the repeated-leak fail-closed path. Truthful
 completion, context-budget recovery, provider handoff, syntax checks, and the
 full test gate pass.
+
+### Unsupported blocker narratives cannot close completed-looking runs
+
+`labcanvas-unsupported-blocker-completion-108` comes from retained production
+session `web-agent-labcanvas-57d7e9c5-8f7c-475b-acbd-b8cf70427d80`. The exact
+LabCanvas repair request named its authoritative task artifact directory and
+required a material source revision, rebuilt and inspected replacement PDF,
+and concise result. After DeepSeek failed before inference with `402
+Insufficient Balance`, LocalLLM listed the exact directory and read its routine
+contract. It then claimed that no source file or revision instruction had been
+provided and asked the user to provide them. No permission, dependency,
+authentication, quota, or tool blocker existed, but the completion gate
+accepted that invented limitation as `session.finished` once unrelated runtime
+evidence made the underlying evidence assessment look complete.
+
+Completion now classifies blocker language before the ordinary success return.
+A candidate that says the task cannot proceed is accepted only when the current
+evidence ledger contains a matching real blocker and project, source, and
+artifact quality gates permit that blocker to close the run. Otherwise it
+enters the existing bounded evidence-repair path with an explicit unsupported-
+blocker reason. The model gets one progress-sensitive chance to use the enabled
+tools or return the actual verified result; a repeated unsupported blocker
+stops without a false terminal finish.
+
+The end-to-end regression first satisfies a shell execution contract, then
+proposes an unrelated missing-file blocker, verifies that the blocker is
+rejected, and accepts the repaired evidence-grounded answer exactly once. The
+existing positive control still accepts a genuinely evidenced missing command.
+Syntax checks, truthful-completion tests, provider handoff, and the full package
+gate pass.

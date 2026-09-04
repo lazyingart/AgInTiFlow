@@ -23214,6 +23214,7 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     return { action: "retry", detail, artifactBlock };
   }
   const claimsIncompleteWork = finishResultClaimsIncompleteWork(candidateResult);
+  const claimsBlocker = finishResultClaimsBlocker(candidateResult);
   const internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
     result: candidateResult,
     messages: state.messages,
@@ -23224,6 +23225,7 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     mode,
     scsActive: Boolean(config.scsActive),
     claimsIncompleteWork,
+    claimsBlocker,
     internalRuntimeScaffoldLeak: internalScaffoldLeak.leaks,
     internalRuntimeScaffoldMarkers: internalScaffoldLeak.markers,
     resultChars: String(candidateResult || "").length,
@@ -23544,7 +23546,9 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     documentQuality,
     spreadsheetQuality,
   });
-  if (assessment.ok && !claimsIncompleteWork) return { action: "accept", assessment };
+  if (assessment.ok && !claimsIncompleteWork && !claimsBlocker) {
+    return { action: "accept", assessment };
+  }
   if (claimsIncompleteWork) {
     assessment = {
       ...assessment,
@@ -23557,6 +23561,17 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     };
   } else if (hasRealBlocker) {
     return { action: "accept", assessment, acceptedBlocker: true };
+  } else if (claimsBlocker) {
+    assessment = {
+      ...assessment,
+      ok: false,
+      evaluation: {
+        ...assessment.evaluation,
+        ok: false,
+        reason:
+          "The proposed final result claims the task is blocked, but no matching runtime blocker evidence exists.",
+      },
+    };
   }
 
   const blocker = deterministicFinishBlocker(assessment.contract, assessment.ledger, assessment.evaluation);

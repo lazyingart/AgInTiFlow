@@ -1298,6 +1298,42 @@ try {
   );
   assert(!scsUnsupportedNarrative.events.some((event) => event.type === "session.finished"));
 
+  const inventedBlockerAfterVerifiedExecution = await runCase({
+    id: "invented-blocker-after-verified-execution",
+    goal: "Run pwd and report the verified working directory.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    responses: [
+      assistant("", [
+        toolCall("pwd-before-invented-blocker", "run_command", { command: "pwd" }),
+      ]),
+      assistant(
+        "I cannot proceed because no target file was named. Please specify a source file."
+      ),
+      assistant("Ran pwd and verified the working directory."),
+    ],
+  });
+  assert.equal(inventedBlockerAfterVerifiedExecution.calls.length, 3);
+  assert.equal(inventedBlockerAfterVerifiedExecution.result.stopped, undefined);
+  assert.match(inventedBlockerAfterVerifiedExecution.result.result, /verified the working directory/i);
+  assert(
+    inventedBlockerAfterVerifiedExecution.events.some(
+      (event) =>
+        event.type === "completion.evidence_rejected" &&
+        /claims the task is blocked, but no matching runtime blocker evidence exists/i.test(
+          String(event.data?.reason || "")
+        )
+    ),
+    "an invented blocker was accepted after unrelated execution evidence satisfied the task contract"
+  );
+  assert.equal(
+    inventedBlockerAfterVerifiedExecution.events.filter(
+      (event) => event.type === "session.finished"
+    ).length,
+    1,
+    "the repaired completion did not finish exactly once"
+  );
+
   const approvalNarrativeWithBlockerEvidence = await runCase({
     id: "approval-narrative-with-blocker-evidence",
     goal: "Run which definitely_missing_aginti_command and report the result.",
