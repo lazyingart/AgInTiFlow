@@ -1023,3 +1023,28 @@ fresh file mutation after the request boundary, and still requires a PDF. The
 same retained production goal now derives file plus artifact evidence instead
 of artifact delivery alone, so unchanged prior files cannot satisfy it.
 Scoped-artifact, progressive-tool, syntax, and full package tests pass.
+
+### Project nouns do not trigger source-free forecast repair
+
+`labcanvas-project-noun-forecast-false-positive-110` comes from retained
+production session `web-agent-labcanvas-acfafa25-d3c5-4a4e-9e12-1813973211a2`.
+The authoritative scheduled-inspiration request required one concise message
+aligned to the exact group's organoid and interdisciplinary research interests.
+After DeepSeek failed before inference with `402 Insufficient Balance`, the
+LocalLLM returned the harmless invitation `Share your latest project ideas`.
+The source-free claim guard interpreted the noun `project` as the verb
+`project`, rejected it as an unsupported forecast, and requested a correction.
+That unnecessary repair lost the subject: the replacement became generic
+career advice and exposed the unrelated internal schedule id `memo_daily`.
+
+Forecast detection no longer treats bare `project` as a prediction. It still
+detects the unambiguous forms `projected` and `projection`, and detects
+`projects` when a report, study, source, model, forecast, analysis, or analyst
+is its subject. The change is confined to source-free response validation; it
+does not weaken publication, validation, citation, year, benchmark, metric, or
+multilingual forecast checks.
+
+The regression uses the exact retained invitation and proves it passes without
+a repair. A negative control proves that `The market analysis projects that
+demand will grow next year` remains rejected. Truthful-completion and syntax
+checks pass before the full package gate.

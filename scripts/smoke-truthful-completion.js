@@ -412,6 +412,27 @@ assert.equal(
   true,
   "ordinary source-free pure chat was incorrectly rejected"
 );
+const projectIdeaInvitation = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "Let's spark creativity together! Share your latest project ideas and collaborate on pushing boundaries.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  projectIdeaInvitation.ok,
+  true,
+  "the noun 'project' in a source-free invitation was misclassified as a forecast"
+);
+const attributedProjectsForecast = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "The market analysis projects that demand will grow next year.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  attributedProjectsForecast.ok,
+  false,
+  "an attributed projects-verb forecast bypassed the source-free guard"
+);
 const responseOnlyRouterJson = evaluateSourceFreeResponseClaims({
   goal: sourceFreeResearchGoal,
   candidateResult: JSON.stringify({

@@ -1993,7 +1993,7 @@ function sourceFreeExternalClaimCategoriesForSegment(text = "") {
   );
   add(
     "forecast",
-    /\b(?:forecast|forecasted|predict(?:s|ed|ion)?|project(?:s|ed|ion)|expected\s+to|will\s+(?:reach|increase|decrease|grow|decline|outperform|underperform)|cagr)\b|(?:预测|預測|预计|預計|估计|估計|推算|推測|到\s*(?:19|20)\d{2}\s*年?(?:底|末)?(?:前|之前)?|(?:19|20)\d{2}\s*年?(?:底|末)?(?:前|之前)?[^。！？；\n]{0,40}(?:将|將|会|會|预计|預計|预测|預測))|(?:予測|予想|見込み|推定|年末まで|までに)/iu
+    /\b(?:forecast|forecasted|predict(?:s|ed|ion)?|projected|projection|expected\s+to|will\s+(?:reach|increase|decrease|grow|decline|outperform|underperform)|cagr)\b|\b(?:report|study|source|model|forecast|analysis|analyst)\s+projects\b|(?:预测|預測|预计|預計|估计|估計|推算|推測|到\s*(?:19|20)\d{2}\s*年?(?:底|末)?(?:前|之前)?|(?:19|20)\d{2}\s*年?(?:底|末)?(?:前|之前)?[^。！？；\n]{0,40}(?:将|將|会|會|预计|預計|预测|預測))|(?:予測|予想|見込み|推定|年末まで|までに)/iu
   );
   add(
     "benchmark_or_metric",
