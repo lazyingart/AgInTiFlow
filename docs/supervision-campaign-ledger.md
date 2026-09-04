@@ -933,3 +933,35 @@ to conceal unsupported validation and accuracy claims. The production-shaped
 provider handoff forces DeepSeek `402`, accepts the requested LocalLLM
 prediction in one fallback request, emits no source-free rejection, and records
 one terminal finish.
+
+### Internal recovery scaffolding cannot become the task answer
+
+`labcanvas-internal-runtime-scaffold-leak-107` comes from retained production
+session `web-agent-labcanvas-b94e75e1-5441-402c-b299-e8b527f386cf`. The task
+was a current LabAgent research briefing with reader-facing artifacts. DeepSeek
+failed before inference with `402 Insufficient Balance`; the LocalLLM request
+then exceeded its context envelope and AgInTi compacted the history from about
+71,000 to 13,800 message characters. Instead of continuing the briefing, the
+fallback model copied the private recovery packet into its answer: it discussed
+runtime compaction, repeated the AgInTi identity instruction, claimed that the
+original request was truncated, and asserted that acceptance criteria were
+satisfied. Because the task had not yet produced tool evidence, this internal
+narrative was nevertheless accepted as `session.finished`.
+
+Completion now checks a candidate against the actual runtime-generated
+compaction or constrained-recovery packets retained in that session. It rejects
+only high-confidence copying: at least two distinctive narrative markers, one
+narrative marker plus a private section heading, or three private headings. A
+normal answer after compaction is unaffected, and an explicit user request to
+explain or audit context-recovery behavior remains allowed. English, Chinese,
+and Japanese marker forms are covered without treating generic words such as
+`runtime`, `context`, or `plan` as failures.
+
+The first copied answer is removed from active conversation state and receives
+one goal-revision-scoped repair directing the model back to the real task. A
+second copied answer stops truthfully without a terminal finish, preserving the
+session for another provider. The production-shaped regression forces proactive
+compaction, proves recovery to the exact user-facing answer on the next model
+turn, and separately proves the repeated-leak fail-closed path. Truthful
+completion, context-budget recovery, provider handoff, syntax checks, and the
+full test gate pass.

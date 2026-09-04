@@ -1541,6 +1541,83 @@ function isRuntimeRecoveryRequest(content = "") {
   );
 }
 
+function runtimeScaffoldSourceKind(content = "") {
+  const text = String(content || "").trim();
+  if (!text) return "";
+  if (isRuntimeCompactionRequest(text)) return "context-compaction";
+  if (/^The runtime narrowed this turn because concrete evidence leaves only one bounded recovery phase\./i.test(text)) {
+    return "constrained-recovery";
+  }
+  if (isRuntimeRecoveryRequest(text)) return "runtime-recovery";
+  return "";
+}
+
+function explicitlyRequestsRuntimeScaffoldDiscussion(goal = "") {
+  const text = compactSingleLine(goal, 4000);
+  if (!text) return false;
+  const discussion =
+    /\b(?:explain|describe|analy[sz]e|debug|document|inspect|review|test|audit|why|how)\b|(?:解释|说明|分析|调试|记录|文档|检查|测试|审计|为什么|如何)|(?:説明|分析|デバッグ|文書化|確認|テスト|監査|なぜ|どのように)/iu;
+  const subject =
+    /\b(?:runtime|context|history|prompt|recovery)\b.{0,80}\b(?:compact(?:ion|ed)?|scaffold|instruction|truncat(?:e|ed|ion))\b|\b(?:compact(?:ion|ed)?|scaffold|truncat(?:e|ed|ion))\b.{0,80}\b(?:runtime|context|history|prompt|recovery)\b|(?:运行时|上下文|历史|提示词|恢复).{0,80}(?:压缩|脚手架|指令|截断)|(?:ランタイム|コンテキスト|履歴|プロンプト|復旧).{0,80}(?:圧縮|指示|切り詰め)/iu;
+  return discussion.test(text) && subject.test(text);
+}
+
+export function assessInternalRuntimeScaffoldLeak({ result = "", messages = [], goal = "" } = {}) {
+  const text = String(result || "").trim();
+  const sourceKinds = [
+    ...new Set(
+      (Array.isArray(messages) ? messages : [])
+        .filter((message) => message?.role === "user")
+        .map((message) => runtimeScaffoldSourceKind(message.content))
+        .filter(Boolean)
+    ),
+  ];
+  if (!text || sourceKinds.length === 0 || explicitlyRequestsRuntimeScaffoldDiscussion(goal)) {
+    return { leaks: false, markers: [], sourceKinds };
+  }
+
+  const markerPatterns = [
+    [
+      "runtime-compaction-narrative",
+      /(?:\b(?:the\s+)?runtime\b[\s\S]{0,180}\b(?:compact(?:ed|ion)|context window|agent history)\b)|(?:(?:运行时|上下文).{0,100}(?:压缩|截断|历史))|(?:(?:ランタイム|コンテキスト).{0,100}(?:圧縮|切り詰め|履歴))/iu,
+    ],
+    [
+      "agent-identity-instruction",
+      /(?:\byou are AgInTi(?:Flow)?\b|你是\s*AgInTi(?:Flow)?|あなたは\s*AgInTi(?:Flow)?)/iu,
+    ],
+    [
+      "prompt-visibility-narrative",
+      /(?:\b(?:original|latest|genuine)\s+(?:user\s+)?(?:prompt|request|message)[\s\S]{0,140}\b(?:truncat(?:ed|ion)|not (?:fully )?visible|missing from (?:the )?context)\b)|(?:(?:原始|最新|真实).{0,40}(?:提示词|请求|消息).{0,80}(?:截断|不可见|看不到|缺失))|(?:(?:元の|最新の).{0,40}(?:プロンプト|依頼|メッセージ).{0,80}(?:切り詰め|見えない|欠落))/iu,
+    ],
+    [
+      "authoritative-state-narrative",
+      /(?:\b(?:authoritative\s+)?(?:goals?|plans?|retained evidence)[\s\S]{0,140}\bpreserv(?:ed|ation)\b)|(?:(?:权威|保留).{0,80}(?:目标|计划|证据).{0,80}(?:保留|保存))|(?:(?:権威|保持).{0,80}(?:目標|計画|証拠).{0,80}(?:保持|保存))/iu,
+    ],
+    ["authoritative-goal-heading", /^\s*Authoritative current goal\s*:/imu],
+    ["verification-checkpoint-heading", /^\s*Authoritative verification and artifact checkpoint\s*:/imu],
+    ["reconciled-request-heading", /^\s*Original and latest genuine user request\(s\), reconciled/imu],
+    ["runtime-snapshot-heading", /^\s*Latest runtime snapshot\s*:/imu],
+    ["recovery-instruction-heading", /^\s*Recovery instruction\s*:/imu],
+  ];
+  const markers = markerPatterns
+    .filter(([, pattern]) => pattern.test(text))
+    .map(([id]) => id);
+  const narrativeMarkers = markers.filter((id) =>
+    [
+      "runtime-compaction-narrative",
+      "agent-identity-instruction",
+      "prompt-visibility-narrative",
+      "authoritative-state-narrative",
+    ].includes(id)
+  );
+  const headingMarkers = markers.filter((id) => id.endsWith("-heading"));
+  const leaks =
+    narrativeMarkers.length >= 2 ||
+    (narrativeMarkers.length >= 1 && headingMarkers.length >= 1) ||
+    headingMarkers.length >= 3;
+  return { leaks, markers, sourceKinds };
+}
+
 function summarizeOriginalRequests(messages = [], limit = 6) {
   const requests = [];
   for (const message of messages) {
@@ -23137,15 +23214,37 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     return { action: "retry", detail, artifactBlock };
   }
   const claimsIncompleteWork = finishResultClaimsIncompleteWork(candidateResult);
+  const internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
+    result: candidateResult,
+    messages: state.messages,
+    goal: completionContractGoal(config, state),
+  });
   const candidateAssessment = {
     step,
     mode,
     scsActive: Boolean(config.scsActive),
     claimsIncompleteWork,
+    internalRuntimeScaffoldLeak: internalScaffoldLeak.leaks,
+    internalRuntimeScaffoldMarkers: internalScaffoldLeak.markers,
     resultChars: String(candidateResult || "").length,
   };
   await store.appendEvent("completion.candidate_assessed", candidateAssessment);
   observers.event("completion.candidate_assessed", candidateAssessment);
+  if (internalScaffoldLeak.leaks) {
+    return await rejectInternalRuntimeScaffoldCompletion({
+      config,
+      state,
+      store,
+      observers,
+      step,
+      mode,
+      candidateResult,
+      leak: internalScaffoldLeak,
+    });
+  }
+  if (state.meta?.internalRuntimeScaffoldRepair) {
+    delete state.meta.internalRuntimeScaffoldRepair;
+  }
   // SCS is an additional semantic reviewer, never a substitute for the
   // deterministic execution, project-test, and artifact gates below. A model
   // narrative must not become successful merely because SCS is active.
@@ -24027,6 +24126,75 @@ function verifiedCompletionFallback(assessment = {}, state = {}) {
   ]
     .filter(Boolean)
     .join(" ");
+}
+
+async function rejectInternalRuntimeScaffoldCompletion({
+  config,
+  state,
+  store,
+  observers,
+  step,
+  mode,
+  candidateResult,
+  leak,
+}) {
+  state.meta = state.meta || {};
+  const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const key = `${completionContractKey(config)}:${goalRevision}:internal-runtime-scaffold`;
+  const prior = state.meta.internalRuntimeScaffoldRepair || {};
+  const attempts = prior.key === key ? Math.max(0, Number(prior.attempts || 0)) : 0;
+  const detail = {
+    step,
+    mode,
+    key,
+    repairAttempt: attempts + 1,
+    maxRepairAttempts: 1,
+    markers: leak.markers,
+    sourceKinds: leak.sourceKinds,
+    resultChars: String(candidateResult || "").length,
+  };
+  await store.appendEvent("completion.internal_runtime_scaffold_rejected", detail);
+  observers.event("completion.internal_runtime_scaffold_rejected", detail);
+
+  const last = state.messages?.at(-1);
+  if (
+    mode === "assistant-content" &&
+    last?.role === "assistant" &&
+    String(last.content || "").trim() === String(candidateResult || "").trim() &&
+    !(last.tool_calls || []).length
+  ) {
+    state.messages.pop();
+  }
+
+  if (attempts < 1) {
+    state.meta.internalRuntimeScaffoldRepair = {
+      key,
+      attempts: attempts + 1,
+      step,
+      goalRevision,
+      at: new Date().toISOString(),
+    };
+    const instruction = [
+      "Your proposed answer repeated private recovery or compaction scaffolding instead of answering the authoritative task.",
+      "Do not mention runtime prompts, context compaction, hidden instructions, or request visibility.",
+      "Continue the actual current task from the retained goal and evidence: use the smallest enabled tool when action is still required, or return the concrete user-facing result when the task is already complete.",
+      "If the task is genuinely blocked, state only the task-specific external blocker and preserve the session for resume.",
+    ].join(" ");
+    state.messages.push({ role: "user", content: instruction });
+    await store.appendEvent("completion.internal_runtime_scaffold_repair_requested", {
+      ...detail,
+      instruction,
+    });
+    observers.event("completion.internal_runtime_scaffold_repair_requested", detail);
+    return { action: "retry", detail };
+  }
+
+  return {
+    action: "stop",
+    detail,
+    result:
+      "The model did not produce a usable task answer after one repair attempt. The session is saved and can be resumed with another provider.",
+  };
 }
 
 async function repairEmptyCompletion({ config, state, store, observers, step, assessment }) {

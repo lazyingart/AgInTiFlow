@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  assessInternalRuntimeScaffoldLeak,
   completionRequirementCoverageInstruction,
   continuationExecutionContractDirective,
   evaluateAuthoritativeStructuredCompletionCoverage,
@@ -183,6 +184,70 @@ assert.equal(
   ),
   true,
   "agent-owned pending validation was accepted as a completed result"
+);
+
+const internalCompactionMessages = [{
+  role: "user",
+  content: [
+    "The runtime proactively compacted a long agent history before the provider context became inefficient or unstable.",
+    "Authoritative current goal:",
+    "Prepare the requested briefing.",
+    "Authoritative verification and artifact checkpoint:",
+    "{}",
+    "Recovery instruction:",
+    "Continue the task.",
+  ].join("\n"),
+}];
+const productionScaffoldResult = [
+  "The runtime has compacted the agent history due to context window limits, but all authoritative goals, plans, and retained evidence are preserved.",
+  "You are AgInTiFlow and should continue from the recovery instruction.",
+  "The original prompt was truncated and the latest genuine user request is not fully visible.",
+  "All acceptance criteria are satisfied.",
+].join(" ");
+const productionScaffoldLeak = assessInternalRuntimeScaffoldLeak({
+  messages: internalCompactionMessages,
+  goal: "Prepare the requested briefing.",
+  result: productionScaffoldResult,
+});
+assert.equal(productionScaffoldLeak.leaks, true);
+assert(productionScaffoldLeak.markers.includes("runtime-compaction-narrative"));
+assert(productionScaffoldLeak.markers.includes("prompt-visibility-narrative"));
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: internalCompactionMessages,
+    goal: "Prepare the requested briefing.",
+    result: "The briefing is complete and the requested reader-facing PDF is attached.",
+  }).leaks,
+  false,
+  "a normal post-compaction task answer was rejected"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: "Explain this text.",
+    result: productionScaffoldResult,
+  }).leaks,
+  false,
+  "ordinary text was treated as copied runtime scaffolding without a runtime source packet"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: internalCompactionMessages,
+    goal: "Explain how the runtime context-compaction recovery instruction works.",
+    result:
+      "The runtime compacts agent history and preserves authoritative goals. You are AgInTiFlow is an identity instruction in that scaffold.",
+  }).leaks,
+  false,
+  "an explicit user request to explain runtime compaction was rejected"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: internalCompactionMessages,
+    goal: "完成用户请求。",
+    result: "运行时已经压缩了代理历史。你是 AgInTiFlow，应按照恢复指令继续。原始请求已被截断。",
+  }).leaks,
+  true,
+  "translated internal runtime scaffolding was accepted"
 );
 
 const sourceFreeResearchGoal = [
@@ -502,6 +567,8 @@ async function runCase({
   allowDestructive = false,
   executionTier = "",
   maxOutputTokens = undefined,
+  contextBudgetChars = undefined,
+  contextBudgetTargetChars = undefined,
   resume = false,
   runtimePatch = undefined,
   expectedRuntimeRevision = undefined,
@@ -542,6 +609,8 @@ async function runCase({
       allowParallelScouts: false,
       enableScs: scsActive ? "auto" : "off",
       commandCwd: workspace,
+      ...(contextBudgetChars ? { contextBudgetChars } : {}),
+      ...(contextBudgetTargetChars ? { contextBudgetTargetChars } : {}),
     },
     {
       baseDir: workspace,
@@ -578,6 +647,8 @@ async function runCase({
     sandboxMode: "host",
     packageInstallPolicy: "block",
     ...(maxOutputTokens ? { maxOutputTokens } : {}),
+    ...(contextBudgetChars ? { contextBudgetChars } : {}),
+    ...(contextBudgetTargetChars ? { contextBudgetTargetChars } : {}),
     allowDestructive,
     allowShellTool,
     allowFileTools,
@@ -666,6 +737,76 @@ try {
     ) < 2_000,
     "focused runtime snapshot repeated the full capability manual"
   );
+
+  const compactionRecoveryGoal = [
+    "Return exactly READY. Do not use any external tool or claim external facts.",
+    `Retained background notes: ${"context-only background. ".repeat(1600)}`,
+  ].join("\n");
+  const recoveredFromInternalScaffold = await runCase({
+    id: "internal-runtime-scaffold-recovery",
+    goal: compactionRecoveryGoal,
+    contextBudgetChars: 8_000,
+    contextBudgetTargetChars: 5_000,
+    responses: [
+      assistant(productionScaffoldResult),
+      assistant("READY"),
+    ],
+  });
+  assert.equal(recoveredFromInternalScaffold.calls.length, 2);
+  assert.equal(recoveredFromInternalScaffold.result.result, "READY");
+  assert(
+    recoveredFromInternalScaffold.events.some(
+      (event) => event.type === "history.compacted_for_context_budget"
+    ),
+    "production-shaped fixture did not enter runtime context compaction"
+  );
+  assert.equal(
+    recoveredFromInternalScaffold.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    1,
+    "copied internal compaction scaffolding was not rejected exactly once"
+  );
+  assert.equal(
+    recoveredFromInternalScaffold.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_repair_requested"
+    ).length,
+    1,
+    "copied internal compaction scaffolding did not receive one bounded repair"
+  );
+  assert(
+    recoveredFromInternalScaffold.calls[1].messages.some(
+      (message) => /repeated private recovery or compaction scaffolding/i.test(String(message.content || ""))
+    ),
+    "the repaired model turn did not receive a task-facing recovery instruction"
+  );
+  assert(
+    !recoveredFromInternalScaffold.state.messages.some(
+      (message) => message.role === "assistant" && String(message.content || "").includes("original prompt was truncated")
+    ),
+    "rejected internal scaffolding remained in the resumed conversation"
+  );
+
+  const repeatedInternalScaffold = await runCase({
+    id: "internal-runtime-scaffold-repeated",
+    goal: compactionRecoveryGoal,
+    contextBudgetChars: 8_000,
+    contextBudgetTargetChars: 5_000,
+    responses: [
+      assistant(productionScaffoldResult),
+      assistant(productionScaffoldResult),
+    ],
+  });
+  assert.equal(repeatedInternalScaffold.calls.length, 2);
+  assert.equal(repeatedInternalScaffold.result.stopped, true);
+  assert.equal(repeatedInternalScaffold.result.reason, "model_did_not_execute");
+  assert.equal(
+    repeatedInternalScaffold.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    2
+  );
+  assert(!repeatedInternalScaffold.events.some((event) => event.type === "session.finished"));
 
   // Recreate a state written by the older continuation classifier: the
   // expanded continuation was incorrectly persisted as the durable task.
