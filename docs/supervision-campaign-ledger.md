@@ -1341,3 +1341,30 @@ The focused regression covers exact workspace-search reuse, refined-search and
 richer-inspection positive controls, listing depth, and cross-tool `list_files`
 to `ls` equivalence. This changes no workspace permissions, tool availability,
 provider selection, or LabCanvas runtime policy.
+
+### Shell discovery requires non-mutation proof
+
+`labcanvas-shell-discovery-mutation-boundary-124` follows the retained
+environment-probe loop in production session
+`web-agent-labcanvas-d2b99a34-8fa9-4157-ade9-a2a00c74940b`. That trace exposed
+a disagreement between shell command policy and dynamic-step accounting: the
+discovery classifier used only the first command word, so every command that
+started with `find`, `cat`, `jq`, `rg`, or another reader looked static even
+when it deleted files, ran a mutating `-exec`, or redirected output into the
+workspace. Such a successful mutation could fail to advance the stagnation
+epoch and could be rejected later by a misleading read-only convergence guard.
+
+Shell calls now count as static discovery only when their shape is
+discovery-like and command policy independently proves that they cannot mutate
+the project. The existing `semanticMayMutateProject=false` escape remains
+available for conservative broad-pipeline classifications such as
+`find ... | xargs ls`. Verified leading workspace `cd` wrappers remain
+transparent. Destructive `find` actions and output redirections remain outside
+static accounting, while observed mutation and substantive-test progress keep
+their existing semantics.
+
+The focused regression covers the retained read-only environment probe,
+leading-workspace wrappers, `find -delete`, mutating `find -exec`, reader output
+redirection, and a stale convergence-history negative control. Dynamic-step
+and syntax checks pass without executing a destructive command, starting a
+model, or changing LabCanvas routing.

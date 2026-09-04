@@ -11367,7 +11367,7 @@ export function toolResultForModel(result) {
 }
 
 export function repeatedStaticToolBlock(state, toolName, args = {}, config = {}) {
-  if (!isStaticDiscoveryToolCall(toolName, args)) return null;
+  if (!isStaticDiscoveryToolCall(toolName, args, config)) return null;
   const requiredPatchRefresh = activePatchContextRefresh(state);
   const boundedFailedTestReadPaths = [
     ...(Array.isArray(config.testFailureRepairContextPaths)
@@ -11709,7 +11709,9 @@ export function recordFailedCommandAttempt(toolLoop = {}, entry = {}) {
 }
 
 function isStaticDiscoveryToolResult(toolResult = {}) {
-  if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {})) return true;
+  if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {}, {
+    commandPolicy: toolResult.commandPolicy,
+  })) return true;
   if (toolResult.toolName !== "run_command") return false;
   if (runCommandResultHasDurableProgress(toolResult)) return false;
   return !expectedRepeatedObservationCommand(toolResult.args?.command);
@@ -11717,7 +11719,9 @@ function isStaticDiscoveryToolResult(toolResult = {}) {
 
 function successfulToolStateProgress(toolResult = {}) {
   if (!toolResult || toolResult.done || toolResult.ok === false || toolResult.blocked || toolResult.skipped) return false;
-  if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {})) {
+  if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {}, {
+    commandPolicy: toolResult.commandPolicy,
+  })) {
     return false;
   }
   if (toolResult.toolName === "run_command") {

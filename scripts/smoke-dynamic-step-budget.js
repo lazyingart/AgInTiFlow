@@ -10577,6 +10577,64 @@ try {
   assert(explicitBudget.extensionsUsed === 0, "explicit resumed max-steps retained stale extension usage");
   assert(explicitBudget.resetFromExplicitOverride, "explicit resumed max-steps reset was not recorded");
   assert(isStaticDiscoveryToolCall("run_command", { command: "ls -la ../Musia" }), "static ls discovery was not classified");
+  const safeFindListCommand = 'find /aginti-env -type f -name "pdflatex" | xargs ls -la';
+  const safeFindListPolicy = classifyCommand(safeFindListCommand);
+  assert(
+    isStaticDiscoveryToolCall(
+      "run_command",
+      { command: safeFindListCommand },
+      { commandPolicy: safeFindListPolicy }
+    ),
+    "a policy-proven read-only find/xargs listing was not static discovery"
+  );
+  for (const mutatingDiscoveryShape of [
+    'find . -type f -name "*.tmp" -delete',
+    'find . -type f -exec chmod 600 {} +',
+    'cat input.txt > output.txt',
+    'jq . input.json > output.json',
+    'rg TODO src > report.txt',
+  ]) {
+    assert(
+      !isStaticDiscoveryToolCall(
+        "run_command",
+        { command: mutatingDiscoveryShape },
+        { commandPolicy: classifyCommand(mutatingDiscoveryShape) }
+      ),
+      `workspace-writing command was mislabeled as static discovery: ${mutatingDiscoveryShape}`
+    );
+  }
+  const deceptiveMutation = 'find . -type f -name "*.tmp" -delete';
+  const deceptiveMutationSignature = staticToolCallSignature(
+    "run_command",
+    { command: deceptiveMutation },
+    { commandCwd: workspace }
+  );
+  assertStrict.equal(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [deceptiveMutationSignature]: 2 },
+            staticOrder: [deceptiveMutationSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "run_command",
+      { command: deceptiveMutation },
+      { commandCwd: workspace }
+    ),
+    null,
+    "a mutation-shaped command was blocked by the read-only convergence guard"
+  );
+  assert(
+    isStaticDiscoveryToolCall(
+      "run_command",
+      { command: `cd ${workspace} && ${safeFindListCommand}` },
+      { commandCwd: workspace, commandPolicy: safeFindListPolicy }
+    ),
+    "a verified leading workspace cd hid a read-only discovery command"
+  );
   assert(isStaticDiscoveryToolCall("read_image", { path: "snapshot.png" }), "image perception was not classified as static discovery");
   const repeatedImageReadSignature = staticToolCallSignature(
     "read_image",

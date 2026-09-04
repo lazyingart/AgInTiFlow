@@ -1,4 +1,5 @@
 import path from "node:path";
+import { classifyCommand } from "./command-policy.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 
 export const DYNAMIC_STEP_MODES = ["off", "auto", "on"];
@@ -150,7 +151,31 @@ function stableStringify(value) {
   return JSON.stringify(value);
 }
 
-export function isStaticDiscoveryToolCall(toolName, args = {}) {
+function staticDiscoveryCommandBody(command = "", commandCwd = process.cwd()) {
+  const text = String(command || "").trim();
+  const match = text.match(/^cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s*&&\s*([\s\S]+)$/);
+  if (!match) return text;
+  const target = match[1] || match[2] || match[3] || "";
+  const expected = path.resolve(commandCwd || process.cwd());
+  const resolved = path.resolve(commandCwd || process.cwd(), target);
+  return resolved === expected ? match[4].trim() : text;
+}
+
+function commandPolicyProvesStaticDiscovery(command = "", context = {}) {
+  const policy = context.commandPolicy && typeof context.commandPolicy === "object"
+    ? context.commandPolicy
+    : classifyCommand(command);
+  return Boolean(
+    policy.semanticMayMutateProject === false ||
+      (
+        policy.writesWorkspace !== true &&
+        policy.mayMutateProject !== true &&
+        !["blocked", "destructive"].includes(String(policy.category || ""))
+      )
+  );
+}
+
+export function isStaticDiscoveryToolCall(toolName, args = {}, context = {}) {
   if (
     [
       "inspect_project",
@@ -166,13 +191,13 @@ export function isStaticDiscoveryToolCall(toolName, args = {}) {
     return true;
   }
   if (toolName !== "run_command") return false;
-  const command = String(args.command || "").trim();
+  const command = staticDiscoveryCommandBody(args.command, context.commandCwd);
   if (!command) return false;
-  if (/\s--?(?:help|version)\b/i.test(command)) return true;
   if (/\b(?:watch|poll|status|queue|sleep)\b|tail\s+-f|\bcurl\b|\bps\b|tmux\s+capture-pane/i.test(command)) return false;
-  return /^(?:env\s+)?(?:ls\b|find\b|rg\b|grep\b|cat\b|head\b|sed\s+-n\b|wc\b|stat\b|file\b|realpath\b|readlink\b|jq\b)/i.test(
-    command
-  );
+  const discoveryShape =
+    /\s--?(?:help|version)\b/i.test(command) ||
+    /^(?:env\s+)?(?:ls\b|find\b|rg\b|grep\b|cat\b|head\b|sed\s+-n\b|wc\b|stat\b|file\b|realpath\b|readlink\b|jq\b)/i.test(command);
+  return discoveryShape && commandPolicyProvesStaticDiscovery(command, context);
 }
 
 function canonicalDiscoveryPath(value, commandCwd = process.cwd()) {
@@ -327,9 +352,12 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
   return `${toolName}:${stableStringify(args || {})}`;
 }
 
-function isStaticDiscoveryResult(result = {}) {
+function isStaticDiscoveryResult(result = {}, context = {}) {
   if (!result || result.ok === false || result.blocked || result.done) return false;
-  if (isStaticDiscoveryToolCall(result.toolName, result.args || {})) return true;
+  if (isStaticDiscoveryToolCall(result.toolName, result.args || {}, {
+    ...context,
+    commandPolicy: result.commandPolicy,
+  })) return true;
   if (result.toolName !== "run_command") return false;
   if (/\b(?:watch|poll|status|queue|sleep)\b|tail\s+-f|tmux\s+capture-pane/i.test(String(result.args?.command || ""))) {
     return false;
@@ -340,8 +368,11 @@ function isStaticDiscoveryResult(result = {}) {
 function runCommandHasConcreteProgress(result = {}) {
   const policy = result.commandPolicy || {};
   const policyAllowsMutation =
-    policy.mayMutateProject === true ||
-    (policy.mayMutateProject === undefined && policy.writesWorkspace === true);
+    policy.semanticMayMutateProject !== false &&
+    (
+      policy.mayMutateProject === true ||
+      (policy.mayMutateProject === undefined && policy.writesWorkspace === true)
+    );
   return Boolean(
     policyAllowsMutation ||
       policy.substantiveTest === true ||
@@ -352,7 +383,7 @@ function runCommandHasConcreteProgress(result = {}) {
 
 export function summarizeRepeatedStaticDiscovery(recentToolResults = [], context = {}) {
   const signatures = recentToolResults
-    .filter(isStaticDiscoveryResult)
+    .filter((result) => isStaticDiscoveryResult(result, context))
     .map((result) => staticToolCallSignature(result.toolName, result.args || {}, context));
   const counts = new Map();
   for (const signature of signatures) counts.set(signature, (counts.get(signature) || 0) + 1);
@@ -489,7 +520,9 @@ function hasConcreteProgress(recentToolResults = [], events = []) {
   }
   return recentToolResults.some((result) => {
     if (result.ok === false || result.blocked || result.done) return false;
-    if (isStaticDiscoveryToolCall(result.toolName, result.args || {})) return false;
+    if (isStaticDiscoveryToolCall(result.toolName, result.args || {}, {
+      commandPolicy: result.commandPolicy,
+    })) return false;
     if (!PROGRESS_TOOL_NAMES.has(result.toolName)) return false;
     if (result.toolName === "run_command") return runCommandHasConcreteProgress(result);
     return Boolean(
