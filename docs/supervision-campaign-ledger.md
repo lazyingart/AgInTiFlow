@@ -1877,3 +1877,27 @@ returns `accepted=false`, preserves the caller schema, and finishes normally.
 Existing initially perfect, already rejected, qualified, and non-audit controls
 remain unchanged. No live model, LocalLLM inference, LabCanvas runtime change,
 queue action, schedule, or transport operation is involved.
+
+### Bare artifact outputs resolve inside one authoritative task root
+
+`labcanvas-scoped-artifact-bare-write-146` follows retained WeCom worker session
+`web-agent-labcanvas-12fc2f0e-6c81-489c-9d0c-8bde674eeeed`. After DeepSeek
+balance exhaustion, the LocalLLM correctly attempted to create a task-local
+report source but supplied only a meaningful basename. AgInTiFlow resolved it
+at the AgenticApp repository root, then rejected its own resolution as outside
+the host-declared artifact directory and paused for permission. Stronger host
+permission could not resolve this path-semantics mismatch.
+
+Workspace writes now interpret a bare basename relative to the artifact root
+only when the host marks the run as a scoped artifact task, declares exactly
+one matching artifact root, and enables write access. The returned tool path is
+the real workspace-relative rooted path. Absolute paths, parent traversal,
+directory-bearing relative paths, multiple scopes, reads, and ordinary
+write-scoped work retain the existing containment behavior.
+
+The production-shaped executor regression proves the pre-fix block, successful
+write and exact bytes under the authoritative root after the fix, and negative
+controls for both non-bare relocation and ordinary outside-root writes. Report
+source grounding remains independently enforced by the authoritative-manifest
+boundary from scenario 134. No live model, LocalLLM inference, LabCanvas runtime
+change, queue action, schedule, or transport operation is involved.

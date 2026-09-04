@@ -342,8 +342,24 @@ export function resolveWorkspacePath(
   const root = workspaceRoot(config);
   const rawPath = sanitizePathInput(inputPath);
   const workspacePath = normalizeWorkspaceInputPath(rawPath);
-  const absolutePath = path.resolve(root, workspacePath);
+  let absolutePath = path.resolve(root, workspacePath);
   const scopedRoots = configuredWorkspaceScopeRoots(config, root, { writeAccess });
+  const configuredArtifactRoot = String(config.scopedArtifactRoot || "").trim();
+  const resolvedArtifactRoot = configuredArtifactRoot
+    ? path.resolve(root, normalizeWorkspaceInputPath(configuredArtifactRoot))
+    : "";
+  if (
+    writeAccess &&
+    config.scopedArtifactTask === true &&
+    scopedRoots.length === 1 &&
+    resolvedArtifactRoot === scopedRoots[0] &&
+    !path.isAbsolute(rawPath) &&
+    path.dirname(workspacePath) === "." &&
+    ![".", ".."].includes(workspacePath) &&
+    !isInside(resolvedArtifactRoot, absolutePath)
+  ) {
+    absolutePath = path.resolve(resolvedArtifactRoot, workspacePath);
+  }
 
   if (scopedRoots.length && !scopedRoots.some((scopeRoot) => isInside(scopeRoot, absolutePath))) {
     throw new Error(`Path is outside the active task artifact scope: ${rawPath}`);

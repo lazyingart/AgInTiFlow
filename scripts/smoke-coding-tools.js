@@ -2551,6 +2551,40 @@ try {
     writeScopedRead.content === "unrelated\n",
     "write-scoped artifact work could not read safe workspace evidence"
   );
+  const taskScopedWriteConfig = {
+    commandCwd: workspace,
+    allowFileTools: true,
+    scopedArtifactTask: true,
+    scopedArtifactRoot: "output/task-scope",
+    workspaceWritePathScopeRoots: ["output/task-scope"],
+  };
+  const taskScopedBareWrite = await executeWorkspaceTool(
+    "write_file",
+    { path: "briefing-v2.md", content: "task scoped\n", mode: "create" },
+    taskScopedWriteConfig
+  );
+  assert(
+    taskScopedBareWrite.ok === true &&
+      taskScopedBareWrite.path === "output/task-scope/briefing-v2.md",
+    "a bare output filename was not resolved inside the one authoritative task artifact root"
+  );
+  assert(
+    await fs.readFile(path.join(workspace, "output", "task-scope", "briefing-v2.md"), "utf8") ===
+      "task scoped\n",
+    "the scoped bare-filename write did not reach the authoritative artifact directory"
+  );
+  const taskScopedNestedOutsideWrite = await executeWorkspaceTool(
+    "write_file",
+    { path: "unrelated/escape.md", content: "blocked\n", mode: "create" },
+    taskScopedWriteConfig
+  );
+  assert(
+    taskScopedNestedOutsideWrite.blocked === true &&
+      /outside the active task artifact scope/.test(
+        String(taskScopedNestedOutsideWrite.reason || "")
+      ),
+    "a non-bare path was silently relocated into the task artifact root"
+  );
   const outsideWriteScopedWrite = await executeWorkspaceTool(
     "write_file",
     { path: "outside-scoped-write.md", content: "blocked\n" },
