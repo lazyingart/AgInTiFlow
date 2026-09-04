@@ -229,6 +229,26 @@ function canonicalWebReadPassageBand(value) {
   return 16;
 }
 
+function canonicalImageSources(args = {}, commandCwd = process.cwd()) {
+  const raw =
+    args.imagePaths ||
+    args.images ||
+    args.paths ||
+    args.imagePath ||
+    args.path ||
+    args.url ||
+    args.referenceId ||
+    [];
+  const values = (Array.isArray(raw) ? raw : String(raw || "").split(","))
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return values.map((value) => {
+    if (/^https?:\/\//i.test(value)) return canonicalDiscoveryUrl(value);
+    if (/^vimg_[a-f0-9]{64}$/i.test(value)) return value.toLocaleLowerCase("en-US");
+    return canonicalDiscoveryPath(value, commandCwd);
+  });
+}
+
 function simpleLsPath(command = "", commandCwd = process.cwd()) {
   const match = String(command || "")
     .trim()
@@ -255,6 +275,15 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
       path: canonicalDiscoveryPath(args.path, commandCwd),
       startLine: Number(args.startLine || 1),
       lineLimit: Number(args.lineLimit || args.limit || 0),
+    })}`;
+  }
+  if (toolName === "read_image") {
+    const detail = ["low", "high"].includes(String(args.detail || "").trim().toLowerCase())
+      ? String(args.detail).trim().toLowerCase()
+      : "auto";
+    return `image-read:${stableStringify({
+      sources: canonicalImageSources(args, commandCwd),
+      detail,
     })}`;
   }
   if (toolName === "search_files") {

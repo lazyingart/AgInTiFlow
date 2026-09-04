@@ -1299,3 +1299,23 @@ fragment, and small numeric changes do not reopen the call.
 The focused regression covers equivalent extraction normalization, exact-repeat
 blocking, a different question, and a deeper read. This changes no web provider,
 network permission, LabCanvas route, or hosted/local model priority.
+
+### Image perception reuses one complete visual reading
+
+`labcanvas-image-perception-idempotency-122` comes from retained production
+session `web-agent-labcanvas-fab99af8-5b13-489b-ae4e-68f4c15cd8d7`. The agent
+successfully read one 167031-byte WeCom image three times. Its first typed result
+already contained the headline, account, visible text, and scene description;
+the next two calls rephrased the OCR request and produced redundant perception
+artifacts several minutes apart.
+
+Image discovery identity now uses the canonical ordered image sources and the
+requested detail level. Prompt wording, provider labels, model names, and
+reasoning settings cannot create an unbounded series for an unchanged visual
+source. One targeted follow-up remains available; a third equivalent-source
+read is blocked. A higher-detail pass, a different image or image set, and a new
+task-state epoch remain available.
+
+The focused regression covers path aliases, prompt/provider variation, the
+two-pass cap, and a higher-detail positive control. It does not select or change
+any perception provider and performs no live vision inference.

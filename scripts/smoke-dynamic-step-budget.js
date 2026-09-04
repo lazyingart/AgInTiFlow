@@ -10578,6 +10578,91 @@ try {
   assert(explicitBudget.resetFromExplicitOverride, "explicit resumed max-steps reset was not recorded");
   assert(isStaticDiscoveryToolCall("run_command", { command: "ls -la ../Musia" }), "static ls discovery was not classified");
   assert(isStaticDiscoveryToolCall("read_image", { path: "snapshot.png" }), "image perception was not classified as static discovery");
+  const repeatedImageReadSignature = staticToolCallSignature(
+    "read_image",
+    {
+      path: "artifacts/source-image.png",
+      prompt: "Describe the image and transcribe all visible text.",
+      provider: "localllm",
+    },
+    { commandCwd: workspace }
+  );
+  assert(
+    repeatedImageReadSignature ===
+      staticToolCallSignature(
+        "read_image",
+        {
+          imagePath: "artifacts/source-image.png",
+          prompt: "Confirm the account name and headline.",
+          provider: "openai",
+          reasoning: "xhigh",
+        },
+        { commandCwd: workspace }
+      ),
+    "prompt or provider changes bypassed one-image perception identity"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedImageReadSignature]: 1 },
+            staticOrder: [repeatedImageReadSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "read_image",
+      {
+        path: "artifacts/source-image.png",
+        prompt: "Confirm the account name and headline.",
+        provider: "openai",
+      },
+      { commandCwd: workspace }
+    ) === null,
+    "one targeted follow-up perception pass was not preserved"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedImageReadSignature]: 2 },
+            staticOrder: [repeatedImageReadSignature],
+            staticTotal: 2,
+          },
+        },
+      },
+      "read_image",
+      {
+        path: "artifacts/source-image.png",
+        prompt: "Confirm readable; transcribe headline and account.",
+      },
+      { commandCwd: workspace }
+    )?.category === "repeated-read-only-call",
+    "a third successful perception call for the unchanged image was not blocked"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedImageReadSignature]: 2 },
+            staticOrder: [repeatedImageReadSignature],
+            staticTotal: 2,
+          },
+        },
+      },
+      "read_image",
+      {
+        path: "artifacts/source-image.png",
+        prompt: "Inspect small labels at higher resolution.",
+        detail: "high",
+      },
+      { commandCwd: workspace }
+    ) === null,
+    "a higher-detail perception pass was blocked by the default-detail result"
+  );
   assert(
     isStaticDiscoveryToolCall("web_search", { query: "project memo guidance" }) &&
       isStaticDiscoveryToolCall("read_web_page", { url: "https://example.com/memo" }),
