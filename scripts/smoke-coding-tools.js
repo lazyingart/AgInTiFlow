@@ -3381,6 +3381,103 @@ try {
       if (error.code !== "ENOENT") throw error;
     });
 
+  const opaqueBinaryTargets = [
+    "reports/research-briefing.pdf",
+    "reports/research-briefing.docx",
+    "figures/result.png",
+    "media/clip.mp4",
+    "packages/model.3mf",
+  ];
+  for (const binaryPath of opaqueBinaryTargets) {
+    const binaryWriteResult = await executeWorkspaceTool(
+      "write_file",
+      {
+        path: binaryPath,
+        content: "# This is plain UTF-8 text, not the requested binary format.\n",
+        mode: "create",
+      },
+      {
+        commandCwd: workspace,
+        allowFileTools: true,
+      }
+    );
+    assert(
+      binaryWriteResult.blocked && binaryWriteResult.category === "workspace-binary-format",
+      `write_file did not reject text disguised as ${path.extname(binaryPath)}`
+    );
+    const binaryAdvice = buildPermissionAdvice({
+      toolName: "write_file",
+      args: { path: binaryPath, content: "[omitted]", mode: "create" },
+      guard: binaryWriteResult,
+      config: {
+        commandCwd: workspace,
+        sandboxMode: "host",
+        allowFileTools: true,
+        allowShellTool: true,
+      },
+      state: {},
+    });
+    assert(
+      binaryAdvice.autoRecover === true && /established build route/i.test(binaryAdvice.instruction || ""),
+      `opaque binary write did not receive non-pausing build-route recovery for ${binaryPath}`
+    );
+    await fs
+      .access(path.join(workspace, binaryPath))
+      .then(() => {
+        throw new Error(`opaque binary target was created through the text tool: ${binaryPath}`);
+      })
+      .catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+  }
+
+  const binaryPatchResult = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: [
+        "*** Begin Patch",
+        "*** Add File: reports/patched-report.pdf",
+        "+%PDF-1.7",
+        "+This is still text, not a compiled PDF.",
+        "*** End Patch",
+      ].join("\n"),
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(
+    binaryPatchResult.blocked && binaryPatchResult.category === "workspace-binary-format",
+    "apply_patch allowed an opaque binary artifact to be fabricated from text"
+  );
+  await fs
+    .access(path.join(workspace, "reports/patched-report.pdf"))
+    .then(() => {
+      throw new Error("apply_patch created an opaque binary artifact through its text patch format");
+    })
+    .catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+
+  const textNativeTargets = [
+    ["notes/research-briefing.md", "# Briefing\n"],
+    ["reports/research-briefing.tex", "\\documentclass{article}\\begin{document}OK\\end{document}\n"],
+    ["figures/diagram.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>\n'],
+    ["cad/holder.step", "ISO-10303-21;\nEND-ISO-10303-21;\n"],
+    ["cad/holder.stl", "solid holder\nendsolid holder\n"],
+    ["cad/holder.obj", "o holder\nv 0 0 0\n"],
+    ["data/manifest.json", '{"ok":true}\n'],
+  ];
+  for (const [sourcePath, content] of textNativeTargets) {
+    const sourceWriteResult = await executeWorkspaceTool(
+      "write_file",
+      { path: sourcePath, content, mode: "create" },
+      { commandCwd: workspace, allowFileTools: true }
+    );
+    assert(sourceWriteResult.ok, `text-native source format was blocked: ${sourcePath}`);
+  }
+
   const safeEnvReferenceResult = await executeWorkspaceTool(
     "write_file",
     {

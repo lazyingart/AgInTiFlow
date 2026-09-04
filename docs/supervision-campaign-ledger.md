@@ -1641,3 +1641,27 @@ shell wrappers, and alternate document compilers. Read-only tool discovery,
 source validators, ordinary agent-owned compilation, and conditional host
 fallback remain available. No compiler command, live model, LabCanvas runtime
 mutation, queue action, schedule, or transport operation is involved.
+
+### Text workspace tools cannot fabricate opaque binary artifacts
+
+`labcanvas-text-binary-artifact-boundary-136` follows retained production
+session `web-agent-labcanvas-bc69ea98-1fbd-4289-9609-e01b8b5a04a5`. While
+recovering a scheduled research report, the fallback passed 1,019 bytes of
+ordinary UTF-8 Chinese text to `write_file` under a `.pdf` filename. The text
+tool reported success even though the result was not a PDF, allowing a
+mislabelled artifact to enter later completion and delivery work.
+
+Workspace text tools now reject writes and patches to opaque binary formats
+before mutation. The automatic recovery tells the model to create or repair the
+canonical text-native source and use the established compiler, converter,
+renderer, generator, or host-owned build stage. It explicitly rejects base64
+workarounds and extension renaming. The boundary covers PDF and Office
+documents, raster images, audio/video, archives, executable objects, databases,
+fonts, and packaged 3D containers. Text-native Markdown, TeX, SVG, STEP, STL,
+OBJ, JSON, code, and configuration remain writable.
+
+The direct regression proves that `.pdf`, `.docx`, `.png`, `.mp4`, and `.3mf`
+targets are blocked without creating files, that an `apply_patch` PDF add is
+also blocked, and that representative text-native source formats still work.
+No compiler, live model, LabCanvas runtime mutation, queue action, schedule, or
+transport operation is involved.

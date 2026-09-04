@@ -377,6 +377,22 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
     };
   }
 
+  if (category === "workspace-binary-format") {
+    return {
+      ...base,
+      autoRecover: true,
+      summary:
+        "The proposed workspace write would label UTF-8 text as an opaque binary artifact. Stronger permission cannot make that file valid.",
+      instruction:
+        "Continue automatically through the established build route: create or repair the complete text-native source, then use an available compiler, converter, renderer, or generator. When the task contract assigns binary production to the host, return the verified editable source for that stage. Do not retry the binary path with write_file/apply_patch, encode bytes as base64, or rename text to a binary extension.",
+      options: [
+        "Write the canonical Markdown, TeX, Typst, SVG, CAD, code, or configuration source.",
+        "Run the existing project build or format-native generator when the current task owns compilation.",
+        "Return the complete editable source when a declared host stage owns binary generation and inspection.",
+      ],
+    };
+  }
+
   if (category === "workspace-write") {
     return {
       ...base,

@@ -74,6 +74,68 @@ const IMPORTANT_MANIFESTS = new Set([
 const SOURCE_DIR_NAMES = new Set(["src", "app", "lib", "packages", "apps", "bin", "scripts", "server", "client", "public", "docs"]);
 const TEST_DIR_NAMES = new Set(["test", "tests", "__tests__", "spec", "specs", "e2e"]);
 const SENSITIVE_EXTENSIONS = new Set([".key", ".pem", ".p12", ".pfx", ".crt", ".csr"]);
+const OPAQUE_BINARY_EXTENSIONS = new Set([
+  ".3mf",
+  ".7z",
+  ".a",
+  ".apk",
+  ".avif",
+  ".avi",
+  ".bin",
+  ".bmp",
+  ".bz2",
+  ".class",
+  ".db",
+  ".deb",
+  ".dll",
+  ".dmg",
+  ".doc",
+  ".docx",
+  ".epub",
+  ".exe",
+  ".flac",
+  ".gif",
+  ".glb",
+  ".gz",
+  ".heic",
+  ".ico",
+  ".iso",
+  ".jar",
+  ".jpeg",
+  ".jpg",
+  ".m4a",
+  ".m4v",
+  ".mov",
+  ".mp3",
+  ".mp4",
+  ".o",
+  ".ogg",
+  ".otf",
+  ".parquet",
+  ".pdf",
+  ".png",
+  ".ppt",
+  ".pptx",
+  ".pyc",
+  ".rar",
+  ".rpm",
+  ".so",
+  ".sqlite",
+  ".sqlite3",
+  ".tar",
+  ".tif",
+  ".tiff",
+  ".ttf",
+  ".wav",
+  ".webm",
+  ".webp",
+  ".woff",
+  ".woff2",
+  ".xls",
+  ".xlsx",
+  ".xz",
+  ".zip",
+]);
 const SENSITIVE_BASENAMES = new Set([
   ".env",
   ".npmrc",
@@ -341,6 +403,10 @@ function isNodeModulesPath(relativePath) {
   return pathSegments(relativePath).includes("node_modules");
 }
 
+function isOpaqueBinaryPath(relativePath) {
+  return OPAQUE_BINARY_EXTENSIONS.has(path.extname(String(relativePath || "")).toLowerCase());
+}
+
 function pathPolicy(toolName, relativePath) {
   const write = WORKSPACE_WRITE_TOOL_NAMES.includes(toolName);
   if (isSensitivePath(relativePath)) {
@@ -355,6 +421,15 @@ function pathPolicy(toolName, relativePath) {
       allowed: false,
       reason: "Writes inside node_modules are blocked.",
       category: "workspace-path",
+    };
+  }
+  if (write && isOpaqueBinaryPath(relativePath)) {
+    return {
+      allowed: false,
+      reason:
+        `The workspace text tools cannot create or modify the opaque binary format ${path.extname(relativePath).toLowerCase()}. ` +
+        "Keep a text-native editable source and use an established compiler, converter, renderer, generator, or host-owned build stage to produce the binary artifact; do not rename plain text or base64 as the requested format.",
+      category: "workspace-binary-format",
     };
   }
   return { allowed: true };
