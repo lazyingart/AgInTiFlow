@@ -104,6 +104,22 @@ summary, repeat the blocked value, or expose the value in its final response.
 Other protected-path, outside-workspace, destructive, and
 permission-sensitive blocks keep their existing approval behavior.
 
+## Local Artifact Preview Recovery
+
+`open_url` is only for remote `http` and `https` sources. A fallback model may
+still copy a local artifact path into a `file://` URL when it intends to inspect
+a generated PDF, HTML page, image, or text file. The remote-browser guard keeps
+that URL blocked, but the mistake is a tool-selection error rather than a
+request for stronger permission.
+
+AgInTi receives one bounded automatic correction. It converts the local URL to
+an authorized workspace-relative path and chooses `open_workspace_file` for a
+single rendered file, `preview_workspace` for a static site or directory, or
+`read_file` when textual inspection is enough. It must not retry `open_url`,
+start a temporary localhost server, or ask the user to elevate the sandbox.
+The replacement workspace tool still enforces its normal path and read-root
+rules, so an outside-workspace or protected target remains blocked.
+
 ## Local Context Recovery
 
 LocalLLM planning compacts oversized goals to a bounded head-and-tail representation. Runtime compaction retains the first request and latest interruptions. A `LocalContextBudgetError` triggers one compact-and-retry cycle at the same step and records private recovery events. It does not authorize replaying task side effects.

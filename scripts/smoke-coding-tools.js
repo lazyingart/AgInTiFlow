@@ -3404,6 +3404,34 @@ try {
   );
   assert(safeEnvReferenceResult.ok, "write_file should allow safe env-var credential references in source code");
 
+  const localFileUrlGuard = checkToolUse({
+    toolName: "open_url",
+    args: { url: `file://${path.join(workspace, "notes", "local-preview.txt")}` },
+    snapshot: {},
+    config: { allowedDomains: [] },
+  });
+  assert(
+    !localFileUrlGuard.allowed && localFileUrlGuard.category === "browser-url-scheme",
+    "a local file URL did not retain the remote-browser scheme boundary"
+  );
+  const localFileUrlAdvice = buildPermissionAdvice({
+    toolName: "open_url",
+    args: { url: `file://${path.join(workspace, "notes", "local-preview.txt")}` },
+    guard: localFileUrlGuard,
+    config: {
+      commandCwd: workspace,
+      sandboxMode: "host",
+      allowFileTools: true,
+      allowShellTool: false,
+    },
+    state: {},
+  });
+  assert(localFileUrlAdvice.autoRecover === true, "a local file URL mistake still requests stronger permission");
+  assert(
+    /open_workspace_file, preview_workspace, or read_file/i.test(localFileUrlAdvice.instruction || ""),
+    "local file URL recovery omitted workspace-native inspection tools"
+  );
+
   const safeTokenVariableSyntaxResult = await executeWorkspaceTool(
     "write_file",
     {

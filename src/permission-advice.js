@@ -266,6 +266,32 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
     };
   }
 
+  if (category === "browser-url-scheme") {
+    const url = String(args.url || "").trim();
+    const localFile = /^file:\/\//i.test(url);
+    return {
+      ...base,
+      autoRecover: true,
+      summary: localFile
+        ? "A local file URL was sent to the remote-browser tool. This is a recoverable tool-selection error, not a permission blocker."
+        : "The remote-browser tool received an unsupported URL scheme. This is a recoverable tool-selection error, not a request for stronger permission.",
+      instruction: localFile
+        ? "Continue automatically with one workspace-native operation. Convert the file URL to its workspace-relative path and use open_workspace_file, preview_workspace, or read_file as appropriate. Do not retry open_url, start a localhost server, or ask for stronger permission."
+        : "Do not execute or rewrite the unsupported scheme. Use one exact authorized http/https source from the current request when available; otherwise continue without browser access and state the source limitation honestly. Do not ask for stronger permission.",
+      options: localFile
+        ? [
+            "Use open_workspace_file for one generated local file that needs browser rendering.",
+            "Use preview_workspace for a local static site or directory.",
+            "Use read_file for textual inspection when visual rendering is unnecessary.",
+          ]
+        : [
+            "Open an exact http/https URL already supplied by the current request.",
+            "Use a non-browser tool explicitly designed for the current source type.",
+            "Continue with an honest bounded answer when no authorized web source exists.",
+          ],
+    };
+  }
+
   if (category === "workspace-path") {
     if (READ_ONLY_FILE_TOOLS.has(toolName)) {
       return {

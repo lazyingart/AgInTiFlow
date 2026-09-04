@@ -165,7 +165,11 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
 
   if (toolName === "open_url") {
     if (!/^https?:\/\//.test(String(args.url || ""))) {
-      return { allowed: false, reason: "Only http and https URLs are allowed." };
+      return {
+        allowed: false,
+        category: "browser-url-scheme",
+        reason: "Only http and https URLs are allowed.",
+      };
     }
 
     if (!isDomainAllowed(args.url, config.allowedDomains)) {

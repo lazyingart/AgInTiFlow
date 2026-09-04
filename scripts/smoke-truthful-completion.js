@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   assessInternalRuntimeScaffoldLeak,
   completionRequirementCoverageInstruction,
@@ -1502,6 +1502,65 @@ try {
   );
   assert.match(safeDerivedNote, /\[REDACTED\]/);
   assert(!safeDerivedNote.includes("aginti_fake_do_not_use"));
+
+  const localPreviewWorkspace = path.join(
+    tempRoot,
+    "workspaces",
+    "local-file-url-preview-recovery"
+  );
+  const localFileUrlPreviewRecovery = await runCase({
+    id: "local-file-url-preview-recovery",
+    goal: "Read notes/local-preview.txt and report its exact local preview status.",
+    allowFileTools: true,
+    setup: async (workspace) => {
+      await fs.mkdir(path.join(workspace, "notes"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspace, "notes", "local-preview.txt"),
+        "LOCAL_PREVIEW_READY\n",
+        "utf8"
+      );
+    },
+    responses: [
+      assistant("", [toolCall("file-url-as-remote-url", "open_url", {
+        url: pathToFileURL(path.join(localPreviewWorkspace, "notes", "local-preview.txt")).href,
+      })]),
+      assistant("", [toolCall("read-local-preview", "read_file", {
+        path: "notes/local-preview.txt",
+      })]),
+      assistant("", [toolCall("finish-local-preview", "finish", {
+        result: "The local preview status is LOCAL_PREVIEW_READY.",
+      })]),
+    ],
+  });
+  assert.equal(
+    localFileUrlPreviewRecovery.calls.length,
+    3,
+    "a recoverable file URL mistake paused instead of switching to a workspace-native tool"
+  );
+  assert.equal(localFileUrlPreviewRecovery.result.stopped, undefined);
+  const localFileUrlBlock = localFileUrlPreviewRecovery.events.find(
+    (event) => event.type === "tool.blocked" && event.data?.toolName === "open_url"
+  );
+  assert(localFileUrlBlock, "the unsupported local file URL was not blocked");
+  assert.equal(
+    localFileUrlBlock.data?.permissionAdvice?.autoRecover,
+    true,
+    "the local file URL mistake still requests stronger permission"
+  );
+  assert(
+    localFileUrlPreviewRecovery.calls[1]?.messages.some(
+      (message) =>
+        message.role === "tool" &&
+        /open_workspace_file, preview_workspace, or read_file/i.test(String(message.content || ""))
+    ),
+    "the retry turn did not receive workspace-native local artifact guidance"
+  );
+  assert(
+    !localFileUrlPreviewRecovery.events.some(
+      (event) => event.type === "session.stopped" && event.data?.reason === "permission_required"
+    ),
+    "the local file URL recovery still persisted a permission pause"
+  );
 
   if (await tmuxAvailable()) {
     const tmuxAliasRecovery = await runCase({

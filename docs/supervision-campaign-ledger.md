@@ -1544,3 +1544,27 @@ finish without exposing the secret. Direct workspace-tool coverage separately
 proves that the original secret-like write remains blocked. No live model,
 private media URL, LabCanvas runtime change, queue action, schedule, or
 transport operation is involved.
+
+### Local file URLs recover through workspace-native tools
+
+`labcanvas-file-url-preview-recovery-132` follows retained production session
+`web-agent-labcanvas-8239a475-f456-4451-8c31-36428d15803e`. The fallback had
+already found a task-scoped PDF, but passed its `file://` URL to `open_url`.
+The browser guard correctly accepts only remote HTTP(S) URLs; generic
+permission advice nevertheless paused the task and suggested stronger runtime
+flags. No permission change was needed because the file was already inside the
+authorized workspace.
+
+Unsupported browser schemes now carry a distinct recovery category. A local
+file URL remains blocked before browser navigation, while the next model turn
+is directed to `open_workspace_file`, `preview_workspace`, or `read_file` using
+the workspace-relative path. Unsupported non-file schemes are never executed
+or rewritten; the model may use an exact authorized HTTP(S) source from the
+current request or report the source limitation honestly.
+
+The end-to-end regression reproduces the old one-turn permission pause, then
+proves one workspace-native read and a verified finish. Direct guard coverage
+also proves that `file://` did not become remotely navigable. Outside-workspace,
+protected-path, domain-allowlist, and genuine permission boundaries remain
+unchanged. No live model, browser navigation, LabCanvas runtime mutation,
+queue action, schedule, or transport operation is involved.
