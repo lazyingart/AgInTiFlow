@@ -673,6 +673,23 @@ function artifactRequestHasOutputIntent(goal = "", taskProfile = "") {
 export function hostManagedDocumentCompilationRequested(goal = "") {
   const source = String(goal || "").replace(/\s+/gu, " ").trim();
   if (!source) return false;
+  const agentCompilationProhibited = Boolean(
+    /\bdo\s+not\s+(?:invoke|run|use)\b[^.!?;。！？；]{0,220}\b(?:document\s+compiler|latexmk|pdflatex|xelatex|lualatex|latex|pandoc|make)\b/iu.test(
+      source
+    ) ||
+      /(?:不要|不得|无需|不需要)(?:调用|运行|使用).{0,100}(?:LaTeX|latexmk|pdflatex|xelatex|lualatex|pandoc|文档编译器)/u.test(
+        source
+      )
+  );
+  const explicitHostCompilation = Boolean(
+    /\b(?:the\s+)?(?:labcanvas\s+)?host(?:\s+(?:compiler|recovery|stage)){0,2}\s+(?:alone\s+)?(?:owns|handles?|performs?|will\s+(?:build|compile|handle|perform|render|validate|revalidate))\b/iu.test(
+      source
+    ) ||
+      /(?:由|交给)(?:\s*LabCanvas)?(?:主机|宿主)(?:编译|构建|渲染|验证)/u.test(
+        source
+      )
+  );
+  if (agentCompilationProhibited && explicitHostCompilation) return true;
   if (
     /\bdo\s+not\s+(?:invoke|run|use)\b[^.!?;。！？；]{0,180}\b(?:document\s+compiler|latexmk|pdflatex|xelatex|lualatex|latex|pandoc|make)\b[^.!?;。！？；]{0,180}\b(?:labcanvas\s+)?host\b/iu.test(
       source
@@ -2398,9 +2415,10 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     inferExactOutputPaths(positiveEvidenceGoal),
     excludedOutputPaths
   );
-  const hostManagedDocumentCompilation = hostManagedDocumentCompilationRequested(
-    evidenceGoal
-  );
+  // Host compilation ownership is a runtime execution contract, not source
+  // evidence. Keep it visible even when AGINTI_EVIDENCE_SCOPE_JSON narrows the
+  // factual task text to an earlier user request.
+  const hostManagedDocumentCompilation = hostManagedDocumentCompilationRequested(goal);
   const exactOutputPaths = filterExplicitlyExcludedOutputPaths(
     applyScopedArtifactRoot(inferredOutputPaths, artifactRoot),
     excludedOutputPaths
@@ -2414,10 +2432,29 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     excludedOutputPaths
   ).filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
-  const requiredArtifactKinds = inferRequestedArtifactRequirements(
+  let requiredArtifactKinds = inferRequestedArtifactRequirements(
     positiveEvidenceGoal,
     taskProfile
   );
+  if (hostManagedDocumentCompilation) {
+    requiredArtifactKinds = requiredArtifactKinds.filter(
+      (item) =>
+        String(item?.extension || "").toLocaleLowerCase("en-US") !== ".pdf" &&
+        String(item?.kind || "") !== "printable-document"
+    );
+    const hasEditableDocumentSource = requiredArtifactKinds.some((item) => {
+      const extension = String(item?.extension || "").toLocaleLowerCase("en-US");
+      return extension === ".md" || extension === ".tex";
+    });
+    if (!hasEditableDocumentSource) {
+      requiredArtifactKinds.push({
+        id: "host-document-source",
+        kind: "host-document-source",
+        extensions: [".md", ".tex"],
+        description: "editable Markdown or LaTeX source for host compilation",
+      });
+    }
+  }
   const scopedArtifactDeliverable = Boolean(
     artifactRoot && goalRequestsScopedArtifactDeliverable(evidenceGoal)
   );
@@ -2914,11 +2951,10 @@ function collectRequestedArtifactCandidates(
     scanRoots.push(absolutePath);
   };
   // A host-declared task artifact root is authoritative and usually sits deep
-  // inside a large application workspace. Inspect it before the bounded broad
-  // workspace scan so unrelated files cannot exhaust the candidate limit and
-  // hide a valid task deliverable.
-  appendScanRoot(artifactRoot);
-  appendScanRoot();
+  // inside a large application workspace. Do not let an unrelated workspace
+  // file satisfy a task-scoped deliverable when that boundary is present.
+  if (artifactRoot) appendScanRoot(artifactRoot);
+  else appendScanRoot();
   let visited = 0;
   for (const scanRoot of scanRoots) {
     const queue = [{ absolutePath: scanRoot, depth: 0 }];
@@ -2981,12 +3017,23 @@ function requestedArtifactRequirementMatches(requirement = {}, candidate = {}) {
   if (requirement.kind === "format") {
     return extension === String(requirement.extension || "").toLocaleLowerCase("en-US");
   }
-  if (["editable-presentation", "printable-document", "visual-preview"].includes(requirement.kind)) {
+  if (["editable-presentation", "printable-document", "visual-preview", "host-document-source"].includes(requirement.kind)) {
     const extensions = new Set(
       (Array.isArray(requirement.extensions) ? requirement.extensions : [])
         .map((item) => String(item || "").toLocaleLowerCase("en-US"))
     );
     if (!extensions.has(extension)) return false;
+    if (
+      requirement.kind === "host-document-source" &&
+      (
+        /^(?:agent[-_]?routine[-_]?cheat[-_]?sheet|routine[-_]?contract)\.(?:md|tex)$/i.test(
+          basename
+        ) ||
+        /(?:^|\/)delivery(?:\/|$)/i.test(String(candidate.path || ""))
+      )
+    ) {
+      return false;
+    }
     if (requirement.kind === "visual-preview") {
       return /(?:preview|contact[-_ ]?sheet|overview|thumbnail|render)/i.test(basename);
     }

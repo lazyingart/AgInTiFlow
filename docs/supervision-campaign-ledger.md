@@ -797,3 +797,34 @@ forces DeepSeek `402`, returns the router JSON from LocalLLM, and verifies that
 the exact JSON finishes unchanged after one fallback request with no
 `response_only.source_free_claim_rejected` event. Truthful-completion,
 provider-handoff, and syntax checks pass.
+
+### Host-owned document compilation remains outside the fallback model
+
+`labcanvas-host-document-handoff-102` came from retained production session
+`web-agent-labcanvas-e654a5b9-6486-4718-b8fd-c76f1c05626e`. Its task packet
+required AgInTi to revise a task-local Markdown or TeX source and explicitly
+forbade compiler invocation because the LabCanvas host would compile and
+revalidate the PDF in the same completion cycle. The narrowed evidence scope
+still contained the earlier user-facing PDF request, however, so AgInTi's
+generic completion contract discarded the later host-ownership directive and
+continued to require a PDF from the fallback model.
+
+After writing the report source, LocalLLM could not pass the contradictory
+completion gate. It repeatedly sent the same Markdown file to canvas through
+58 steps instead of returning control to the host compiler. The retained trace
+therefore demonstrated a contract-layer defect rather than missing research,
+context loss, or a need to weaken evidence checks.
+
+Host compilation ownership is now derived from the complete runtime contract,
+while factual source and artifact scope remain narrowed to the exact task. An
+unconditional paired contract that prohibits agent-side compilers and assigns
+build/validation to the host removes PDF from the agent-owned deliverables and
+requires one fresh reader-facing Markdown or TeX source instead. Conditional
+fallback wording still leaves ordinary PDF production agent-owned. A declared
+artifact root is now an exclusive evidence boundary, and private routine
+contracts or delivery notes cannot impersonate the reader-facing source.
+
+The production-shaped regression proves that the explicit host directive
+survives `AGINTI_EVIDENCE_SCOPE_JSON`, a private routine note is insufficient,
+a real scoped report source satisfies the handoff, and ordinary or conditional
+PDF workflows retain their existing contracts.

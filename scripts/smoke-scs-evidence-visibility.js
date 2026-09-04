@@ -262,6 +262,24 @@ const fallbackHostCompilationContract = deriveScsTaskContract({
   taskProfile: "research",
 });
 
+const scopedHostCompilationRoot = fs.mkdtempSync(
+  path.join(os.tmpdir(), "aginti-scoped-host-compilation-")
+);
+const scopedHostCompilationContract = deriveScsTaskContract({
+  goal: [
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request:
+        "Revise the exact task-local report source, compile or enable host compilation of its PDF, inspect the result, and return the verified replacement PDF.",
+      artifact_root: scopedHostCompilationRoot,
+    })}`,
+    "Do not invoke LaTeX, make, package managers, or document compilers in the agent session.",
+    "The host compiler will build and revalidate the corrected source in this same completion cycle.",
+    "Required result: revise a task-local reader-facing Markdown or TeX source and finish so the host can compile it.",
+  ].join("\n"),
+  taskProfile: "research",
+});
+
 const forbiddenOutputContract = deriveScsTaskContract({
   goal: "Continue the task. verification_suite.py does not exist and must not be rerun or created. Preserve smoke_test.py and finish from current evidence.",
   taskProfile: "devops",
@@ -588,6 +606,49 @@ assert(
   fallbackHostCompilationContract.hostManagedDocumentCompilation === false,
   "a conditional host recovery fallback was mistaken for an explicit host-only compilation contract"
 );
+assert.equal(
+  scopedHostCompilationContract.hostManagedDocumentCompilation,
+  true,
+  "a host-owned compilation directive outside the narrowed evidence scope was discarded"
+);
+assert(
+  scopedHostCompilationContract.requiredArtifactKinds.some(
+    (item) => item.id === "host-document-source"
+  ) &&
+    !scopedHostCompilationContract.requiredArtifactKinds.some(
+      (item) => item.id === "format:.pdf"
+    ),
+  "a scoped host handoff still required the fallback model to compile its own PDF"
+);
+fs.writeFileSync(
+  path.join(scopedHostCompilationRoot, "routine_contract.md"),
+  "# Private routine contract\n",
+  "utf8"
+);
+const scopedHostCompilationWithoutSource = evaluateRequestedArtifactRequirements(
+  scopedHostCompilationContract,
+  { commandCwd: scopedHostCompilationRoot, state: {} }
+);
+assert.equal(
+  scopedHostCompilationWithoutSource.ok,
+  false,
+  "a private routine contract was mistaken for the reader-facing host-compilation source"
+);
+fs.writeFileSync(
+  path.join(scopedHostCompilationRoot, "cross-disease-target-review.md"),
+  "# Cross-disease target review\n\nReader-facing source for host compilation.\n",
+  "utf8"
+);
+const scopedHostCompilationArtifacts = evaluateRequestedArtifactRequirements(
+  scopedHostCompilationContract,
+  { commandCwd: scopedHostCompilationRoot, state: {} }
+);
+assert.equal(
+  scopedHostCompilationArtifacts.ok,
+  true,
+  `a fresh host-compilable source did not satisfy the agent-owned handoff: ${scopedHostCompilationArtifacts.reason}`
+);
+fs.rmSync(scopedHostCompilationRoot, { recursive: true, force: true });
 
 const noEvidenceProgress = {
   role: "student",
