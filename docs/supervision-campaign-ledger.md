@@ -772,3 +772,28 @@ code `1` without exposing `docker run`, sandbox environment variables, or
 internal mount paths. Syntax, LocalLLM nested failure recovery, DeepSeek to
 LocalLLM provider handoff, coding tools, Docker command, and Docker toolchain
 checks pass.
+
+### Response-only router JSON is not a forecast
+
+`labcanvas-response-router-project-label-101` came from retained production
+session `web-agent-labcanvas-a5159676-c87c-4aad-b1a6-3ef3cd7cf8c1`. The task
+was a response-only LabCanvas route classification for two WeChat article
+cards. DeepSeek failed before inference with `402 Insufficient Balance`, and
+LocalLLM returned a structurally valid routing JSON object. AgInTiFlow then
+rejected it as an unsupported forecast because the source-free claim matcher
+treated the ordinary JSON key-value pair `"project": "labcanvas"` as the verb
+"project" in a prediction. Its bounded repair received another valid project
+label and failed closed, suppressing the worker route entirely.
+
+The forecast matcher now excludes the bare ambiguous noun `project` while
+continuing to detect `projects`, `projected`, `projection`, predictions,
+forecasts, expected growth, CAGR, and the existing Chinese and Japanese
+forecast forms. This also prevents ordinary prose such as "the project" from
+being mislabeled without weakening actual projection checks.
+
+The matcher regression uses the production-shaped router JSON and a positive
+unsupported forecast sentence. The end-to-end provider-handoff regression
+forces DeepSeek `402`, returns the router JSON from LocalLLM, and verifies that
+the exact JSON finishes unchanged after one fallback request with no
+`response_only.source_free_claim_rejected` event. Truthful-completion,
+provider-handoff, and syntax checks pass.

@@ -277,6 +277,33 @@ assert.equal(
   true,
   "ordinary source-free pure chat was incorrectly rejected"
 );
+const responseOnlyRouterJson = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    route_kind: "research_or_summary",
+    project: "labcanvas",
+    worker_needed: true,
+    public_publish_intent: false,
+    reason: "The shared links need source reading before a concise summary.",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  responseOnlyRouterJson.ok,
+  true,
+  "a response-only routing JSON project label was misclassified as an unsupported forecast"
+);
+const actualSourceFreeProjection = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "The report projects that demand will grow by 20% next year.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  actualSourceFreeProjection.ok,
+  false,
+  "a genuine source-free projection bypassed the forecast guard"
+);
+assert(actualSourceFreeProjection.categories.includes("forecast"));
 const sourcedResponseOnlyClaim = evaluateSourceFreeResponseClaims({
   goal: sourceFreeResearchGoal,
   candidateResult:

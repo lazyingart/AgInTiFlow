@@ -496,6 +496,42 @@ assert.equal(
   1
 );
 
+const routerClassification = JSON.stringify({
+  route_kind: "research_or_summary",
+  project: "labcanvas",
+  worker_needed: true,
+  needs_recent_media: false,
+  public_publish_intent: false,
+  public_publish_allowed: false,
+  external_action_allowed: true,
+  delivery_mode: "agent_decide",
+  source_policy: "current_request_only",
+  reason: "The shared links need source reading before a concise summary.",
+  ack: "",
+  chat_reply: "",
+  confidence: 0.94,
+});
+const routerSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-router-json-handoff",
+  localResponses: [routerClassification],
+});
+assert.equal(routerSourceFreeHandoff.result.stopped, undefined);
+assert.equal(routerSourceFreeHandoff.result.result, routerClassification);
+assert.deepEqual(
+  routerSourceFreeHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm"],
+  "safe router JSON did not finish on the first LocalLLM fallback response"
+);
+assert.equal(
+  routerSourceFreeHandoff.events.filter((event) => event.type === "response_only.source_free_claim_rejected").length,
+  0,
+  "a project label in safe router JSON was still classified as a forecast"
+);
+assert.equal(
+  routerSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
 async function runResponseOnlyContextBudgetHandoffScenario() {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-response-only-context-handoff-"));
   const workspace = path.join(tempRoot, "workspace");
