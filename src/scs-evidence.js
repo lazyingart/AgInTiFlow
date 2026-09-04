@@ -343,6 +343,20 @@ function uniqueLimited(items = [], limit = 16) {
   return unique(items.map((item) => compact(item, 120)).filter(Boolean)).slice(0, limit);
 }
 
+function uniquePathList(items = [], limit = 16) {
+  return unique(
+    items
+      .map((item) => String(item || "").trim())
+      .filter(
+        (item) =>
+          item &&
+          item.length <= 1024 &&
+          !item.includes("\0") &&
+          !/[\r\n]/u.test(item)
+      )
+  ).slice(0, limit);
+}
+
 function quotedTerms(text = "") {
   const terms = [];
   const patterns = [
@@ -576,7 +590,7 @@ function inferExactOutputPaths(goal = "") {
     }
     activeOutputDir = "";
   }
-  return uniqueLimited(filterShadowedBasenames(paths), 16);
+  return uniquePathList(filterShadowedBasenames(paths), 16);
 }
 
 const REQUESTED_ARTIFACT_FORMATS = [
@@ -932,7 +946,7 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
       }
     }
   }
-  return uniqueLimited(excluded.map(normalizedContractPath), 24);
+  return uniquePathList(excluded.map(normalizedContractPath), 24);
 }
 
 function inferExactInputPaths(goal = "") {
@@ -981,7 +995,7 @@ function inferExactInputPaths(goal = "") {
       pushPath(match[1]);
     }
   }
-  return uniqueLimited(paths, 24);
+  return uniquePathList(paths, 24);
 }
 
 function inferDeclaredSourceRoots(goal = "") {
@@ -995,7 +1009,7 @@ function inferDeclaredSourceRoots(goal = "") {
       roots.push(candidate.replace(/\/+$/, ""));
     }
   }
-  return uniqueLimited(roots, 12);
+  return uniquePathList(roots, 12);
 }
 
 function requiresPerSourceChecks(goal = "") {

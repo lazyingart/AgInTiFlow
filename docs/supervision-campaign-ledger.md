@@ -2041,3 +2041,32 @@ English, Chinese, and Japanese output; all require bounded repair and forbid a
 successful terminal event. No live provider or LocalLLM inference, LabCanvas
 runtime change, queue action, schedule, transport operation, or external side
 effect is involved.
+
+### Scoped tasks cannot borrow sibling artifacts
+
+`labcanvas-cross-task-artifact-isolation-154` follows retained LabCanvas
+session `web-agent-labcanvas-064f6714-4b85-463c-af5b-43663f4da56d`. The task
+declared one authoritative artifact root, but the fallback discovered a sibling
+task directory, read and validated its report, then finished with that sibling
+PDF. The file existed and was valid, so ordinary artifact evidence checks could
+not distinguish it from the current task's result.
+
+Scoped artifact tasks now derive the containing task namespace from their exact
+`artifact_root`. Reads, directory probes, shell commands, and completion text
+may use the current root recursively, but an undeclared sibling root is blocked
+before inspection or rejected before completion. One bounded repair directs the
+agent back to the current root. Explicit exact inputs, exact outputs, and
+declared source roots remain available, so legitimate source reuse is not
+mistaken for cross-task leakage.
+
+The regression also exposed that structured contract paths were previously
+passed through a prose compactor that inserted `... [truncated]` after 120
+characters. Exact inputs, outputs, exclusions, and source roots now retain their
+full bounded value up to 1,024 characters. Production-length LabCanvas paths
+therefore remain usable by the isolation allowlist.
+
+Deterministic coverage proves rejection and repair of a sibling completion,
+blocks sibling `read_file` and `run_command` access, permits the current task
+through both paths, and permits an explicitly declared long sibling source
+root. No live provider or LocalLLM inference, LabCanvas runtime change, queue
+action, schedule, transport operation, or external side effect is involved.

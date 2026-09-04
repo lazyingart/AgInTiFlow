@@ -15297,6 +15297,169 @@ function isScopedTaskArtifactEvidencePath(value = "", state = {}, config = {}) {
   );
 }
 
+function scopedTaskAbsolutePath(value = "", commandCwd = process.cwd()) {
+  const raw = String(value || "")
+    .trim()
+    .replace(/^(?:["'`])|(?:["'`])$/gu, "")
+    .replace(/\\/gu, "/");
+  if (!raw || raw.includes("\0") || /^https?:\/\//iu.test(raw)) return "";
+  const workspacePath = normalizeWorkspaceInputPath(raw);
+  return path.isAbsolute(workspacePath)
+    ? path.resolve(workspacePath)
+    : path.resolve(commandCwd, workspacePath);
+}
+
+function pathIsInsideOrEqual(root = "", candidate = "") {
+  if (!root || !candidate) return false;
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function scopedTaskArtifactNamespace(state = {}, config = {}) {
+  const artifactRoot =
+    scopedArtifactRoot(completionContractGoal(config, state)) ||
+    String(config.scopedArtifactRoot || "").trim();
+  if (!artifactRoot) return null;
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const absoluteRoot = scopedTaskAbsolutePath(artifactRoot, commandCwd);
+  if (!absoluteRoot || !pathIsInsideOrEqual(commandCwd, absoluteRoot)) return null;
+  const namespaceRoot = path.dirname(absoluteRoot);
+  if (namespaceRoot === commandCwd || !pathIsInsideOrEqual(commandCwd, namespaceRoot)) {
+    return null;
+  }
+  const relativeNamespace = path.relative(commandCwd, namespaceRoot).replace(/\\/gu, "/");
+  if (!relativeNamespace || relativeNamespace.startsWith("..")) return null;
+  return {
+    commandCwd,
+    absoluteRoot,
+    namespaceRoot,
+    relativeNamespace,
+  };
+}
+
+function scopedTaskNamespaceTextReferences(text = "", scope = null) {
+  if (!scope || !String(text || "").trim()) return [];
+  const source = String(text).replace(/\\/gu, "/");
+  const absoluteNamespace = scope.namespaceRoot.replace(/\\/gu, "/");
+  const variants = [...new Set([
+    absoluteNamespace,
+    scope.relativeNamespace,
+    `./${scope.relativeNamespace}`,
+    `/workspace/${scope.relativeNamespace}`,
+  ].filter(Boolean))].sort((left, right) => right.length - left.length);
+  const references = [];
+  for (const prefix of variants) {
+    let offset = 0;
+    while (offset < source.length) {
+      const index = source.indexOf(prefix, offset);
+      if (index < 0) break;
+      const before = index > 0 ? source[index - 1] : "";
+      const afterPrefix = source[index + prefix.length] || "";
+      const beforeBoundary = !before || /[\s="'`(;:[{]/u.test(before);
+      const afterBoundary = !afterPrefix || afterPrefix === "/" || /[\s"'`;&|<>)\]}},，。！？]/u.test(afterPrefix);
+      if (!beforeBoundary || !afterBoundary) {
+        offset = index + prefix.length;
+        continue;
+      }
+      let end = index + prefix.length;
+      while (
+        end < source.length &&
+        !/[\s"'`;&|<>()\[\]{},，。！？]/u.test(source[end])
+      ) {
+        end += 1;
+      }
+      const candidate = source.slice(index, end).replace(/[.:]+$/gu, "");
+      const absolutePath = scopedTaskAbsolutePath(candidate, scope.commandCwd);
+      if (
+        absolutePath &&
+        pathIsInsideOrEqual(scope.namespaceRoot, absolutePath) &&
+        !references.includes(absolutePath)
+      ) {
+        references.push(absolutePath);
+      }
+      offset = Math.max(end, index + prefix.length);
+    }
+  }
+  return references;
+}
+
+function scopedTaskAuthorizedArtifactRoots(state = {}, config = {}, scope = null) {
+  if (!scope) return [];
+  const contract = completionTaskContract(config, state);
+  const roots = [{ path: scope.absoluteRoot, descendants: true }];
+  for (const candidate of contract.declaredSourceRoots || []) {
+    const absolutePath = scopedTaskAbsolutePath(candidate, scope.commandCwd);
+    if (absolutePath) roots.push({ path: absolutePath, descendants: true });
+  }
+  for (const candidate of [
+    ...(contract.exactInputPaths || []),
+    ...(contract.exactOutputPaths || []),
+  ]) {
+    const absolutePath = scopedTaskAbsolutePath(candidate, scope.commandCwd);
+    if (absolutePath) roots.push({ path: absolutePath, descendants: false });
+  }
+  return roots;
+}
+
+function scopedTaskUnauthorizedArtifactReferences({
+  state = {},
+  config = {},
+  text = "",
+  directPaths = [],
+} = {}) {
+  const scope = scopedTaskArtifactNamespace(state, config);
+  if (!scope) return [];
+  const references = [
+    ...scopedTaskNamespaceTextReferences(text, scope),
+    ...directPaths
+      .map((candidate) => scopedTaskAbsolutePath(candidate, scope.commandCwd))
+      .filter((candidate) => pathIsInsideOrEqual(scope.namespaceRoot, candidate)),
+  ];
+  const allowed = scopedTaskAuthorizedArtifactRoots(state, config, scope);
+  return [...new Set(references)].filter((candidate) =>
+    !allowed.some((entry) =>
+      entry.descendants
+        ? pathIsInsideOrEqual(entry.path, candidate)
+        : entry.path === candidate
+    )
+  );
+}
+
+export function scopedTaskArtifactIsolationBlock(state, toolName, args = {}, config = {}) {
+  const directPaths = ["path", "root", "directory"]
+    .map((key) => args?.[key])
+    .filter((value) => typeof value === "string" && value.trim());
+  const text = toolName === "run_command" ? String(args.command || "") : "";
+  if (!text && !directPaths.length) return null;
+  const references = scopedTaskUnauthorizedArtifactReferences({
+    state,
+    config,
+    text,
+    directPaths,
+  });
+  if (!references.length) return null;
+  return {
+    reason: "The requested tool call references an undeclared sibling task artifact namespace.",
+    category: "cross-task-artifact-scope",
+    referencedPaths: references.map((candidate) =>
+      path.relative(config.commandCwd || state.commandCwd || process.cwd(), candidate).replace(/\\/gu, "/")
+    ),
+    permissionAdvice: {
+      category: "cross-task-artifact-scope",
+      autoRecover: true,
+      summary: "Keep evidence and artifacts isolated to the current task.",
+      instruction:
+        "Use the exact current artifact root or an input path explicitly declared by the current task. Do not discover, inspect, validate, copy, or return a sibling task directory.",
+      options: [
+        "Continue inside the current task artifact root.",
+        "Use an explicitly declared current-task input path.",
+      ],
+    },
+  };
+}
+
 function safePatchContextEvidencePath(value = "", state = {}, config = {}) {
   const sourcePath = safeRecoveryEvidencePath(value);
   if (sourcePath) return sourcePath;
@@ -23068,6 +23231,27 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     return result;
   }
 
+  const crossTaskArtifactBlock = scopedTaskArtifactIsolationBlock(
+    state,
+    toolName,
+    args,
+    config
+  );
+  if (crossTaskArtifactBlock) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      ...crossTaskArtifactBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
   const validationScopeBlock = artifactValidationScopeBlock(state, toolName, args, config);
   if (validationScopeBlock) {
     const result = {
@@ -24930,6 +25114,77 @@ function inferredLatexArtifactProducerCommand(state = {}, config = {}, contract 
     : "";
 }
 
+async function rejectCrossTaskArtifactCompletion({
+  config,
+  state,
+  store,
+  observers,
+  step,
+  mode,
+  candidateResult,
+  references,
+}) {
+  state.meta = state.meta || {};
+  const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const artifactRoot = scopedArtifactRoot(completionContractGoal(config, state));
+  const key = `${completionContractKey(config)}:${goalRevision}:cross-task-artifact`;
+  const prior = state.meta.crossTaskArtifactRepair || {};
+  const attempts = prior.key === key ? Math.max(0, Number(prior.attempts || 0)) : 0;
+  const detail = {
+    step,
+    mode,
+    key,
+    repairAttempt: attempts + 1,
+    maxRepairAttempts: 1,
+    referencedPaths: references.map((candidate) =>
+      path.relative(config.commandCwd || state.commandCwd || process.cwd(), candidate).replace(/\\/gu, "/")
+    ),
+  };
+  await store.appendEvent("completion.cross_task_artifact_rejected", detail);
+  observers.event("completion.cross_task_artifact_rejected", detail);
+
+  const last = state.messages?.at(-1);
+  if (
+    mode === "assistant-content" &&
+    last?.role === "assistant" &&
+    String(last.content || "").trim() === String(candidateResult || "").trim() &&
+    !(last.tool_calls || []).length
+  ) {
+    state.messages.pop();
+  }
+
+  if (attempts < 1) {
+    state.meta.crossTaskArtifactRepair = {
+      key,
+      attempts: attempts + 1,
+      step,
+      goalRevision,
+      at: new Date().toISOString(),
+    };
+    const instruction = [
+      "Your proposed completion referenced an undeclared sibling task artifact.",
+      "Do not inspect, reuse, validate, copy, or return artifacts from another task namespace.",
+      artifactRoot
+        ? `Continue only with artifacts inside the exact current root ${artifactRoot}, unless the current request explicitly declares another input path.`
+        : "Continue only with artifacts belonging to the exact current task.",
+      "Create or verify the current task's own result, then return only that result.",
+    ].join(" ");
+    state.messages.push({ role: "user", content: instruction });
+    await store.appendEvent("completion.cross_task_artifact_repair_requested", {
+      ...detail,
+      instruction,
+    });
+    observers.event("completion.cross_task_artifact_repair_requested", detail);
+    return { action: "retry", detail };
+  }
+
+  return {
+    action: "stop",
+    detail,
+    result: naturalUnusableResponseStopResult(completionContractGoal(config, state)),
+  };
+}
+
 async function completionEvidenceDecision({ config, state, store, observers, step, mode, candidateResult = "" }) {
   if (state.meta?.artifactProgress?.complete) {
     await refreshArtifactValidationPreflight(state, store, observers, config, {
@@ -24961,6 +25216,33 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   }
   const claimsIncompleteWork = finishResultClaimsIncompleteWork(candidateResult);
   const claimsBlocker = finishResultClaimsBlocker(candidateResult);
+  const crossTaskArtifactReferences = scopedTaskUnauthorizedArtifactReferences({
+    state,
+    config,
+    text: candidateResult,
+  });
+  if (crossTaskArtifactReferences.length) {
+    return await rejectCrossTaskArtifactCompletion({
+      config,
+      state,
+      store,
+      observers,
+      step,
+      mode,
+      candidateResult,
+      references: crossTaskArtifactReferences,
+    });
+  }
+  if (state.meta?.crossTaskArtifactRepair) {
+    const repaired = {
+      step,
+      mode,
+      priorRepairStep: state.meta.crossTaskArtifactRepair.step,
+    };
+    delete state.meta.crossTaskArtifactRepair;
+    await store.appendEvent("completion.cross_task_artifact_repaired", repaired);
+    observers.event("completion.cross_task_artifact_repaired", repaired);
+  }
   const internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
     result: candidateResult,
     messages: state.messages,

@@ -1262,6 +1262,25 @@ function scopedTaskGoal(request, artifactRoot) {
   ].join("\n");
 }
 
+const longStructuredPathSegment = `production-task-${"x".repeat(140)}`;
+const longStructuredInput = `references/${longStructuredPathSegment}/source.md`;
+const longStructuredOutput = `output/wechat_worker/${longStructuredPathSegment}/report.md`;
+const longStructuredExclusion = `output/wechat_worker/${longStructuredPathSegment}/draft.md`;
+const longDeclaredSourceRoot = `/home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/${longStructuredPathSegment}`;
+const longStructuredPathContract = deriveScsTaskContract({
+  goal: [
+    `Read ${longStructuredInput}.`,
+    `Create ${longStructuredOutput}.`,
+    `Do not create ${longStructuredExclusion}.`,
+    `Use source root \`${longDeclaredSourceRoot}\`.`,
+  ].join("\n"),
+  taskProfile: "chatops",
+});
+assert(longStructuredPathContract.exactInputPaths.includes(longStructuredInput));
+assert(longStructuredPathContract.exactOutputPaths.includes(longStructuredOutput));
+assert(longStructuredPathContract.excludedOutputPaths.includes(longStructuredExclusion));
+assert(longStructuredPathContract.declaredSourceRoots.includes(longDeclaredSourceRoot));
+
 try {
   const explanation = await runCase({
     id: "ordinary-explanation",
@@ -1289,6 +1308,174 @@ try {
         .map((message) => String(message.content || "").length)
     ) < 2_000,
     "focused runtime snapshot repeated the full capability manual"
+  );
+
+  const crossTaskIsolationId = "scoped-artifact-cross-task-completion";
+  const crossTaskWorkspace = path.join(tempRoot, "workspaces", crossTaskIsolationId);
+  const currentTaskRoot = path.join(crossTaskWorkspace, "output", "tasks", "current-task");
+  const siblingTaskRoot = path.join(crossTaskWorkspace, "output", "tasks", "sibling-task");
+  const currentTaskReport = path.join(currentTaskRoot, "current-report.md");
+  const siblingTaskReport = path.join(siblingTaskRoot, "sibling-report.md");
+  const crossTaskCompletion = await runCase({
+    id: crossTaskIsolationId,
+    taskProfile: "chatops",
+    goal: scopedTaskGoal(
+      "Create a daily research briefing under the exact task artifact root and return its verified reader-facing artifact.",
+      currentTaskRoot
+    ),
+    allowFileTools: true,
+    setup: async () => {
+      await fs.mkdir(siblingTaskRoot, { recursive: true });
+      await fs.writeFile(siblingTaskReport, "SIBLING TASK\n", "utf8");
+    },
+    responses: [
+      assistant("", [toolCall("write-current-task", "write_file", {
+        path: currentTaskReport,
+        content: "CURRENT TASK\n",
+      })]),
+      assistant("", [toolCall("finish-sibling-task", "finish", {
+        result: `Created and verified ${siblingTaskReport}`,
+      })]),
+      assistant("", [toolCall("finish-current-task", "finish", {
+        result: `Created and verified ${currentTaskReport}`,
+      })]),
+    ],
+  });
+  assert.equal(
+    crossTaskCompletion.calls.length,
+    3,
+    "a sibling task artifact path was accepted as the current task completion"
+  );
+  assert.equal(crossTaskCompletion.result.stopped, undefined);
+  assert.match(crossTaskCompletion.result.result, /current-report\.md/u);
+  assert.doesNotMatch(crossTaskCompletion.result.result, /sibling-report\.md/u);
+  assert(
+    crossTaskCompletion.events.some(
+      (event) => event.type === "completion.cross_task_artifact_rejected"
+    ),
+    "the cross-task completion did not leave private rejection evidence"
+  );
+
+  const crossTaskReadId = "scoped-artifact-cross-task-read";
+  const crossTaskReadWorkspace = path.join(tempRoot, "workspaces", crossTaskReadId);
+  const crossTaskReadCurrentRoot = path.join(crossTaskReadWorkspace, "output", "tasks", "current-task");
+  const crossTaskReadSiblingRoot = path.join(crossTaskReadWorkspace, "output", "tasks", "sibling-task");
+  const crossTaskReadCurrentFile = path.join(crossTaskReadCurrentRoot, "source.md");
+  const crossTaskReadSiblingFile = path.join(crossTaskReadSiblingRoot, "source.md");
+  const crossTaskRead = await runCase({
+    id: crossTaskReadId,
+    taskProfile: "chatops",
+    goal: scopedTaskGoal(
+      `Read ${crossTaskReadCurrentFile} and summarize it without creating a file.`,
+      crossTaskReadCurrentRoot
+    ),
+    allowFileTools: true,
+    setup: async () => {
+      await fs.mkdir(crossTaskReadCurrentRoot, { recursive: true });
+      await fs.mkdir(crossTaskReadSiblingRoot, { recursive: true });
+      await fs.writeFile(crossTaskReadCurrentFile, "CURRENT SOURCE\n", "utf8");
+      await fs.writeFile(crossTaskReadSiblingFile, "SIBLING SOURCE\n", "utf8");
+    },
+    responses: [
+      assistant("", [toolCall("read-sibling-task", "read_file", {
+        path: crossTaskReadSiblingFile,
+      })]),
+      assistant("", [toolCall("read-current-task", "read_file", {
+        path: crossTaskReadCurrentFile,
+      })]),
+      assistant("The current source says CURRENT SOURCE."),
+    ],
+  });
+  assert.equal(crossTaskRead.calls.length, 3);
+  assert.match(crossTaskRead.result.result, /CURRENT SOURCE/u);
+  assert(
+    crossTaskRead.events.some(
+      (event) =>
+        event.type === "tool.blocked" &&
+        event.data?.category === "cross-task-artifact-scope"
+    ),
+    "read_file could inspect an undeclared sibling task root"
+  );
+
+  const crossTaskShellId = "scoped-artifact-cross-task-shell-read";
+  const crossTaskShellWorkspace = path.join(tempRoot, "workspaces", crossTaskShellId);
+  const crossTaskShellCurrentRoot = path.join(crossTaskShellWorkspace, "output", "tasks", "current-task");
+  const crossTaskShellSiblingRoot = path.join(crossTaskShellWorkspace, "output", "tasks", "sibling-task");
+  const crossTaskShellCurrentFile = path.join(crossTaskShellCurrentRoot, "source.md");
+  const crossTaskShellSiblingFile = path.join(crossTaskShellSiblingRoot, "source.md");
+  const crossTaskShellRead = await runCase({
+    id: crossTaskShellId,
+    taskProfile: "chatops",
+    goal: scopedTaskGoal(
+      `Read ${crossTaskShellCurrentFile} with a shell command and report its text.`,
+      crossTaskShellCurrentRoot
+    ),
+    allowShellTool: true,
+    allowFileTools: true,
+    setup: async () => {
+      await fs.mkdir(crossTaskShellCurrentRoot, { recursive: true });
+      await fs.mkdir(crossTaskShellSiblingRoot, { recursive: true });
+      await fs.writeFile(crossTaskShellCurrentFile, "CURRENT SHELL SOURCE\n", "utf8");
+      await fs.writeFile(crossTaskShellSiblingFile, "SIBLING SHELL SOURCE\n", "utf8");
+    },
+    responses: [
+      assistant("", [toolCall("shell-read-sibling-task", "run_command", {
+        command: `cat ${crossTaskShellSiblingFile}`,
+      })]),
+      assistant("", [toolCall("shell-read-current-task", "run_command", {
+        command: `cat ${crossTaskShellCurrentFile}`,
+      })]),
+      assistant("", [toolCall("file-read-current-shell-source", "read_file", {
+        path: crossTaskShellCurrentFile,
+      })]),
+      assistant("The current shell source says CURRENT SHELL SOURCE."),
+    ],
+  });
+  assert.equal(crossTaskShellRead.calls.length, 4);
+  assert.match(crossTaskShellRead.result.result, /CURRENT SHELL SOURCE/u);
+  assert(
+    crossTaskShellRead.events.some(
+      (event) =>
+        event.type === "tool.blocked" &&
+        event.data?.category === "cross-task-artifact-scope"
+    ),
+    "run_command could inspect an undeclared sibling task root"
+  );
+
+  const declaredSiblingInputId = "scoped-artifact-declared-sibling-input";
+  const declaredSiblingInputWorkspace = path.join(tempRoot, "workspaces", declaredSiblingInputId);
+  const declaredSiblingCurrentRoot = path.join(declaredSiblingInputWorkspace, "output", "tasks", "current-task");
+  const declaredSiblingSourceRoot = path.join(declaredSiblingInputWorkspace, "output", "tasks", "declared-source");
+  const declaredSiblingSourceFile = path.join(declaredSiblingSourceRoot, "source.md");
+  const declaredSiblingInput = await runCase({
+    id: declaredSiblingInputId,
+    taskProfile: "chatops",
+    goal: scopedTaskGoal(
+      `Use the declared read-only source root \`${declaredSiblingSourceRoot}\`. Read its supplied source and summarize it in chat without creating artifacts.`,
+      declaredSiblingCurrentRoot
+    ),
+    allowFileTools: true,
+    setup: async () => {
+      await fs.mkdir(declaredSiblingCurrentRoot, { recursive: true });
+      await fs.mkdir(declaredSiblingSourceRoot, { recursive: true });
+      await fs.writeFile(declaredSiblingSourceFile, "DECLARED SOURCE\n", "utf8");
+    },
+    responses: [
+      assistant("", [toolCall("read-declared-sibling-source", "read_file", {
+        path: declaredSiblingSourceFile,
+      })]),
+      assistant("The explicitly supplied file says DECLARED SOURCE."),
+    ],
+  });
+  assert.equal(declaredSiblingInput.calls.length, 2);
+  assert.match(declaredSiblingInput.result.result, /DECLARED SOURCE/u);
+  assert(
+    !declaredSiblingInput.events.some(
+      (event) =>
+        event.type === "tool.blocked" &&
+        event.data?.category === "cross-task-artifact-scope"
+    ),
+    "an explicitly declared sibling input was blocked"
   );
 
   const compactionRecoveryGoal = [
