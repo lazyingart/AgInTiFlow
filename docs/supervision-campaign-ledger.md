@@ -1443,3 +1443,28 @@ compilation, option values that happen to carry file extensions, explicit
 Pandoc conversion, and project build scripts. No compiler is launched, no
 package is installed, and no LabCanvas provider, schedule, transport, or
 runtime policy is changed.
+
+### Numeric chat identifiers are not truncated into years or forecasts
+
+`labcanvas-bare-number-claim-boundary-128` comes from retained production
+sessions `web-agent-labcanvas-d99fc736-db3a-4310-bbe5-c939a779ffca` and
+`web-agent-labcanvas-a2400822-729d-400b-8a70-2842e3dcefe8`. A user sent the
+bare message `199793`. Both the route turn and the fast-chat turn produced
+reasonable clarification responses, but response-only evidence validation
+rejected them twice and returned an internal evidence failure to the host.
+
+The root cause was lexical, not provider quality. The Chinese forecast matcher
+read the last character of `收到` as the temporal preposition `到`, then treated
+the first four digits of the six-digit value as year `1997`. Related year
+patterns also lacked numeric boundaries. The source-free claim guard now
+requires complete four-digit year tokens and an actual Chinese year/deadline
+suffix after `到`. It also recognizes narrowly framed metalinguistic
+clarifications about an ambiguous input while continuing to reject external
+publication, validation, market, and forecast assertions embedded in them.
+
+The focused regression preserves the exact retained Chinese clarification, a
+production-shaped route JSON response, and ordinary numeric acknowledgements.
+Negative controls still reject an ambiguous-message sentence that asserts a
+2025 publication and validation, plus an attributed 2030 product forecast.
+This changes no response schema, model route, LabCanvas prompt, transport, or
+schedule.

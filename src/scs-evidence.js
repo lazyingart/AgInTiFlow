@@ -1989,13 +1989,44 @@ function sourceFreeClaimSegmentOnlyMentionsCandidateForecast(text = "") {
     /\b(?:19|20)\d{2}\b|\b(?:next|coming)\s+(?:year|years|decade)\b|\b(?:will|would|shall|projected\s+to|expected\s+to)\b|\b\d+(?:\.\d+)?\s*%/iu.test(
       value
     ) ||
-    /(?:19|20)\d{2}\s*年|(?:未来|今后|今後|年内|年內|年前|年底|年末)[^。！？；\n]{0,50}(?:将|將|会|會|达到|達到|增长|增長|下降|上线|上線|成为|成為)|(?:将|將|会|會)[^。！？；\n]{0,50}(?:达到|達到|增长|增長|下降|上线|上線|成为|成為)/u.test(
+    /(?<!\d)(?:19|20)\d{2}(?!\d)\s*年|(?:未来|今后|今後|年内|年內|年前|年底|年末)[^。！？；\n]{0,50}(?:将|將|会|會|达到|達到|增长|增長|下降|上线|上線|成为|成為)|(?:将|將|会|會)[^。！？；\n]{0,50}(?:达到|達到|增长|增長|下降|上线|上線|成为|成為)/u.test(
       value
     ) ||
-    /(?:19|20)\d{2}\s*年|(?:将来|今後|年内|年末|までに)[^。！？；\n]{0,50}(?:なる|増加|減少|達する|実現|公開|発売)|(?:なる|増加|減少|達する|実現|公開|発売)(?:見込み|予測|予想)/u.test(
+    /(?<!\d)(?:19|20)\d{2}(?!\d)\s*年|(?:将来|今後|年内|年末|までに)[^。！？；\n]{0,50}(?:なる|増加|減少|達する|実現|公開|発売)|(?:なる|増加|減少|達する|実現|公開|発売)(?:見込み|予測|予想)/u.test(
       value
     );
   return !assertsForecastDetails;
+}
+
+function sourceFreeClaimSegmentOnlyClarifiesAmbiguousInput(text = "") {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  const namesInput =
+    /\b(?:bare\s+)?(?:input|message|number|digits?|string|code|identifier|meaning|context)\b/iu.test(value) ||
+    /(?:这串|這串|这个|這個|该|該)?(?:输入|輸入|消息|訊息|信息|数字|數字|编号|編號|验证码|驗證碼|字符串|字串|代码|代碼|含义|含義|意思|上下文|误发|誤發)/u.test(value) ||
+    /(?:入力|メッセージ|数字|番号|コード|識別子|意味|文脈|誤送信)/u.test(value);
+  const framesInterpretations =
+    /\b(?:may|might|could|possibly)\s+(?:mean|refer\s+to|be)|\b(?:cannot|can't|could\s+not|unable\s+to)\s+(?:safely\s+)?(?:infer|interpret|determine)|\bambiguous\b/iu.test(
+      value
+    ) ||
+    /(?:可能(?:是|指|表示)|也可能|或许|或許|无法|無法|不能|不确定|不確定|不清楚|不知道)[^。！？；\n]{0,60}(?:含义|含義|意思|指什么|指什麼|上下文|编号|編號|日期|金额|金額|误发|誤發)/u.test(
+      value
+    ) ||
+    /(?:かもしれない|可能性|判断できない|特定できない|曖昧)[^。！？；\n]{0,60}(?:意味|文脈|番号|日付|金額|誤送信)/u.test(
+      value
+    );
+  if (!namesInput || !framesInterpretations) return false;
+  const assertsExternalOutcome =
+    /\b(?:paper|study|article|report|dataset|trial|company|market|demand|revenue|sales)\b[^.!?;。！？；\n]{0,100}\b(?:published|released|validated|verified|forecast|predict|project|will|expected\s+to)\b/iu.test(
+      value
+    ) ||
+    /(?:论文|論文|研究|报告|報告|数据集|資料集|公司|市场|市場|需求|营收|營收|销售|銷售)[^。！？；\n]{0,80}(?:发表|發表|发布|發布|验证|驗證|预测|預測|预计|預計|将|將|会|會)/u.test(
+      value
+    ) ||
+    /(?:論文|研究|報告|データセット|企業|市場|需要|売上)[^。！？；\n]{0,80}(?:発表|公開|検証|予測|予想|見込み)/u.test(
+      value
+    );
+  return !assertsExternalOutcome;
 }
 
 function sourceFreeClaimSegmentOnlyDescribesTaskIntent(text = "") {
@@ -2012,8 +2043,8 @@ function sourceFreeClaimSegmentOnlyDescribesTaskIntent(text = "") {
   if (!taskContext || !describesAssignment) return false;
   const assertsExternalOutcome =
     /\b(?:19|20)\d{2}\b|\b(?:next|coming|future)\s+(?:year|years|decade)\b|\b(?:market|demand|revenue|sales|accuracy|latency|throughput)\b[^.!?;\n]{0,80}\b(?:will|would|expected\s+to|forecast|predict|project|grow|increase|decrease|reach|decline)\b|\b\d+(?:\.\d+)?\s*%/iu.test(value) ||
-    /(?:19|20)\d{2}\s*年|(?:未来|今后|今後|年内|年內|年前|年底|年末)[^。！？；\n]{0,50}(?:将|將|会|會|达到|達到|增长|增長|下降|上线|上線|成为|成為)|(?:市场|市場|需求|营收|營收|销售|銷售|准确率|準確率|延迟|延遲)[^。！？；\n]{0,80}(?:预计|預計|预测|預測|增长|增長|下降|达到|達到)/u.test(value) ||
-    /(?:19|20)\d{2}\s*年|(?:将来|今後|年内|年末|までに)[^。！？；\n]{0,50}(?:なる|増加|減少|達する|実現|公開|発売)|(?:市場|需要|売上|精度|遅延)[^。！？；\n]{0,80}(?:予測|予想|増加|減少|達する)/u.test(value);
+    /(?<!\d)(?:19|20)\d{2}(?!\d)\s*年|(?:未来|今后|今後|年内|年內|年前|年底|年末)[^。！？；\n]{0,50}(?:将|將|会|會|达到|達到|增长|增長|下降|上线|上線|成为|成為)|(?:市场|市場|需求|营收|營收|销售|銷售|准确率|準確率|延迟|延遲)[^。！？；\n]{0,80}(?:预计|預計|预测|預測|增长|增長|下降|达到|達到)/u.test(value) ||
+    /(?<!\d)(?:19|20)\d{2}(?!\d)\s*年|(?:将来|今後|年内|年末|までに)[^。！？；\n]{0,50}(?:なる|増加|減少|達する|実現|公開|発売)|(?:市場|需要|売上|精度|遅延)[^。！？；\n]{0,80}(?:予測|予想|増加|減少|達する)/u.test(value);
   return !assertsExternalOutcome;
 }
 
@@ -2031,7 +2062,7 @@ function sourceFreeExternalClaimCategoriesForSegment(text = "") {
   );
   add(
     "year",
-    /\b(?:published|released|announced|accepted|reported|validated|verified|evaluated|benchmarked|forecast(?:ed)?|projected|predicted)\b[^.!?;。！？；\n]{0,100}\b(?:19|20)\d{2}\b|\b(?:19|20)\d{2}\b[^.!?;。！？；\n]{0,100}\b(?:publication|paper|study|article|benchmark|forecast|projection|dataset|trial|validation|release)\b|(?:19|20)\d{2}\s*年?[^.!?;。！？；\n]{0,80}(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|发表|發表|发布|發布|预测|預測|预计|預計|验证|驗證|基准|基準|指标|指標|論文|研究|発表|公開|掲載|予測|検証|ベンチマーク)|(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|发表|發表|发布|發布|预测|預測|预计|預計|验证|驗證|基准|基準|指标|指標|論文|研究|発表|公開|掲載|予測|検証|ベンチマーク)[^.!?;。！？；\n]{0,80}(?:19|20)\d{2}\s*年?/iu
+    /\b(?:published|released|announced|accepted|reported|validated|verified|evaluated|benchmarked|forecast(?:ed)?|projected|predicted)\b[^.!?;。！？；\n]{0,100}\b(?:19|20)\d{2}\b|\b(?:19|20)\d{2}\b[^.!?;。！？；\n]{0,100}\b(?:publication|paper|study|article|benchmark|forecast|projection|dataset|trial|validation|release)\b|(?<!\d)(?:19|20)\d{2}(?!\d)\s*年?[^.!?;。！？；\n]{0,80}(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|发表|發表|发布|發布|预测|預測|预计|預計|验证|驗證|基准|基準|指标|指標|論文|研究|発表|公開|掲載|予測|検証|ベンチマーク)|(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|发表|發表|发布|發布|预测|預測|预计|預計|验证|驗證|基准|基準|指标|指標|論文|研究|発表|公開|掲載|予測|検証|ベンチマーク)[^.!?;。！？；\n]{0,80}(?<!\d)(?:19|20)\d{2}(?!\d)\s*年?/iu
   );
   add(
     "validation",
@@ -2039,7 +2070,7 @@ function sourceFreeExternalClaimCategoriesForSegment(text = "") {
   );
   add(
     "forecast",
-    /\b(?:forecast|forecasted|predict(?:s|ed|ion)?|projected|projection|expected\s+to|will\s+(?:reach|increase|decrease|grow|decline|outperform|underperform)|cagr)\b|\b(?:report|study|source|model|forecast|analysis|analyst)\s+projects\b|(?:预测|預測|预计|預計|估计|估計|推算|推測|到\s*(?:19|20)\d{2}\s*年?(?:底|末)?(?:前|之前)?|(?:19|20)\d{2}\s*年?(?:底|末)?(?:前|之前)?[^。！？；\n]{0,40}(?:将|將|会|會|预计|預計|预测|預測))|(?:予測|予想|見込み|推定|年末まで|までに)/iu
+    /\b(?:forecast|forecasted|predict(?:s|ed|ion)?|projected|projection|expected\s+to|will\s+(?:reach|increase|decrease|grow|decline|outperform|underperform)|cagr)\b|\b(?:report|study|source|model|forecast|analysis|analyst)\s+projects\b|(?:预测|預測|预计|預計|估计|估計|推算|推測|到\s*(?:19|20)\d{2}(?!\d)\s*(?:年(?:底|末)?(?:前|之前)?|底|末|前|之前)|(?<!\d)(?:19|20)\d{2}(?!\d)\s*(?:年(?:底|末)?(?:前|之前)?|底|末|前|之前)[^。！？；\n]{0,40}(?:将|將|会|會|预计|預計|预测|預測))|(?:予測|予想|見込み|推定|年末まで|までに)/iu
   );
   add(
     "benchmark_or_metric",
@@ -2059,13 +2090,18 @@ function sourceFreeExternalClaimAssessment(text = "", { allowExplicitSpeculation
   for (const segment of segments) {
     const segmentCategories = sourceFreeExternalClaimCategoriesForSegment(segment);
     if (!segmentCategories.length) continue;
+    const forecastOnly =
+      segmentCategories.length === 1 && segmentCategories[0] === "forecast";
+    const inputInterpretationOnly =
+      segmentCategories.every((category) => ["year", "forecast"].includes(category)) &&
+      sourceFreeClaimSegmentOnlyClarifiesAmbiguousInput(segment);
     if (
-      segmentCategories.length === 1 &&
-      segmentCategories[0] === "forecast" &&
-      (
-        sourceFreeClaimSegmentOnlyMentionsCandidateForecast(segment) ||
-        sourceFreeClaimSegmentOnlyDescribesTaskIntent(segment)
-      )
+      inputInterpretationOnly ||
+      (forecastOnly &&
+        (
+          sourceFreeClaimSegmentOnlyMentionsCandidateForecast(segment) ||
+          sourceFreeClaimSegmentOnlyDescribesTaskIntent(segment)
+        ))
     ) {
       continue;
     }

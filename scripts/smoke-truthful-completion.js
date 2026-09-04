@@ -412,6 +412,44 @@ assert.equal(
   true,
   "ordinary source-free pure chat was incorrectly rejected"
 );
+const retainedBareNumberClarification = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "CHAT: 「199793」单独一个数字我这边没有可验证的上下文，不想乱猜。它可能指日期 1997-09-03，也可能是某个编号或误发。补一句它关联什么，我马上接着处理。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedBareNumberClarification.ok,
+  true,
+  "a bare numeric message clarification was mistaken for a year or forecast claim"
+);
+const retainedBareNumberRouter = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    route_kind: "chat_only",
+    project: "unknown",
+    worker_needed: false,
+    reason: "A bare number '199793' cannot be safely inferred as a task without context.",
+    ack: "",
+    chat_reply: "收到 199793。请问这串数字指什么？",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedBareNumberRouter.ok,
+  true,
+  "a routing clarification for a bare numeric message triggered source-free evidence repair"
+);
+const ambiguousInputExternalClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "这条消息可能是指某研究在2025年发表并已验证。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  ambiguousInputExternalClaim.ok,
+  false,
+  "ambiguous-input framing laundered an unsupported publication claim"
+);
 const projectIdeaInvitation = evaluateSourceFreeResponseClaims({
   goal: sourceFreeResearchGoal,
   candidateResult:
