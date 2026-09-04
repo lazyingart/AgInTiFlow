@@ -2246,6 +2246,59 @@ try {
     { allowWebSearch: true, webSearchDryRun: true }
   );
   assert(drySearch.ok && drySearch.results.length === 1, "web_search dry-run did not return deterministic result");
+  let privateQueryDispatches = 0;
+  const privateTranscriptQueries = [
+    "Chat History for sunnyyty的聊天记录",
+    "\"Conversation transcript with Alice\"",
+    "孙小雨的对话记录",
+    "アリスとのチャット履歴",
+  ];
+  for (const query of privateTranscriptQueries) {
+    const guard = checkToolUse({
+      toolName: "web_search",
+      args: { query },
+      snapshot: {},
+      config: { allowWebSearch: true },
+    });
+    assert(!guard.allowed && guard.category === "web-search-private-context", `private transcript query passed tool guard: ${query}`);
+    const result = await searchWeb(
+      { query },
+      {
+        allowWebSearch: true,
+        webSearchImpl: async () => {
+          privateQueryDispatches += 1;
+          return { ok: true, toolName: "web_search", results: [] };
+        },
+      }
+    );
+    assert(!result.ok && result.blocked && result.category === "web-search-private-context", `private transcript query reached search dispatch: ${query}`);
+  }
+  assert(privateQueryDispatches === 0, "private transcript title reached a public web-search provider");
+  for (const query of [
+    "how to export WeChat chat history safely",
+    "research on conversation history in task-oriented dialogue systems",
+    "organoid microfluidics primary research 2026",
+  ]) {
+    const guard = checkToolUse({
+      toolName: "web_search",
+      args: { query },
+      snapshot: {},
+      config: { allowWebSearch: true },
+    });
+    assert(guard.allowed, `legitimate public research query was blocked: ${query}`);
+  }
+  const secretQuery = await searchWeb(
+    { query: "debug API_KEY=secret-production-value" },
+    {
+      allowWebSearch: true,
+      webSearchImpl: async () => {
+        privateQueryDispatches += 1;
+        return { ok: true, toolName: "web_search", results: [] };
+      },
+    }
+  );
+  assert(!secretQuery.ok && secretQuery.category === "web-search-sensitive-query", "secret-bearing web query was not rejected");
+  assert(privateQueryDispatches === 0, "secret-bearing query reached a public web-search provider");
   const writingRun = await runMock("Write a novel chapter about a harbor drone repairer and save the draft.", "coding-writing-specialist");
   assert(
     writingRun.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "writing_specialist"),

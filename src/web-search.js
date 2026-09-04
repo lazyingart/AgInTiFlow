@@ -11,6 +11,7 @@ import { XMLParser } from "fast-xml-parser";
 
 import { isDomainAllowed } from "./guardrails.js";
 import { redactSensitiveText } from "./redaction.js";
+import { assessPublicWebQuery } from "./web-query-privacy.js";
 
 const MAX_QUERY_BYTES = 500;
 const MAX_RESULTS = 10;
@@ -707,6 +708,16 @@ export async function searchWeb(args = {}, config = {}) {
   if (!query) return { ok: false, toolName: "web_search", error: "Search query is required." };
   if (Buffer.byteLength(query, "utf8") > MAX_QUERY_BYTES) {
     return { ok: false, toolName: "web_search", error: "Search query is too large." };
+  }
+  const privacy = assessPublicWebQuery(query);
+  if (!privacy.allowed) {
+    return {
+      ok: false,
+      blocked: true,
+      toolName: "web_search",
+      category: privacy.category,
+      error: privacy.reason,
+    };
   }
 
   const maxResults = Math.min(Math.max(Number(args.maxResults) || 5, 1), MAX_RESULTS);

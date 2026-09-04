@@ -1390,3 +1390,28 @@ The focused regression reproduces the retained path aliases, proves that a
 third equivalent failure is blocked, and keeps `xelatex`, another source, and a
 fresh source-edit epoch available. It does not execute LaTeX or change any
 LabCanvas host policy.
+
+### Private context titles never become public web queries
+
+`labcanvas-web-query-private-context-boundary-126` comes from retained
+production session `web-agent-labcanvas-795aaa67-fdc2-427c-afd4-9bce957ae32c`.
+A source-recovery manifest incorrectly described a same-chat history artifact
+as an article and supplied an exact-title reconstruction query. DeepSeek then
+sent `Chat History for sunnyyty的聊天记录` to public search providers. The
+query returned irrelevant generic chat pages, exposed a private transcript
+label outside the task boundary, and consumed a research step before the model
+recognized that the real task was an unrelated daily research briefing.
+
+Public web search now rejects secret-bearing queries and title-shaped private
+chat, conversation, message, or session-history scaffolds before a custom
+provider callback or network fetch can run. The same classifier is applied at
+the agent tool guard and inside direct `searchWeb` calls, so `web_research` and
+`deep_research` cannot bypass it. The failure tells the agent to search for the
+underlying public topic without copying names or transcript labels.
+
+The focused regression uses the exact retained mixed-language query plus
+English, Chinese, and Japanese variants and proves zero provider dispatch. It
+also keeps ordinary public queries about safely exporting chat history,
+conversation-history research, and organoid microfluidics available. This
+changes no provider choice, network allowlist, LabCanvas policy, schedule, or
+transport.

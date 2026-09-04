@@ -8,6 +8,7 @@ import { AGENTLINK_TOOL_NAMES, checkAgentLinkToolUse } from "./agentlink.js";
 import { normalizeProviderId } from "./provider-contract.js";
 import { resolveAuxiliaryImageEndpoint } from "./auxiliary-tools.js";
 import { splitTopLevelShellCommands, tokenizeShellWords } from "./shell-syntax.js";
+import { assessPublicWebQuery } from "./web-query-privacy.js";
 
 const DESTRUCTIVE_KEYWORDS = [
   "delete",
@@ -186,6 +187,8 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     if (Buffer.byteLength(query, "utf8") > 500) {
       return { allowed: false, reason: "Search query is too large.", category: "web-search" };
     }
+    const privacy = assessPublicWebQuery(query);
+    if (!privacy.allowed) return privacy;
     return { allowed: true };
   }
 
