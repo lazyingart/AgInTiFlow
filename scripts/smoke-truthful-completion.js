@@ -413,6 +413,71 @@ assert.equal(
   "a normal response-only human answer was rejected"
 );
 
+const privatePacketIdentifierGoal = [
+  "You are the response-only reasoning backend for host-managed chat.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Return the requested natural chat message only.",
+  })}`,
+  "Return one strict JSON object and no prose:",
+  JSON.stringify({ message: "natural source-chat response", files: [], confirmation: "" }),
+  "Exact task packet:",
+  JSON.stringify({
+    id: "wecom-inspiration-202609040800-example",
+    current_request: "Create one concise, useful inspiration point for the group.",
+    route_decision: { route_kind: "research_or_summary" },
+    preflight: {
+      snapshot: {
+        schedules: {
+          memo_daily: { status: "waiting" },
+        },
+      },
+    },
+  }),
+].join("\n");
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: privatePacketIdentifierGoal,
+    result: JSON.stringify({
+      message: "Reflect on your achievements like the memo_daily task to stay motivated.",
+      files: [],
+      confirmation: "",
+    }),
+  }).leaks,
+  true,
+  "a private packet-only scheduler identifier leaked into a human-facing message"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: privatePacketIdentifierGoal.replace(
+      "Create one concise, useful inspiration point for the group.",
+      "Explain what the memo_daily task does."
+    ),
+    result: JSON.stringify({
+      message: "memo_daily is the schedule you asked about.",
+      files: [],
+      confirmation: "",
+    }),
+  }).leaks,
+  false,
+  "a machine identifier explicitly named by the human could not be discussed"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: privatePacketIdentifierGoal,
+    result: JSON.stringify({
+      message: "Try a small measurement_first experiment and compare the result tomorrow.",
+      files: [],
+      confirmation: "",
+    }),
+  }).leaks,
+  false,
+  "ordinary underscore text absent from the private packet was rejected"
+);
+
 const perfectAuditGoal = [
   "You are the response-only independent reviewer.",
   `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
@@ -1527,6 +1592,76 @@ try {
     )
   );
   assert(!repeatedHostAcknowledgement.events.some((event) => event.type === "session.finished"));
+
+  const packetIdentifierLeak = {
+    message: "Reflect on your achievements like the memo_daily task to stay motivated.",
+    files: [],
+    confirmation: "",
+  };
+  const repairedPacketIdentifierLeak = await runCase({
+    id: "response-only-private-packet-identifier-repair",
+    taskProfile: "chatops",
+    goal: privatePacketIdentifierGoal,
+    responses: [
+      assistant(JSON.stringify(packetIdentifierLeak)),
+      assistant(JSON.stringify({
+        message: "Choose one small result from today and write down what made it possible.",
+        files: [],
+        confirmation: "",
+      })),
+    ],
+  });
+  assert.equal(repairedPacketIdentifierLeak.calls.length, 2);
+  assert.deepEqual(
+    Object.keys(JSON.parse(repairedPacketIdentifierLeak.result.result)),
+    ["message", "files", "confirmation"],
+    "private-identifier repair changed the explicit JSON envelope"
+  );
+  assert.doesNotMatch(
+    JSON.parse(repairedPacketIdentifierLeak.result.result).message,
+    /memo_daily/
+  );
+  assert.equal(
+    repairedPacketIdentifierLeak.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    1
+  );
+  assert(
+    repairedPacketIdentifierLeak.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /private task or schedule identifiers/i.test(String(message.content || ""))
+    ),
+    "the repair did not explain the private packet-identifier boundary"
+  );
+
+  const repeatedPacketIdentifierLeak = await runCase({
+    id: "response-only-private-packet-identifier-repeated",
+    taskProfile: "chatops",
+    goal: privatePacketIdentifierGoal,
+    responses: [
+      assistant(JSON.stringify(packetIdentifierLeak)),
+      assistant(JSON.stringify({
+        ...packetIdentifierLeak,
+        confirmation: "The memo_daily schedule is ready.",
+      })),
+    ],
+  });
+  assert.equal(repeatedPacketIdentifierLeak.calls.length, 2);
+  assert.equal(repeatedPacketIdentifierLeak.result.stopped, true);
+  assert.deepEqual(
+    Object.keys(JSON.parse(repeatedPacketIdentifierLeak.result.result)),
+    ["message", "files", "confirmation"],
+    "private-identifier fail-closed result broke the explicit JSON envelope"
+  );
+  assert.equal(
+    repeatedPacketIdentifierLeak.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    2
+  );
+  assert(!repeatedPacketIdentifierLeak.events.some((event) => event.type === "session.finished"));
 
   const revisedAudit = {
     ...blanketPerfectAudit,

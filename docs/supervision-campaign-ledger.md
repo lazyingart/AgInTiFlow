@@ -1740,3 +1740,26 @@ uses one call. It also covers direct non-audit and non-perfect controls, event
 counts, JSON-envelope preservation, and successful completion boundaries. No
 live DeepSeek or LocalLLM inference, LabCanvas runtime change, queue action,
 schedule, or transport operation is involved.
+
+### Human-facing replies cannot expose private packet identifiers
+
+`labcanvas-response-only-private-packet-hygiene-140` follows retained production
+session `web-agent-labcanvas-acfafa25-d3c5-4a4e-9e12-1813973211a2`. A scheduled
+inspiration reply told group members to reflect on achievements like the
+`memo_daily` task and put another orchestration phrase in `confirmation`. That
+identifier came from a private preflight schedule snapshot, not the human-facing
+request, and should never have appeared in chat.
+
+Response-only scaffold validation now derives machine-style identifiers from
+the exact task packet and checks only outward text fields such as `message`,
+`response`, `chat_reply`, `ack`, and `confirmation`. An identifier is rejected
+only when it occurs in the private packet and is absent from `current_request`
+and every explicit request item. The implementation does not contain scheduler
+names, inspect attachment paths, or reject arbitrary underscore text. A human
+who explicitly asks about the named internal task can still receive an answer.
+
+The production-shaped regression proves the original leak failed before the
+fix, then covers direct detection, explicit-request and unrelated-text controls,
+one successful schema-preserving repair, and repeated-leak fail-closed behavior
+without `session.finished`. No live model, LocalLLM inference, LabCanvas runtime
+change, queue action, schedule, or transport operation is involved.

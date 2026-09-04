@@ -1635,6 +1635,71 @@ function responseOnlyHostAcknowledgementMarkers(text = "") {
   return markers;
 }
 
+function responseOnlyTaskPacket(goal = "") {
+  const source = String(goal || "");
+  const matches = [
+    ...source.matchAll(/(?:^|\n)\s*(?:Exact task packet|Task packet):\s*/giu),
+  ];
+  for (const match of matches.reverse()) {
+    const packet = firstJsonObject(source.slice((match.index || 0) + match[0].length));
+    if (
+      packet &&
+      typeof packet === "object" &&
+      (typeof packet.current_request === "string" || Array.isArray(packet.request_items))
+    ) {
+      return packet;
+    }
+  }
+  return null;
+}
+
+function responseOnlyHumanRequestFromPacket(packet = {}) {
+  const requestItems = Array.isArray(packet?.request_items)
+    ? packet.request_items.map((item) => String(item?.text || "").trim()).filter(Boolean)
+    : [];
+  return [String(packet?.current_request || "").trim(), ...requestItems]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function responseOnlyPrivatePacketIdentifiers(packet = {}) {
+  const identifiers = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    for (const [key, nested] of Object.entries(value)) {
+      if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/iu.test(key)) identifiers.add(key);
+      visit(nested);
+    }
+  };
+  visit(packet);
+  return [...identifiers];
+}
+
+function responseOnlyHumanFacingText(result = "") {
+  const parsed = parseStrictResponseOnlyJson(result);
+  if (!parsed) return String(result || "");
+  const values = ["message", "confirmation", "response", "chat_reply", "ack"]
+    .map((key) => parsed[key])
+    .filter((value) => typeof value === "string" && value.trim());
+  return values.join("\n");
+}
+
+function responseOnlyPrivatePacketIdentifierMarkers({ goal = "", result = "" } = {}) {
+  const packet = responseOnlyTaskPacket(goal);
+  const visibleText = responseOnlyHumanFacingText(result);
+  if (!packet || !visibleText.trim()) return [];
+  const humanRequest = responseOnlyHumanRequestFromPacket(packet);
+  const leaked = responseOnlyPrivatePacketIdentifiers(packet).some((identifier) => {
+    const pattern = new RegExp(`(?:^|[^A-Za-z0-9_])${identifier}(?:$|[^A-Za-z0-9_])`, "iu");
+    return pattern.test(visibleText) && !pattern.test(humanRequest);
+  });
+  return leaked ? ["private-task-packet-identifier"] : [];
+}
+
 export function assessInternalRuntimeScaffoldLeak({ result = "", messages = [], goal = "" } = {}) {
   const text = String(result || "").trim();
   const sourceKinds = [
@@ -1648,11 +1713,16 @@ export function assessInternalRuntimeScaffoldLeak({ result = "", messages = [], 
   const hostAcknowledgementMarkers = isResponseOnlyEvidenceScope(goal)
     ? responseOnlyHostAcknowledgementMarkers(text)
     : [];
+  const privatePacketIdentifierMarkers = isResponseOnlyEvidenceScope(goal)
+    ? responseOnlyPrivatePacketIdentifierMarkers({ goal, result: text })
+    : [];
   if (
     !text ||
     explicitlyRequestsRuntimeScaffoldDiscussion(goal) ||
     (hostAcknowledgementMarkers.length > 0 && explicitlyRequestsHostRoutingDiscussion(goal)) ||
-    (sourceKinds.length === 0 && hostAcknowledgementMarkers.length === 0)
+    (sourceKinds.length === 0 &&
+      hostAcknowledgementMarkers.length === 0 &&
+      privatePacketIdentifierMarkers.length === 0)
   ) {
     return { leaks: false, markers: [], sourceKinds };
   }
@@ -1683,7 +1753,7 @@ export function assessInternalRuntimeScaffoldLeak({ result = "", messages = [], 
   const markers = markerPatterns
     .filter(([, pattern]) => pattern.test(text))
     .map(([id]) => id)
-    .concat(hostAcknowledgementMarkers);
+    .concat(hostAcknowledgementMarkers, privatePacketIdentifierMarkers);
   const narrativeMarkers = markers.filter((id) =>
     [
       "runtime-compaction-narrative",
@@ -1695,6 +1765,7 @@ export function assessInternalRuntimeScaffoldLeak({ result = "", messages = [], 
   const headingMarkers = markers.filter((id) => id.endsWith("-heading"));
   const leaks =
     hostAcknowledgementMarkers.length > 0 ||
+    privatePacketIdentifierMarkers.length > 0 ||
     narrativeMarkers.length >= 2 ||
     (narrativeMarkers.length >= 1 && headingMarkers.length >= 1) ||
     headingMarkers.length >= 3;
@@ -25434,8 +25505,8 @@ async function rejectInternalRuntimeScaffoldCompletion({
       at: new Date().toISOString(),
     };
     const instruction = [
-      "Your proposed answer repeated private recovery or compaction scaffolding, a routing acknowledgement, or host-contract language instead of answering the authoritative task.",
-      "Do not mention runtime prompts, context compaction, hidden instructions, request visibility, host routing acknowledgements, or output-contract compliance.",
+      "Your proposed answer repeated private recovery or compaction scaffolding, a task-packet identifier, a routing acknowledgement, or host-contract language instead of answering the authoritative task.",
+      "Do not mention runtime prompts, context compaction, hidden instructions, request visibility, private task or schedule identifiers, host routing acknowledgements, or output-contract compliance unless the human request explicitly asks about that exact subject.",
       "Continue the actual current task from the retained goal and evidence: use the smallest enabled tool when action is still required, or return the concrete user-facing result when the task is already complete.",
       "If the task is genuinely blocked, state only the task-specific external blocker and preserve the session for resume.",
     ].join(" ");
