@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   assessInternalRuntimeScaffoldLeak,
+  assessResponseOnlyEmptyEnvelope,
   assessResponseOnlyPerfectAudit,
   completionRequirementCoverageInstruction,
   continuationExecutionContractDirective,
@@ -476,6 +477,46 @@ assert.equal(
   }).leaks,
   false,
   "ordinary underscore text absent from the private packet was rejected"
+);
+const emptyResponseOnlyEnvelope = {
+  message: "",
+  files: [],
+  confirmation: "",
+};
+assert.equal(
+  assessResponseOnlyEmptyEnvelope({
+    goal: privatePacketIdentifierGoal,
+    result: JSON.stringify(emptyResponseOnlyEnvelope),
+  }).ok,
+  false,
+  "a schema-valid empty host-task envelope was treated as a usable response"
+);
+for (const usefulPayload of [
+  { ...emptyResponseOnlyEnvelope, message: "A concise human-facing answer." },
+  { ...emptyResponseOnlyEnvelope, files: ["useful-report.pdf"] },
+  { ...emptyResponseOnlyEnvelope, confirmation: "Which sample should I use?" },
+  { ...emptyResponseOnlyEnvelope, knowledge_items: [{ subject: "retained preference" }] },
+  { ...emptyResponseOnlyEnvelope, publish_stage: { stage: "published_verified" } },
+]) {
+  assert.equal(
+    assessResponseOnlyEmptyEnvelope({
+      goal: privatePacketIdentifierGoal,
+      result: JSON.stringify(usefulPayload),
+    }).ok,
+    true,
+    "a substantive response-only payload was rejected as empty"
+  );
+}
+assert.equal(
+  assessResponseOnlyEmptyEnvelope({
+    goal: privatePacketIdentifierGoal.replace(
+      "Create one concise, useful inspiration point for the group.",
+      "Store the supplied preference and return the message field empty."
+    ),
+    result: JSON.stringify(emptyResponseOnlyEnvelope),
+  }).ok,
+  true,
+  "an explicit empty-message contract could not be honored"
 );
 
 const perfectAuditGoal = [
@@ -1662,6 +1703,74 @@ try {
     2
   );
   assert(!repeatedPacketIdentifierLeak.events.some((event) => event.type === "session.finished"));
+
+  const emptyResponseOnlyEnvelope = {
+    message: "",
+    files: [],
+    confirmation: "",
+  };
+  const repairedEmptyResponseOnlyEnvelope = await runCase({
+    id: "response-only-empty-envelope-repair",
+    taskProfile: "chatops",
+    goal: privatePacketIdentifierGoal,
+    responses: [
+      assistant(JSON.stringify(emptyResponseOnlyEnvelope)),
+      assistant(JSON.stringify({
+        message: "Choose one useful result from today and note the decision that produced it.",
+        files: [],
+        confirmation: "",
+      })),
+    ],
+  });
+  assert.equal(
+    repairedEmptyResponseOnlyEnvelope.calls.length,
+    2,
+    "a schema-valid but semantically empty chat envelope was accepted as finished"
+  );
+  assert.match(
+    JSON.parse(repairedEmptyResponseOnlyEnvelope.result.result).message,
+    /Choose one useful result/
+  );
+  assert.equal(
+    repairedEmptyResponseOnlyEnvelope.events.filter(
+      (event) => event.type === "response_only.empty_payload_repair_requested"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedEmptyResponseOnlyEnvelope.events.filter(
+      (event) => event.type === "response_only.empty_payload_repaired"
+    ).length,
+    1
+  );
+
+  const repeatedEmptyResponseOnlyEnvelope = await runCase({
+    id: "response-only-empty-envelope-repeated",
+    taskProfile: "chatops",
+    goal: privatePacketIdentifierGoal,
+    responses: [
+      assistant(JSON.stringify(emptyResponseOnlyEnvelope)),
+      assistant(JSON.stringify(emptyResponseOnlyEnvelope)),
+    ],
+  });
+  assert.equal(repeatedEmptyResponseOnlyEnvelope.calls.length, 2);
+  assert.equal(repeatedEmptyResponseOnlyEnvelope.result.stopped, true);
+  assert.equal(repeatedEmptyResponseOnlyEnvelope.result.reason, "empty_response_only_payload");
+  assert.deepEqual(
+    Object.keys(JSON.parse(repeatedEmptyResponseOnlyEnvelope.result.result)),
+    ["message", "files", "confirmation"],
+    "empty-envelope fail-closed result broke the explicit JSON contract"
+  );
+  assert.match(
+    JSON.parse(repeatedEmptyResponseOnlyEnvelope.result.result).message,
+    /did not provide a usable task response/
+  );
+  assert(
+    repeatedEmptyResponseOnlyEnvelope.events.some(
+      (event) => event.type === "response_only.empty_payload_failed_closed"
+    )
+  );
+  assert(!repeatedEmptyResponseOnlyEnvelope.events.some((event) => event.type === "session.finished"));
 
   const revisedAudit = {
     ...blanketPerfectAudit,

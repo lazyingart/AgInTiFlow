@@ -1763,3 +1763,28 @@ fix, then covers direct detection, explicit-request and unrelated-text controls,
 one successful schema-preserving repair, and repeated-leak fail-closed behavior
 without `session.finished`. No live model, LocalLLM inference, LabCanvas runtime
 change, queue action, schedule, or transport operation is involved.
+
+### Schema-valid empty envelopes cannot finish a task
+
+`labcanvas-response-only-empty-envelope-141` follows retained production session
+`web-agent-labcanvas-7159acc2-9bbe-4254-825b-ed6819f8e269`. After DeepSeek
+reported insufficient balance and the LocalLLM request was compacted to fit its
+context window, the fallback returned a valid chat JSON envelope whose message,
+confirmation, files, publish state, and generated-content arrays were all empty.
+AgInTiFlow accepted the field types and emitted `session.finished`, silently
+clearing a scheduled inspiration task without a reply.
+
+Host task envelopes now require a meaningful outward payload after structural
+JSON validation. A nonempty human message, task-scoped attachment, continuation
+question, knowledge item, upstream feedback item, publish state, or generated
+content satisfies the boundary. The check applies only when an exact host task
+packet and a human-facing response field are present; router and audit schemas
+remain unchanged. An explicit human instruction to leave the message or reply
+empty is also preserved.
+
+The production-shaped regression first proves the one-call silent finish on the
+pre-fix runtime. It then covers direct positive controls, one successful bounded
+repair, exact JSON-envelope preservation, repeated-empty fail-closed behavior,
+and absence of `session.finished` after failure. No live model, LocalLLM
+inference, LabCanvas runtime change, queue action, schedule, or transport
+operation is involved.

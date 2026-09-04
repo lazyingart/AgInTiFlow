@@ -1688,6 +1688,52 @@ function responseOnlyHumanFacingText(result = "") {
   return values.join("\n");
 }
 
+function hasMeaningfulResponseOnlyValue(value) {
+  if (typeof value === "string") return Boolean(value.trim());
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.some(hasMeaningfulResponseOnlyValue);
+  if (value && typeof value === "object") {
+    return Object.values(value).some(hasMeaningfulResponseOnlyValue);
+  }
+  return false;
+}
+
+export function assessResponseOnlyEmptyEnvelope({ goal = "", result = "" } = {}) {
+  const packet = responseOnlyTaskPacket(goal);
+  const parsed = parseStrictResponseOnlyJson(result);
+  if (!packet || !parsed) return { ok: true, reason: "not-a-host-task-envelope" };
+  const responseKeys = [
+    "message",
+    "response",
+    "chat_reply",
+    "ack",
+    "confirmation",
+    "files",
+    "knowledge_items",
+    "upstream_feedback",
+    "publish_stage",
+    "generated_pdf_content",
+    "generated_text_content",
+  ].filter((key) => Object.hasOwn(parsed, key));
+  if (!responseKeys.some((key) => ["message", "response", "chat_reply"].includes(key))) {
+    return { ok: true, reason: "not-a-human-facing-envelope" };
+  }
+  const humanRequest = responseOnlyHumanRequestFromPacket(packet);
+  const explicitlyAllowsEmpty =
+    /(?:return|leave|keep)\s+(?:the\s+)?(?:message|reply|response)\s+(?:field\s+)?(?:empty|blank)|(?:do not|don't)\s+(?:send\s+)?(?:a\s+)?(?:message|reply|response)|(?:无需|無需|不必|不要)(?:回复|回覆|响应|響應)|(?:返信|応答)(?:不要|なし)/iu.test(
+      humanRequest
+    );
+  if (explicitlyAllowsEmpty) return { ok: true, reason: "explicit-empty-response-contract" };
+  const meaningfulKeys = responseKeys.filter((key) => hasMeaningfulResponseOnlyValue(parsed[key]));
+  return {
+    ok: meaningfulKeys.length > 0,
+    reason: meaningfulKeys.length > 0 ? "human-facing-payload-present" : "empty-human-facing-envelope",
+    responseKeys,
+    meaningfulKeys,
+  };
+}
+
 function responseOnlyPrivatePacketIdentifierMarkers({ goal = "", result = "" } = {}) {
   const packet = responseOnlyTaskPacket(goal);
   const visibleText = responseOnlyHumanFacingText(result);
@@ -4741,6 +4787,53 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     };
   }
 
+  async function stopForEmptyResponseOnlyEnvelope({ step, assessment, contract }) {
+    const stoppedResult = responseOnlyContractFallbackResult(
+      contract,
+      "The model did not provide a usable task response after one repair attempt. The session is saved and can be resumed with another provider."
+    );
+    const detail = {
+      step,
+      mode: "response-only-empty-payload-fail-closed",
+      reason: assessment.reason,
+      responseKeys: assessment.responseKeys || [],
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      emptyPayloadBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "empty_response_only_payload", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.empty_payload_failed_closed", detail);
+    await store.appendEvent("session.stopped", {
+      reason: "empty_response_only_payload",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.empty_payload_failed_closed", detail);
+    observers.event("session.stopped", {
+      reason: "empty_response_only_payload",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "empty_response_only_payload",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
   async function requestWithResponseOnlyLocalContextRecovery({ step, mode }) {
     const requestRuntimeConfig = applyLocalContextOutputAdaptation(config, state);
     try {
@@ -5033,6 +5126,78 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
         mode: "response-only-contract-fail-closed",
       });
     }
+  }
+  let emptyEnvelopeAssessment = assessResponseOnlyEmptyEnvelope({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!emptyEnvelopeAssessment.ok) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only-empty-payload-repair",
+      reason: emptyEnvelopeAssessment.reason,
+      responseKeys: emptyEnvelopeAssessment.responseKeys || [],
+    };
+    await store.appendEvent("response_only.empty_payload_repair_requested", detail);
+    observers.event("response_only.empty_payload_repair_requested", detail);
+    state.messages.push({
+      role: "user",
+      content: [
+        "Your previous JSON matched the field types but contained no usable outward response.",
+        "Answer the authoritative current request with a concise human-facing message, a real task-scoped attachment, a concrete continuation question, or another substantive payload required by the task.",
+        "Do not invent work, repeat host metadata, or mark an unhandled task complete.",
+        outputContract
+          ? `Preserve the explicit JSON contract exactly: ${responseOnlyJsonKeyContractText(outputContract)}.`
+          : "Preserve the authoritative output shape exactly.",
+      ].join(" "),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-empty-payload-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-empty-payload-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-empty-payload-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return await stopForOutputContract({
+        step: finalResponseStep,
+        assessment: outputAssessment,
+        contract: outputContract,
+        mode: "response-only-empty-payload-repair-contract-fail-closed",
+      });
+    }
+    emptyEnvelopeAssessment = assessResponseOnlyEmptyEnvelope({
+      goal: completionContractGoal(config, state),
+      result,
+    });
+    if (!emptyEnvelopeAssessment.ok) {
+      return await stopForEmptyResponseOnlyEnvelope({
+        step: finalResponseStep,
+        assessment: emptyEnvelopeAssessment,
+        contract: outputContract,
+      });
+    }
+    const repaired = {
+      ...detail,
+      step: finalResponseStep,
+      meaningfulKeys: emptyEnvelopeAssessment.meaningfulKeys || [],
+    };
+    await store.appendEvent("response_only.empty_payload_repaired", repaired);
+    observers.event("response_only.empty_payload_repaired", repaired);
   }
   const perfectAuditAssessment = assessResponseOnlyPerfectAudit({
     goal: completionContractGoal(config, state),
