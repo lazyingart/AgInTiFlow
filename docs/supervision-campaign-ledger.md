@@ -1415,3 +1415,31 @@ also keeps ordinary public queries about safely exporting chat history,
 conversation-history research, and organoid microfluidics available. This
 changes no provider choice, network allowlist, LabCanvas policy, schedule, or
 transport.
+
+### LaTeX compilers reject non-TeX document sources before execution
+
+`labcanvas-document-source-compiler-boundary-127` comes from retained
+production session
+`web-agent-labcanvas-aef0f454-06ca-45ed-93ca-21c786de1020`. The task asked for
+a Markdown report revision and explicitly assigned unavailable Unicode-PDF
+compilation to the host. After correctly editing the report, the fallback model
+ran `pdflatex report.md`, searched for a converter, attempted package-manager
+and Node.js installation routes, and finally requested elevation. The first
+command was semantically invalid: a LaTeX engine accepts a `.tex` source, not a
+Markdown, text, HTML, office-document, or PDF input.
+
+AgInTiFlow now rejects that source/compiler mismatch before launching the
+process and stops the remaining tool calls in the same assistant batch. The
+diagnostic directs the model to create or use the complete task-scoped `.tex`
+source, use an already available declared converter, or return editable source
+to a host-owned compilation stage. This prevents one invalid premise from
+cascading into converter installation or permission requests while retaining
+normal recovery after the model sees the result.
+
+The focused regression covers the retained `pdflatex report.md` command,
+XeLaTeX, LuaLaTeX, `latexmk`, shell wrappers, and incompatible Markdown, text,
+PDF, HTML, and office-document inputs. Positive controls preserve valid `.tex`
+compilation, option values that happen to carry file extensions, explicit
+Pandoc conversion, and project build scripts. No compiler is launched, no
+package is installed, and no LabCanvas provider, schedule, transport, or
+runtime policy is changed.

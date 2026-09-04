@@ -3335,7 +3335,7 @@ async function createInitialState(config, sessionId) {
             : "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files, run available build/compile/test commands, and surface artifacts through the canvas when useful.",
           hostManagedDocumentCompilationRequested(config.goal)
             ? "For this host-managed document task, create and verify the requested editable sources only. Do not invoke LaTeX, make, package managers, or document compilers; the host stage owns compilation and derived-PDF validation."
-            : "For LaTeX/PDF tasks, check existing latexmk/pdflatex first and compile with the available host or Docker TeX toolchain before installing packages or rebuilding the sandbox.",
+            : "For LaTeX/PDF tasks, check the existing compiler first and compile a .tex source with the available host or Docker TeX toolchain before installing packages or rebuilding the sandbox. Never pass Markdown, text, HTML, DOCX, or PDF directly to a LaTeX compiler; use an existing declared converter or create a complete .tex source.",
           "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
           completionRequirementCoverageInstruction(),
           repositorySourcePrecedenceInstruction(),
@@ -5427,6 +5427,62 @@ export function shellDiagnosticHint(command = "", result = {}) {
   return "";
 }
 
+export function incompatibleDocumentCompilerSourceBlock(toolName, args = {}) {
+  if (toolName !== "run_command") return null;
+  const sequence = parseTopLevelShellSequence(String(args.command || "").trim());
+  if (
+    !sequence.commands.length ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return null;
+  }
+
+  for (const segment of sequence.commands) {
+    const tokens = tokenizeShellWords(segment).map((token) => String(token || ""));
+    let index = 0;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] || "")) index += 1;
+    const tokenBasename = (value) => path.posix.basename(String(value || "").replace(/\\/g, "/"));
+    if (tokenBasename(tokens[index]) === "env") {
+      index += 1;
+      while (/^-/.test(tokens[index] || "") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] || "")) {
+        index += 1;
+      }
+    }
+    while (["command", "exec", "nohup"].includes(tokenBasename(tokens[index]))) index += 1;
+    const compiler = tokenBasename(tokens[index]).toLocaleLowerCase("en-US");
+    if (!["latexmk", "lualatex", "pdflatex", "xelatex"].includes(compiler)) continue;
+    const valueOptions = new Set(["-aux-directory", "-include-directory", "-jobname", "-output-directory"]);
+    let skipOptionValue = false;
+    const incompatibleSource = tokens.slice(index + 1).find((token) => {
+      if (skipOptionValue) {
+        skipOptionValue = false;
+        return false;
+      }
+      if (token.startsWith("-")) {
+        skipOptionValue = valueOptions.has(token.toLocaleLowerCase("en-US"));
+        return false;
+      }
+      return /\.(?:docx?|html?|markdown|md|odt|pdf|rst|txt)$/iu.test(token);
+    });
+    if (!incompatibleSource) continue;
+    return {
+      blocked: true,
+      recoverable: true,
+      stopRun: false,
+      category: "document-compiler-source-type",
+      reason:
+        `${compiler} requires a LaTeX source, but the requested input is not a .tex file. ` +
+        "Do not run the compiler on Markdown or install a converter solely to repeat this command.",
+      error: "Document compiler input type is incompatible.",
+      diagnosticHint:
+        "Create or use the complete task-scoped .tex source, use an already available declared conversion routine, or return the editable source to a host-managed compilation stage when the task contract assigns compilation to the host.",
+    };
+  }
+  return null;
+}
+
 export function normalizeNoMatchQueryResult(result = {}, policy = {}) {
   if (
     policy?.noMatchExitIsSuccess !== true ||
@@ -5592,6 +5648,7 @@ export function shouldShortCircuitToolBatch(toolResult) {
   return Boolean(
     (toolResult?.blocked && toolResult?.permissionAdvice) ||
       toolResult?.category === "malformed-tool-arguments" ||
+      toolResult?.category === "document-compiler-source-type" ||
       toolResult?.category === "tool-contract-violation"
   );
 }
@@ -5607,6 +5664,9 @@ export function shouldPauseForPermissionAdvice(toolResult = {}) {
 export function skippedAfterBlockedToolResult(toolCall, blockedResult) {
   const toolName = toolCall?.function?.name || "unknown";
   const args = sanitizeToolArgs(toolName, safeParseToolArgs(toolCall));
+  const reason = blockedResult?.permissionAdvice
+    ? "Skipped because an earlier tool call in the same assistant message returned permission advice. The runtime stops the batch so the agent cannot retry variants before the user/model sees the blocker."
+    : "Skipped because an earlier tool call in the same assistant message failed a semantic pre-dispatch contract. The runtime stops the batch so later calls cannot act on that invalid premise before the model corrects it.";
   return {
     ok: false,
     blocked: true,
@@ -5614,8 +5674,7 @@ export function skippedAfterBlockedToolResult(toolCall, blockedResult) {
     toolName,
     args,
     category: "blocked-batch",
-    reason:
-      "Skipped because an earlier tool call in the same assistant message returned permissionAdvice. The runtime stops the batch so the agent cannot retry variants before the user/model sees the blocker.",
+    reason,
     priorBlockedTool: blockedResult?.toolName || "",
     priorBlockedCategory: blockedResult?.category || "",
   };
@@ -20845,7 +20904,7 @@ async function captureSyntheticSnapshot(store, step, config) {
           ? `Visual previews are disabled. read_image accepts only an owned opaque retained PNG reference through ${INTEGRATION_RETAINED_VISION_MODEL_ID}; paths, URLs, base64, overrides, hosted fallback, and artifact persistence are forbidden.`
           : "Image perception and visual preview tools are disabled."
         : "For draw/plot/graph/chart/diagram/figure requests, publish a canvas artifact proactively.",
-      "For LaTeX/PDF requests, check latexmk/pdflatex first, publish the source and compiled PDF artifacts when available, and avoid reinstalling TeX when an existing toolchain works.",
+      "For LaTeX/PDF requests, check the existing compiler first, pass it a .tex source rather than Markdown or another document type, publish the source and compiled PDF artifacts when available, and avoid installing a converter or rebuilding TeX solely to recover from a source-type mismatch.",
       isRetainedWorkspaceProfile(config)
         ? "Browser and web navigation are disabled."
         : "Use open_url only if the task actually needs the web.",
@@ -21304,6 +21363,22 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       toolName,
       args: safeArgs,
     };
+  }
+
+  const documentCompilerSourceBlock = incompatibleDocumentCompilerSourceBlock(
+    toolName,
+    args
+  );
+  if (documentCompilerSourceBlock) {
+    const result = {
+      ok: false,
+      toolName,
+      args: safeArgs,
+      ...documentCompilerSourceBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
   }
 
   const prematureArtifactCommit = prematureRequestedArtifactCommitBlock(

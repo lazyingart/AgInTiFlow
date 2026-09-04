@@ -8,6 +8,7 @@ import {
   buildModelTimeoutRetryMessages,
   genericArtifactFilenameBlock,
   goalClearlyAllowsOverwrite,
+  incompatibleDocumentCompilerSourceBlock,
   modelTimeoutExhaustionRoute,
   modelTimeoutRetryRoute,
   normalizeNoMatchQueryResult,
@@ -2299,6 +2300,26 @@ try {
   );
   assert(!secretQuery.ok && secretQuery.category === "web-search-sensitive-query", "secret-bearing web query was not rejected");
   assert(privateQueryDispatches === 0, "secret-bearing query reached a public web-search provider");
+  for (const command of [
+    "pdflatex report.md",
+    "cd artifacts && xelatex -interaction=nonstopmode daily-briefing.markdown",
+    "env TEXINPUTS=. latexmk -pdf notes.txt",
+    "lualatex existing-report.pdf",
+  ]) {
+    const block = incompatibleDocumentCompilerSourceBlock("run_command", { command });
+    assert(block?.category === "document-compiler-source-type" && block.recoverable, `incompatible document compiler source was not rejected: ${command}`);
+    assert(block.blocked && shouldShortCircuitToolBatch(block), `incompatible document compiler source did not stop its tool batch: ${command}`);
+  }
+  for (const command of [
+    "pdflatex -interaction=nonstopmode report.tex",
+    "pdflatex -jobname release.pdf report.tex",
+    "latexmk -output-directory=build.pdf -pdf report.tex",
+    "cd artifacts && latexmk -pdf daily-briefing.tex",
+    "pandoc report.md -o report.tex",
+    "python scripts/build_report.py report.md",
+  ]) {
+    assert(!incompatibleDocumentCompilerSourceBlock("run_command", { command }), `valid document command was rejected: ${command}`);
+  }
   const writingRun = await runMock("Write a novel chapter about a harbor drone repairer and save the draft.", "coding-writing-specialist");
   assert(
     writingRun.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "writing_specialist"),
