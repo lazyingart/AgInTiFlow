@@ -4207,10 +4207,22 @@ function responseOnlyJsonContract(config = {}, state = {}) {
   const source = responseOnlyContractSource(config, state);
   const authoritativeStart = source.search(/(?:^|\n)(?:Original prompt|Exact current request):\s*/i);
   const contractSource = authoritativeStart >= 0 ? source.slice(authoritativeStart) : source;
-  const marker = /\breturn\s+(?:exactly\s+)?(?:one\s+)?(?:strict\s+)?JSON(?:\s+object)?(?:\s+and\s+no\s+prose|\s+only)?\s*:/gi;
-  const match = marker.exec(contractSource);
-  if (!match) return null;
-  const sample = firstJsonObject(contractSource.slice(match.index + match[0].length));
+  const markers = [
+    /\breturn\s+(?:exactly\s+)?(?:one\s+)?(?:strict\s+)?JSON(?:\s+object)?(?:\s+and\s+no\s+prose|\s+only)?\s*:/gi,
+    /(?:^|\n)\s*(?:required|expected)\s+JSON\s+(?:schema|shape|format|object)\s*:\s*/gi,
+    /(?:^|\n)\s*JSON\s+(?:schema|shape|format)\s*:\s*/gi,
+  ];
+  const matches = markers
+    .map((marker) => {
+      const match = marker.exec(contractSource);
+      return match ? { index: match.index, end: match.index + match[0].length } : null;
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.index - right.index);
+  if (!matches.length) return null;
+  const sample = matches
+    .map((match) => firstJsonObject(contractSource.slice(match.end)))
+    .find((value) => value && typeof value === "object" && !Array.isArray(value));
   if (!sample || Array.isArray(sample)) return null;
   const requiredKeys = Object.keys(sample).slice(0, 64);
   if (!requiredKeys.length) return null;

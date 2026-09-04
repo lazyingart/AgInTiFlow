@@ -628,6 +628,69 @@ assert.equal(
   1
 );
 
+const explicitRouterSchema = {
+  route_kind: "research_or_summary",
+  project: "generic",
+  worker_needed: true,
+  needs_recent_media: false,
+  public_publish_intent: false,
+  public_publish_allowed: false,
+  external_action_allowed: true,
+  delivery_mode: "agent_decide",
+  source_policy: "current_request_only",
+  reason: "short reason",
+  ack: "",
+  chat_reply: "",
+  confidence: 0.0,
+};
+const explicitRouterSchemaRequest = [
+  "Classify the current chat request for a backend worker.",
+  "Return only JSON. No markdown.",
+  "Allowed route_kind values:",
+  "- chat_only",
+  "- research_or_summary",
+  "JSON schema:",
+  JSON.stringify(explicitRouterSchema, null, 2),
+].join("\n");
+const repairedExplicitRouterSchema = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-explicit-router-schema-repaired",
+  request: explicitRouterSchemaRequest,
+  localResponses: [
+    JSON.stringify({ route_kind: "research_or_summary" }),
+    JSON.stringify({
+      ...explicitRouterSchema,
+      reason: "The shared source needs backend reading.",
+      confidence: 0.92,
+    }),
+  ],
+});
+assert.equal(repairedExplicitRouterSchema.result.stopped, undefined);
+assert.deepEqual(
+  Object.keys(JSON.parse(repairedExplicitRouterSchema.result.result)),
+  Object.keys(explicitRouterSchema)
+);
+assert.deepEqual(
+  repairedExplicitRouterSchema.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "an incomplete explicit router schema did not get one bounded LocalLLM repair"
+);
+assert.equal(
+  repairedExplicitRouterSchema.events.filter(
+    (event) => event.type === "response_only.output_contract_rejected"
+  ).length,
+  1
+);
+assert.equal(
+  repairedExplicitRouterSchema.events.filter(
+    (event) => event.type === "response_only.output_contract_repaired"
+  ).length,
+  1
+);
+assert.equal(
+  repairedExplicitRouterSchema.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
 const completionAuditRequest = [
   "Audit the candidate against the current request.",
   "Return JSON only:",

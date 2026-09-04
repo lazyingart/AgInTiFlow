@@ -1125,3 +1125,27 @@ message containing `output/task/report.tex` and proves the new file remains
 blocked. Its positive control puts the same exact path in the active request
 and proves it is accepted. Coding-tool and syntax checks pass before the full
 package gate.
+
+### Explicit JSON schema headings are completion contracts
+
+`labcanvas-explicit-json-schema-contract-114` comes from retained production
+session `web-agent-labcanvas-f61239a5-db5e-42ff-94e2-1f4a1d5a4b2c`. Its route
+request said `Return only JSON`, declared the allowed `route_kind` values, and
+then supplied a thirteen-field object under `JSON schema:`. One fallback turn
+returned an unrelated object with `classification`, `request_type`, `context`,
+`status`, and `required_action`; a later turn returned only `route_kind`. Both
+were valid JSON, so the runtime recorded each as finished even though neither
+matched the explicit response envelope.
+
+Response-only contract discovery now recognizes explicit `JSON schema`,
+`JSON shape`, and `JSON format` headings, including `required` and `expected`
+variants, in addition to the existing inline `Return JSON:` form. It derives
+only the declared top-level keys and value types, then uses the existing single
+bounded repair and fail-closed path. This remains domain-independent and does
+not infer a schema from incidental JSON examples elsewhere in the prompt.
+
+The production-shaped regression forces DeepSeek quota failure, returns a
+one-key route object from the LocalLLM double, and proves that it cannot finish
+until the missing schema fields are repaired. The focused provider-handoff
+test, syntax checks, and full package suite pass without real LocalLLM
+inference or changes to LabCanvas routing.
