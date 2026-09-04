@@ -14226,6 +14226,30 @@ try {
       ),
     "a reader-facing research mutation used an explicit evidence manifest without reading it"
   );
+  const bareScopedResearchManifestBlock = researchEvidenceManifestMutationBlock(
+    ungroundedResearchState,
+    "write_file",
+    {
+      path: "research-briefing.tex",
+      content:
+        "Chen et al. (2026) proved organoid self-repair under stress \\citep{S3}.",
+    },
+    {
+      commandCwd: workspace,
+      taskProfile: "research",
+      scopedArtifactTask: true,
+      scopedArtifactRoot: "output/research-task-134",
+      workspaceWritePathScopeRoots: ["output/research-task-134"],
+    }
+  );
+  assert(
+    bareScopedResearchManifestBlock?.category ===
+      "research-evidence-manifest-unread" &&
+      bareScopedResearchManifestBlock.targetPaths?.includes(
+        "research-briefing.tex"
+      ),
+    "scoped bare report writes bypassed the authoritative evidence-manifest gate"
+  );
   const groundedResearchState = structuredClone(ungroundedResearchState);
   groundedResearchState.messages = [
     {

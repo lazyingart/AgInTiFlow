@@ -1901,3 +1901,11 @@ controls for both non-bare relocation and ordinary outside-root writes. Report
 source grounding remains independently enforced by the authoritative-manifest
 boundary from scenario 134. No live model, LocalLLM inference, LabCanvas runtime
 change, queue action, schedule, or transport operation is involved.
+
+`labcanvas-scoped-artifact-manifest-composition-147` additionally locks the two
+boundaries together. A model-supplied bare report basename is still inspected as
+a reader-facing research mutation before workspace execution, so an unread
+exact-task evidence manifest blocks the write even though the executor would
+later anchor that basename inside the one authoritative artifact root. Filename
+recovery therefore cannot turn unsupported report prose into a successful
+mutation.
