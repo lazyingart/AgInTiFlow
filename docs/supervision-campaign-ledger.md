@@ -1714,3 +1714,29 @@ control, a normal human-answer positive control, successful repair, repeated
 failure, event counts, and JSON-envelope preservation. No live model,
 LocalLLM inference, LabCanvas runtime change, queue action, schedule, or
 transport operation is involved.
+
+### Blanket-perfect audits receive one skeptical confirmation
+
+`labcanvas-response-only-perfect-audit-139` follows retained production session
+`web-agent-labcanvas-497d42ba-3d06-4b6a-8a64-e67726a949a9`. DeepSeek first
+stopped with an insufficient-balance response. The LocalLLM fallback then
+accepted a roughly 15,000-character trilingual tutorial with all 11 dimensions
+scored `5/5` and no issues, despite visible malformed Japanese and an incorrect
+reading. The complete candidate remained in the active request, so this was an
+audit-quality failure rather than context loss.
+
+Response-only completion now asks for exactly one independent skeptical check
+when an explicit scored audit is accepted, has at least four numeric dimensions,
+assigns every dimension the request's explicit maximum, and reports no issues or
+revisions. The check must compare the actual candidate with all material
+requirements, preserve the caller's JSON contract, and may confirm a genuinely
+perfect result. Rejected audits, qualified scores, ordinary answers, and reviews
+without an explicit score range do not receive an extra model turn.
+
+The production-shaped regression includes the retained malformed Japanese span,
+proves a corrected rejection after confirmation, proves a clean candidate can
+remain perfect after exactly two calls, and proves an initially rejected audit
+uses one call. It also covers direct non-audit and non-perfect controls, event
+counts, JSON-envelope preservation, and successful completion boundaries. No
+live DeepSeek or LocalLLM inference, LabCanvas runtime change, queue action,
+schedule, or transport operation is involved.

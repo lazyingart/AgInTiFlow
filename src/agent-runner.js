@@ -4348,6 +4348,80 @@ function parseStrictResponseOnlyJson(result = "") {
   }
 }
 
+function responseOnlyAuditScoreRange(goal = "") {
+  const text = String(goal || "");
+  const patterns = [
+    /\b(?:score|rate|grade)\b[^\n]{0,120}\bfrom\s+(-?\d+(?:\.\d+)?)\s+to\s+(-?\d+(?:\.\d+)?)/iu,
+    /(?:评分|評分|打分|分数|分數)[^\n]{0,80}(?:从|從)\s*(-?\d+(?:\.\d+)?)\s*(?:到|至)\s*(-?\d+(?:\.\d+)?)/u,
+    /(?:採点|評価)[^\n]{0,80}(-?\d+(?:\.\d+)?)\s*(?:から|〜|～)\s*(-?\d+(?:\.\d+)?)/u,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const lower = Number(match[1]);
+    const upper = Number(match[2]);
+    if (Number.isFinite(lower) && Number.isFinite(upper) && upper > lower) {
+      return { lower, upper };
+    }
+  }
+  return null;
+}
+
+export function assessResponseOnlyPerfectAudit({ goal = "", result = "" } = {}) {
+  const text = String(goal || "");
+  const auditRequest =
+    /\b(?:audit|review|evaluate|assess|critique|grade)\b|(?:审核|審核|审查|審查|评估|評估|校对|校對)|(?:監査|レビュー|評価|査読)/iu.test(
+      text
+    );
+  const value = parseStrictResponseOnlyJson(result);
+  const range = responseOnlyAuditScoreRange(text);
+  if (!auditRequest || !value || !range) {
+    return { requiresConfirmation: false, reason: "not-a-scored-audit" };
+  }
+
+  const acceptanceKey = ["accepted", "approved", "passed", "publish_ready"]
+    .find((key) => value[key] === true);
+  const scoreEntry = Object.entries(value).find(([, candidate]) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const scores = Object.values(candidate);
+    return scores.length >= 4 && scores.every((score) => Number.isFinite(Number(score)));
+  });
+  if (!acceptanceKey || !scoreEntry) {
+    return { requiresConfirmation: false, reason: "not-an-accepted-multidimensional-audit" };
+  }
+
+  const [scoreKey, scoreObject] = scoreEntry;
+  const scores = Object.values(scoreObject).map(Number);
+  const issueArrays = Object.entries(value).filter(
+    ([key, candidate]) =>
+      Array.isArray(candidate) &&
+      /(?:issues?|errors?|problems?|defects?|revisions?|corrections?|fixes?)/iu.test(key)
+  );
+  const allMaximum = scores.every((score) => score === range.upper);
+  const noReportedIssues = issueArrays.length > 0 && issueArrays.every(([, items]) => items.length === 0);
+  return {
+    requiresConfirmation: allMaximum && noReportedIssues,
+    reason: allMaximum && noReportedIssues ? "blanket-perfect-audit" : "non-perfect-or-qualified-audit",
+    acceptanceKey,
+    scoreKey,
+    scoreCount: scores.length,
+    maximumScore: range.upper,
+    issueKeys: issueArrays.map(([key]) => key),
+  };
+}
+
+function responseOnlyPerfectAuditInstruction(assessment = {}, contract = null) {
+  return [
+    `Your audit accepted the candidate with all ${assessment.scoreCount || "declared"} dimensions at the maximum score and reported no issues.`,
+    "Perform one independent skeptical verification against the actual candidate and every material requirement in the authoritative request.",
+    "Look for the smallest concrete contradiction, malformed language or data, unsupported claim, omitted requirement, internal inconsistency, or repeated padding before preserving a perfect result.",
+    "Do not invent a defect or lower a score merely to appear critical. If the candidate truly passes, return the same acceptance after checking it; otherwise identify the shortest decisive issue and revise the affected scores and acceptance consistently.",
+    contract
+      ? `Preserve the explicit output contract exactly. Return one JSON object with these required top-level key types and no prose: ${responseOnlyJsonKeyContractText(contract)}.`
+      : "Preserve the authoritative output shape exactly.",
+  ].join(" ");
+}
+
 function assessResponseOnlyJsonContract(result, contract) {
   if (!contract) return { ok: true, missingKeys: [], typeMismatches: [], enumMismatches: [] };
   const value = parseStrictResponseOnlyJson(result);
@@ -4888,6 +4962,67 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
         mode: "response-only-contract-fail-closed",
       });
     }
+  }
+  const perfectAuditAssessment = assessResponseOnlyPerfectAudit({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (perfectAuditAssessment.requiresConfirmation) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only-perfect-audit-confirmation",
+      acceptanceKey: perfectAuditAssessment.acceptanceKey,
+      scoreKey: perfectAuditAssessment.scoreKey,
+      scoreCount: perfectAuditAssessment.scoreCount,
+      maximumScore: perfectAuditAssessment.maximumScore,
+      issueKeys: perfectAuditAssessment.issueKeys,
+    };
+    await store.appendEvent("response_only.perfect_audit_confirmation_requested", detail);
+    observers.event("response_only.perfect_audit_confirmation_requested", detail);
+    state.messages.push({
+      role: "user",
+      content: responseOnlyPerfectAuditInstruction(perfectAuditAssessment, outputContract),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-perfect-audit-confirmation",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-perfect-audit-confirmation",
+    });
+    const confirmationResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-perfect-audit-confirmation",
+    });
+    finalAssistantMessage = confirmationResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return await stopForOutputContract({
+        step: finalResponseStep,
+        assessment: outputAssessment,
+        contract: outputContract,
+        mode: "response-only-perfect-audit-confirmation-contract-fail-closed",
+      });
+    }
+    const confirmedAssessment = assessResponseOnlyPerfectAudit({
+      goal: completionContractGoal(config, state),
+      result,
+    });
+    const reviewed = {
+      ...detail,
+      step: finalResponseStep,
+      outcome: confirmedAssessment.requiresConfirmation ? "confirmed-perfect" : "revised",
+    };
+    await store.appendEvent("response_only.perfect_audit_reviewed", reviewed);
+    observers.event("response_only.perfect_audit_reviewed", reviewed);
   }
   let internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
     goal: completionContractGoal(config, state),

@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   assessInternalRuntimeScaffoldLeak,
+  assessResponseOnlyPerfectAudit,
   completionRequirementCoverageInstruction,
   continuationExecutionContractDirective,
   evaluateAuthoritativeStructuredCompletionCoverage,
@@ -410,6 +411,81 @@ assert.equal(
   }).leaks,
   false,
   "a normal response-only human answer was rejected"
+);
+
+const perfectAuditGoal = [
+  "You are the response-only independent reviewer.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Audit the supplied multilingual tutorial independently.",
+  })}`,
+  "Original prompt:",
+  "Audit the candidate carefully. Score each dimension from 1 to 5.",
+  "Set accepted=true only when every score is at least 4 and no correction remains.",
+  "Required JSON shape:",
+  JSON.stringify({
+    accepted: true,
+    scores: {
+      source_fidelity: 5,
+      chinese_naturalness: 5,
+      english_naturalness: 5,
+      japanese_naturalness: 5,
+    },
+    critical_issues: [],
+    revision_instructions: [],
+  }),
+  "Candidate tutorial:",
+  "The vocabulary row contains the malformed Japanese span サイズ交换 instead of サイズ交換.",
+].join("\n");
+const blanketPerfectAudit = {
+  accepted: true,
+  scores: {
+    source_fidelity: 5,
+    chinese_naturalness: 5,
+    english_naturalness: 5,
+    japanese_naturalness: 5,
+  },
+  critical_issues: [],
+  revision_instructions: [],
+};
+assert.equal(
+  assessResponseOnlyPerfectAudit({
+    goal: perfectAuditGoal,
+    result: JSON.stringify(blanketPerfectAudit),
+  }).requiresConfirmation,
+  true,
+  "a blanket-perfect multidimensional audit bypassed skeptical confirmation"
+);
+assert.equal(
+  assessResponseOnlyPerfectAudit({
+    goal: perfectAuditGoal,
+    result: JSON.stringify({
+      ...blanketPerfectAudit,
+      scores: { ...blanketPerfectAudit.scores, japanese_naturalness: 4 },
+    }),
+  }).requiresConfirmation,
+  false,
+  "a qualified non-perfect audit received an unnecessary confirmation turn"
+);
+assert.equal(
+  assessResponseOnlyPerfectAudit({
+    goal: perfectAuditGoal,
+    result: JSON.stringify({
+      ...blanketPerfectAudit,
+      accepted: false,
+      critical_issues: ["A concrete language defect remains."],
+    }),
+  }).requiresConfirmation,
+  false,
+  "an explicit audit rejection received an unnecessary confirmation turn"
+);
+assert.equal(
+  assessResponseOnlyPerfectAudit({
+    goal: "Return project metrics from 1 to 5 as JSON.",
+    result: JSON.stringify(blanketPerfectAudit),
+  }).requiresConfirmation,
+  false,
+  "a non-audit structured response was mistaken for blanket acceptance"
 );
 
 const sourceFreeResearchGoal = [
@@ -1451,6 +1527,93 @@ try {
     )
   );
   assert(!repeatedHostAcknowledgement.events.some((event) => event.type === "session.finished"));
+
+  const revisedAudit = {
+    ...blanketPerfectAudit,
+    accepted: false,
+    scores: {
+      ...blanketPerfectAudit.scores,
+      japanese_naturalness: 2,
+    },
+    critical_issues: ["「サイズ交换」must be corrected to 「サイズ交換」."],
+    revision_instructions: ["Correct the malformed Japanese vocabulary entry."],
+  };
+  const skepticallyRevisedAudit = await runCase({
+    id: "response-only-perfect-audit-revised",
+    taskProfile: "chatops",
+    goal: perfectAuditGoal,
+    responses: [
+      assistant(JSON.stringify(blanketPerfectAudit)),
+      assistant(JSON.stringify(revisedAudit)),
+    ],
+  });
+  assert.equal(
+    skepticallyRevisedAudit.calls.length,
+    2,
+    "a blanket-perfect audit reached the host without independent verification"
+  );
+  assert.equal(JSON.parse(skepticallyRevisedAudit.result.result).accepted, false);
+  assert.match(
+    JSON.parse(skepticallyRevisedAudit.result.result).critical_issues[0],
+    /サイズ交换/
+  );
+  assert(
+    skepticallyRevisedAudit.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /independent skeptical verification/i.test(String(message.content || "")) &&
+        /accepted.*boolean/i.test(String(message.content || ""))
+    ),
+    "the perfect-audit verification omitted the skeptical instruction or JSON contract"
+  );
+  assert.equal(
+    skepticallyRevisedAudit.events.filter(
+      (event) => event.type === "response_only.perfect_audit_confirmation_requested"
+    ).length,
+    1
+  );
+  assert.equal(
+    skepticallyRevisedAudit.events.find(
+      (event) => event.type === "response_only.perfect_audit_reviewed"
+    )?.data?.outcome,
+    "revised"
+  );
+
+  const skepticallyConfirmedAudit = await runCase({
+    id: "response-only-perfect-audit-confirmed",
+    taskProfile: "chatops",
+    goal: perfectAuditGoal.replace(
+      "The vocabulary row contains the malformed Japanese span サイズ交换 instead of サイズ交換.",
+      "The short candidate satisfies each declared requirement."
+    ),
+    responses: [
+      assistant(JSON.stringify(blanketPerfectAudit)),
+      assistant(JSON.stringify(blanketPerfectAudit)),
+    ],
+  });
+  assert.equal(skepticallyConfirmedAudit.calls.length, 2);
+  assert.equal(JSON.parse(skepticallyConfirmedAudit.result.result).accepted, true);
+  assert.equal(
+    skepticallyConfirmedAudit.events.find(
+      (event) => event.type === "response_only.perfect_audit_reviewed"
+    )?.data?.outcome,
+    "confirmed-perfect"
+  );
+  assert(skepticallyConfirmedAudit.events.some((event) => event.type === "session.finished"));
+
+  const rejectedAuditNeedsNoConfirmation = await runCase({
+    id: "response-only-rejected-audit-single-turn",
+    taskProfile: "chatops",
+    goal: perfectAuditGoal,
+    responses: [assistant(JSON.stringify(revisedAudit))],
+  });
+  assert.equal(rejectedAuditNeedsNoConfirmation.calls.length, 1);
+  assert.equal(JSON.parse(rejectedAuditNeedsNoConfirmation.result.result).accepted, false);
+  assert(
+    !rejectedAuditNeedsNoConfirmation.events.some(
+      (event) => event.type === "response_only.perfect_audit_confirmation_requested"
+    )
+  );
 
   const explicitPriorMessageRepeat = await runCase({
     id: "response-only-explicit-prior-message-repeat",
