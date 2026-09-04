@@ -879,3 +879,28 @@ and a second response-only continuation whose near-limit history would overflow
 again without the retained lane. The second continuation makes one bounded
 request and the event ledger remains at one context-overflow recovery. The full
 `npm test` gate passes.
+
+### Explicit response-only JSON contracts are checked before completion
+
+`labcanvas-response-only-json-contract-105` comes from retained production
+session `web-agent-labcanvas-7159acc2-9bbe-4254-825b-ed6819f8e269`. After a
+DeepSeek `402` handoff, a completion-auditor turn explicitly required an object
+with `covered_item_ids`, `missing`, `legitimate_blocker`, `complexity`, and
+`summary`. LocalLLM instead copied the nested candidate object with `message`,
+`confirmation`, and artifact fields. It was valid nonempty JSON and made no
+unsupported factual claim, so the response-only lane incorrectly recorded a
+successful finish.
+
+Response-only execution now derives a shallow contract only when the
+authoritative prompt contains an explicit `Return JSON ...:` instruction
+followed by a valid object example. It requires one parseable JSON object with
+the example's top-level keys and value types. It does not infer schemas from
+ordinary prose, hard-code LabCanvas fields, or inspect arbitrary nested task
+payloads. A mismatch receives one bounded repair instruction naming only the
+expected key types. A second mismatch stops without `session.finished`, so the
+host can retain and retry the task instead of accepting the wrong protocol.
+
+The provider-handoff regression reproduces the wrong nested candidate object,
+repairs it to the outer audit contract, and separately proves the fail-closed
+path. Existing plain-text, router, source-free-claim, and context-recovery
+response-only paths remain covered.

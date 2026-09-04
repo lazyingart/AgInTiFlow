@@ -344,6 +344,7 @@ assert.equal(smart.events.filter((event) => event.type === "session.failed").len
 async function runSourceFreeResponseOnlyHandoffScenario({
   sessionId,
   localResponses,
+  request: requestedResponse = "",
 }) {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-source-free-handoff-"));
   const workspace = path.join(tempRoot, "workspace");
@@ -369,7 +370,7 @@ async function runSourceFreeResponseOnlyHandoffScenario({
   });
   clientFactory.agintiDeterministicTest = true;
 
-  const request =
+  const request = requestedResponse ||
     "Correct the prior research response using the host-managed evidence scope. No tools are available in this run.";
   const goal = [
     request,
@@ -530,6 +531,97 @@ assert.equal(
 assert.equal(
   routerSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
   1
+);
+
+const completionAuditRequest = [
+  "Audit the candidate against the current request.",
+  "Return JSON only:",
+  JSON.stringify({
+    covered_item_ids: ["source:123"],
+    missing: [],
+    legitimate_blocker: false,
+    complexity: "low",
+    summary: "one short private diagnostic",
+  }, null, 2),
+  "Task packet:",
+  JSON.stringify({
+    request_items: [{ item_id: "source:123", text: "Return a concise direct answer." }],
+    nested_worker_prompt: [
+      "Return one strict JSON object and no prose:",
+      JSON.stringify({ message: "", files: [], confirmation: "" }),
+    ].join("\n"),
+    candidate_result: {
+      message: "The concise answer.",
+      confirmation: "",
+      files: [],
+      publish_stage: {},
+      generated_pdf_content: [],
+      generated_text_content: [],
+    },
+  }, null, 2),
+].join("\n");
+const repairedOutputContractHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-json-contract-repaired",
+  request: completionAuditRequest,
+  localResponses: [
+    JSON.stringify({
+      message: "",
+      confirmation: "",
+      files: [],
+      publish_stage: {},
+      generated_pdf_content: [],
+      generated_text_content: [],
+    }),
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The current request is covered.",
+    }),
+  ],
+});
+assert.equal(repairedOutputContractHandoff.result.stopped, undefined);
+assert.deepEqual(
+  JSON.parse(repairedOutputContractHandoff.result.result).covered_item_ids,
+  ["source:123"]
+);
+assert.deepEqual(
+  repairedOutputContractHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "explicit response-only JSON contract did not get one bounded LocalLLM repair"
+);
+assert.equal(
+  repairedOutputContractHandoff.events.filter((event) => event.type === "response_only.output_contract_rejected").length,
+  1
+);
+assert.equal(
+  repairedOutputContractHandoff.events.filter((event) => event.type === "response_only.output_contract_repaired").length,
+  1
+);
+assert.equal(
+  repairedOutputContractHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const failedOutputContractHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-json-contract-fail-closed",
+  request: completionAuditRequest,
+  localResponses: [
+    JSON.stringify({ message: "wrong nested object", files: [] }),
+    JSON.stringify({ message: "still wrong", files: [] }),
+  ],
+});
+assert.equal(failedOutputContractHandoff.result.stopped, true);
+assert.equal(failedOutputContractHandoff.result.reason, "response_only_output_contract_required");
+assert.equal(
+  failedOutputContractHandoff.events.filter((event) => event.type === "response_only.output_contract_failed_closed").length,
+  1
+);
+assert.equal(
+  failedOutputContractHandoff.events.filter((event) => event.type === "session.finished").length,
+  0,
+  "schema-invalid response-only output was persisted as a finished session"
 );
 
 async function runResponseOnlyContextBudgetHandoffScenario() {

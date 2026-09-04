@@ -69,7 +69,7 @@ import {
   surgicalEvidenceCardTemplate,
 } from "./engineering-guidance.js";
 import { refreshCodebaseMap } from "./codebase-map.js";
-import { readImage, researchWrapper, webResearch } from "./perception-tools.js";
+import { firstJsonObject, readImage, researchWrapper, webResearch } from "./perception-tools.js";
 import { readWebPage, searchWeb } from "./web-search.js";
 import { deepResearch, RESEARCH_VERSION } from "./deep-research.js";
 import {
@@ -4114,6 +4114,98 @@ function responseOnlyResultFromMessage(message = {}) {
   return result;
 }
 
+function responseOnlyContractSource(config = {}, state = {}) {
+  const goalContract = state.meta?.goalContract && typeof state.meta.goalContract === "object"
+    ? state.meta.goalContract
+    : {};
+  return [
+    goalContract.activeGoal,
+    goalContract.currentRequest,
+    config.goal,
+    state.goal,
+  ].map((value) => String(value || "").trim()).find(Boolean) || "";
+}
+
+function responseOnlyJsonContract(config = {}, state = {}) {
+  const source = responseOnlyContractSource(config, state);
+  const authoritativeStart = source.search(/(?:^|\n)(?:Original prompt|Exact current request):\s*/i);
+  const contractSource = authoritativeStart >= 0 ? source.slice(authoritativeStart) : source;
+  const marker = /\breturn\s+(?:exactly\s+)?(?:one\s+)?(?:strict\s+)?JSON(?:\s+object)?(?:\s+and\s+no\s+prose|\s+only)?\s*:/gi;
+  const match = marker.exec(contractSource);
+  if (!match) return null;
+  const sample = firstJsonObject(contractSource.slice(match.index + match[0].length));
+  if (!sample || Array.isArray(sample)) return null;
+  const requiredKeys = Object.keys(sample).slice(0, 64);
+  if (!requiredKeys.length) return null;
+  const keyTypes = Object.fromEntries(requiredKeys.map((key) => {
+    const value = sample[key];
+    const type = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
+    return [key, type];
+  }));
+  return { requiredKeys, keyTypes };
+}
+
+function parseStrictResponseOnlyJson(result = "") {
+  const text = String(result || "").trim();
+  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1];
+  try {
+    const value = JSON.parse(String(fenced ?? text).trim());
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function assessResponseOnlyJsonContract(result, contract) {
+  if (!contract) return { ok: true, missingKeys: [], typeMismatches: [] };
+  const value = parseStrictResponseOnlyJson(result);
+  if (!value) {
+    return {
+      ok: false,
+      missingKeys: [...contract.requiredKeys],
+      typeMismatches: [],
+      reason: "The response was not exactly one valid JSON object.",
+    };
+  }
+  const missingKeys = contract.requiredKeys.filter((key) => !Object.hasOwn(value, key));
+  const typeMismatches = contract.requiredKeys.filter((key) => {
+    if (!Object.hasOwn(value, key)) return false;
+    const actual = Array.isArray(value[key]) ? "array" : value[key] === null ? "null" : typeof value[key];
+    return actual !== contract.keyTypes[key];
+  });
+  return {
+    ok: missingKeys.length === 0 && typeMismatches.length === 0,
+    missingKeys,
+    typeMismatches,
+    reason: missingKeys.length || typeMismatches.length
+      ? "The response did not match the explicit top-level JSON contract."
+      : "The explicit JSON contract is satisfied.",
+  };
+}
+
+function responseOnlyJsonRepairInstruction(contract, assessment = {}) {
+  const keyContract = contract.requiredKeys
+    .map((key) => `${JSON.stringify(key)}:${contract.keyTypes[key]}`)
+    .join(", ");
+  const diagnostics = [
+    assessment.missingKeys?.length ? `missing keys: ${assessment.missingKeys.join(", ")}` : "",
+    assessment.typeMismatches?.length ? `wrong value types: ${assessment.typeMismatches.join(", ")}` : "",
+  ].filter(Boolean).join("; ");
+  return [
+    "Your previous response violated the current explicit JSON output contract.",
+    diagnostics ? `Contract diagnostics: ${diagnostics}.` : "Return exactly one parseable JSON object with no prose or markdown fence.",
+    `Required top-level key types: ${keyContract}.`,
+    "Answer the authoritative current request; do not copy a nested example or candidate object from its input.",
+  ].join(" ");
+}
+
+function responseOnlyJsonStopResult(assessment = {}) {
+  const missing = assessment.missingKeys?.length
+    ? ` Missing keys: ${assessment.missingKeys.join(", ")}.`
+    : "";
+  return `No result: the response-only model did not satisfy the explicit JSON output contract after one repair attempt.${missing}`;
+}
+
 async function assessResponseOnlySourceFreeClaims({ config, state, store, result }) {
   const scoped = currentContinuationEvidence(state, await store.loadEvents());
   const ledger = buildScsEvidenceLedger({
@@ -4289,6 +4381,100 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   const rawAssistantMessage = response.choices[0]?.message;
   let result = responseOnlyResultFromMessage(rawAssistantMessage);
   let finalAssistantMessage = rawAssistantMessage;
+  let finalResponseStep = 1;
+  const outputContract = responseOnlyJsonContract(config, state);
+  let outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+  if (!outputAssessment.ok) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only",
+      reason: outputAssessment.reason,
+      requiredKeys: outputContract.requiredKeys,
+      missingKeys: outputAssessment.missingKeys,
+      typeMismatches: outputAssessment.typeMismatches,
+      preview: publicCompletionText(result, 300),
+    };
+    await store.appendEvent("response_only.output_contract_rejected", detail);
+    observers.event("response_only.output_contract_rejected", detail);
+    state.messages.push({
+      role: "user",
+      content: responseOnlyJsonRepairInstruction(outputContract, outputAssessment),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-contract-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-contract-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-contract-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (outputAssessment.ok) {
+      const repaired = {
+        step: finalResponseStep,
+        mode: "response-only-contract-repair",
+        requiredKeys: outputContract.requiredKeys,
+      };
+      await store.appendEvent("response_only.output_contract_repaired", repaired);
+      observers.event("response_only.output_contract_repaired", repaired);
+    } else {
+      result = responseOnlyJsonStopResult(outputAssessment);
+      const fallback = {
+        step: finalResponseStep,
+        mode: "response-only-contract-fail-closed",
+        reason: outputAssessment.reason,
+        requiredKeys: outputContract.requiredKeys,
+        missingKeys: outputAssessment.missingKeys,
+        typeMismatches: outputAssessment.typeMismatches,
+        result: publicCompletionText(result, 500),
+      };
+      state.meta = state.meta || {};
+      state.meta.responseOnly = {
+        stoppedAt: new Date().toISOString(),
+        provider: config.provider,
+        model: config.model,
+        outputContractBlocked: true,
+      };
+      state.updatedAt = state.meta.responseOnly.stoppedAt;
+      state.messages.push({ role: "assistant", content: result });
+      appendChatEntry(state, "assistant", result);
+      updateGoalStatus(state, "paused", "response_only_output_contract_required", state.updatedAt);
+      await store.saveState(state);
+      await store.appendEvent("response_only.output_contract_failed_closed", fallback);
+      await store.appendEvent("session.stopped", {
+        reason: "response_only_output_contract_required",
+        result,
+        mode: "response-only",
+      });
+      observers.event("response_only.output_contract_failed_closed", fallback);
+      observers.event("session.stopped", {
+        reason: "response_only_output_contract_required",
+        result,
+        sessionId,
+        mode: "response-only",
+      });
+      emitConsole(config, result, { kind: "assistant", markdown: true });
+      return {
+        sessionId,
+        stopped: true,
+        reason: "response_only_output_contract_required",
+        result,
+        ...goalRunMetadata(state),
+      };
+    }
+  }
   let sourceFreeAssessment = await assessResponseOnlySourceFreeClaims({
     config,
     state,
@@ -4297,7 +4483,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   });
   if (!sourceFreeAssessment.ok) {
     const detail = {
-      step: 1,
+      step: finalResponseStep,
       mode: "response-only",
       reason: sourceFreeAssessment.reason,
       categories: sourceFreeAssessment.categories,
@@ -4313,20 +4499,21 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       content: responseOnlySourceFreeRepairInstruction(sourceFreeAssessment),
     });
     await store.saveState(state);
+    finalResponseStep += 1;
     await store.appendEvent("model.requested", {
-      step: 2,
+      step: finalResponseStep,
       provider: config.provider,
       model: config.model,
       mode: "response-only-repair",
     });
     observers.event("model.requested", {
-      step: 2,
+      step: finalResponseStep,
       provider: config.provider,
       model: config.model,
       mode: "response-only-repair",
     });
     const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
-      step: 2,
+      step: finalResponseStep,
       mode: "response-only-repair",
     });
     finalAssistantMessage = repairResponse.choices[0]?.message;
@@ -4339,7 +4526,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     });
     if (sourceFreeAssessment.ok) {
       const repaired = {
-        step: 2,
+        step: finalResponseStep,
         mode: "response-only-repair",
         reason: sourceFreeAssessment.reason,
         categories: sourceFreeAssessment.categories,
@@ -4351,7 +4538,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     } else {
       result = responseOnlySourceFreeStopResult(sourceFreeAssessment);
       const fallback = {
-        step: 2,
+        step: finalResponseStep,
         mode: "response-only-fail-closed",
         reason: sourceFreeAssessment.reason,
         categories: sourceFreeAssessment.categories,
@@ -4412,7 +4599,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   updateGoalStatus(state, "completed", "response_only", state.updatedAt);
   await store.saveState(state);
   await store.appendEvent("model.responded", {
-    step: 1,
+    step: finalResponseStep,
     content: result,
     toolCalls: [],
     mode: "response-only",
@@ -4422,7 +4609,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     mode: "response-only",
   });
   observers.event("model.responded", {
-    step: 1,
+    step: finalResponseStep,
     content: result,
     mode: "response-only",
   });
