@@ -16278,6 +16278,91 @@ export function requiredResearchEvidenceManifestPaths(
   )].slice(0, 8);
 }
 
+function researchReaderShellMutationPaths(command = "", depth = 0) {
+  if (depth > 2) return [];
+  const source = canonicalizeShellCommand(command);
+  if (!source) return [];
+  const candidates = [];
+  const append = (value = "") => {
+    const candidate = String(value || "")
+      .trim()
+      .replace(/^["']|["']$/gu, "")
+      .replace(/[),;]+$/gu, "");
+    if (
+      candidate &&
+      !candidate.startsWith("-") &&
+      !/^(?:&\d+|\/dev\/null)$/u.test(candidate) &&
+      RESEARCH_READER_SOURCE_EXTENSIONS.has(
+        path.extname(candidate).toLocaleLowerCase("en-US")
+      )
+    ) {
+      candidates.push(candidate);
+    }
+  };
+  const sequence = parseTopLevelShellSequence(source);
+  if (sequence.openQuote || sequence.trailingEscape) return [];
+  for (const segment of sequence.commands) {
+    for (const match of segment.matchAll(
+      /(?:^|\s)(?:\d*>>?|&>>?)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/gu
+    )) {
+      append(match[1]);
+    }
+    const tokens = tokenizeShellWords(segment);
+    let index = 0;
+    while (/^[A-Za-z_]\w*=/.test(String(tokens[index] || ""))) index += 1;
+    if (tokens[index] === "sudo") index += 1;
+    if (tokens[index] === "env") {
+      index += 1;
+      while (
+        String(tokens[index] || "").startsWith("-") ||
+        /^[A-Za-z_]\w*=/.test(String(tokens[index] || ""))
+      ) {
+        index += 1;
+      }
+    }
+    const executable = path.basename(String(tokens[index] || ""));
+    const operands = tokens.slice(index + 1);
+    if (["bash", "dash", "sh", "zsh"].includes(executable)) {
+      const shellCommandIndex = operands.findIndex((token) => /^-[^-]*c/u.test(token));
+      if (shellCommandIndex >= 0 && operands[shellCommandIndex + 1]) {
+        candidates.push(
+          ...researchReaderShellMutationPaths(
+            operands[shellCommandIndex + 1],
+            depth + 1
+          )
+        );
+      }
+      continue;
+    }
+    if (
+      (executable === "sed" && operands.some((token) => /^--in-place(?:=|$)|^-[^-]*i/u.test(token))) ||
+      (executable === "perl" && operands.some((token) => /^-[^-]*i/u.test(token))) ||
+      ["tee", "touch", "truncate", "rm", "unlink"].includes(executable)
+    ) {
+      for (const operand of operands) append(operand);
+      continue;
+    }
+    if (["cp", "install", "mv"].includes(executable)) {
+      append(operands.filter((token) => !String(token).startsWith("-")).at(-1));
+      continue;
+    }
+    if (
+      ["node", "python", "python3", "ruby"].includes(executable) &&
+      /(?:\bopen\s*\([^\n)]*,\s*["'][^"']*[wax+][^"']*["']|\.(?:append|rename|replace|touch|unlink|write|write_bytes|write_text)\s*\(|\b(?:writeFile|writeFileSync)\s*\()/iu.test(
+        segment
+      )
+    ) {
+      for (const match of segment.matchAll(
+        /\b(?:Path|open|writeFile|writeFileSync)\s*\(\s*["']([^"'\n]+)["']/gu
+      )) {
+        append(match[1]);
+      }
+      for (const match of segment.matchAll(/["']([^"'\n]+)["']/gu)) append(match[1]);
+    }
+  }
+  return [...new Set(candidates)];
+}
+
 function researchReaderMutationPaths(toolName = "", args = {}) {
   const candidates = [];
   if (["write_file", "apply_patch"].includes(toolName)) {
@@ -16291,6 +16376,9 @@ function researchReaderMutationPaths(toolName = "", args = {}) {
     } catch {
       // The workspace executor reports malformed patches separately.
     }
+  }
+  if (toolName === "run_command") {
+    candidates.push(...researchReaderShellMutationPaths(args.command || ""));
   }
   return [...new Set(candidates.map((item) => String(item || "").trim()).filter(Boolean))];
 }
@@ -16376,7 +16464,7 @@ export function researchEvidenceManifestMutationBlock(
   args = {},
   config = {}
 ) {
-  if (!["write_file", "apply_patch"].includes(toolName)) return null;
+  if (!["write_file", "apply_patch", "run_command"].includes(toolName)) return null;
   const requiredPaths = requiredResearchEvidenceManifestPaths(state, config);
   if (!requiredPaths.length) return null;
   const commandCwd = path.resolve(
@@ -16425,6 +16513,28 @@ export function researchEvidenceManifestMutationBlock(
         options: [
           "Read the exact authoritative evidence manifest.",
           "After that read, apply a bounded report repair with traceable claims.",
+        ],
+      },
+    };
+  }
+  if (toolName === "run_command") {
+    return {
+      reason:
+        "The shell command directly mutates reader-facing research source while an authoritative evidence manifest is active. " +
+        "Use apply_patch or write_file so the proposed prose and evidence identifiers can be checked before mutation.",
+      category: "research-evidence-shell-mutation-unreviewable",
+      requiredPaths,
+      targetPaths: readerFacingTargets,
+      permissionAdvice: {
+        category: "research-evidence-shell-mutation-unreviewable",
+        autoRecover: true,
+        summary: "Direct shell editing would bypass claim-level evidence review.",
+        instruction:
+          "Apply the bounded reader-facing source change with apply_patch or write_file, then run read-only validation or the required compiler separately.",
+        options: [
+          "Use apply_patch for an in-place source correction.",
+          "Use write_file for a new task-scoped source file.",
+          "Keep run_command for read-only checks and required build or compiler commands.",
         ],
       },
     };

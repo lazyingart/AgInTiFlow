@@ -14250,6 +14250,20 @@ try {
       ),
     "scoped bare report writes bypassed the authoritative evidence-manifest gate"
   );
+  const unreadResearchShellMutationBlock = researchEvidenceManifestMutationBlock(
+    ungroundedResearchState,
+    "run_command",
+    {
+      command:
+        "cd output/research-task-134 && sed -i 's/limited/proven/' research-briefing.tex",
+    },
+    { commandCwd: workspace, taskProfile: "research" }
+  );
+  assert(
+    unreadResearchShellMutationBlock?.category ===
+      "research-evidence-manifest-unread",
+    "a direct shell edit bypassed the unread authoritative research manifest"
+  );
   const groundedResearchState = structuredClone(ungroundedResearchState);
   groundedResearchState.messages = [
     {
@@ -14283,6 +14297,39 @@ try {
       }),
     },
   ];
+  for (const command of [
+    "cd output/research-task-134 && sed -i 's/limited/proven/' research-briefing.tex",
+    "printf '%s\\n' 'Chen et al. (2026) proved it.' > output/research-task-134/research-briefing.tex",
+    "bash -lc \"perl -pi -e 's/limited/proven/' output/research-task-134/research-briefing.tex\"",
+    "tee output/research-task-134/research-briefing.md",
+    "python3 -c \"from pathlib import Path; Path('output/research-task-134/research-briefing.tex').write_text('invented')\"",
+  ]) {
+    assert(
+      researchEvidenceManifestMutationBlock(
+        groundedResearchState,
+        "run_command",
+        { command },
+        { commandCwd: workspace, taskProfile: "research" }
+      )?.category === "research-evidence-shell-mutation-unreviewable",
+      `a direct reader-facing shell mutation bypassed evidence review: ${command}`
+    );
+  }
+  for (const command of [
+    "grep -n 'bounded' output/research-task-134/research-briefing.tex",
+    "python3 scripts/validate_report.py output/research-task-134/research-briefing.tex",
+    "pdflatex output/research-task-134/research-briefing.tex",
+    "printf '%s\\n' pass > output/research-task-134/build.log",
+  ]) {
+    assert(
+      researchEvidenceManifestMutationBlock(
+        groundedResearchState,
+        "run_command",
+        { command },
+        { commandCwd: workspace, taskProfile: "research" }
+      ) === null,
+      `a read-only, compiler, or non-reader artifact command was overblocked: ${command}`
+    );
+  }
   const supportedResearchPatch = {
     ...attributedResearchPatch,
     replace:
@@ -14415,6 +14462,29 @@ try {
   );
   assert(
     researchEvidenceManifestMutationBlock(
+      {
+        ...ungroundedResearchState,
+        goal: "Fix the typography in research-briefing.tex.",
+        meta: {
+          ...ungroundedResearchState.meta,
+          goalContract: {
+            revision: 2,
+            activeGoal: "Fix the typography in research-briefing.tex.",
+            currentRequest: "Fix the typography in research-briefing.tex.",
+          },
+        },
+      },
+      "run_command",
+      {
+        command:
+          "sed -i 's/old/new/' output/research-task-134/research-briefing.tex",
+      },
+      { commandCwd: workspace, taskProfile: "research", goal: researchManifestGoal }
+    ) === null,
+    "a stale config goal blocked a shell edit under the current non-manifest contract"
+  );
+  assert(
+    researchEvidenceManifestMutationBlock(
       ungroundedResearchState,
       "write_file",
       {
@@ -14425,6 +14495,18 @@ try {
       { commandCwd: workspace, taskProfile: "research" }
     ) === null,
     "the report evidence boundary blocked an explicitly targeted manifest edit"
+  );
+  assert(
+    researchEvidenceManifestMutationBlock(
+      ungroundedResearchState,
+      "run_command",
+      {
+        command:
+          "sed -i 's/Verified/Reviewed/' output/research-task-134/research-evidence-manifest.json",
+      },
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "the reader-facing shell boundary blocked an explicitly targeted manifest edit"
   );
   const retainedHostCompilationGoal = [
     "Materially revise a source file inside the exact task artifact directory and return the replacement PDF.",

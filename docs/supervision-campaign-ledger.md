@@ -1934,3 +1934,29 @@ supported `S1` citation, and preserves ordinary synthesis and a falsifiable
 working hypothesis. No live provider, LocalLLM inference, LabCanvas runtime
 change, queue action, schedule, transport operation, or external side effect is
 involved.
+
+### Shell commands cannot bypass research source review
+
+`labcanvas-research-shell-mutation-boundary-149` follows retained session
+`web-agent-labcanvas-bc69ea98-1fbd-4289-9609-e01b8b5a04a5`. Its fallback model
+used `sed -i` to change a task-local TeX report while an authoritative evidence
+manifest contract was active. That particular edit targeted typography, but
+`run_command` bypassed both the mandatory manifest read and the claim-level
+identifier review applied to structured workspace mutations.
+
+The manifest boundary now recognizes direct shell content mutations to
+reader-facing research sources. Before the manifest is read, they receive the
+same unread-manifest recovery. Afterward, in-place `sed` or `perl`, output
+redirection, `tee`, direct file replacement, and explicit language-runtime file
+writes are redirected to `apply_patch` or `write_file`, where the proposed text
+can be reviewed before mutation. Read-only inspection, validators, compiler
+invocations, non-reader build logs, stale contracts, and explicit edits to the
+manifest itself retain their previous behavior.
+
+The production-shaped regression proves the pre-fix shell bypass and covers a
+nested shell wrapper, Python `Path.write_text`, structured-edit recovery, and
+the non-mutation controls. The detector is deliberately not a ban on shell use:
+it isolates direct reader-source editing while leaving validation and build
+commands available. No live provider, LocalLLM inference, LabCanvas runtime
+change, queue action, schedule, transport operation, or external side effect is
+involved.
