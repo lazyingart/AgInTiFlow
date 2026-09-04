@@ -4601,11 +4601,15 @@ function responseOnlyJsonRepairInstruction(contract, assessment = {}) {
   ].join(" ");
 }
 
-function responseOnlyJsonStopResult(assessment = {}) {
-  const missing = assessment.missingKeys?.length
-    ? ` Missing keys: ${assessment.missingKeys.join(", ")}.`
-    : "";
-  return `No result: the response-only model did not satisfy the explicit JSON output contract after one repair attempt.${missing}`;
+function responseOnlyJsonStopResult(goal = "") {
+  const source = String(goal || "");
+  if (/[\u3040-\u30ff]/u.test(source)) {
+    return "このメッセージには、指定形式を満たす信頼できる回答を作成できませんでした。";
+  }
+  if (/\p{Script=Han}/u.test(source)) {
+    return "这条消息暂时没有生成符合指定格式且可靠的答复。";
+  }
+  return "I could not produce a reliable response in the required format for this message.";
 }
 
 function responseOnlyContractFallbackResult(contract, message) {
@@ -4745,7 +4749,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   async function stopForOutputContract({ step, assessment, contract, mode }) {
     const stoppedResult = responseOnlyContractFallbackResult(
       contract,
-      responseOnlyJsonStopResult(assessment)
+      responseOnlyJsonStopResult(completionContractGoal(config, state))
     );
     const fallback = {
       step,

@@ -1986,3 +1986,26 @@ private runtime vocabulary while retaining the existing negative evidence
 controls. No live provider or LocalLLM inference, LabCanvas runtime change,
 queue action, schedule, transport operation, or external side effect is
 involved.
+
+### JSON contract stops keep diagnostics private
+
+`labcanvas-response-only-natural-contract-stop-151` extends the same outward
+response hygiene to strict JSON failures. Existing contract enforcement kept
+the caller's keys and stopped the session after a second malformed response,
+but inserted `response-only model`, `output contract`, and missing-key details
+into a reader-facing string field. That preserved machine parsing while still
+leaking operator diagnostics into chat or a completion audit.
+
+The schema-compatible fallback now contains a short, localized statement that
+a reliable answer in the required format was not produced. Missing keys, type
+mismatches, enum mismatches, step, provider, and model remain available in the
+private `response_only.output_contract_failed_closed` event. The caller's exact
+key order and types, paused state, bounded single repair, and absence of a
+successful terminal event remain unchanged.
+
+The deterministic regression covers the retained completion-audit shape and a
+Chinese chat envelope. It proves exact schema preservation, natural outward
+text, private diagnostic retention, and zero `session.finished` events after
+failure. No live provider or LocalLLM inference, LabCanvas runtime change,
+queue action, schedule, transport operation, or external side effect is
+involved.

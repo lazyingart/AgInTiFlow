@@ -1007,7 +1007,15 @@ assert.deepEqual(
   Object.keys(failedOutputContractFallback),
   ["covered_item_ids", "missing", "legitimate_blocker", "complexity", "summary"]
 );
-assert.match(failedOutputContractFallback.summary, /output contract/i);
+assert.match(
+  failedOutputContractFallback.summary,
+  /could not produce a reliable response in the required format/i
+);
+assert.doesNotMatch(
+  failedOutputContractFallback.summary,
+  /response-only|output contract|model|session|provider|runtime|resume/iu,
+  "schema-compatible contract stop exposed private runtime diagnostics"
+);
 assert.equal(
   failedOutputContractHandoff.events.filter((event) => event.type === "response_only.output_contract_failed_closed").length,
   1
@@ -1016,6 +1024,32 @@ assert.equal(
   failedOutputContractHandoff.events.filter((event) => event.type === "session.finished").length,
   0,
   "schema-invalid response-only output was persisted as a finished session"
+);
+
+const chineseJsonContractStop = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-chinese-json-contract-fail-closed",
+  request: [
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({ message: "", files: [], confirmation: "" }, null, 2),
+    "Current request: 用户希望得到一个简短可靠的答复。",
+  ].join("\n"),
+  localResponses: [
+    JSON.stringify({ wrong: "第一次格式错误" }),
+    JSON.stringify({ wrong: "第二次格式仍然错误" }),
+  ],
+});
+assert.equal(chineseJsonContractStop.result.stopped, true);
+const chineseJsonContractFallback = JSON.parse(chineseJsonContractStop.result.result);
+assert.deepEqual(Object.keys(chineseJsonContractFallback), [
+  "message",
+  "files",
+  "confirmation",
+]);
+assert.match(chineseJsonContractFallback.message, /^这条消息暂时没有生成/u);
+assert.doesNotMatch(
+  chineseJsonContractFallback.message,
+  /response-only|输出契约|模型|会话|提供商|运行时|恢复/iu,
+  "Chinese schema-compatible contract stop exposed private runtime diagnostics"
 );
 
 async function runResponseOnlyContextBudgetHandoffScenario() {
