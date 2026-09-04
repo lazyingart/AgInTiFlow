@@ -263,6 +263,55 @@ try {
       /fluorescence|experiment/i.test(genericArtifactBlock.permissionAdvice?.instruction || ""),
     "new generic artifact filename was not redirected to a meaningful topic-derived name"
   );
+  const echoedGenericArtifactBlock = await genericArtifactFilenameBlock(
+    "write_file",
+    { path: "output/task/report.tex", content: "document" },
+    {
+      commandCwd: workspace,
+      taskProfile: "writing",
+      goal: "Create a reader-facing evidence brief with a meaningful filename.",
+    },
+    {
+      goal: "Create a reader-facing evidence brief with a meaningful filename.",
+      messages: [
+        {
+          role: "user",
+          content:
+            "Runtime recovery: the previous attempt to create output/task/report.tex was blocked. Continue safely.",
+        },
+      ],
+      meta: {
+        goalContract: {
+          currentRequest: "Create a reader-facing evidence brief with a meaningful filename.",
+        },
+      },
+    }
+  );
+  assert(
+    echoedGenericArtifactBlock?.category === "artifact-filename",
+    "runtime feedback echoed a blocked generic filename into apparent user authorization"
+  );
+  assert(
+    (await genericArtifactFilenameBlock(
+      "write_file",
+      { path: "output/task/report.tex", content: "document" },
+      {
+        commandCwd: workspace,
+        taskProfile: "writing",
+        goal: "Create output/task/report.tex exactly as named.",
+      },
+      {
+        goal: "Create output/task/report.tex exactly as named.",
+        messages: [],
+        meta: {
+          goalContract: {
+            currentRequest: "Create output/task/report.tex exactly as named.",
+          },
+        },
+      }
+    )) === null,
+    "an exact filename in the active goal contract was incorrectly blocked"
+  );
   assert(
     (await genericArtifactFilenameBlock(
       "write_file",

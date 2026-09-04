@@ -1101,3 +1101,27 @@ The production-shaped regression uses the retained absolute report paths and
 the same negated cleanup sentence. It proves the blocked cleanup no longer
 pauses, while an explicit deletion sentence in the same goal is not erased.
 Coding-tool and syntax checks pass before the full package gate.
+
+### Runtime echoes cannot authorize generic artifact names
+
+`labcanvas-generic-artifact-echo-bypass-113` is also derived from retained
+production session `web-agent-labcanvas-23dfa04f-cef4-4d48-a99e-b152eacf4a99`.
+The document task asked for a recognizable reader-facing report. A first write
+to generic `report.tex` was correctly blocked with a descriptive-name repair.
+After local-context compaction, the synthetic runtime message repeated the
+blocked path. The filename guard searched recent messages whose transport role
+was `user`, mistook that runtime echo for a human filename request, and allowed
+the same `report.tex` write on the next turn.
+
+Generic-filename authorization now comes only from the active goal contract
+and configured goal. Synthetic compaction, loop-guard, permission, and tool
+feedback can still guide the model but cannot silently broaden the user's
+artifact naming contract. Exact filenames in the current request remain
+allowed, as do paths declared by the task contract and edits to an existing
+file.
+
+The regression supplies a production-shaped synthetic `role=user` recovery
+message containing `output/task/report.tex` and proves the new file remains
+blocked. Its positive control puts the same exact path in the active request
+and proves it is accepted. Coding-tool and syntax checks pass before the full
+package gate.

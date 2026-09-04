@@ -11191,7 +11191,11 @@ export async function genericArtifactFilenameBlock(toolName, args = {}, config =
 
   const declared = declaredArtifactPaths(state);
   if (declared.some((item) => item === normalized || path.posix.basename(item) === parsed.base)) return null;
-  const requestText = [state.goal, config.goal, ...(state.messages || []).filter((item) => item?.role === "user").slice(-4).map((item) => item.content)]
+  const requestText = [
+    state.meta?.goalContract?.currentRequest,
+    state.goal,
+    config.goal,
+  ]
     .filter(Boolean)
     .join("\n")
     .toLowerCase();
