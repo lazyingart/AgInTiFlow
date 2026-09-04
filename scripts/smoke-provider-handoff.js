@@ -630,18 +630,24 @@ assert.equal(
 
 const explicitRouterSchema = {
   route_kind: "research_or_summary",
-  project: "generic",
+  project: "labcanvas|generic",
   worker_needed: true,
   needs_recent_media: false,
   public_publish_intent: false,
   public_publish_allowed: false,
   external_action_allowed: true,
-  delivery_mode: "agent_decide",
-  source_policy: "current_request_only",
+  delivery_mode: "agent_decide|local_save|chat_attachment",
+  source_policy: "current_request_only|recent_media",
   reason: "short reason",
   ack: "",
   chat_reply: "",
   confidence: 0.0,
+};
+const validExplicitRouterResponse = {
+  ...explicitRouterSchema,
+  project: "generic",
+  delivery_mode: "agent_decide",
+  source_policy: "current_request_only",
 };
 const explicitRouterSchemaRequest = [
   "Classify the current chat request for a backend worker.",
@@ -658,7 +664,7 @@ const repairedExplicitRouterSchema = await runSourceFreeResponseOnlyHandoffScena
   localResponses: [
     JSON.stringify({ route_kind: "research_or_summary" }),
     JSON.stringify({
-      ...explicitRouterSchema,
+      ...validExplicitRouterResponse,
       reason: "The shared source needs backend reading.",
       confidence: 0.92,
     }),
@@ -688,6 +694,46 @@ assert.equal(
 );
 assert.equal(
   repairedExplicitRouterSchema.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const repairedExplicitRouterEnum = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-explicit-router-enum-repaired",
+  request: explicitRouterSchemaRequest,
+  localResponses: [
+    JSON.stringify({
+      ...validExplicitRouterResponse,
+      route_kind: "video_generation_and_download",
+    }),
+    JSON.stringify({
+      ...validExplicitRouterResponse,
+      route_kind: "research_or_summary",
+      reason: "The shared source needs backend reading.",
+    }),
+  ],
+});
+assert.equal(repairedExplicitRouterEnum.result.stopped, undefined);
+assert.equal(
+  JSON.parse(repairedExplicitRouterEnum.result.result).route_kind,
+  "research_or_summary"
+);
+assert.deepEqual(
+  repairedExplicitRouterEnum.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "an invalid explicit router enum did not get one bounded LocalLLM repair"
+);
+const rejectedRouterEnum = repairedExplicitRouterEnum.events.find(
+  (event) => event.type === "response_only.output_contract_rejected"
+);
+assert.deepEqual(rejectedRouterEnum?.data?.enumMismatches, ["route_kind"]);
+assert.equal(
+  repairedExplicitRouterEnum.events.filter(
+    (event) => event.type === "response_only.output_contract_repaired"
+  ).length,
+  1
+);
+assert.equal(
+  repairedExplicitRouterEnum.events.filter((event) => event.type === "session.finished").length,
   1
 );
 

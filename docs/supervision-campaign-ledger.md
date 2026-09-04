@@ -1149,3 +1149,27 @@ one-key route object from the LocalLLM double, and proves that it cannot finish
 until the missing schema fields are repaired. The focused provider-handoff
 test, syntax checks, and full package suite pass without real LocalLLM
 inference or changes to LabCanvas routing.
+
+### Explicit JSON enums are completion contracts
+
+`labcanvas-response-json-enum-contract-115` continues from retained production
+session `web-agent-labcanvas-f61239a5-db5e-42ff-94e2-1f4a1d5a4b2c`. The route
+request declared an exact `Allowed route_kind values:` list, but one fallback
+turn returned `video_generation_and_download`, a plausible invented label that
+does not exist in the host contract. A full-shaped response with that value
+could satisfy the key and type checks while still selecting an unsupported
+route.
+
+Response-only contract discovery now retains string enums declared either as
+an explicit `Allowed <field> values:` bullet list or as a pipe-delimited value
+in the authoritative JSON schema sample. Completion validation reports fields
+whose values fall outside those caller-declared enums, includes the allowed
+values in the bounded repair instruction, and fails closed if the one repair
+still violates the contract. It does not infer allowed values from prose or
+apply domain-specific route names.
+
+The production-shaped regression forces DeepSeek quota failure, returns all
+thirteen required fields with only `route_kind` invalid, and proves that one
+LocalLLM repair restores a declared value before the runtime records a finish.
+The focused provider-handoff test, syntax checks, and full package suite pass
+without real LocalLLM inference or any LabCanvas policy change.

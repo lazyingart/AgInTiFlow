@@ -4231,7 +4231,27 @@ function responseOnlyJsonContract(config = {}, state = {}) {
     const type = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
     return [key, type];
   }));
-  return { requiredKeys, keyTypes };
+  const enumValues = {};
+  for (const key of requiredKeys) {
+    if (typeof sample[key] !== "string" || !sample[key].includes("|")) continue;
+    const values = sample[key]
+      .split("|")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (values.length > 1) enumValues[key] = [...new Set(values)];
+  }
+  const explicitEnumPattern = /(?:^|\n)\s*Allowed\s+([A-Za-z_][\w.-]*)\s+values\s*:\s*\n((?:\s*-\s*[^\n]+(?:\n|$))+)/gi;
+  for (const match of contractSource.matchAll(explicitEnumPattern)) {
+    const key = match[1];
+    if (!requiredKeys.includes(key)) continue;
+    const values = match[2]
+      .split("\n")
+      .map((line) => line.replace(/^\s*-\s*/, "").trim())
+      .map((value) => value.replace(/^([`'"])(.*)\1$/, "$2").trim())
+      .filter(Boolean);
+    if (values.length) enumValues[key] = [...new Set(values)];
+  }
+  return { requiredKeys, keyTypes, enumValues };
 }
 
 function parseStrictResponseOnlyJson(result = "") {
@@ -4246,13 +4266,14 @@ function parseStrictResponseOnlyJson(result = "") {
 }
 
 function assessResponseOnlyJsonContract(result, contract) {
-  if (!contract) return { ok: true, missingKeys: [], typeMismatches: [] };
+  if (!contract) return { ok: true, missingKeys: [], typeMismatches: [], enumMismatches: [] };
   const value = parseStrictResponseOnlyJson(result);
   if (!value) {
     return {
       ok: false,
       missingKeys: [...contract.requiredKeys],
       typeMismatches: [],
+      enumMismatches: [],
       reason: "The response was not exactly one valid JSON object.",
     };
   }
@@ -4262,11 +4283,16 @@ function assessResponseOnlyJsonContract(result, contract) {
     const actual = Array.isArray(value[key]) ? "array" : value[key] === null ? "null" : typeof value[key];
     return actual !== contract.keyTypes[key];
   });
+  const enumMismatches = contract.requiredKeys.filter((key) => {
+    const allowed = contract.enumValues?.[key];
+    return Array.isArray(allowed) && allowed.length && Object.hasOwn(value, key) && !allowed.includes(value[key]);
+  });
   return {
-    ok: missingKeys.length === 0 && typeMismatches.length === 0,
+    ok: missingKeys.length === 0 && typeMismatches.length === 0 && enumMismatches.length === 0,
     missingKeys,
     typeMismatches,
-    reason: missingKeys.length || typeMismatches.length
+    enumMismatches,
+    reason: missingKeys.length || typeMismatches.length || enumMismatches.length
       ? "The response did not match the explicit top-level JSON contract."
       : "The explicit JSON contract is satisfied.",
   };
@@ -4275,7 +4301,13 @@ function assessResponseOnlyJsonContract(result, contract) {
 function responseOnlyJsonKeyContractText(contract) {
   if (!contract) return "";
   return contract.requiredKeys
-    .map((key) => `${JSON.stringify(key)}:${contract.keyTypes[key]}`)
+    .map((key) => {
+      const allowed = contract.enumValues?.[key];
+      const enumText = Array.isArray(allowed) && allowed.length
+        ? ` enum=${allowed.map((value) => JSON.stringify(value)).join("|")}`
+        : "";
+      return `${JSON.stringify(key)}:${contract.keyTypes[key]}${enumText}`;
+    })
     .join(", ");
 }
 
@@ -4284,6 +4316,7 @@ function responseOnlyJsonRepairInstruction(contract, assessment = {}) {
   const diagnostics = [
     assessment.missingKeys?.length ? `missing keys: ${assessment.missingKeys.join(", ")}` : "",
     assessment.typeMismatches?.length ? `wrong value types: ${assessment.typeMismatches.join(", ")}` : "",
+    assessment.enumMismatches?.length ? `values outside their declared enums: ${assessment.enumMismatches.join(", ")}` : "",
   ].filter(Boolean).join("; ");
   return [
     "Your previous response violated the current explicit JSON output contract.",
@@ -4390,6 +4423,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       requiredKeys: contract.requiredKeys,
       missingKeys: assessment.missingKeys,
       typeMismatches: assessment.typeMismatches,
+      enumMismatches: assessment.enumMismatches,
       result: publicCompletionText(stoppedResult, 500),
     };
     state.meta = state.meta || {};
@@ -4536,6 +4570,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       requiredKeys: outputContract.requiredKeys,
       missingKeys: outputAssessment.missingKeys,
       typeMismatches: outputAssessment.typeMismatches,
+      enumMismatches: outputAssessment.enumMismatches,
       preview: publicCompletionText(result, 300),
     };
     await store.appendEvent("response_only.output_contract_rejected", detail);
