@@ -2070,3 +2070,26 @@ blocks sibling `read_file` and `run_command` access, permits the current task
 through both paths, and permits an explicitly declared long sibling source
 root. No live provider or LocalLLM inference, LabCanvas runtime change, queue
 action, schedule, transport operation, or external side effect is involved.
+
+### Tool-capable tasks preserve strict JSON envelopes
+
+`labcanvas-tool-capable-json-contract-155` follows retained LabCanvas session
+`web-agent-labcanvas-97e7f45f-b6ef-4fef-aeb2-c21c43e29b41`. The task used
+normal file and shell tools to verify a repaired PDF, but its host contract also
+required one strict JSON object. AgInTi accepted a polished prose `finish`
+result instead. The work itself was valid, but the caller could not consume the
+answer and started successor sessions against the same task.
+
+Explicit JSON contracts are now enforced at the shared completion boundary,
+not only in the response-only fast path. Both assistant-content and `finish`
+tool completions receive one bounded schema-preserving repair. A repeated
+violation pauses without a successful terminal event and returns a parseable
+fallback object with the requested top-level keys and value types, allowing the
+host to record the limitation without retrying malformed output indefinitely.
+
+The deterministic regression proves the retained plain-prose failure before
+the fix, successful repair through both completion modes, exact required-key
+and value-type preservation, bounded retry count, and schema-valid fail-closed
+behavior. No live provider or LocalLLM inference, LabCanvas runtime change,
+queue action, schedule, transport operation, or external side effect is
+involved.

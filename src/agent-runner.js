@@ -25185,6 +25185,96 @@ async function rejectCrossTaskArtifactCompletion({
   };
 }
 
+async function enforceToolCapableOutputContract({
+  config,
+  state,
+  store,
+  observers,
+  step,
+  mode,
+  candidateResult,
+}) {
+  const contract = responseOnlyJsonContract(config, state);
+  if (!contract) return null;
+  const assessment = assessResponseOnlyJsonContract(candidateResult, contract);
+  state.meta = state.meta || {};
+  if (assessment.ok) {
+    const prior = state.meta.completionOutputContractRepair;
+    if (prior) {
+      const detail = {
+        step,
+        mode,
+        priorRepairStep: prior.step,
+        requiredKeys: contract.requiredKeys,
+      };
+      delete state.meta.completionOutputContractRepair;
+      await store.appendEvent("completion.output_contract_repaired", detail);
+      observers.event("completion.output_contract_repaired", detail);
+    }
+    return null;
+  }
+
+  const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const key = `${completionContractKey(config)}:${goalRevision}:json-output-contract`;
+  const prior = state.meta.completionOutputContractRepair || {};
+  const attempts = prior.key === key ? Math.max(0, Number(prior.attempts || 0)) : 0;
+  const detail = {
+    step,
+    mode,
+    key,
+    repairAttempt: attempts + 1,
+    maxRepairAttempts: 1,
+    reason: assessment.reason,
+    requiredKeys: contract.requiredKeys,
+    missingKeys: assessment.missingKeys,
+    typeMismatches: assessment.typeMismatches,
+    enumMismatches: assessment.enumMismatches,
+    preview: publicCompletionText(candidateResult, 300),
+  };
+  await store.appendEvent("completion.output_contract_rejected", detail);
+  observers.event("completion.output_contract_rejected", detail);
+
+  const last = state.messages?.at(-1);
+  if (
+    mode === "assistant-content" &&
+    last?.role === "assistant" &&
+    String(last.content || "").trim() === String(candidateResult || "").trim() &&
+    !(last.tool_calls || []).length
+  ) {
+    state.messages.pop();
+  }
+
+  if (attempts < 1) {
+    state.meta.completionOutputContractRepair = {
+      key,
+      attempts: attempts + 1,
+      step,
+      goalRevision,
+      at: new Date().toISOString(),
+    };
+    const instruction = responseOnlyJsonRepairInstruction(contract, assessment);
+    state.messages.push({ role: "user", content: instruction });
+    await store.appendEvent("completion.output_contract_repair_requested", {
+      ...detail,
+      instruction,
+    });
+    observers.event("completion.output_contract_repair_requested", detail);
+    return { action: "retry", detail };
+  }
+
+  const result = responseOnlyContractFallbackResult(
+    contract,
+    responseOnlyJsonStopResult(completionContractGoal(config, state))
+  );
+  delete state.meta.completionOutputContractRepair;
+  await store.appendEvent("completion.output_contract_failed_closed", {
+    ...detail,
+    result,
+  });
+  observers.event("completion.output_contract_failed_closed", detail);
+  return { action: "stop", detail, result };
+}
+
 async function completionEvidenceDecision({ config, state, store, observers, step, mode, candidateResult = "" }) {
   if (state.meta?.artifactProgress?.complete) {
     await refreshArtifactValidationPreflight(state, store, observers, config, {
@@ -25243,6 +25333,16 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     await store.appendEvent("completion.cross_task_artifact_repaired", repaired);
     observers.event("completion.cross_task_artifact_repaired", repaired);
   }
+  const outputContractDecision = await enforceToolCapableOutputContract({
+    config,
+    state,
+    store,
+    observers,
+    step,
+    mode,
+    candidateResult,
+  });
+  if (outputContractDecision) return outputContractDecision;
   const internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
     result: candidateResult,
     messages: state.messages,

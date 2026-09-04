@@ -1644,6 +1644,108 @@ try {
   assert.equal(quotedChatClassification.result.result, '{"intent":"generation_only","publish":false}');
   assert(!quotedChatClassification.events.some((event) => event.type === "completion.evidence_rejected"));
 
+  const toolCapableJsonGoal = [
+    "Run pwd and report the verified working directory.",
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({
+      message: "direct user-facing answer",
+      files: [],
+      confirmation: "",
+      knowledge_items: [],
+      upstream_feedback: [],
+    }),
+  ].join("\n");
+  const validToolCapableJson = JSON.stringify({
+    message: "Verified the working directory with pwd.",
+    files: [],
+    confirmation: "",
+    knowledge_items: [],
+    upstream_feedback: [],
+  });
+  const repairedToolCapableJsonFinish = await runCase({
+    id: "tool-capable-json-finish-repair",
+    taskProfile: "shell",
+    goal: toolCapableJsonGoal,
+    allowShellTool: true,
+    responses: [
+      assistant("", [toolCall("json-pwd-finish", "run_command", { command: "pwd" })]),
+      assistant("", [toolCall("json-invalid-finish", "finish", {
+        result: "Verified the working directory with pwd.",
+      })]),
+      assistant("", [toolCall("json-repaired-finish", "finish", {
+        result: validToolCapableJson,
+      })]),
+    ],
+  });
+  assert.equal(
+    repairedToolCapableJsonFinish.calls.length,
+    3,
+    "a tool-capable finish bypassed the explicit JSON output contract"
+  );
+  assert.deepEqual(JSON.parse(repairedToolCapableJsonFinish.result.result), JSON.parse(validToolCapableJson));
+  assert.equal(
+    repairedToolCapableJsonFinish.events.filter(
+      (event) => event.type === "completion.output_contract_rejected"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedToolCapableJsonFinish.events.filter(
+      (event) => event.type === "completion.output_contract_repaired"
+    ).length,
+    1
+  );
+
+  const repairedToolCapableJsonContent = await runCase({
+    id: "tool-capable-json-assistant-repair",
+    taskProfile: "shell",
+    goal: toolCapableJsonGoal,
+    allowShellTool: true,
+    responses: [
+      assistant("", [toolCall("json-pwd-content", "run_command", { command: "pwd" })]),
+      assistant("Verified the working directory with pwd."),
+      assistant(validToolCapableJson),
+    ],
+  });
+  assert.equal(
+    repairedToolCapableJsonContent.calls.length,
+    3,
+    "tool-capable assistant content bypassed the explicit JSON output contract"
+  );
+  assert.deepEqual(JSON.parse(repairedToolCapableJsonContent.result.result), JSON.parse(validToolCapableJson));
+
+  const repeatedInvalidToolCapableJson = await runCase({
+    id: "tool-capable-json-repeated-invalid",
+    taskProfile: "shell",
+    goal: toolCapableJsonGoal,
+    allowShellTool: true,
+    responses: [
+      assistant("", [toolCall("json-pwd-repeated", "run_command", { command: "pwd" })]),
+      assistant("", [toolCall("json-invalid-repeated-1", "finish", {
+        result: "Verified the working directory with pwd.",
+      })]),
+      assistant("", [toolCall("json-invalid-repeated-2", "finish", {
+        result: "Done.",
+      })]),
+    ],
+  });
+  assert.equal(repeatedInvalidToolCapableJson.calls.length, 3);
+  assert.equal(repeatedInvalidToolCapableJson.result.stopped, true);
+  assert.equal(repeatedInvalidToolCapableJson.result.reason, "model_did_not_execute");
+  assert.deepEqual(Object.keys(JSON.parse(repeatedInvalidToolCapableJson.result.result)), [
+    "message",
+    "files",
+    "confirmation",
+    "knowledge_items",
+    "upstream_feedback",
+  ]);
+  assert(
+    repeatedInvalidToolCapableJson.events.some(
+      (event) => event.type === "completion.output_contract_failed_closed"
+    )
+  );
+  assert(!repeatedInvalidToolCapableJson.events.some((event) => event.type === "session.finished"));
+
   const responseOnlyScope = {
     mode: "chat-response",
     request: "Return the requested text only; no external action is requested.",
