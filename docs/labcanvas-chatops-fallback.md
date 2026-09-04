@@ -60,6 +60,20 @@ successful response. Reliable transcripts and requests that only ask to
 identify supplied metadata are unaffected. Exact-source download,
 transcription, attachments, and chat delivery remain host-owned routines.
 
+## Fail-Closed Envelope Integrity
+
+A response-only safety stop must preserve an explicit caller JSON envelope.
+This applies when a backend repeats an unsupported source claim and when it
+fails the JSON contract itself after the single bounded repair turn. The
+fallback object keeps every required top-level key, value type, and declared
+string enum; it places the private diagnostic in a non-enum field such as
+`message`, `summary`, or `reason`. It never replaces a route enum with prose.
+
+The session remains stopped and does not record `session.finished`. Envelope
+preservation only lets the host parse and recover the task reliably; it does
+not convert the failed turn into success, select a provider, or change any
+LabCanvas queue, schedule, transport, or routing policy.
+
 ## Provider Tool-Batch Recovery
 
 AgInTi requests one effectful tool call at a time, but some OpenAI-compatible

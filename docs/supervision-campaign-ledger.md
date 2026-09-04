@@ -1494,3 +1494,26 @@ contract preservation. Positive controls retain an ordinary information-rich
 transcript and a metadata-only identification request. Media resolution,
 download, ASR, attachment delivery, provider priority, LabCanvas queues,
 transport, and schedules remain unchanged.
+
+### Fail-closed response-only turns retain the caller envelope
+
+`labcanvas-response-only-fail-closed-envelope-130` follows retained production
+session `web-agent-labcanvas-0aa6abef-47a0-4f2a-b07e-ae36281ecd6f`. Its
+response-only route request declared a strict multi-field JSON schema. The
+source-free guard correctly stopped a repeated unsupported claim, but returned
+plain diagnostic prose. That truthful stop was no longer parseable by the
+caller's declared protocol and could become a dropped or misrouted host task.
+
+Every response-only fail-closed path now serializes its limitation through the
+explicit contract. Required keys and value types remain present, declared
+string enums receive a valid safe value, and diagnostic prose is placed only in
+a non-enum string field, preferring `message`, `summary`, or `reason`. The same
+rule covers a repeated malformed JSON answer and a repeated unsupported factual
+claim. The session still stops, emits its existing private failure event, and
+never records `session.finished`.
+
+Production-shaped regressions cover a chat response envelope, the retained
+router-style enum envelope, and a completion-auditor schema. They force the
+DeepSeek pre-inference quota handoff through deterministic LocalLLM responses;
+no live model inference, LabCanvas policy change, queue action, schedule, or
+transport operation is involved.

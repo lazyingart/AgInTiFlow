@@ -4352,9 +4352,25 @@ function responseOnlyContractFallbackResult(contract, message) {
     else if (contract.keyTypes[key] === "object") value[key] = {};
     else value[key] = "";
   }
-  const messageKey = Object.hasOwn(value, "message")
-    ? "message"
-    : contract.requiredKeys.find((key) => contract.keyTypes[key] === "string");
+  const preferredMessageKeys = [
+    "message",
+    "summary",
+    "reason",
+    "error",
+    "diagnostic",
+    "detail",
+    "chat_reply",
+    "ack",
+    "confirmation",
+  ];
+  const messageKey = preferredMessageKeys.find(
+    (key) =>
+      Object.hasOwn(value, key) &&
+      contract.keyTypes[key] === "string" &&
+      !contract.enumValues?.[key]?.length
+  ) || contract.requiredKeys.find(
+    (key) => contract.keyTypes[key] === "string" && !contract.enumValues?.[key]?.length
+  );
   if (messageKey) value[messageKey] = message;
   return JSON.stringify(value);
 }
@@ -4452,7 +4468,10 @@ function retainLocalContextOutputAdaptation(state, config, maxOutputTokens, step
 
 async function finishWithResponseOnlyModelTurn({ client, config, state, store, observers, sessionId }) {
   async function stopForOutputContract({ step, assessment, contract, mode }) {
-    const stoppedResult = responseOnlyJsonStopResult(assessment);
+    const stoppedResult = responseOnlyContractFallbackResult(
+      contract,
+      responseOnlyJsonStopResult(assessment)
+    );
     const fallback = {
       step,
       mode,
@@ -4841,7 +4860,10 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       await store.appendEvent("response_only.source_free_claim_repaired", repaired);
       observers.event("response_only.source_free_claim_repaired", repaired);
     } else {
-      result = responseOnlySourceFreeStopResult(sourceFreeAssessment);
+      result = responseOnlyContractFallbackResult(
+        outputContract,
+        responseOnlySourceFreeStopResult(sourceFreeAssessment)
+      );
       const fallback = {
         step: finalResponseStep,
         mode: "response-only-fail-closed",

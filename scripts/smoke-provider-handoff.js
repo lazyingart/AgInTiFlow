@@ -564,6 +564,40 @@ assert.equal(
   1
 );
 
+const sourceFreeJsonFailClosed = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-json-contract-fail-closed",
+  request: sourceFreeJsonContractRequest,
+  localResponses: [
+    JSON.stringify({
+      message: "The paper was published in 2025 and validated on a 12,000-case benchmark.",
+      files: [],
+      confirmation: "",
+    }),
+    JSON.stringify({
+      message: "The 2025 publication was validated with 94.2% accuracy.",
+      files: [],
+      confirmation: "",
+    }),
+  ],
+});
+assert.equal(sourceFreeJsonFailClosed.result.stopped, true);
+assert.equal(sourceFreeJsonFailClosed.result.reason, "source_free_evidence_required");
+assert.deepEqual(
+  Object.keys(JSON.parse(sourceFreeJsonFailClosed.result.result)),
+  ["message", "files", "confirmation"],
+  "a source-free fail-closed result broke the caller's explicit JSON envelope"
+);
+assert.match(
+  JSON.parse(sourceFreeJsonFailClosed.result.result).message,
+  /cannot verify/i,
+  "the schema-compatible fail-closed result omitted its truthful limitation"
+);
+assert.equal(
+  sourceFreeJsonFailClosed.events.filter((event) => event.type === "session.finished").length,
+  0,
+  "a repeated source-free claim was persisted as a finished session"
+);
+
 const requestedFalsifiablePrediction = [
   "Create one concise inspiration message from the supplied conceptual context.",
   "Include one clearly labeled, falsifiable 3/5/10-year prediction as your own hypothesis.",
@@ -718,6 +752,34 @@ const explicitRouterSchemaRequest = [
   "JSON schema:",
   JSON.stringify(explicitRouterSchema, null, 2),
 ].join("\n");
+const sourceFreeRouterFailClosed = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-router-contract-fail-closed",
+  request: explicitRouterSchemaRequest,
+  localResponses: [
+    JSON.stringify({
+      ...validExplicitRouterResponse,
+      reason: "The paper was published in 2025 and validated on a 12,000-case benchmark.",
+    }),
+    JSON.stringify({
+      ...validExplicitRouterResponse,
+      reason: "The 2025 publication was validated with 94.2% accuracy.",
+    }),
+  ],
+});
+assert.equal(sourceFreeRouterFailClosed.result.stopped, true);
+assert.equal(sourceFreeRouterFailClosed.result.reason, "source_free_evidence_required");
+const sourceFreeRouterFallback = JSON.parse(sourceFreeRouterFailClosed.result.result);
+assert.deepEqual(Object.keys(sourceFreeRouterFallback), Object.keys(explicitRouterSchema));
+assert.equal(
+  sourceFreeRouterFallback.route_kind,
+  "chat_only",
+  "a fail-closed fallback overwrote a declared route enum with diagnostic prose"
+);
+assert.match(sourceFreeRouterFallback.reason, /cannot verify/i);
+assert.equal(
+  sourceFreeRouterFailClosed.events.filter((event) => event.type === "session.finished").length,
+  0
+);
 const repairedExplicitRouterSchema = await runSourceFreeResponseOnlyHandoffScenario({
   sessionId: "response-only-explicit-router-schema-repaired",
   request: explicitRouterSchemaRequest,
@@ -878,6 +940,12 @@ const failedOutputContractHandoff = await runSourceFreeResponseOnlyHandoffScenar
 });
 assert.equal(failedOutputContractHandoff.result.stopped, true);
 assert.equal(failedOutputContractHandoff.result.reason, "response_only_output_contract_required");
+const failedOutputContractFallback = JSON.parse(failedOutputContractHandoff.result.result);
+assert.deepEqual(
+  Object.keys(failedOutputContractFallback),
+  ["covered_item_ids", "missing", "legitimate_blocker", "complexity", "summary"]
+);
+assert.match(failedOutputContractFallback.summary, /output contract/i);
 assert.equal(
   failedOutputContractHandoff.events.filter((event) => event.type === "response_only.output_contract_failed_closed").length,
   1
