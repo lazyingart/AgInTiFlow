@@ -10583,6 +10583,10 @@ try {
       isStaticDiscoveryToolCall("read_web_page", { url: "https://example.com/memo" }),
     "read-only web discovery was allowed to reset convergence"
   );
+  assert(
+    isStaticDiscoveryToolCall("open_url", { url: "https://example.com/research#results" }),
+    "browser URL navigation was counted as durable task progress"
+  );
   const repeatedWebQuerySignature = staticToolCallSignature(
     "web_search",
     { query: "  Project   Memo Guidance ", maxResults: 10 },
@@ -10630,6 +10634,46 @@ try {
       { commandCwd: workspace }
     ) === null,
     "a materially refined web query was blocked by successful-search idempotency"
+  );
+  const repeatedBrowserUrlSignature = staticToolCallSignature(
+    "open_url",
+    { url: "https://example.com/research#results" },
+    { commandCwd: workspace }
+  );
+  assert(
+    repeatedBrowserUrlSignature ===
+      staticToolCallSignature(
+        "open_url",
+        { url: "https://example.com/research" },
+        { commandCwd: workspace }
+      ),
+    "equivalent browser URL opens did not share one canonical signature"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedBrowserUrlSignature]: 1 },
+            staticOrder: [repeatedBrowserUrlSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "open_url",
+      { url: "https://example.com/research#results" },
+      { commandCwd: workspace }
+    )?.category === "repeated-read-only-call",
+    "a second equivalent successful browser URL open was not blocked"
+  );
+  assert(
+    !shouldResetStaticDiscoveryPhase({
+      ok: true,
+      toolName: "open_url",
+      args: { url: "https://example.com/research" },
+      url: "https://example.com/research",
+    }),
+    "a successful browser URL open reset static-discovery convergence"
   );
   assert(
     !shouldResetStaticDiscoveryPhase({ ok: false, toolName: "read_image", args: { path: "missing.png" } }),

@@ -1219,3 +1219,23 @@ The focused regression proves that the second semantically identical query is
 blocked while a query with an added primary-source constraint remains allowed.
 The dynamic-step smoke, syntax checks, and full package suite pass without live
 web requests, real LocalLLM inference, or any LabCanvas runtime-policy change.
+
+### Reopening one unchanged browser URL is not progress
+
+`labcanvas-browser-open-idempotency-118` continues from retained production
+session `web-agent-labcanvas-3ff222ef-af1c-4301-8799-4c6ca71368d2`. The same
+AACR page was successfully opened six times. Unlike `web_search` and
+`read_web_page`, `open_url` was not static discovery, so every navigation was
+credited as progress and reset convergence despite producing no file, artifact,
+or new browser interaction.
+
+`open_url` is now static discovery with a canonical URL signature. Fragments do
+not create distinct identities, and a second successful equivalent open in an
+unchanged task phase is blocked. A real non-static browser action still resets
+the discovery phase through the existing progress machinery, so a later
+intentional revisit after interacting with the page remains available.
+
+The focused regression covers static classification, canonical fragment
+normalization, duplicate blocking, and no-progress accounting. Dynamic-step,
+syntax, and full package tests pass without opening a live browser or changing
+host transport behavior.

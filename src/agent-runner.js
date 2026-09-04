@@ -11398,10 +11398,10 @@ export function repeatedStaticToolBlock(state, toolName, args = {}, config = {})
   });
   const priorCalls = Number(toolLoop.staticCounts?.[signature] || 0);
   const staticTotal = Number(toolLoop.staticTotal || 0);
-  // Successful file reads and equivalent searches are reusable evidence. A
-  // second identical call adds latency and can amplify after compaction; the
-  // model can still issue a materially refined query or reread a new range.
-  const repeatLimit = ["read_file", "web_search"].includes(toolName) ? 1 : 2;
+  // Successful file reads, equivalent searches, and unchanged URL opens are
+  // reusable evidence. A second identical call adds latency and can amplify
+  // after compaction; the model can still refine a query or read a new range.
+  const repeatLimit = ["open_url", "read_file", "web_search"].includes(toolName) ? 1 : 2;
   if (priorCalls < repeatLimit && staticTotal < STATIC_DISCOVERY_CONVERGENCE_LIMIT) return null;
   const exactOutputs = state.meta?.scs?.taskContract?.exactOutputPaths || [];
   const phaseExhausted = staticTotal >= STATIC_DISCOVERY_CONVERGENCE_LIMIT;

@@ -155,6 +155,7 @@ export function isStaticDiscoveryToolCall(toolName, args = {}) {
     [
       "inspect_project",
       "list_files",
+      "open_url",
       "read_file",
       "search_files",
       "read_image",
@@ -232,6 +233,9 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
   }
   if (toolName === "web_search") {
     return `web-search:${canonicalDiscoveryQuery(args.query)}`;
+  }
+  if (toolName === "open_url") {
+    return `browser-open:${canonicalDiscoveryUrl(args.url)}`;
   }
   if (toolName === "read_web_page") {
     return `web-read:${canonicalDiscoveryUrl(args.url)}`;
