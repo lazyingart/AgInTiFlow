@@ -2025,3 +2025,19 @@ English and Chinese regressions preserve the exact caller schema, one repair,
 paused state, and absence of `session.finished`. No live provider or LocalLLM
 inference, LabCanvas runtime change, queue action, schedule, transport
 operation, or external side effect is involved.
+
+### Unusable-answer stops share one natural boundary
+
+`labcanvas-natural-unusable-response-stops-153` closes the remaining copies of
+the same outward diagnostic leak. A weak backend that repeated private runtime
+scaffolding or returned a blank answer twice stopped safely, but the final chat
+text instructed the human to resume a saved session with another provider.
+
+One localized helper now serves ordinary empty responses, response-only empty
+envelopes, and repeated internal-scaffold failures. Their distinct private
+events, stop reasons, schema fallbacks, and recoverable paused states are
+unchanged. Deterministic controls cover ordinary and response-only paths plus
+English, Chinese, and Japanese output; all require bounded repair and forbid a
+successful terminal event. No live provider or LocalLLM inference, LabCanvas
+runtime change, queue action, schedule, transport operation, or external side
+effect is involved.

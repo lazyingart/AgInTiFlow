@@ -4612,7 +4612,7 @@ function responseOnlyJsonStopResult(goal = "") {
   return "I could not produce a reliable response in the required format for this message.";
 }
 
-function responseOnlyEmptyStopResult(goal = "") {
+function naturalUnusableResponseStopResult(goal = "") {
   const source = String(goal || "");
   if (/[\u3040-\u30ff]/u.test(source)) {
     return "このメッセージには、信頼できる回答を作成できませんでした。";
@@ -4810,7 +4810,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   async function stopForEmptyResponseOnlyEnvelope({ step, assessment, contract }) {
     const stoppedResult = responseOnlyContractFallbackResult(
       contract,
-      responseOnlyEmptyStopResult(completionContractGoal(config, state))
+      naturalUnusableResponseStopResult(completionContractGoal(config, state))
     );
     const detail = {
       step,
@@ -25954,8 +25954,7 @@ async function rejectInternalRuntimeScaffoldCompletion({
   return {
     action: "stop",
     detail,
-    result:
-      "The model did not produce a usable task answer after one repair attempt. The session is saved and can be resumed with another provider.",
+    result: naturalUnusableResponseStopResult(completionContractGoal(config, state)),
   };
 }
 
@@ -25993,7 +25992,7 @@ async function repairEmptyCompletion({ config, state, store, observers, step, as
   }
   return {
     action: "stop",
-    result: "The model returned no usable answer after one repair attempt. The session is saved and can be resumed with another provider.",
+    result: naturalUnusableResponseStopResult(completionContractGoal(config, state)),
   };
 }
 

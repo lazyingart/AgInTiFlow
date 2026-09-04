@@ -1354,6 +1354,15 @@ try {
   assert.equal(repeatedInternalScaffold.result.stopped, true);
   assert.equal(repeatedInternalScaffold.result.reason, "model_did_not_execute");
   assert.equal(
+    repeatedInternalScaffold.result.result,
+    "I could not produce a reliable response for this message."
+  );
+  assert.doesNotMatch(
+    repeatedInternalScaffold.result.result,
+    /model|session|provider|runtime|resume|repair attempt/iu,
+    "internal-scaffold stop exposed private runtime diagnostics"
+  );
+  assert.equal(
     repeatedInternalScaffold.events.filter(
       (event) => event.type === "completion.internal_runtime_scaffold_rejected"
     ).length,
@@ -1620,6 +1629,15 @@ try {
     JSON.parse(repeatedHostAcknowledgement.result.result).handled,
     false,
     "host acknowledgement fail-closed result claimed the current message was handled"
+  );
+  assert.equal(
+    JSON.parse(repeatedHostAcknowledgement.result.result).response,
+    "这条消息暂时没有生成可靠的答复。"
+  );
+  assert.doesNotMatch(
+    JSON.parse(repeatedHostAcknowledgement.result.result).response,
+    /response-only|模型|会话|提供商|运行时|恢复|重试/iu,
+    "response-only scaffold stop exposed private runtime diagnostics"
   );
   assert.equal(
     repeatedHostAcknowledgement.events.filter(
@@ -3585,11 +3603,41 @@ try {
   assert.equal(unusableEmptyChat.result.stopped, true);
   assert.equal(unusableEmptyChat.result.reason, "empty_model_response");
   assert.equal(
+    unusableEmptyChat.result.result,
+    "I could not produce a reliable response for this message."
+  );
+  assert.doesNotMatch(
+    unusableEmptyChat.result.result,
+    /model|session|provider|runtime|resume|repair attempt/iu,
+    "empty chat stop exposed private runtime diagnostics"
+  );
+  assert.equal(
     unusableEmptyChat.events.filter((event) => event.type === "completion.empty_response_repair_requested").length,
     1
   );
   assert(!unusableEmptyChat.events.some((event) => event.type === "session.finished"));
   assert(!unusableEmptyChat.result.result.includes("No tool call returned"));
+
+  const chineseUnusableEmptyChat = await runCase({
+    id: "unusable-empty-chat-chinese",
+    goal: "请解释递归为什么需要终止条件。",
+    responses: [assistant(""), assistant("")],
+  });
+  assert.equal(chineseUnusableEmptyChat.result.stopped, true);
+  assert.equal(chineseUnusableEmptyChat.result.result, "这条消息暂时没有生成可靠的答复。");
+  assert(!chineseUnusableEmptyChat.events.some((event) => event.type === "session.finished"));
+
+  const japaneseUnusableEmptyChat = await runCase({
+    id: "unusable-empty-chat-japanese",
+    goal: "再帰に終了条件が必要な理由を説明してください。",
+    responses: [assistant(""), assistant("")],
+  });
+  assert.equal(japaneseUnusableEmptyChat.result.stopped, true);
+  assert.equal(
+    japaneseUnusableEmptyChat.result.result,
+    "このメッセージには、信頼できる回答を作成できませんでした。"
+  );
+  assert(!japaneseUnusableEmptyChat.events.some((event) => event.type === "session.finished"));
 
   const resumedAction = await runCase({
     id: "verified-action",
