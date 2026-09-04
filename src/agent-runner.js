@@ -73,6 +73,10 @@ import { firstJsonObject, readImage, researchWrapper, webResearch } from "./perc
 import { readWebPage, searchWeb } from "./web-search.js";
 import { deepResearch, RESEARCH_VERSION } from "./deep-research.js";
 import {
+  assessBoundedTranscriptResponse,
+  boundedTranscriptRepairInstruction,
+} from "./response-only-source-quality.js";
+import {
   formatDurableResearchEvidence,
   recordDurableResearchEvidence,
 } from "./durable-research-evidence.js";
@@ -4333,6 +4337,39 @@ function responseOnlyJsonStopResult(assessment = {}) {
   return `No result: the response-only model did not satisfy the explicit JSON output contract after one repair attempt.${missing}`;
 }
 
+function responseOnlyContractFallbackResult(contract, message) {
+  if (!contract) return message;
+  const value = {};
+  for (const key of contract.requiredKeys) {
+    const allowed = contract.enumValues?.[key];
+    if (Array.isArray(allowed) && allowed.length) {
+      value[key] = allowed[0];
+      continue;
+    }
+    if (contract.keyTypes[key] === "array") value[key] = [];
+    else if (contract.keyTypes[key] === "boolean") value[key] = false;
+    else if (contract.keyTypes[key] === "number") value[key] = 0;
+    else if (contract.keyTypes[key] === "object") value[key] = {};
+    else value[key] = "";
+  }
+  const messageKey = Object.hasOwn(value, "message")
+    ? "message"
+    : contract.requiredKeys.find((key) => contract.keyTypes[key] === "string");
+  if (messageKey) value[messageKey] = message;
+  return JSON.stringify(value);
+}
+
+function boundedTranscriptStopMessage(goal = "") {
+  const text = String(goal || "");
+  if (/[\u3040-\u30ff]/u.test(text)) {
+    return "文字起こしが反復または不足しているため、実際の発話内容を信頼できる形で要約できません。タイトル由来の情報を発話内容として補完していません。";
+  }
+  if (/\p{Script=Han}/u.test(text)) {
+    return "转写内容重复或不足，无法可靠概括实际语音；我没有把标题或描述推断成讲话内容。";
+  }
+  return "The transcript is repetitive or insufficient, so the actual speech cannot be summarized reliably; title or description text was not presented as spoken content.";
+}
+
 async function assessResponseOnlySourceFreeClaims({ config, state, store, result }) {
   const scoped = currentContinuationEvidence(state, await store.loadEvents());
   const ledger = buildScsEvidenceLedger({
@@ -4539,6 +4576,53 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     }
   }
 
+  async function stopForBoundedTranscriptQuality({ step, assessment, contract }) {
+    const stoppedResult = responseOnlyContractFallbackResult(
+      contract,
+      boundedTranscriptStopMessage(completionContractGoal(config, state))
+    );
+    const fallback = {
+      step,
+      mode: "response-only-transcript-quality-fail-closed",
+      reason: assessment.reason,
+      transcriptQuality: assessment.quality,
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      boundedTranscriptQualityBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "unreliable_bounded_transcript", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.transcript_quality_failed_closed", fallback);
+    await store.appendEvent("session.stopped", {
+      reason: "unreliable_bounded_transcript",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.transcript_quality_failed_closed", fallback);
+    observers.event("session.stopped", {
+      reason: "unreliable_bounded_transcript",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "unreliable_bounded_transcript",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
   await store.appendEvent("model.requested", {
     step: 1,
     provider: config.provider,
@@ -4616,6 +4700,76 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
         mode: "response-only-contract-fail-closed",
       });
     }
+  }
+  let transcriptAssessment = assessBoundedTranscriptResponse({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!transcriptAssessment.ok) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only",
+      reason: transcriptAssessment.reason,
+      transcriptQuality: transcriptAssessment.quality,
+      preview: publicCompletionText(result, 300),
+    };
+    await store.appendEvent("response_only.transcript_quality_rejected", detail);
+    observers.event("response_only.transcript_quality_rejected", detail);
+    state.messages.push({
+      role: "user",
+      content: boundedTranscriptRepairInstruction(
+        transcriptAssessment,
+        responseOnlyJsonKeyContractText(outputContract)
+      ),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-transcript-quality-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-transcript-quality-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-transcript-quality-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return await stopForOutputContract({
+        step: finalResponseStep,
+        assessment: outputAssessment,
+        contract: outputContract,
+        mode: "response-only-transcript-quality-repair-contract-fail-closed",
+      });
+    }
+    transcriptAssessment = assessBoundedTranscriptResponse({
+      goal: completionContractGoal(config, state),
+      result,
+    });
+    if (!transcriptAssessment.ok) {
+      return await stopForBoundedTranscriptQuality({
+        step: finalResponseStep,
+        assessment: transcriptAssessment,
+        contract: outputContract,
+      });
+    }
+    const repaired = {
+      step: finalResponseStep,
+      mode: "response-only-transcript-quality-repair",
+      reason: transcriptAssessment.reason,
+      transcriptQuality: transcriptAssessment.quality,
+    };
+    await store.appendEvent("response_only.transcript_quality_repaired", repaired);
+    observers.event("response_only.transcript_quality_repaired", repaired);
   }
   let sourceFreeAssessment = await assessResponseOnlySourceFreeClaims({
     config,

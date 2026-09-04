@@ -1468,3 +1468,29 @@ Negative controls still reject an ambiguous-message sentence that asserts a
 2025 publication and validation, plus an attributed 2030 product forecast.
 This changes no response schema, model route, LabCanvas prompt, transport, or
 schedule.
+
+### Degenerate transcripts cannot become invented speech summaries
+
+`labcanvas-bounded-transcript-quality-129` comes from retained production
+session `web-agent-labcanvas-5fbe19a4-7707-4649-8b50-1e2698ce7141`. The host
+provided one exact Shipinhao packet for a 47-second video and explicitly asked
+for a summary of the actual speech. Its transcript consisted almost entirely
+of repeated `母带`, `混音`, and related production-credit words. The fallback
+model nevertheless expanded title and hashtag metadata into a fluent account
+of the video's speech and visuals, and response-only completion accepted it.
+
+AgInTiFlow now evaluates transcript usability only for structured bounded
+packets that explicitly request a speech summary. Empty, implausibly sparse,
+or strongly repetitive transcripts require a reader-facing limitation. The
+single repair turn prohibits converting title, description, author, or hashtag
+metadata into speech and restates the caller's JSON key/type contract. If the
+backend repeats the invention, the runtime returns a schema-compatible
+limitation and leaves the session stopped rather than recording a successful
+finish.
+
+The production-shaped regression covers the exact repetitive transcript, a
+successful bounded repair, repeated-failure fail-closed behavior, and JSON
+contract preservation. Positive controls retain an ordinary information-rich
+transcript and a metadata-only identification request. Media resolution,
+download, ASR, attachment delivery, provider priority, LabCanvas queues,
+transport, and schedules remain unchanged.

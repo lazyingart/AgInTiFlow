@@ -14,6 +14,10 @@ import {
   runAgent,
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
+import {
+  assessBoundedTranscriptResponse,
+  assessTranscriptUsability,
+} from "../src/response-only-source-quality.js";
 import { SessionStore } from "../src/session-store.js";
 import {
   deriveScsTaskContract,
@@ -84,6 +88,111 @@ assert.match(sourcePrecedenceInstruction, /closest project instructions/i);
 assert.match(sourcePrecedenceInstruction, /most specific current implementation and tests/i);
 assert.match(sourcePrecedenceInstruction, /stale guides/i);
 assert.match(sourcePrecedenceInstruction, /AGENTS\.md/i);
+
+const degenerateTranscript = [
+  "[00:00.00-00:02.00] 词曲 编曲 缩混 混音 母带 母带",
+  "[00:30.00-00:32.00] 缩混 混音 母带 母带",
+  "[00:32.00-00:34.00] 母带 母带 母带",
+  "[00:34.00-00:36.00] 母带 母带 母带",
+  "[00:36.00-00:38.00] 母带 母带 母带",
+  "[00:38.00-00:40.00] 母带 母带 母带",
+  "[00:40.00-00:42.00] 母带 母带 母带",
+  "[00:42.00-00:44.00] 母带 母带 母带",
+  "[00:44.00-00:46.00] 母带 母带 母带",
+  "[00:46.00-00:48.00] 母带 母带 母带",
+].join(" ");
+const reliableTranscript = [
+  "[00:00.00-00:04.00] 接下来看到的是印度南部的卡纳塔克邦",
+  "[00:04.00-00:08.00] 它西临阿拉伯海 东接德干高原",
+  "[00:08.00-00:12.00] 西高止山脉从高山延伸到海岸",
+  "[00:12.00-00:16.00] 首府班加罗尔也被称为印度硅谷",
+  "[00:16.00-00:20.00] 科技城市与古老寺庙在这里并肩而立",
+].join(" ");
+assert.equal(assessTranscriptUsability(degenerateTranscript, 47.17).usable, false);
+assert.equal(
+  assessTranscriptUsability(degenerateTranscript, 47.17).reason,
+  "strongly-repetitive-transcript"
+);
+assert.equal(assessTranscriptUsability(reliableTranscript, 20).usable, true);
+assert.equal(
+  assessTranscriptUsability(
+    "这是一段没有空格的完整中文转写内容，它清楚介绍实验方法、观察结果和下一步验证计划。",
+    45
+  ).usable,
+  true,
+  "a substantive unsegmented CJK transcript was mistaken for sparse audio"
+);
+
+const boundedTranscriptGoal = [
+  "Write one concise reply. Identify the video and summarize the actual speech.",
+  "Bounded exact-source packet:",
+  "```json",
+  JSON.stringify({
+    source: {
+      title: "翩若惊鸿，婉若游龙",
+      author: "洛水辞记",
+      duration_seconds: 47.17,
+      audio_status: "transcribed",
+    },
+    transcript: degenerateTranscript,
+    delivery: {
+      video_ready: true,
+      transcript_ready: true,
+      public_publish_allowed: false,
+    },
+  }),
+  "```",
+  'Return JSON only: {"message":"...","files":[],"confirmation":""}.',
+].join("\n");
+const inventedBoundedSpeechSummary = assessBoundedTranscriptResponse({
+  goal: boundedTranscriptGoal,
+  result: JSON.stringify({
+    message: "这段视频以《洛神赋》为灵感，讲述云端神女踏光而来的浪漫故事。",
+    files: [],
+    confirmation: "视频和时间戳文本已就绪",
+  }),
+});
+assert.equal(inventedBoundedSpeechSummary.checked, true);
+assert.equal(inventedBoundedSpeechSummary.ok, false);
+assert.equal(inventedBoundedSpeechSummary.quality.reason, "strongly-repetitive-transcript");
+assert.equal(
+  assessBoundedTranscriptResponse({
+    goal: boundedTranscriptGoal,
+    result: JSON.stringify({
+      message: "这是洛水辞记的《翩若惊鸿，婉若游龙》。转写内容高度重复，无法可靠概括实际语音；从标题只能判断主题与《洛神赋》有关。",
+      files: [],
+      confirmation: "视频和时间戳文本已就绪",
+    }),
+  }).ok,
+  true
+);
+assert.equal(
+  assessBoundedTranscriptResponse({
+    goal: boundedTranscriptGoal.replace(degenerateTranscript, reliableTranscript),
+    result: JSON.stringify({
+      message: "视频介绍卡纳塔克邦的自然地貌，以及班加罗尔古老文化和现代科技并存的特点。",
+      files: [],
+      confirmation: "",
+    }),
+  }).ok,
+  true
+);
+assert.equal(
+  assessBoundedTranscriptResponse({
+    goal: boundedTranscriptGoal.replace("summarize the actual speech", "identify the supplied title only"),
+    result: JSON.stringify({ message: "标题是《翩若惊鸿，婉若游龙》。", files: [], confirmation: "" }),
+  }).checked,
+  false,
+  "a title-only bounded packet was forced through the speech-summary contract"
+);
+assert.equal(
+  assessBoundedTranscriptResponse({
+    goal: boundedTranscriptGoal.replace(degenerateTranscript, ""),
+    result: JSON.stringify({ message: "视频中没有可辨识语音，无法做实际讲话摘要。", files: [], confirmation: "" }),
+  }).ok,
+  true,
+  "an honest silent-source response was rejected"
+);
 
 const readOnlyContractAuditGoal = `
 Audit the current source-intake contract and cover an ordinary video, a hypothetical
@@ -1033,6 +1142,86 @@ try {
   assert.equal(quotedChatClassification.result.stopped, undefined);
   assert.equal(quotedChatClassification.result.result, '{"intent":"generation_only","publish":false}');
   assert(!quotedChatClassification.events.some((event) => event.type === "completion.evidence_rejected"));
+
+  const boundedTranscriptResponseGoal = [
+    "You are the response-only reasoning backend for a chat host.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "chat-response",
+      request: "Return the requested text only; no external action is requested.",
+    })}`,
+    boundedTranscriptGoal,
+  ].join("\n");
+  const repairedDegenerateTranscriptSummary = await runCase({
+    id: "bounded-degenerate-transcript-repair",
+    taskProfile: "chatops",
+    goal: boundedTranscriptResponseGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message: "洛水辞记的视频以洛神赋为灵感，展现云端神女踏光而来的浪漫意境。",
+        files: [],
+        confirmation: "视频和时间戳文本已就绪",
+      })),
+      assistant(JSON.stringify({
+        message: "这是洛水辞记的《翩若惊鸿，婉若游龙》。转写内容高度重复，无法可靠概括实际语音；从标题只能判断主题与《洛神赋》有关。",
+        files: [],
+        confirmation: "视频和时间戳文本已就绪",
+      })),
+    ],
+  });
+  assert.equal(repairedDegenerateTranscriptSummary.calls.length, 2);
+  assert.equal(repairedDegenerateTranscriptSummary.result.stopped, undefined);
+  assert.match(repairedDegenerateTranscriptSummary.result.result, /无法可靠概括实际语音/u);
+  assert.equal(
+    repairedDegenerateTranscriptSummary.events.filter(
+      (event) => event.type === "response_only.transcript_quality_rejected"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedDegenerateTranscriptSummary.events.filter(
+      (event) => event.type === "response_only.transcript_quality_repaired"
+    ).length,
+    1
+  );
+  assert(
+    repairedDegenerateTranscriptSummary.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /Do not infer spoken content, visuals, or events from the title/i.test(String(message.content || "")) &&
+        /"message":string, "files":array, "confirmation":string/i.test(String(message.content || ""))
+    ),
+    "the transcript-quality repair did not retain source boundaries and the caller's JSON contract"
+  );
+
+  const failedClosedDegenerateTranscriptSummary = await runCase({
+    id: "bounded-degenerate-transcript-fail-closed",
+    taskProfile: "chatops",
+    goal: boundedTranscriptResponseGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message: "视频讲述一位神女从云端走来的故事。",
+        files: [],
+        confirmation: "",
+      })),
+      assistant(JSON.stringify({
+        message: "画面表现古典诗词的浪漫想象。",
+        files: [],
+        confirmation: "",
+      })),
+    ],
+  });
+  assert.equal(failedClosedDegenerateTranscriptSummary.calls.length, 2);
+  assert.equal(failedClosedDegenerateTranscriptSummary.result.stopped, true);
+  assert.equal(failedClosedDegenerateTranscriptSummary.result.reason, "unreliable_bounded_transcript");
+  assert.doesNotThrow(() => JSON.parse(failedClosedDegenerateTranscriptSummary.result.result));
+  assert.match(
+    JSON.parse(failedClosedDegenerateTranscriptSummary.result.result).message,
+    /无法可靠概括实际语音/u
+  );
+  assert(
+    !failedClosedDegenerateTranscriptSummary.events.some((event) => event.type === "session.finished"),
+    "a repeated invented speech summary was recorded as a successful finish"
+  );
 
   const providerSwitchSessionId = "provider-switch-resume-contract";
   const providerSwitchFirstTurn = await runCase({

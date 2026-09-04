@@ -38,6 +38,28 @@ AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create the requested PDF f
 
 For `chat-response`, ordinary conversation and routing do not require file or command evidence. `host-managed-response` is for content-only subtasks such as a LaTeX body, translation, completion audit, or scheduled lesson where LabCanvas owns persistence, compilation, validation, and delivery. For `task`, evidence requirements are inferred only from the exact request, not from surrounding wrapper prose. Artifact requests still require real artifacts.
 
+## Bounded Media Source Quality
+
+When a response-only packet explicitly asks AgInTi to summarize actual speech,
+the packet's transcript is the speech authority. A title, description, author,
+or hashtag may identify the source, but it cannot substitute for speech.
+
+AgInTi checks a structured bounded transcript before accepting the response. A
+long transcript with no content, implausibly little content, or extreme
+repetition is treated as unusable. The backend receives one bounded repair turn
+that must:
+
+- disclose that the actual speech cannot be summarized reliably;
+- avoid inferring speech, visuals, or events from metadata;
+- label any metadata-based theme explicitly as title- or description-based;
+- preserve the caller's JSON schema and truthful delivery flags.
+
+If the repair repeats the unsupported summary, the turn stops with a
+schema-compatible limitation instead of recording invented content as a
+successful response. Reliable transcripts and requests that only ask to
+identify supplied metadata are unaffected. Exact-source download,
+transcription, attachments, and chat delivery remain host-owned routines.
+
 ## Provider Tool-Batch Recovery
 
 AgInTi requests one effectful tool call at a time, but some OpenAI-compatible
