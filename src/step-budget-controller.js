@@ -199,6 +199,12 @@ function canonicalDiscoveryQuery(value = "") {
     .toLocaleLowerCase("en-US");
 }
 
+function canonicalListDepth(value) {
+  const requested = Number(value);
+  if (!Number.isFinite(requested) || requested <= 0) return 4;
+  return Math.min(Math.max(Math.floor(requested), 1), 8);
+}
+
 function simpleLsPath(command = "", commandCwd = process.cwd()) {
   const match = String(command || "")
     .trim()
@@ -212,7 +218,10 @@ function simpleLsPath(command = "", commandCwd = process.cwd()) {
 export function staticToolCallSignature(toolName, args = {}, context = {}) {
   const commandCwd = context.commandCwd || process.cwd();
   if (toolName === "list_files") {
-    return `filesystem-list:${canonicalDiscoveryPath(args.path, commandCwd)}`;
+    return [
+      `filesystem-list:${canonicalDiscoveryPath(args.path, commandCwd)}`,
+      `depth=${canonicalListDepth(args.maxDepth)}`,
+    ].join(":");
   }
   if (toolName === "inspect_project") {
     return `project-inspect:${canonicalDiscoveryPath(args.path, commandCwd)}`;
@@ -242,7 +251,7 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
   }
   if (toolName === "run_command") {
     const lsPath = simpleLsPath(args.command, commandCwd);
-    if (lsPath) return `filesystem-list:${lsPath}`;
+    if (lsPath) return `filesystem-list:${lsPath}:depth=1`;
   }
   return `${toolName}:${stableStringify(args || {})}`;
 }

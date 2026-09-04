@@ -1239,3 +1239,22 @@ The focused regression covers static classification, canonical fragment
 normalization, duplicate blocking, and no-progress accounting. Dynamic-step,
 syntax, and full package tests pass without opening a live browser or changing
 host transport behavior.
+
+### Directory depth is part of discovery identity
+
+`labcanvas-directory-depth-refinement-119` also uses retained production
+session `web-agent-labcanvas-3ff222ef-af1c-4301-8799-4c6ca71368d2`. The agent
+listed the same artifact directory at both depth 2 and depth 3 while recovering
+a document task. The convergence signature used only the directory path, so a
+later, materially deeper inspection could be blocked as though it repeated the
+same successful listing.
+
+`list_files` signatures now include the normalized effective depth (1–8,
+default 4). A simple read-only `ls` remains equivalent to a depth-1 structured
+listing of the same canonical directory. Exact repeated listings retain their
+existing bounded retry behavior, while an explicitly deeper scope remains
+available when it can reveal evidence omitted by the earlier listing.
+
+The focused regression proves cross-tool depth-1 equivalence, exact-listing
+convergence, and a depth-2 to depth-3 refinement. It does not change filesystem
+permissions, traversal limits, host transport, or LabCanvas runtime policy.

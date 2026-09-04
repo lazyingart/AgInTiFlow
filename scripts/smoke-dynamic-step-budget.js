@@ -15788,9 +15788,57 @@ Do not prefix, suffix, wrap, redirect, pipe, or combine that validator command.`
   );
   const semanticListContext = { commandCwd: "/tmp/workspace" };
   assert(
-    staticToolCallSignature("list_files", { path: "../Musia", maxDepth: 2 }, semanticListContext) ===
+    staticToolCallSignature("list_files", { path: "../Musia", maxDepth: 1 }, semanticListContext) ===
       staticToolCallSignature("run_command", { command: "ls -la /tmp/Musia" }, semanticListContext),
     "semantic discovery identity did not normalize relative/absolute list variants"
+  );
+  const shallowListSignature = staticToolCallSignature(
+    "list_files",
+    { path: "../Musia", maxDepth: 2 },
+    semanticListContext
+  );
+  const deeperListSignature = staticToolCallSignature(
+    "list_files",
+    { path: "../Musia", maxDepth: 3 },
+    semanticListContext
+  );
+  assert(
+    shallowListSignature !== deeperListSignature,
+    "materially deeper directory inspection reused the shallow listing signature"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [shallowListSignature]: 2 },
+            staticOrder: [shallowListSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "list_files",
+      { path: "../Musia", maxDepth: 2 },
+      semanticListContext
+    )?.category === "repeated-read-only-call",
+    "an exact repeated directory listing escaped convergence"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [shallowListSignature]: 2 },
+            staticOrder: [shallowListSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "list_files",
+      { path: "../Musia", maxDepth: 3 },
+      semanticListContext
+    ) === null,
+    "a materially deeper directory listing was blocked as an exact repeat"
   );
   assert(
     shouldActivateScs("auto", {
