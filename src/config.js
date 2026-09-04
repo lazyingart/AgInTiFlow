@@ -288,13 +288,18 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     0,
     262144
   );
+  const configuredMaxOutputTokens =
+    overrides.maxOutputTokens ??
+    args.maxOutputTokens ??
+    (activeProvider === BASELINE_PROVIDER
+      ? process.env.AGINTI_LOCALLLM_MAX_OUTPUT_TOKENS
+      : process.env.AGINTI_MAX_OUTPUT_TOKENS);
+  const maxOutputTokensExplicit = overrides.maxOutputTokensExplicit !== undefined
+    ? parseBoolean(overrides.maxOutputTokensExplicit, false)
+    : Number(configuredMaxOutputTokens) > 0;
   const maxOutputTokens = clampNumber(
     parseNumber(
-      overrides.maxOutputTokens ??
-        args.maxOutputTokens ??
-        (activeProvider === BASELINE_PROVIDER
-          ? process.env.AGINTI_LOCALLLM_MAX_OUTPUT_TOKENS
-          : process.env.AGINTI_MAX_OUTPUT_TOKENS),
+      configuredMaxOutputTokens,
       activeProvider === BASELINE_PROVIDER ? 8192 : 0
     ),
     0,
@@ -412,6 +417,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     ),
     contextWindowTokens,
     maxOutputTokens,
+    maxOutputTokensExplicit,
     contextToolReserveTokens,
     contextBudgetTargetTokens: parseNumber(
       overrides.contextBudgetTargetTokens ?? args.contextBudgetTargetTokens ?? process.env.AGINTI_CONTEXT_TARGET_TOKENS,

@@ -4154,10 +4154,47 @@ function responseOnlySourceFreeStopResult(assessment = {}) {
   ].join(" ");
 }
 
+function applyLocalContextOutputAdaptation(config = {}, state = {}) {
+  const adaptation = state.meta?.localContextOutputAdaptation || {};
+  const adaptedOutputCap = Math.max(0, Number(adaptation.maxOutputTokens || 0));
+  const adaptedContextWindow = Math.max(0, Number(adaptation.contextWindowTokens || 0));
+  const runtimeContextWindow = Math.max(0, Number(config.contextWindowTokens || 0));
+  if (
+    normalizeProviderId(config.provider, "") !== "localllm" ||
+    config.maxOutputTokensExplicit === true ||
+    adaptedOutputCap <= 0 ||
+    (adaptedContextWindow && runtimeContextWindow && adaptedContextWindow !== runtimeContextWindow)
+  ) {
+    return config;
+  }
+  return {
+    ...config,
+    maxOutputTokens: Math.min(
+      Math.max(1, Number(config.maxOutputTokens || 8192)),
+      adaptedOutputCap
+    ),
+    localContextOutputAdapted: true,
+  };
+}
+
+function retainLocalContextOutputAdaptation(state, config, maxOutputTokens, step) {
+  if (config.maxOutputTokensExplicit === true || !Number(maxOutputTokens || 0)) return false;
+  state.meta = state.meta || {};
+  state.meta.localContextOutputAdaptation = {
+    provider: "localllm",
+    contextWindowTokens: Math.max(0, Number(config.contextWindowTokens || 0)),
+    maxOutputTokens: Number(maxOutputTokens),
+    learnedAtStep: step,
+    learnedAt: new Date().toISOString(),
+  };
+  return true;
+}
+
 async function finishWithResponseOnlyModelTurn({ client, config, state, store, observers, sessionId }) {
   async function requestWithResponseOnlyLocalContextRecovery({ step, mode }) {
+    const requestRuntimeConfig = applyLocalContextOutputAdaptation(config, state);
     try {
-      return await requestDirectResponse(client, config, state.messages);
+      return await requestDirectResponse(client, requestRuntimeConfig, state.messages);
     } catch (error) {
       if (!isLocalContextBudgetError(error)) throw error;
       state.meta = state.meta || {};
@@ -4166,13 +4203,17 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       if (retried[retryKey]) throw error;
 
       const requestMessages = Array.isArray(state.messages) ? state.messages : [];
-      const currentOutputTokens = Math.max(0, Number(config.maxOutputTokens || 0));
-      const retryOutputTokens = currentOutputTokens
-        ? Math.min(currentOutputTokens, 4096)
-        : 4096;
+      const currentOutputTokens = Math.max(
+        0,
+        Number(requestRuntimeConfig.maxOutputTokens || 0)
+      );
+      const adaptImplicitOutputCap = requestRuntimeConfig.maxOutputTokensExplicit !== true;
+      const retryOutputTokens = adaptImplicitOutputCap
+        ? Math.min(Math.max(currentOutputTokens || 8192, 2048), 4096)
+        : currentOutputTokens || undefined;
       const retryRuntimeConfig = {
-        ...config,
-        maxOutputTokens: retryOutputTokens,
+        ...requestRuntimeConfig,
+        ...(retryOutputTokens ? { maxOutputTokens: retryOutputTokens } : {}),
       };
       const compactMessages = buildContextBudgetCompactionMessages(
         state,
@@ -4195,7 +4236,8 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
         messageCharsAfter: countMessageChars(compactMessages),
         messageTokensBefore: estimateMessageTokens(requestMessages),
         messageTokensAfter: estimateMessageTokens(compactMessages),
-        maxOutputTokens: retryOutputTokens,
+        maxOutputTokens: retryOutputTokens || 0,
+        outputCapAdapted: adaptImplicitOutputCap,
         error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
       };
       state.messages = compactMessages;
@@ -4207,6 +4249,12 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
         [retryKey]: true,
       };
       state.meta.lastResponseOnlyContextBudgetRecovery = detail;
+      retainLocalContextOutputAdaptation(
+        state,
+        requestRuntimeConfig,
+        adaptImplicitOutputCap ? retryOutputTokens : 0,
+        step
+      );
       await store.appendEvent("model.local_context_budget_exceeded", detail);
       await store.appendEvent("history.compacted_for_local_context_retry", detail);
       observers.event("model.local_context_budget_exceeded", detail);
@@ -16427,13 +16475,16 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     (staticOrder.some((item) => String(item).startsWith("project-inspect:")) &&
       staticOrder.some((item) => /file-read:.*(?:README|AGENTS?|AGINTI|TASK)/i.test(String(item))) &&
       staticOrder.some((item) => /file-read:.*(?:tests?|specs?|config|analysis|pipeline|src|scripts?)[\\/]/i.test(String(item))));
-  const runtimeConfig = {
-    ...applyLocalFailureRecovery(config, state),
-    ...(retainedDataDiscoveryReady ? { dataProjectDiscoveryReady: true } : {}),
-    ...(currentWorkHasCompletedDeepResearch(state, config)
-      ? { deepResearchCompletedForCurrentWork: true }
-      : {}),
-  };
+  const runtimeConfig = applyLocalContextOutputAdaptation(
+    {
+      ...applyLocalFailureRecovery(config, state),
+      ...(retainedDataDiscoveryReady ? { dataProjectDiscoveryReady: true } : {}),
+      ...(currentWorkHasCompletedDeepResearch(state, config)
+        ? { deepResearchCompletedForCurrentWork: true }
+        : {}),
+    },
+    state
+  );
   const suppressedToolNames = convergenceSuppressedToolNames(state, config);
   if (suppressedToolNames.length) {
     runtimeConfig.convergenceSuppressedToolNames = suppressedToolNames;
@@ -27845,12 +27896,24 @@ async function runAgentOnceUnlocked(config) {
             requestMessages = timeoutRecovery.requestMessages;
           }
         } else if (isLocalContextBudgetError(error) && !contextRetriedSteps[retryKey]) {
+          const currentOutputTokens = Math.max(
+            0,
+            Number(stepRuntimeConfig.maxOutputTokens || 0)
+          );
+          const adaptImplicitOutputCap = stepRuntimeConfig.maxOutputTokensExplicit !== true;
+          const retryOutputTokens = adaptImplicitOutputCap
+            ? Math.min(Math.max(currentOutputTokens || 8192, 2048), 4096)
+            : currentOutputTokens || undefined;
+          const retryRuntimeConfig = {
+            ...stepRuntimeConfig,
+            ...(retryOutputTokens ? { maxOutputTokens: retryOutputTokens } : {}),
+          };
           const requestState = requestMessages === state.messages
             ? state
             : { ...state, messages: requestMessages };
           const compactMessages = buildContextBudgetCompactionMessages(
             requestState,
-            stepRuntimeConfig,
+            retryRuntimeConfig,
             snapshot,
             step,
             {
@@ -27867,6 +27930,8 @@ async function runAgentOnceUnlocked(config) {
             messageCharsAfter: countMessageChars(compactMessages),
             messageTokensBefore: estimateMessageTokens(requestMessages),
             messageTokensAfter: estimateMessageTokens(compactMessages),
+            maxOutputTokens: retryOutputTokens || 0,
+            outputCapAdapted: adaptImplicitOutputCap,
             error: redactSensitiveText(
               error instanceof Error ? error.message : String(error)
             ),
@@ -27881,6 +27946,12 @@ async function runAgentOnceUnlocked(config) {
             [retryKey]: true,
           };
           state.meta.lastLocalContextBudgetRecovery = detail;
+          retainLocalContextOutputAdaptation(
+            state,
+            stepRuntimeConfig,
+            adaptImplicitOutputCap ? retryOutputTokens : 0,
+            step
+          );
           await store.appendEvent("model.local_context_budget_exceeded", detail);
           await store.appendEvent("history.compacted_for_local_context_retry", detail);
           observers.event("model.local_context_budget_exceeded", detail);
@@ -27892,7 +27963,7 @@ async function runAgentOnceUnlocked(config) {
           );
           await store.saveState(state);
           try {
-            response = await requestNextStep(client, stepRuntimeConfig, requestMessages);
+            response = await requestNextStep(client, retryRuntimeConfig, requestMessages);
           } catch (retryError) {
             const timeoutRecovery = await recoverInterruptedModelStep({
               error: retryError,
@@ -27903,7 +27974,7 @@ async function runAgentOnceUnlocked(config) {
               observers,
               snapshot,
               step,
-              stepRuntimeConfig,
+              stepRuntimeConfig: retryRuntimeConfig,
               requestMessages,
             });
             response = timeoutRecovery.response;

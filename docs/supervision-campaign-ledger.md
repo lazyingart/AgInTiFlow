@@ -854,3 +854,28 @@ the same bytes under a different title, receives the completion redirect, then
 observes a host-side file revision and successfully delivers those new bytes.
 It asserts two substantive canvas items, one suppression, two persisted files,
 and no false progress credit for the duplicate.
+
+### Local context recovery retains its successful output lane
+
+`labcanvas-local-context-output-adaptation-104` was derived from retained
+production sessions rather than a synthetic large-prompt guess. Session
+`web-agent-labcanvas-e654a5b9-6486-4718-b8fd-c76f1c05626e` recorded 56
+`model.local_context_budget_exceeded` events in 58 steps, while the longer
+`web-agent-labcanvas-3ff222ef-af1c-4301-8799-4c6ca71368d2` history recorded 183
+such events across 291 requests. Each retry could compact successfully, but the
+next turn restored the implicit 8192-token output reserve and rediscovered the
+same envelope limit.
+
+AgInTiFlow now records whether `maxOutputTokens` came from an operator or from
+the LocalLLM default. After an implicit-cap context overflow, the successful
+4096-token retry lane is retained in private session state and reused by later
+agent steps and response-only continuations with the same context window. The
+saved runtime configuration remains unchanged, hosted providers are unaffected,
+and an explicit operator cap remains authoritative.
+
+The regressions cover a context overflow followed by a nested timeout and model
+route change, all subsequent full-agent requests, an explicit 8192-token cap,
+and a second response-only continuation whose near-limit history would overflow
+again without the retained lane. The second continuation makes one bounded
+request and the event ledger remains at one context-overflow recovery. The full
+`npm test` gate passes.

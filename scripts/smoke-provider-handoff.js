@@ -551,6 +551,7 @@ async function runResponseOnlyContextBudgetHandoffScenario() {
             provider: config.provider,
             model: payload.model,
             messages: payload.messages.length,
+            maxOutputTokens: Number(payload.max_tokens || 0),
           });
           if (phase === "resume" && config.provider === "deepseek") {
             throw Object.assign(new Error("402 Insufficient Balance"), { status: 402 });
@@ -658,12 +659,36 @@ async function runResponseOnlyContextBudgetHandoffScenario() {
     phase = "resume";
     const request =
       "Can you just answer from the saved status in this same session? Keep it short; no tools needed.";
-    const result = await runAgent(buildConfig({
+    await runAgent(buildConfig({
       goal: [
         request,
         `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
           mode: "host-managed-response",
           request,
+        })}`,
+      ].join("\n"),
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      resume: true,
+    }));
+
+    const adaptedState = await store.loadState();
+    adaptedState.messages = [
+      { role: "system", content: "Keep the current response-only chat contract." },
+      { role: "assistant", content: "x".repeat(70000) },
+    ];
+    adaptedState.updatedAt = new Date().toISOString();
+    await store.saveState(adaptedState);
+
+    phase = "adaptive-resume";
+    const adaptiveRequest =
+      "Continue from this saved chat context with one concise, explicitly unverified summary.";
+    const result = await runAgent(buildConfig({
+      goal: [
+        adaptiveRequest,
+        `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+          mode: "host-managed-response",
+          request: adaptiveRequest,
         })}`,
       ].join("\n"),
       provider: "deepseek",
@@ -685,7 +710,7 @@ const responseOnlyContextHandoff = await runResponseOnlyContextBudgetHandoffScen
 assert.equal(responseOnlyContextHandoff.result.stopped, undefined);
 assert.deepEqual(
   responseOnlyContextHandoff.requests.map((item) => `${item.phase}:${item.provider}`),
-  ["seed:deepseek", "resume:deepseek", "resume:localllm"],
+  ["seed:deepseek", "resume:deepseek", "resume:localllm", "adaptive-resume:localllm"],
   "response-only same-session handoff did not compact and retry on LocalLLM"
 );
 assert.equal(responseOnlyContextHandoff.state.provider, "localllm");
@@ -702,6 +727,16 @@ assert.equal(
 assert.equal(
   responseOnlyContextHandoff.events.filter((event) => event.type === "history.compacted_for_local_context_retry").length,
   1
+);
+assert.equal(
+  responseOnlyContextHandoff.state.meta?.localContextOutputAdaptation?.maxOutputTokens,
+  4096,
+  "response-only recovery did not retain its learned LocalLLM output cap"
+);
+assert.equal(
+  responseOnlyContextHandoff.requests.at(-1)?.maxOutputTokens,
+  4096,
+  "a later response-only continuation did not reuse the learned output cap"
 );
 assert.equal(
   responseOnlyContextHandoff.events.filter((event) => event.type === "session.failed").length,

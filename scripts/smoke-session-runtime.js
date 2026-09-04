@@ -70,6 +70,7 @@ const localConfig = {
   contextBudgetTargetChars: 42_000,
   contextWindowTokens: 262_144,
   maxOutputTokens: 8_192,
+  maxOutputTokensExplicit: true,
   contextToolReserveTokens: 6_000,
   contextBudgetTargetTokens: 120_000,
   commandCwd: "/tmp/aginti-session-runtime-smoke",
@@ -101,6 +102,7 @@ assert.equal(initial.auxiliaryProvider, "venice");
 assert.equal(initial.auxiliaryModel, "qwen-image-2-pro");
 assert.equal(initial.scsValidationMode, "deterministic");
 assert.equal(initial.dynamicStepExtensionLimitExplicit, true, "explicit step-limit provenance was not persisted");
+assert.equal(initial.maxOutputTokensExplicit, true, "explicit output-limit provenance was not persisted");
 assert.equal(initial.commandCwd, localConfig.commandCwd);
 assert.deepEqual(initial.allowedDomains, localConfig.allowedDomains);
 assert.deepEqual(initial.readOnlyRoots, localConfig.readOnlyRoots);
@@ -340,6 +342,32 @@ for (const field of [
 assert.throws(
   () => applySessionRuntimePatch(initial, { maxOutputTokens: 8_193 }, 1),
   (error) => error.code === "SESSION_RUNTIME_INVALID_FIELD"
+);
+
+const automaticOutputConfig = resolveRuntimeConfig(
+  { goal: "Verify an implicit LocalLLM output budget." },
+  { baseDir: process.cwd(), provider: "localllm" }
+);
+assert.equal(automaticOutputConfig.maxOutputTokens, 8_192);
+assert.equal(
+  automaticOutputConfig.maxOutputTokensExplicit,
+  false,
+  "the default LocalLLM output reserve was mistaken for an operator override"
+);
+const explicitOutputConfig = resolveRuntimeConfig(
+  { goal: "Verify an explicit LocalLLM output budget.", maxOutputTokens: 6_144 },
+  { baseDir: process.cwd(), provider: "localllm" }
+);
+assert.equal(explicitOutputConfig.maxOutputTokensExplicit, true);
+const patchedAutomaticOutput = applySessionRuntimePatch(
+  captureSessionRuntime(automaticOutputConfig),
+  { maxOutputTokens: 4_096 },
+  1
+);
+assert.equal(
+  patchedAutomaticOutput.maxOutputTokensExplicit,
+  true,
+  "a runtime output-limit patch did not become operator-authoritative"
 );
 
 const legacy = migrateLegacySessionRuntime({

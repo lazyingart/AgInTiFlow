@@ -37,6 +37,7 @@ const BOOLEAN_FIELDS = Object.freeze([
   "allowDestructive",
   "allowOutsideWorkspaceFileTools",
   "useDockerSandbox",
+  "maxOutputTokensExplicit",
 ]);
 
 const NUMBER_FIELDS = Object.freeze({
@@ -99,6 +100,7 @@ const DEFAULTS = Object.freeze({
   contextBudgetTargetChars: 0,
   contextWindowTokens: 32_768,
   maxOutputTokens: 8_192,
+  maxOutputTokensExplicit: false,
   contextToolReserveTokens: 4_096,
   contextBudgetTargetTokens: 0,
   commandCwd: "",
@@ -544,6 +546,12 @@ export function applySessionRuntimePatch(snapshot, runtimePatch, expectedRevisio
   for (const field of SESSION_RUNTIME_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(runtimePatch, field)) continue;
     candidate[field] = validatePatchField(field, runtimePatch[field], candidate);
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(runtimePatch, "maxOutputTokens") &&
+    !Object.prototype.hasOwnProperty.call(runtimePatch, "maxOutputTokensExplicit")
+  ) {
+    candidate.maxOutputTokensExplicit = Number(candidate.maxOutputTokens || 0) > 0;
   }
 
   // Runtime config treats sandboxMode as authoritative and derives the Docker

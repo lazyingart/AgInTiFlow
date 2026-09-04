@@ -2323,6 +2323,15 @@ try {
     "nested local timeout recovery retained an unbounded output envelope"
   );
   assert.equal(
+    contextTimeoutRequests[0]?.max_tokens,
+    8192,
+    "the initial implicit LocalLLM output reserve changed before recovery evidence"
+  );
+  assert(
+    contextTimeoutRequests.slice(1).every((payload) => Number(payload?.max_tokens || 0) <= 4096),
+    "the learned LocalLLM output cap was not reused after the first context overflow"
+  );
+  assert.equal(
     contextTimeoutEvents.filter((event) => event.type === "history.compacted_for_local_context_retry").length,
     1,
     "local context recovery was not recorded exactly once"
@@ -2341,6 +2350,25 @@ try {
     contextTimeoutState.model,
     "localllm-fast",
     "the nested timeout recovery model was not saved in durable session state"
+  );
+  assert.equal(
+    contextTimeoutState.meta?.localContextOutputAdaptation?.maxOutputTokens,
+    4096,
+    "the successful LocalLLM context envelope was not retained for later steps"
+  );
+  assert.equal(
+    nextStepRuntimeConfig(
+      {
+        provider: "localllm",
+        model: "localllm-deep",
+        maxOutputTokens: 8192,
+        maxOutputTokensExplicit: true,
+        contextWindowTokens: 32768,
+      },
+      contextTimeoutState
+    ).maxOutputTokens,
+    8192,
+    "an explicit operator output cap was overridden by automatic context adaptation"
   );
   assert.equal(
     await fs.readFile(
