@@ -1,6 +1,7 @@
 import path from "node:path";
 import { classifyCommand } from "./command-policy.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
+import { parseTopLevelShellSequence, tokenizeShellWords } from "./shell-syntax.js";
 
 export const DYNAMIC_STEP_MODES = ["off", "auto", "on"];
 
@@ -290,6 +291,43 @@ function simpleLsPath(command = "", commandCwd = process.cwd()) {
   return canonicalDiscoveryPath(rawPath, commandCwd);
 }
 
+function canonicalDocumentCompileSignature(command = "", commandCwd = process.cwd()) {
+  const sequence = parseTopLevelShellSequence(String(command || "").trim());
+  if (
+    !sequence.commands.length ||
+    sequence.commands.length > 2 ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return "";
+  }
+
+  let effectiveCwd = path.resolve(commandCwd || process.cwd());
+  let invocation = sequence.commands[0];
+  if (sequence.commands.length === 2) {
+    if (sequence.separators[0] !== "&&") return "";
+    const cdTokens = tokenizeShellWords(sequence.commands[0]);
+    if (cdTokens.length !== 2 || cdTokens[0] !== "cd") return "";
+    effectiveCwd = path.resolve(effectiveCwd, cdTokens[1]);
+    invocation = sequence.commands[1];
+  }
+
+  const tokens = tokenizeShellWords(invocation);
+  if (!tokens.length) return "";
+  const executable = path.basename(String(tokens[0] || "")).toLocaleLowerCase("en-US");
+  if (!["latexmk", "lualatex", "pdflatex", "xelatex"].includes(executable)) return "";
+  const sourceIndexes = tokens
+    .map((token, index) => (/\.tex$/iu.test(String(token || "")) ? index : -1))
+    .filter((index) => index >= 0);
+  if (sourceIndexes.length !== 1) return "";
+  const sourceIndex = sourceIndexes[0];
+  const source = path.resolve(effectiveCwd, tokens[sourceIndex]);
+  const args = tokens.slice(1);
+  args[sourceIndex - 1] = `<source:${source}>`;
+  return `document-compile:${executable}:${stableStringify(args)}`;
+}
+
 export function staticToolCallSignature(toolName, args = {}, context = {}) {
   const commandCwd = context.commandCwd || process.cwd();
   if (toolName === "list_files") {
@@ -346,6 +384,8 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
     })}`;
   }
   if (toolName === "run_command") {
+    const compileSignature = canonicalDocumentCompileSignature(args.command, commandCwd);
+    if (compileSignature) return compileSignature;
     const lsPath = simpleLsPath(args.command, commandCwd);
     if (lsPath) return `filesystem-list:${lsPath}:depth=1`;
   }

@@ -11464,6 +11464,83 @@ try {
     )?.category === "repeated-no-progress-call",
     "dynamic failure output allowed an unchanged failing command to loop"
   );
+  const absoluteLatexCompileArgs = {
+    command: `latexmk -pdf -interaction=nonstopmode -halt-on-error ${path.join(workspace, "reports", "brief.tex")}`,
+  };
+  const relativeLatexCompileArgs = {
+    command: `cd ${path.join(workspace, "reports")} && latexmk -pdf -interaction=nonstopmode -halt-on-error brief.tex`,
+  };
+  const absoluteLatexCompileSignature = staticToolCallSignature(
+    "run_command",
+    absoluteLatexCompileArgs,
+    { commandCwd: workspace }
+  );
+  assertStrict.equal(
+    absoluteLatexCompileSignature,
+    staticToolCallSignature("run_command", relativeLatexCompileArgs, {
+      commandCwd: workspace,
+    }),
+    "equivalent absolute-path and working-directory LaTeX builds had different failure identities"
+  );
+  assertStrict.notEqual(
+    absoluteLatexCompileSignature,
+    staticToolCallSignature(
+      "run_command",
+      {
+        command: `cd ${path.join(workspace, "reports")} && xelatex -interaction=nonstopmode -halt-on-error brief.tex`,
+      },
+      { commandCwd: workspace }
+    ),
+    "a genuinely different LaTeX compiler was collapsed into the failed latexmk attempt"
+  );
+  assertStrict.notEqual(
+    absoluteLatexCompileSignature,
+    staticToolCallSignature(
+      "run_command",
+      {
+        command: `cd ${path.join(workspace, "reports")} && latexmk -pdf -interaction=nonstopmode -halt-on-error appendix.tex`,
+      },
+      { commandCwd: workspace }
+    ),
+    "different LaTeX source files shared one failed-command identity"
+  );
+  const aliasedCompileFailureState = {
+    meta: {
+      toolLoop: {
+        stagnationEpoch: 8,
+        failedCommandAttempts: [
+          {
+            signature: absoluteLatexCompileSignature,
+            count: 2,
+            stagnationEpoch: 8,
+          },
+        ],
+        recent: [],
+      },
+    },
+  };
+  assertStrict.equal(
+    repeatedNoProgressToolBlock(
+      aliasedCompileFailureState,
+      "run_command",
+      relativeLatexCompileArgs,
+      { commandCwd: workspace }
+    )?.category,
+    "repeated-no-progress-call",
+    "a working-directory alias bypassed retained LaTeX failure convergence"
+  );
+  const postEditCompileState = structuredClone(aliasedCompileFailureState);
+  postEditCompileState.meta.toolLoop.stagnationEpoch = 9;
+  assertStrict.equal(
+    repeatedNoProgressToolBlock(
+      postEditCompileState,
+      "run_command",
+      relativeLatexCompileArgs,
+      { commandCwd: workspace }
+    ),
+    null,
+    "a source-edit epoch could not rerun the same LaTeX build"
+  );
   assertStrict.equal(
     runCommandResultHasDurableProgress({
       toolName: "run_command",

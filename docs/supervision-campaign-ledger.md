@@ -1368,3 +1368,25 @@ leading-workspace wrappers, `find -delete`, mutating `find -exec`, reader output
 redirection, and a stale convergence-history negative control. Dynamic-step
 and syntax checks pass without executing a destructive command, starting a
 model, or changing LabCanvas routing.
+
+### Equivalent document builds share failure state
+
+`labcanvas-document-compile-alias-convergence-125` follows retained production
+session `web-agent-labcanvas-d568a2bd-e9d4-48c9-a30e-0e7c830efcd5`. After one
+real LaTeX source repair, the session exhausted 84 steps while revisiting the
+same failing `latexmk` build through both an absolute source path and a `cd`
+plus relative source path. Exact-string guards bounded each spelling
+separately, but changing the shell spelling incorrectly created another retry
+budget. A byte-identical later overwrite no longer advances current runtime
+state, so this path alias remained the live bypass.
+
+Simple LaTeX compiler invocations now use a semantic failed-command identity:
+compiler, ordered flags, and the resolved `.tex` source. The absolute-path and
+working-directory forms of the same build therefore share bounded failure
+history. Different compilers, flags, source documents, and post-mutation epochs
+remain independent, preserving legitimate diagnosis and repair.
+
+The focused regression reproduces the retained path aliases, proves that a
+third equivalent failure is blocked, and keeps `xelatex`, another source, and a
+fresh source-edit epoch available. It does not execute LaTeX or change any
+LabCanvas host policy.
