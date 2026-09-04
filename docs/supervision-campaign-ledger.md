@@ -1075,3 +1075,29 @@ LocalLLM outcomes. Dropping `files` and `confirmation` fails closed with no
 terminal finish; preserving all three fields completes once. Provider handoff,
 source-free evidence, JSON repair, and syntax checks pass before the full
 package gate.
+
+### Negated cleanup policy does not become deletion authorization
+
+`labcanvas-prebuild-cleanup-auto-recovery-112` comes from retained production
+session `web-agent-labcanvas-c8410880-dc6a-420d-9270-9712f158d3ea`. The exact
+document-revision packet explicitly said never to bundle `rm`, delete, clean,
+reset, or scratch cleanup into a build. After making substantive report
+progress, the fallback model nevertheless attempted to remove the prior PDF
+and TeX sidecars before rebuilding. The destructive guard correctly blocked
+the command, but the permission adviser interpreted the words `delete` and
+`clean` in that negative safety rule as user authorization. It therefore
+paused the entire task for destructive approval instead of leaving the files
+in place and continuing safely.
+
+Deletion-intent parsing now removes bounded policy clauses such as `never
+bundle ... delete ... into a build command` before looking for affirmative
+deletion requests. The shell command remains blocked. When no independent
+deletion request exists, the existing non-destructive recovery tells the model
+to retain all files and continue the substantive work without approval. A
+separate affirmative request such as `Delete the obsolete PDF` still requires
+the normal destructive permission path.
+
+The production-shaped regression uses the retained absolute report paths and
+the same negated cleanup sentence. It proves the blocked cleanup no longer
+pauses, while an explicit deletion sentence in the same goal is not erased.
+Coding-tool and syntax checks pass before the full package gate.

@@ -151,7 +151,8 @@ export function recoverableInlineReadOnlyArtifactAudit(toolName = "", args = {},
 }
 
 function goalRequestsDeletion(config = {}, state = {}) {
-  const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "");
+  const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "")
+    .replace(/`([^`]+)`/g, "$1");
   const deletionIntent = /\b(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)\b|删除|刪除|移除|清理|清除|删掉|刪掉|削除|消去/i;
   if (!deletionIntent.test(goal)) return false;
 
@@ -159,6 +160,10 @@ function goalRequestsDeletion(config = {}, state = {}) {
   // authorization. Strip bounded negated phrases before looking for a genuine
   // deletion request elsewhere in the goal.
   const withoutNegatedDeletion = goal
+    .replace(
+      /\b(?:do\s+not|don't|dont|never|must\s+not|should\s+not|shouldn't|without)\s+(?:bundle|include|run|execute|retry)\b[^.\n]{0,320}(?:\.|$)/gi,
+      " "
+    )
     .replace(
       /\b(?:do\s+not|don't|dont|never|must\s+not|should\s+not|shouldn't|without)\s+(?:retry(?:ing)?\s+or\s+)?(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)(?:\s+any)?\b/gi,
       " "

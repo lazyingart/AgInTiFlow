@@ -1794,6 +1794,51 @@ try {
     negatedCleanupAdvice.autoRecover === true,
     "blocked cleanup under a do-not-delete goal should recover without pausing"
   );
+  const retainedReportCleanupArgs = {
+    command:
+      "rm -f /home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/task/2026-09-03-evidence-brief.pdf /home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/task/2026-09-03-evidence-brief.aux /home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/task/2026-09-03-evidence-brief.log /home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/task/2026-09-03-evidence-brief.out",
+  };
+  const retainedReportCleanupGoal =
+    "Revise the existing report and enable host compilation. Unless the current request explicitly requires deletion, never bundle `rm`, delete, clean, reset, or scratch-file cleanup into a build or validation command. Keep prior task artifacts as evidence.";
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      retainedReportCleanupArgs,
+      { goal: retainedReportCleanupGoal },
+      {}
+    ),
+    "a safety rule against bundled cleanup was mistaken for deletion authorization"
+  );
+  const retainedReportCleanupAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: retainedReportCleanupArgs,
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: { ...dockerWorkspacePolicy, goal: retainedReportCleanupGoal },
+    state: { sessionId: "coding-retained-report-cleanup-smoke" },
+  });
+  assert(
+    retainedReportCleanupAdvice.autoRecover === true &&
+      !shouldPauseForPermissionAdvice({
+        blocked: true,
+        permissionAdvice: retainedReportCleanupAdvice,
+      }),
+    "unrequested pre-build report cleanup still paused the substantive revision"
+  );
+  assert(
+    !isUnrequestedCleanupCommand(
+      "run_command",
+      retainedReportCleanupArgs,
+      {
+        goal:
+          `${retainedReportCleanupGoal} Delete the obsolete PDF and its generated sidecars after inspection.`,
+      },
+      {}
+    ),
+    "a separate explicit deletion request was erased with the safety rule"
+  );
   const dynamicEvidenceAdvice = buildPermissionAdvice({
     toolName: "run_command",
     args: {
