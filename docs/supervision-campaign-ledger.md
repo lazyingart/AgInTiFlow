@@ -995,3 +995,31 @@ rejected, and accepts the repaired evidence-grounded answer exactly once. The
 existing positive control still accepts a genuinely evidenced missing command.
 Syntax checks, truthful-completion tests, provider handoff, and the full package
 gate pass.
+
+### Revision and rebuild wording requires fresh artifact evidence
+
+`labcanvas-scoped-artifact-revision-verbs-109` comes from retained production
+session `web-agent-labcanvas-84d3ca00-7abe-4f4b-8b9e-51a7bf79122f`. Its exact
+repair contract required AgInTi to materially revise a source inside the named
+task directory, rebuild and inspect a replacement PDF, and return the verified
+new PDF instead of the unchanged artifact. After the hosted provider failed
+before inference, LocalLLM listed the directory, read the existing Markdown,
+evidence manifest, and routine contract, then sent the pre-existing Markdown
+and PDF to canvas. It performed no file mutation, rebuild, or replacement
+inspection, but the run finished because the mutation classifier did not treat
+`revise` or `rebuild` as workspace mutation verbs.
+
+The generic mutation contract now recognizes `revise`, `rebuild`, and
+`regenerate`, including their Chinese equivalents, anywhere the existing
+mutation classifier already accepts repair, rewrite, and update language. This
+does not infer a file mutation from artifact delivery alone: a file, source,
+document, path, workspace, or explicit filename signal is still required by
+the existing second-stage classifier. Message-only corrections and read-only
+reviews therefore keep their prior behavior.
+
+The production-shaped regression uses the exact retained wording and artifact
+scope. It proves that the request is a scoped artifact operation, requires a
+fresh file mutation after the request boundary, and still requires a PDF. The
+same retained production goal now derives file plus artifact evidence instead
+of artifact delivery alone, so unchanged prior files cannot satisfy it.
+Scoped-artifact, progressive-tool, syntax, and full package tests pass.

@@ -125,6 +125,55 @@ function currentTurnState(currentRequest, activeContract = {}) {
   };
 }
 
+const productionRevisionRequest =
+  "numbered_message_not_covered Materially revise a source file inside the exact task artifact directory, rebuild and inspect the replacement PDF, and return that verified new PDF with a concise direct answer; do not return the unchanged artifact.";
+const productionRevisionGoal = `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+  mode: "task",
+  request: productionRevisionRequest,
+  artifact_root: `/workspace/${artifactRoot}`,
+})}`;
+const productionRevisionContract = deriveScsTaskContract({
+  goal: productionRevisionGoal,
+  taskProfile: "auto",
+});
+assert.equal(
+  productionRevisionContract.requiresWorkspaceMutation,
+  true,
+  "an explicit scoped source revision was mistaken for read-only artifact delivery"
+);
+assert.equal(
+  productionRevisionContract.requiresFileMutation,
+  true,
+  "the production PDF-repair wording did not require a fresh source-file mutation"
+);
+assert.equal(
+  productionRevisionContract.scopedArtifactOperation,
+  true,
+  "the production PDF repair lost its scoped artifact operation"
+);
+assert(
+  productionRevisionContract.requiredArtifactKinds.some(
+    (item) => item.extension === ".pdf"
+  ),
+  "the production PDF repair lost its replacement PDF deliverable"
+);
+const guardedProductionRevisionContract = completionTaskContract(
+  { goal: productionRevisionGoal, taskProfile: "auto", commandCwd: "/workspace" },
+  currentTurnState(productionRevisionGoal, productionRevisionContract)
+);
+assert.equal(
+  guardedProductionRevisionContract.requiredFreshMutationRevision,
+  1,
+  "a pre-existing scoped PDF could satisfy an explicit material revision request"
+);
+assert.equal(
+  guardedProductionRevisionContract.requiredEvidence.find(
+    (item) => item.category === "file"
+  )?.minimumMutationRevision,
+  1,
+  "the scoped PDF repair did not bind file evidence to a post-request mutation"
+);
+
 const completedResearchContract = completionTaskContract(
   { goal: researchGoal, taskProfile: "auto", commandCwd: "/workspace" },
   currentTurnState(researchGoal, { scopedArtifactDeliverable: true })

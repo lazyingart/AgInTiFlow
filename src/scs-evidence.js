@@ -1418,17 +1418,17 @@ function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
   if (String(taskProfile || "").trim().toLowerCase() === "review") {
     return (
       explicitAddMutation ||
-      /\b(?:append|copy|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
+      /\b(?:append|copy|create|delete|edit|fix|implement|modify|move|patch|rebuild|refactor|regenerate|remove|rename|repair|replace|revise|rewrite|save|update|write)\b/.test(
         text
       )
     );
   }
   return (
     explicitAddMutation ||
-    /\b(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
+    /\b(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|rebuild|refactor|regenerate|remove|rename|repair|replace|revise|rewrite|save|update|write)\b/.test(
       text
     ) ||
-    /创建|写入|编辑|修复|实现|修改|更新|生成|保存|复制|移动|转换|删除|重命名|替换|追加/.test(text)
+    /创建|写入|编辑|修复|实现|修改|修订|更新|生成|重新生成|重建|保存|复制|移动|转换|删除|重命名|替换|追加/.test(text)
   );
 }
 
@@ -1776,7 +1776,7 @@ function stripCompletedWorkNarration(goal = "") {
     .replace(
       /\b(?:continue|resume)\s+(?:the\s+)?(?:same\s+)?(?:already\s+)?(?:completed|finished|verified|committed)\b[^.!?;；。！？\n]*/gi,
       (clause) =>
-        /\b(?:and|but|then)\s+(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/i.test(
+        /\b(?:and|but|then)\s+(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|rebuild|refactor|regenerate|remove|rename|repair|replace|revise|rewrite|save|update|write)\b/i.test(
           clause
         )
           ? clause
