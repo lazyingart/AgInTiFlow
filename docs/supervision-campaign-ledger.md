@@ -1831,3 +1831,25 @@ fixed two-call fail-closed result, including one source-free rejection, one
 scaffold rejection, no extra scaffold-repair request, schema preservation, and
 no `session.finished` event. No live model, LocalLLM inference, LabCanvas
 runtime change, queue action, schedule, or transport operation is involved.
+
+### Later repairs cannot invent speech from an unusable transcript
+
+`labcanvas-response-only-post-repair-transcript-144` continues the bounded
+Shipinhao transcript audit. The first answer truthfully said that a strongly
+repetitive transcript could not support a speech summary, but also added an
+unsupported journal validation claim. Source-free repair removed that claim
+and replaced the entire answer with a fluent invented account of the video's
+speech. Because transcript quality had already been checked, the fabricated
+summary previously reached `session.finished`.
+
+Response-only completion now repeats bounded-transcript quality validation at
+the final acceptance boundary. If a later repair drops the required limitation
+or infers speech from title metadata, the runtime returns the established
+truthful limitation in the caller's exact JSON envelope. It does not request a
+third model turn.
+
+The regression proves the before-fix successful finish and the fixed two-call
+stop, including the source-free rejection, transcript-quality fail-closed
+event, parseable limitation message, and absence of `session.finished`. No live
+model, LocalLLM inference, LabCanvas runtime change, queue action, schedule, or
+transport operation is involved.

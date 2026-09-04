@@ -5648,6 +5648,18 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     });
   }
 
+  transcriptAssessment = assessBoundedTranscriptResponse({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!transcriptAssessment.ok) {
+    return await stopForBoundedTranscriptQuality({
+      step: finalResponseStep,
+      assessment: transcriptAssessment,
+      contract: outputContract,
+    });
+  }
+
   state.meta = state.meta || {};
   state.meta.responseOnly = {
     completedAt: new Date().toISOString(),

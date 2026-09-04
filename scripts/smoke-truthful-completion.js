@@ -2247,6 +2247,57 @@ try {
     "a repeated invented speech summary was recorded as a successful finish"
   );
 
+  const inventedTranscriptAfterSourceFreeRepair = await runCase({
+    id: "bounded-transcript-invention-after-source-free-repair",
+    taskProfile: "chatops",
+    goal: boundedTranscriptResponseGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message:
+          "转写内容高度重复，无法可靠概括实际语音。Nature Biomedical Engineering 在 2025 年的研究已验证该视频所示机制。",
+        files: [],
+        confirmation: "",
+      })),
+      assistant(JSON.stringify({
+        message: "视频实际讲述一位神女从云端踏光而来，并与诗人相遇的浪漫故事。",
+        files: [],
+        confirmation: "",
+      })),
+    ],
+  });
+  assert.equal(inventedTranscriptAfterSourceFreeRepair.calls.length, 2);
+  assert.equal(
+    inventedTranscriptAfterSourceFreeRepair.result.stopped,
+    true,
+    "a source-free repair replaced a truthful transcript limitation with invented speech and still finished"
+  );
+  assert.equal(
+    inventedTranscriptAfterSourceFreeRepair.result.reason,
+    "unreliable_bounded_transcript"
+  );
+  assert.match(
+    JSON.parse(inventedTranscriptAfterSourceFreeRepair.result.result).message,
+    /无法可靠概括实际语音/u
+  );
+  assert(
+    inventedTranscriptAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the cross-validator fixture did not exercise source-free repair"
+  );
+  assert(
+    inventedTranscriptAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.transcript_quality_failed_closed"
+    ),
+    "the final transcript invariant did not record its fail-closed decision"
+  );
+  assert(
+    !inventedTranscriptAfterSourceFreeRepair.events.some(
+      (event) => event.type === "session.finished"
+    ),
+    "invented speech introduced by a later validator repair was persisted as successful"
+  );
+
   const providerSwitchSessionId = "provider-switch-resume-contract";
   const providerSwitchFirstTurn = await runCase({
     id: providerSwitchSessionId,
