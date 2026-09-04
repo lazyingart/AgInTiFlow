@@ -10635,6 +10635,81 @@ try {
     ) === null,
     "a materially refined web query was blocked by successful-search idempotency"
   );
+  const repeatedWebReadSignature = staticToolCallSignature(
+    "read_web_page",
+    {
+      url: "https://example.com/paper#results",
+      query: "  Organoid   imaging accuracy ",
+      maxChars: 10_000,
+      maxPassages: 6,
+    },
+    { commandCwd: workspace }
+  );
+  assert(
+    repeatedWebReadSignature ===
+      staticToolCallSignature(
+        "read_web_page",
+        {
+          url: "https://example.com/paper",
+          query: "organoid imaging accuracy",
+          maxChars: 11_000,
+          maxPassages: 8,
+        },
+        { commandCwd: workspace }
+      ),
+    "equivalent bounded page extractions did not share one discovery signature"
+  );
+  const repeatedWebReadState = {
+    meta: {
+      toolLoop: {
+        staticCounts: { [repeatedWebReadSignature]: 1 },
+        staticOrder: [repeatedWebReadSignature],
+        staticTotal: 1,
+      },
+    },
+  };
+  assert(
+    repeatedStaticToolBlock(
+      repeatedWebReadState,
+      "read_web_page",
+      {
+        url: "https://example.com/paper#results",
+        query: "organoid imaging accuracy",
+        maxChars: 12_000,
+        maxPassages: 8,
+      },
+      { commandCwd: workspace }
+    )?.category === "repeated-read-only-call",
+    "a second equivalent successful page extraction was not blocked"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      repeatedWebReadState,
+      "read_web_page",
+      {
+        url: "https://example.com/paper",
+        query: "organoid imaging limitations",
+        maxChars: 12_000,
+        maxPassages: 8,
+      },
+      { commandCwd: workspace }
+    ) === null,
+    "a materially different question about the same source page was blocked"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      repeatedWebReadState,
+      "read_web_page",
+      {
+        url: "https://example.com/paper",
+        query: "organoid imaging accuracy",
+        maxChars: 20_000,
+        maxPassages: 8,
+      },
+      { commandCwd: workspace }
+    ) === null,
+    "a materially deeper extraction of the same source page was blocked"
+  );
   const repeatedBrowserUrlSignature = staticToolCallSignature(
     "open_url",
     { url: "https://example.com/research#results" },

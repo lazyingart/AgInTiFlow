@@ -11401,7 +11401,7 @@ export function repeatedStaticToolBlock(state, toolName, args = {}, config = {})
   // Successful file reads, equivalent searches, and unchanged URL opens are
   // reusable evidence. A second identical call adds latency and can amplify
   // after compaction; the model can still refine a query or read a new range.
-  const repeatLimit = ["open_url", "read_file", "web_search"].includes(toolName) ? 1 : 2;
+  const repeatLimit = ["open_url", "read_file", "read_web_page", "web_search"].includes(toolName) ? 1 : 2;
   if (priorCalls < repeatLimit && staticTotal < STATIC_DISCOVERY_CONVERGENCE_LIMIT) return null;
   const exactOutputs = state.meta?.scs?.taskContract?.exactOutputPaths || [];
   const phaseExhausted = staticTotal >= STATIC_DISCOVERY_CONVERGENCE_LIMIT;

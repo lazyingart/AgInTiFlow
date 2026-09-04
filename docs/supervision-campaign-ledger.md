@@ -1279,3 +1279,23 @@ unsupported 20% next-year demand forecast. The provider-handoff regression
 forces DeepSeek quota failure and proves the valid LocalLLM route finishes on
 its first response without weakening explicit JSON schema checks or changing
 LabCanvas routing policy.
+
+### Exact page reads converge without blocking focused rereads
+
+`labcanvas-web-page-read-idempotency-121` comes from retained production
+session `web-agent-labcanvas-6a712fc4-a1a4-4128-801d-46771cb3c50a`. One exact
+web page extraction completed successfully 11 times, another completed six
+times, and a query-ranked extraction of that second page completed three times.
+The older convergence identity used only the URL and allowed two successful
+calls, so it could neither stop the first duplicate nor distinguish a genuinely
+different question about the same source.
+
+`read_web_page` discovery identity now combines the canonical URL, normalized
+passage query, and bounded content/passage scope bands. A second equivalent
+successful extraction is blocked immediately. A materially different research
+question or a larger content band remains available, while cosmetic whitespace,
+fragment, and small numeric changes do not reopen the call.
+
+The focused regression covers equivalent extraction normalization, exact-repeat
+blocking, a different question, and a deeper read. This changes no web provider,
+network permission, LabCanvas route, or hosted/local model priority.

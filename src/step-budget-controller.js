@@ -205,6 +205,30 @@ function canonicalListDepth(value) {
   return Math.min(Math.max(Math.floor(requested), 1), 8);
 }
 
+function canonicalWebReadCharBand(value) {
+  const requested = Number(value);
+  const bounded = Math.min(
+    Math.max(Number.isFinite(requested) && requested > 0 ? requested : 20_000, 1_000),
+    40_000
+  );
+  if (bounded <= 4_000) return 4_000;
+  if (bounded <= 12_000) return 12_000;
+  if (bounded <= 24_000) return 24_000;
+  return 40_000;
+}
+
+function canonicalWebReadPassageBand(value) {
+  const requested = Number(value);
+  const bounded = Math.min(
+    Math.max(Number.isFinite(requested) && requested > 0 ? requested : 8, 1),
+    16
+  );
+  if (bounded <= 4) return 4;
+  if (bounded <= 8) return 8;
+  if (bounded <= 12) return 12;
+  return 16;
+}
+
 function simpleLsPath(command = "", commandCwd = process.cwd()) {
   const match = String(command || "")
     .trim()
@@ -247,7 +271,13 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
     return `browser-open:${canonicalDiscoveryUrl(args.url)}`;
   }
   if (toolName === "read_web_page") {
-    return `web-read:${canonicalDiscoveryUrl(args.url)}`;
+    const query = canonicalDiscoveryQuery(args.query);
+    return `web-read:${stableStringify({
+      url: canonicalDiscoveryUrl(args.url),
+      query,
+      maxChars: canonicalWebReadCharBand(args.maxChars),
+      maxPassages: query ? canonicalWebReadPassageBand(args.maxPassages) : 0,
+    })}`;
   }
   if (toolName === "run_command") {
     const lsPath = simpleLsPath(args.command, commandCwd);
