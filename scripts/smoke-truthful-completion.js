@@ -358,6 +358,59 @@ assert.equal(
   true,
   "translated internal runtime scaffolding was accepted"
 );
+const responseOnlyHostAcknowledgementGoal = [
+  "Answer the current human message naturally.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "chat-response",
+    request: "Answer the current human message naturally.",
+  })}`,
+].join("\n");
+const retainedEnglishHostAcknowledgement =
+  "The WeCom message has been routed into the LabCanvas agent runtime as instructed. No external actions were taken, and the response adheres strictly to the requested format.";
+const retainedChineseHostAcknowledgement = "消息已成功路由至LabCanvas运行时环境，无需进一步操作。";
+for (const retainedHostAcknowledgement of [
+  retainedEnglishHostAcknowledgement,
+  retainedChineseHostAcknowledgement,
+]) {
+  const assessment = assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: responseOnlyHostAcknowledgementGoal,
+    result: JSON.stringify({ response: retainedHostAcknowledgement, handled: true }),
+  });
+  assert.equal(
+    assessment.leaks,
+    true,
+    "a retained host-routing acknowledgement was accepted as the human-facing answer"
+  );
+  assert(assessment.markers.includes("host-routing-acknowledgement"));
+}
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: [
+      "Report whether the current message reached LabCanvas.",
+      `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+        mode: "read-only-answer",
+        request: "Check whether the current message was routed into the LabCanvas runtime.",
+      })}`,
+    ].join("\n"),
+    result: "The message was routed into the LabCanvas runtime.",
+  }).leaks,
+  false,
+  "an explicit host-routing status question could not be answered"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: responseOnlyHostAcknowledgementGoal,
+    result: JSON.stringify({
+      response: "这个设计需要先核对接口尺寸，再决定公差。",
+      handled: true,
+    }),
+  }).leaks,
+  false,
+  "a normal response-only human answer was rejected"
+);
 
 const sourceFreeResearchGoal = [
   "Correct the research status from the host-managed response context.",
@@ -1300,6 +1353,104 @@ try {
     ),
     "the context-echo repair omitted the current-turn boundary or JSON contract"
   );
+
+  const hostAcknowledgementContextGoal = [
+    "You are the response-only reasoning backend for a chat host.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "chat-response",
+      request: currentChatMessage,
+    })}`,
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({ response: "natural reply to the current message", handled: true }),
+    "Current message:",
+    currentChatMessage,
+  ].join("\n");
+  const repairedHostAcknowledgement = await runCase({
+    id: "response-only-host-acknowledgement-repair",
+    taskProfile: "chatops",
+    goal: hostAcknowledgementContextGoal,
+    responses: [
+      assistant(JSON.stringify({
+        response: retainedEnglishHostAcknowledgement,
+        handled: true,
+      })),
+      assistant(JSON.stringify({
+        response: "不会。幽默只是表达方式，科研判断仍要靠证据和实验。",
+        handled: true,
+      })),
+    ],
+  });
+  assert.equal(repairedHostAcknowledgement.calls.length, 2);
+  assert.deepEqual(
+    Object.keys(JSON.parse(repairedHostAcknowledgement.result.result)),
+    ["response", "handled"],
+    "host acknowledgement repair changed the explicit JSON envelope"
+  );
+  assert.equal(
+    JSON.parse(repairedHostAcknowledgement.result.result).response,
+    "不会。幽默只是表达方式，科研判断仍要靠证据和实验。"
+  );
+  assert.equal(
+    repairedHostAcknowledgement.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedHostAcknowledgement.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_repaired"
+    ).length,
+    1
+  );
+  assert(
+    repairedHostAcknowledgement.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /routing acknowledgement/i.test(String(message.content || ""))
+    ),
+    "the host acknowledgement repair did not explain the task-facing defect"
+  );
+
+  const repeatedHostAcknowledgement = await runCase({
+    id: "response-only-host-acknowledgement-repeated",
+    taskProfile: "chatops",
+    goal: hostAcknowledgementContextGoal,
+    responses: [
+      assistant(JSON.stringify({
+        response: retainedEnglishHostAcknowledgement,
+        handled: true,
+      })),
+      assistant(JSON.stringify({
+        response: retainedChineseHostAcknowledgement,
+        handled: true,
+      })),
+    ],
+  });
+  assert.equal(repeatedHostAcknowledgement.calls.length, 2);
+  assert.equal(repeatedHostAcknowledgement.result.stopped, true);
+  assert.equal(repeatedHostAcknowledgement.result.reason, "model_did_not_execute");
+  assert.deepEqual(
+    Object.keys(JSON.parse(repeatedHostAcknowledgement.result.result)),
+    ["response", "handled"],
+    "host acknowledgement fail-closed result broke the explicit JSON envelope"
+  );
+  assert.equal(
+    JSON.parse(repeatedHostAcknowledgement.result.result).handled,
+    false,
+    "host acknowledgement fail-closed result claimed the current message was handled"
+  );
+  assert.equal(
+    repeatedHostAcknowledgement.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    2
+  );
+  assert(
+    repeatedHostAcknowledgement.events.some(
+      (event) => event.type === "response_only.internal_runtime_scaffold_failed_closed"
+    )
+  );
+  assert(!repeatedHostAcknowledgement.events.some((event) => event.type === "session.finished"));
 
   const explicitPriorMessageRepeat = await runCase({
     id: "response-only-explicit-prior-message-repeat",

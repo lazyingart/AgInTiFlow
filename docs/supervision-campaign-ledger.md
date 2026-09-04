@@ -1690,3 +1690,27 @@ evidence ledger. End-to-end cases prove that one correction preserves the
 caller's five-field JSON envelope and that a second unsupported answer fails
 closed without `session.finished`. No live model, LocalLLM inference, LabCanvas
 runtime change, queue action, schedule, or transport operation is involved.
+
+### Response-only answers cannot collapse into host acknowledgements
+
+`labcanvas-response-only-host-acknowledgement-138` follows retained production
+session `web-agent-labcanvas-21296064-9835-461b-8179-5c8cf5f367a2`. Two
+schema-valid response-only turns said that a WeCom message had been routed into
+the LabCanvas runtime and that the requested response format was followed. The
+host had already performed those operations; the fallback therefore answered
+its transport wrapper instead of the human message.
+
+Response-only completion now treats unsolicited routing, forwarding, runtime,
+and output-contract acknowledgements as private host-control leakage. The
+check reads the authoritative request from the evidence-scope envelope, so a
+real user question about routing or backend status remains answerable. One
+bounded repair asks for the task-facing answer without changing the caller's
+JSON keys or types. A second acknowledgement fails closed with a schema-valid
+`handled:false` result and no `session.finished` event.
+
+The production-shaped regression uses the exact retained English and Chinese
+outputs. It covers direct detection, an explicit routing-status positive
+control, a normal human-answer positive control, successful repair, repeated
+failure, event counts, and JSON-envelope preservation. No live model,
+LocalLLM inference, LabCanvas runtime change, queue action, schedule, or
+transport operation is involved.

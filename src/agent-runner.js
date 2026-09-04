@@ -1569,6 +1569,72 @@ function explicitlyRequestsRuntimeScaffoldDiscussion(goal = "") {
   return discussion.test(text) && subject.test(text);
 }
 
+function responseOnlyScopeRequestText(goal = "") {
+  const line = agintiEvidenceScopeLine(goal);
+  if (!line) return "";
+  try {
+    const payload = JSON.parse(line.replace(/^AGINTI_EVIDENCE_SCOPE_JSON:\s*/u, ""));
+    return String(payload?.request || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function explicitlyRequestsHostRoutingDiscussion(goal = "") {
+  const request = responseOnlyScopeRequestText(goal);
+  if (!request) return false;
+  const asksForStatus =
+    /\b(?:check|verify|confirm|explain|debug|inspect|status|whether|did|was|is|tell\s+me)\b/iu.test(
+      request
+    ) ||
+    /(?:检查|檢查|确认|確認|解释|解釋|调试|調試|状态|狀態|是否|有没有|有沒有|告诉我|告訴我)/u.test(
+      request
+    ) ||
+    /(?:確認|説明|デバッグ|状態|かどうか|教えて)/u.test(request);
+  const namesHostControl =
+    /\b(?:LabCanvas|runtime|backend|router?|routing|forward(?:ing|ed)?|message\s+delivery|response\s+(?:format|schema|contract))\b/iu.test(
+      request
+    ) ||
+    /(?:运行时|運行時|后端|後端|路由|转发|轉發|消息传递|消息傳遞|响应格式|回覆格式|回复格式)/u.test(
+      request
+    ) ||
+    /(?:ランタイム|バックエンド|ルーティング|転送|メッセージ配信|応答形式)/u.test(
+      request
+    );
+  return asksForStatus && namesHostControl;
+}
+
+function responseOnlyHostAcknowledgementMarkers(text = "") {
+  const value = String(text || "");
+  const markers = [];
+  if (
+    /\b(?:(?:WeChat|WeCom|chat|user)\s+)?(?:message|request|task)\b[^.!?;。！？；\n]{0,160}\b(?:rout(?:e|ed)|forward(?:ed)?|pass(?:ed)?|sent)\b[^.!?;。！？；\n]{0,140}\b(?:LabCanvas|agent\s+runtime|runtime|backend)\b|\b(?:rout(?:e|ed)|forward(?:ed)?|pass(?:ed)?|sent)\b[^.!?;。！？；\n]{0,100}\b(?:message|request|task)\b[^.!?;。！？；\n]{0,120}\b(?:LabCanvas|agent\s+runtime|runtime|backend)\b/iu.test(
+      value
+    ) ||
+    /(?:消息|请求|請求|任务|任務)[^。！？；\n]{0,100}(?:已(?:经|經)?(?:成功)?|成功)?(?:路由|转发|轉發|传递|傳遞|发送|發送)[^。！？；\n]{0,100}(?:LabCanvas|运行时|運行時|后端|後端|代理)/u.test(
+      value
+    ) ||
+    /(?:メッセージ|依頼|タスク)[^。！？；\n]{0,100}(?:ルーティング|転送|送信)[^。！？；\n]{0,100}(?:LabCanvas|ランタイム|バックエンド|エージェント)/u.test(
+      value
+    )
+  ) {
+    markers.push("host-routing-acknowledgement");
+  }
+  if (
+    /AGINTI_EVIDENCE_SCOPE_JSON/u.test(value) ||
+    /\b(?:response|output)\b[^.!?;。！？；\n]{0,100}\b(?:adheres?|conforms?|complies?|formatted)\b[^.!?;。！？；\n]{0,100}\b(?:requested|required|specified)?\s*(?:format|schema|contract|requirements?)\b/iu.test(
+      value
+    ) ||
+    /(?:响应|響應|回复|回覆|输出|輸出)[^。！？；\n]{0,80}(?:符合|遵循|按照)[^。！？；\n]{0,80}(?:格式|模式|契约|契約|要求)/u.test(
+      value
+    ) ||
+    /(?:応答|出力)[^。！？；\n]{0,80}(?:準拠|従って|形式化)[^。！？；\n]{0,80}(?:形式|スキーマ|契約|要件)/u.test(value)
+  ) {
+    markers.push("host-contract-acknowledgement");
+  }
+  return markers;
+}
+
 export function assessInternalRuntimeScaffoldLeak({ result = "", messages = [], goal = "" } = {}) {
   const text = String(result || "").trim();
   const sourceKinds = [
@@ -1579,7 +1645,15 @@ export function assessInternalRuntimeScaffoldLeak({ result = "", messages = [], 
         .filter(Boolean)
     ),
   ];
-  if (!text || sourceKinds.length === 0 || explicitlyRequestsRuntimeScaffoldDiscussion(goal)) {
+  const hostAcknowledgementMarkers = isResponseOnlyEvidenceScope(goal)
+    ? responseOnlyHostAcknowledgementMarkers(text)
+    : [];
+  if (
+    !text ||
+    explicitlyRequestsRuntimeScaffoldDiscussion(goal) ||
+    (hostAcknowledgementMarkers.length > 0 && explicitlyRequestsHostRoutingDiscussion(goal)) ||
+    (sourceKinds.length === 0 && hostAcknowledgementMarkers.length === 0)
+  ) {
     return { leaks: false, markers: [], sourceKinds };
   }
 
@@ -1608,7 +1682,8 @@ export function assessInternalRuntimeScaffoldLeak({ result = "", messages = [], 
   ];
   const markers = markerPatterns
     .filter(([, pattern]) => pattern.test(text))
-    .map(([id]) => id);
+    .map(([id]) => id)
+    .concat(hostAcknowledgementMarkers);
   const narrativeMarkers = markers.filter((id) =>
     [
       "runtime-compaction-narrative",
@@ -1619,6 +1694,7 @@ export function assessInternalRuntimeScaffoldLeak({ result = "", messages = [], 
   );
   const headingMarkers = markers.filter((id) => id.endsWith("-heading"));
   const leaks =
+    hostAcknowledgementMarkers.length > 0 ||
     narrativeMarkers.length >= 2 ||
     (narrativeMarkers.length >= 1 && headingMarkers.length >= 1) ||
     headingMarkers.length >= 3;
@@ -4691,6 +4767,50 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     };
   }
 
+  async function stopForResponseOnlyInternalScaffold({ step, decision, contract }) {
+    const stoppedResult = responseOnlyContractFallbackResult(contract, decision.result);
+    const detail = {
+      step,
+      mode: "response-only-internal-runtime-scaffold-fail-closed",
+      reason: "model_did_not_execute",
+      markers: decision.detail?.markers || [],
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      internalRuntimeScaffoldBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "model_did_not_execute", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.internal_runtime_scaffold_failed_closed", detail);
+    await store.appendEvent("session.stopped", {
+      reason: "model_did_not_execute",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.internal_runtime_scaffold_failed_closed", detail);
+    observers.event("session.stopped", {
+      reason: "model_did_not_execute",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "model_did_not_execute",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
   await store.appendEvent("model.requested", {
     step: 1,
     provider: config.provider,
@@ -4768,6 +4888,88 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
         mode: "response-only-contract-fail-closed",
       });
     }
+  }
+  let internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
+    goal: completionContractGoal(config, state),
+    messages: state.messages,
+    result,
+  });
+  if (internalScaffoldLeak.leaks) {
+    const firstDecision = await rejectInternalRuntimeScaffoldCompletion({
+      config,
+      state,
+      store,
+      observers,
+      step: finalResponseStep,
+      mode: "response-only",
+      candidateResult: result,
+      leak: internalScaffoldLeak,
+    });
+    if (firstDecision.action === "stop") {
+      return await stopForResponseOnlyInternalScaffold({
+        step: finalResponseStep,
+        decision: firstDecision,
+        contract: outputContract,
+      });
+    }
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-internal-runtime-scaffold-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-internal-runtime-scaffold-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-internal-runtime-scaffold-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return await stopForOutputContract({
+        step: finalResponseStep,
+        assessment: outputAssessment,
+        contract: outputContract,
+        mode: "response-only-internal-runtime-scaffold-repair-contract-fail-closed",
+      });
+    }
+    internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
+      goal: completionContractGoal(config, state),
+      messages: state.messages,
+      result,
+    });
+    if (internalScaffoldLeak.leaks) {
+      const repeatedDecision = await rejectInternalRuntimeScaffoldCompletion({
+        config,
+        state,
+        store,
+        observers,
+        step: finalResponseStep,
+        mode: "response-only",
+        candidateResult: result,
+        leak: internalScaffoldLeak,
+      });
+      return await stopForResponseOnlyInternalScaffold({
+        step: finalResponseStep,
+        decision: repeatedDecision,
+        contract: outputContract,
+      });
+    }
+    const repaired = {
+      step: finalResponseStep,
+      mode: "response-only-internal-runtime-scaffold-repair",
+      markers: firstDecision.detail?.markers || [],
+    };
+    await store.appendEvent("completion.internal_runtime_scaffold_repaired", repaired);
+    observers.event("completion.internal_runtime_scaffold_repaired", repaired);
   }
   let contextEchoAssessment = assessResponseOnlyContextEcho({
     goal: completionContractGoal(config, state),
@@ -25097,8 +25299,8 @@ async function rejectInternalRuntimeScaffoldCompletion({
       at: new Date().toISOString(),
     };
     const instruction = [
-      "Your proposed answer repeated private recovery or compaction scaffolding instead of answering the authoritative task.",
-      "Do not mention runtime prompts, context compaction, hidden instructions, or request visibility.",
+      "Your proposed answer repeated private recovery or compaction scaffolding, a routing acknowledgement, or host-contract language instead of answering the authoritative task.",
+      "Do not mention runtime prompts, context compaction, hidden instructions, request visibility, host routing acknowledgements, or output-contract compliance.",
       "Continue the actual current task from the retained goal and evidence: use the smallest enabled tool when action is still required, or return the concrete user-facing result when the task is already complete.",
       "If the task is genuinely blocked, state only the task-specific external blocker and preserve the session for resume.",
     ].join(" ");
