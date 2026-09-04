@@ -1427,6 +1427,82 @@ try {
     "permission blocker triggered an SCS replan instead of waiting for approval"
   );
 
+  const secretWriteRedactionRecovery = await runCase({
+    id: "secret-write-redaction-recovery",
+    goal: [
+      "Create notes/shipinhao-source-summary.md as a safe reader-facing summary.",
+      "Do not copy private signed media URLs or credentials into the derived note.",
+      "Verify the created file before finishing.",
+    ].join(" "),
+    allowFileTools: true,
+    responses: [
+      assistant("", [toolCall("unsafe-derived-note", "write_file", {
+        path: "notes/shipinhao-source-summary.md",
+        content: [
+          "# Shipinhao source summary",
+          "",
+          "Private source credential: DEMO_SECRET_TOKEN=aginti_fake_do_not_use",
+          "",
+        ].join("\n"),
+        mode: "create",
+      })]),
+      assistant("", [toolCall("redacted-derived-note", "write_file", {
+        path: "notes/shipinhao-source-summary.md",
+        content: [
+          "# Shipinhao source summary",
+          "",
+          "The source card identifies a short music video. Private source URL: [REDACTED]",
+          "",
+        ].join("\n"),
+        mode: "create",
+      })]),
+      assistant("", [toolCall("finish-redacted-note", "finish", {
+        result: "Created and verified the safe Shipinhao source summary with its private URL redacted.",
+      })]),
+    ],
+  });
+  assert.equal(
+    secretWriteRedactionRecovery.calls.length,
+    3,
+    "a recoverable secret-write mistake paused instead of requesting one redacted retry"
+  );
+  assert.equal(secretWriteRedactionRecovery.result.stopped, undefined);
+  const secretWriteBlock = secretWriteRedactionRecovery.events.find(
+    (event) => event.type === "tool.blocked" && event.data?.category === "workspace-content"
+  );
+  assert(secretWriteBlock, "the unsafe derived note was not blocked");
+  assert.equal(
+    secretWriteBlock.data?.permissionAdvice?.autoRecover,
+    true,
+    "secret-write guidance still asks for ineffective stronger permission"
+  );
+  assert(
+    !secretWriteRedactionRecovery.events.some(
+      (event) => event.type === "session.stopped" && event.data?.reason === "permission_required"
+    ),
+    "secret-write redaction recovery still persisted a permission pause"
+  );
+  assert(
+    secretWriteRedactionRecovery.calls[1]?.messages.some(
+      (message) =>
+        message.role === "tool" &&
+        /redact the sensitive value/i.test(String(message.content || ""))
+    ),
+    "the retry turn did not receive an explicit bounded redaction instruction"
+  );
+  const safeDerivedNote = await fs.readFile(
+    path.join(
+      tempRoot,
+      "workspaces",
+      "secret-write-redaction-recovery",
+      "notes",
+      "shipinhao-source-summary.md"
+    ),
+    "utf8"
+  );
+  assert.match(safeDerivedNote, /\[REDACTED\]/);
+  assert(!safeDerivedNote.includes("aginti_fake_do_not_use"));
+
   if (await tmuxAvailable()) {
     const tmuxAliasRecovery = await runCase({
       id: "tmux-shell-alias-recovery",

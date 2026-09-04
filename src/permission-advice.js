@@ -335,6 +335,22 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
     };
   }
 
+  if (category === "workspace-content") {
+    return {
+      ...base,
+      autoRecover: true,
+      summary:
+        "The workspace write was blocked because its proposed content contains a secret-like value. Stronger permission cannot make that content safe to persist.",
+      instruction:
+        "Continue automatically with one corrected write: redact the sensitive value as [REDACTED] or omit the private URL, token, credential, cookie, or signed query entirely. Preserve the useful non-sensitive content and the requested artifact path. Do not repeat the blocked value, ask for stronger permission, or modify an authoritative source record merely to sanitize a derived artifact.",
+      options: [
+        "Rewrite the intended derived artifact with the sensitive value replaced by [REDACTED].",
+        "Omit the private source field when it is unnecessary to the reader-facing result.",
+        "Use dedicated key storage only when the task truly requires a reusable credential reference.",
+      ],
+    };
+  }
+
   if (category === "workspace-write") {
     return {
       ...base,

@@ -1517,3 +1517,30 @@ router-style enum envelope, and a completion-auditor schema. They force the
 DeepSeek pre-inference quota handoff through deterministic LocalLLM responses;
 no live model inference, LabCanvas policy change, queue action, schedule, or
 transport operation is involved.
+
+### Secret-bearing derived content recovers by redaction
+
+`labcanvas-secret-write-redaction-recovery-131` follows retained production
+session `web-agent-labcanvas-0ba776d1-2592-45a1-a2f3-e842c092be20`. A
+Shipinhao source packet contained private signed media fields. While preparing
+a derived reader-facing note, the fallback model copied a token-like value into
+an `apply_patch` replacement. The workspace secret guard correctly denied the
+write, but generic permission advice paused the task and suggested a stronger
+Docker run. No permission level can make persisting that value safe, so the
+source-understanding task stopped for an irrelevant user decision.
+
+Workspace-content secret blocks now advertise one bounded automatic recovery:
+omit the private URL or replace the sensitive value with `[REDACTED]`, preserve
+the useful non-sensitive content and requested artifact path, and retry once.
+The denied write still does not mutate the workspace. The current assistant
+tool batch is still short-circuited, so later calls cannot act on the invalid
+content before the model sees the correction. Protected paths,
+outside-workspace writes, destructive actions, and genuine permission changes
+retain their existing pause behavior.
+
+The end-to-end regression first proves the old `permission_required` stop,
+then proves that a redacted retry creates the exact derived artifact and can
+finish without exposing the secret. Direct workspace-tool coverage separately
+proves that the original secret-like write remains blocked. No live model,
+private media URL, LabCanvas runtime change, queue action, schedule, or
+transport operation is involved.

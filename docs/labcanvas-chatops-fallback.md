@@ -88,6 +88,22 @@ oversized batch still stop with `tool_contract_violation`. A host may resume
 the same saved session with another provider after that categorized stop; it
 must not replay the original request or duplicate earlier side effects.
 
+## Secret-Bearing Derived Content
+
+Private source packets can legitimately contain signed media URLs, cookies, or
+token-shaped fields that must not be copied into a reader-facing artifact.
+Workspace secret guards remain authoritative: the proposed write is blocked
+before any file mutation.
+
+That block is a content-correction event, not a request for stronger runtime
+permission. AgInTi receives one bounded automatic recovery instruction to
+remove the private field or replace its value with `[REDACTED]`, retain the
+useful non-sensitive content, and write the originally requested derived
+artifact. It must not edit the authoritative source record merely to sanitize a
+summary, repeat the blocked value, or expose the value in its final response.
+Other protected-path, outside-workspace, destructive, and
+permission-sensitive blocks keep their existing approval behavior.
+
 ## Local Context Recovery
 
 LocalLLM planning compacts oversized goals to a bounded head-and-tail representation. Runtime compaction retains the first request and latest interruptions. A `LocalContextBudgetError` triggers one compact-and-retry cycle at the same step and records private recovery events. It does not authorize replaying task side effects.

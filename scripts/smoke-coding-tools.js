@@ -3351,6 +3351,27 @@ try {
     }
   );
   assert(secretContentResult.blocked && secretContentResult.category === "workspace-content", "write_file secret-like content was not blocked");
+  const secretContentAdvice = buildPermissionAdvice({
+    toolName: "write_file",
+    args: {
+      path: "notes/secret-leak-report.md",
+      content: "[redacted from permission-advice test]",
+      mode: "create",
+    },
+    guard: secretContentResult,
+    config: {
+      commandCwd: workspace,
+      sandboxMode: "host",
+      allowFileTools: true,
+      allowShellTool: false,
+    },
+    state: {},
+  });
+  assert(secretContentAdvice.autoRecover === true, "secret-like content block still requested stronger permissions");
+  assert(
+    /redact the sensitive value/i.test(secretContentAdvice.instruction || ""),
+    "secret-like content recovery omitted its bounded redaction instruction"
+  );
   await fs
     .access(path.join(workspace, "notes/secret-leak-report.md"))
     .then(() => {
