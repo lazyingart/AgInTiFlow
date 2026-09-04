@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 const BOUNDED_SOURCE_PACKET_PATTERN =
   /(?:bounded\s+(?:exact[- ]source|source|transcript)\s+packet|exact[- ]source\s+packet)\s*:\s*```(?:json)?\s*([\s\S]*?)\s*```/giu;
 
@@ -21,6 +23,201 @@ const TRANSCRIPT_LIMITATION_PATTERNS = [
   /(?:信頼でき|利用でき|要約でき|不十分|失敗).{0,70}(?:文字起こし|発話|音声|会話|対話)/u,
   /(?:聞き取れる|判別できる|明瞭な).{0,12}(?:発話|音声|会話).{0,8}(?:ない|ありません)/u,
 ];
+
+const RESPONSE_ONLY_PRIMARY_TEXT_KEYS = [
+  "response",
+  "chat_reply",
+  "ack",
+  "message",
+  "summary",
+  "confirmation",
+];
+
+function firstMarkedJsonValue(text = "", markerPattern, opening, closing) {
+  const source = String(text || "");
+  const marker = markerPattern.exec(source);
+  markerPattern.lastIndex = 0;
+  if (!marker) return null;
+  const start = source.indexOf(opening, marker.index + marker[0].length);
+  if (start < 0) return null;
+  let depth = 0;
+  let quote = "";
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === "\\") escaped = true;
+      else if (char === quote) quote = "";
+      continue;
+    }
+    if (char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === opening) depth += 1;
+    else if (char === closing) {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(source.slice(start, index + 1));
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function markedJsonValues(text = "", markerSource, opening, closing) {
+  const source = String(text || "");
+  const values = [];
+  const markers = [...source.matchAll(new RegExp(markerSource, "giu"))];
+  for (const marker of markers) {
+    const value = firstMarkedJsonValue(
+      source.slice(marker.index),
+      new RegExp(`^${markerSource}`, "iu"),
+      opening,
+      closing
+    );
+    if (value !== null) values.push(value);
+  }
+  return values;
+}
+
+function parseStrictJsonObject(text = "") {
+  const raw = String(text || "").trim();
+  const fenced = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu)?.[1];
+  try {
+    const parsed = JSON.parse(String(fenced ?? raw).trim());
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function primaryResponseTexts(result = "") {
+  const parsed = parseStrictJsonObject(result);
+  if (!parsed) return [String(result || "").trim()].filter(Boolean);
+  return RESPONSE_ONLY_PRIMARY_TEXT_KEYS
+    .filter((key) => typeof parsed[key] === "string" && parsed[key].trim())
+    .map((key) => parsed[key].trim());
+}
+
+function normalizeContextText(text = "") {
+  return String(text || "")
+    .normalize("NFKC")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLocaleLowerCase();
+}
+
+function currentMessageSections(goal = "") {
+  const source = String(goal || "");
+  const marker = /(?:^|\n)Current message:\s*(?:\n|$)/giu;
+  const end = /\n+(?:Recent same-chat context|Private same-member knowledge|Current exact-chat active task|Recent context|Current coalesced request):/iu;
+  return [...source.matchAll(marker)].map((match) => {
+    const tail = source.slice(match.index + match[0].length);
+    const boundary = tail.search(end);
+    return (boundary >= 0 ? tail.slice(0, boundary) : tail).trim();
+  }).filter(Boolean);
+}
+
+function priorSelfMessages(goal = "") {
+  const contexts = markedJsonValues(
+    goal,
+    "(?:^|\\n)Recent same-chat context:\\s*",
+    "[",
+    "]"
+  );
+  return contexts.flatMap((context) => Array.isArray(context) ? context : [])
+    .filter((entry) => entry?.is_self === true && typeof entry.content === "string")
+    .map((entry) => entry.content.trim())
+    .filter(Boolean);
+}
+
+function containsExplicitCurrentRepeat(goal = "", responseText = "") {
+  const normalized = normalizeContextText(responseText);
+  if (!normalized) return false;
+  const repeatIntent = /\b(?:repeat|quote|echo|return\s+exactly|verbatim)\b|(?:原样|原樣|逐字|照抄|重复|重複|引用).{0,24}(?:这|這|下|句|话|話|内容|內容)|(?:そのまま|逐語|引用|繰り返).{0,24}(?:文|内容|発言)/iu;
+  return currentMessageSections(goal).some((section) =>
+    repeatIntent.test(section) && normalizeContextText(section).includes(normalized)
+  );
+}
+
+function isSubstantiveExactReplay(candidate = "", prior = "") {
+  const left = normalizeContextText(candidate);
+  const right = normalizeContextText(prior);
+  if (!left || left !== right) return false;
+  return (left.match(/[\p{L}\p{N}]/gu) || []).length >= 12;
+}
+
+export function assessResponseOnlyContextEcho({ goal = "", result = "" } = {}) {
+  const parsedResult = parseStrictJsonObject(result);
+  const scopeObjects = markedJsonValues(
+    goal,
+    "AGINTI_EVIDENCE_SCOPE_JSON:\\s*",
+    "{",
+    "}"
+  );
+  if (
+    parsedResult &&
+    scopeObjects.some((scope) =>
+      scope && typeof scope === "object" && !Array.isArray(scope) &&
+      isDeepStrictEqual(scope, parsedResult)
+    )
+  ) {
+    return {
+      checked: true,
+      ok: false,
+      reason: "control-envelope-echo",
+    };
+  }
+
+  const selfMessages = priorSelfMessages(goal);
+  for (const candidate of primaryResponseTexts(result)) {
+    if (containsExplicitCurrentRepeat(goal, candidate)) continue;
+    if (selfMessages.some((prior) => isSubstantiveExactReplay(candidate, prior))) {
+      return {
+        checked: true,
+        ok: false,
+        reason: "prior-self-message-echo",
+      };
+    }
+  }
+  return {
+    checked: Boolean(scopeObjects.length || selfMessages.length),
+    ok: true,
+    reason: "No stale response-only context replay was detected.",
+  };
+}
+
+export function responseOnlyContextEchoRepairInstruction(assessment = {}, outputContractText = "") {
+  return [
+    assessment.reason === "control-envelope-echo"
+      ? "Your previous answer copied the host's response-only control envelope instead of answering the current request."
+      : "Your previous answer copied a prior bot-authored chat message instead of answering the different current inbound message.",
+    "Answer the authoritative current message now. Use prior chat only as context; do not replay an earlier bot response or runtime metadata.",
+    outputContractText
+      ? `Preserve the explicit output contract exactly: ${outputContractText}. Return one JSON object with no prose or markdown fence.`
+      : "Preserve the authoritative request's output shape exactly.",
+  ].join(" ");
+}
+
+export function responseOnlyContextEchoStopMessage(goal = "") {
+  const text = String(goal || "");
+  if (/[\u3040-\u30ff]/u.test(text)) {
+    return "現在の依頼への回答を生成できず、以前のボット応答または制御情報を繰り返したため停止しました。";
+  }
+  if (/\p{Script=Han}/u.test(text)) {
+    return "未能生成针对当前消息的回答；模型重复了先前的机器人回复或控制信息，因此已停止。";
+  }
+  return "No current-turn answer was produced; the model repeated prior bot output or response-only control metadata, so the turn was stopped.";
+}
 
 function parseBoundedSourcePackets(text = "") {
   const packets = [];

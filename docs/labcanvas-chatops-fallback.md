@@ -120,6 +120,31 @@ start a temporary localhost server, or ask the user to elevate the sandbox.
 The replacement workspace tool still enforces its normal path and read-root
 rules, so an outside-workspace or protected target remains blocked.
 
+## Current-Turn Response Fidelity
+
+Response-only prompts contain host control metadata and may contain prior
+bot-authored messages for conversational continuity. Neither is an answer to
+the current inbound message. AgInTiFlow therefore rejects two exact replay
+forms before accepting completion:
+
+- a returned JSON object that is identical to an
+  `AGINTI_EVIDENCE_SCOPE_JSON` control envelope;
+- a substantive primary response field that exactly repeats a prior
+  `is_self: true` chat message while the current message asks something else.
+
+The backend receives one bounded repair turn that identifies the current
+message as authoritative and preserves any explicit JSON key and type
+contract. A current message that explicitly requests a verbatim repetition is
+accepted. Merely quoting an earlier bot message to ask about it is not a repeat
+request.
+
+The replay check runs again after transcript-quality and source-free-evidence
+repairs. This prevents one validator from replacing a rejected answer with
+stale context that a later stage would otherwise accept. A repeated replay
+fails closed in the caller's parseable envelope, leaves the session stopped,
+and never records `session.finished`. This does not alter LabCanvas routing,
+provider priority, queues, schedules, transports, or chat coalescing.
+
 ## Local Context Recovery
 
 LocalLLM planning compacts oversized goals to a bounded head-and-tail representation. Runtime compaction retains the first request and latest interruptions. A `LocalContextBudgetError` triggers one compact-and-retry cycle at the same step and records private recovery events. It does not authorize replaying task side effects.

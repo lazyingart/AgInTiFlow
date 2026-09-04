@@ -74,7 +74,10 @@ import { readWebPage, searchWeb } from "./web-search.js";
 import { deepResearch, RESEARCH_VERSION } from "./deep-research.js";
 import {
   assessBoundedTranscriptResponse,
+  assessResponseOnlyContextEcho,
   boundedTranscriptRepairInstruction,
+  responseOnlyContextEchoRepairInstruction,
+  responseOnlyContextEchoStopMessage,
 } from "./response-only-source-quality.js";
 import {
   formatDurableResearchEvidence,
@@ -4642,6 +4645,52 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     };
   }
 
+  async function stopForResponseOnlyContextEcho({ step, assessment, contract, mode }) {
+    const stoppedResult = responseOnlyContractFallbackResult(
+      contract,
+      responseOnlyContextEchoStopMessage(completionContractGoal(config, state))
+    );
+    const fallback = {
+      step,
+      mode,
+      reason: assessment.reason,
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      staleContextReplayBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "stale_response_context_replay", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.context_echo_failed_closed", fallback);
+    await store.appendEvent("session.stopped", {
+      reason: "stale_response_context_replay",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.context_echo_failed_closed", fallback);
+    observers.event("session.stopped", {
+      reason: "stale_response_context_replay",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "stale_response_context_replay",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
   await store.appendEvent("model.requested", {
     step: 1,
     provider: config.provider,
@@ -4719,6 +4768,75 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
         mode: "response-only-contract-fail-closed",
       });
     }
+  }
+  let contextEchoAssessment = assessResponseOnlyContextEcho({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!contextEchoAssessment.ok) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only",
+      reason: contextEchoAssessment.reason,
+      preview: publicCompletionText(result, 300),
+    };
+    await store.appendEvent("response_only.context_echo_rejected", detail);
+    observers.event("response_only.context_echo_rejected", detail);
+    state.messages.push({
+      role: "user",
+      content: responseOnlyContextEchoRepairInstruction(
+        contextEchoAssessment,
+        responseOnlyJsonKeyContractText(outputContract)
+      ),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-context-echo-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-context-echo-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-context-echo-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return await stopForOutputContract({
+        step: finalResponseStep,
+        assessment: outputAssessment,
+        contract: outputContract,
+        mode: "response-only-context-echo-repair-contract-fail-closed",
+      });
+    }
+    contextEchoAssessment = assessResponseOnlyContextEcho({
+      goal: completionContractGoal(config, state),
+      result,
+    });
+    if (!contextEchoAssessment.ok) {
+      return await stopForResponseOnlyContextEcho({
+        step: finalResponseStep,
+        assessment: contextEchoAssessment,
+        contract: outputContract,
+        mode: "response-only-context-echo-fail-closed",
+      });
+    }
+    const repaired = {
+      step: finalResponseStep,
+      mode: "response-only-context-echo-repair",
+      reason: contextEchoAssessment.reason,
+    };
+    await store.appendEvent("response_only.context_echo_repaired", repaired);
+    observers.event("response_only.context_echo_repaired", repaired);
   }
   let transcriptAssessment = assessBoundedTranscriptResponse({
     goal: completionContractGoal(config, state),
@@ -4906,6 +5024,19 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
         ...goalRunMetadata(state),
       };
     }
+  }
+
+  contextEchoAssessment = assessResponseOnlyContextEcho({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!contextEchoAssessment.ok) {
+    return await stopForResponseOnlyContextEcho({
+      step: finalResponseStep,
+      assessment: contextEchoAssessment,
+      contract: outputContract,
+      mode: "response-only-context-echo-post-repair-fail-closed",
+    });
   }
 
   state.meta = state.meta || {};

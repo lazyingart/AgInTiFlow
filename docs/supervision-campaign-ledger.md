@@ -1568,3 +1568,27 @@ also proves that `file://` did not become remotely navigable. Outside-workspace,
 protected-path, domain-allowlist, and genuine permission boundaries remain
 unchanged. No live model, browser navigation, LabCanvas runtime mutation,
 queue action, schedule, or transport operation is involved.
+
+### Response-only completion cannot replay host control or prior bot output
+
+`labcanvas-response-only-context-echo-133` follows retained production session
+`web-agent-labcanvas-dc5db4bc-5d33-427b-aafb-042e44ef9595`. Its response-only
+fallback returned the host's evidence-scope object as the finished answer. A
+second retained trace showed the same failure class after context compaction:
+the fallback copied a prior bot-authored chat response instead of responding
+to a different current inbound message. Both outputs could satisfy ordinary
+plain-text or JSON-shape checks while saying nothing new.
+
+AgInTiFlow now compares response-only candidates with the exact host control
+object and attributed `is_self: true` messages in the bounded same-chat
+context. An exact substantive replay receives one current-turn repair that
+retains the caller's JSON contract. Explicit verbatim-repeat requests remain
+valid, while merely quoting an earlier response does not authorize copying it
+back.
+
+The regression also forces an unsupported source-free factual answer to be
+repaired into a stale prior message. A final cross-validator check stops that
+turn with a schema-compatible limitation and no `session.finished` event. The
+test uses deterministic provider responses only; no live DeepSeek or LocalLLM
+inference, LabCanvas host change, queue action, schedule, or transport
+operation is involved.

@@ -1143,6 +1143,196 @@ try {
   assert.equal(quotedChatClassification.result.result, '{"intent":"generation_only","publish":false}');
   assert(!quotedChatClassification.events.some((event) => event.type === "completion.evidence_rejected"));
 
+  const responseOnlyScope = {
+    mode: "chat-response",
+    request: "Return the requested text only; no external action is requested.",
+  };
+  const responseOnlyControlEchoGoal = [
+    "You are the response-only reasoning backend for a chat host.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify(responseOnlyScope)}`,
+    "Current message:",
+    "Can you answer the new question instead of repeating runtime metadata?",
+    "Return the finished chat response only.",
+  ].join("\n");
+  const repairedResponseOnlyControlEcho = await runCase({
+    id: "response-only-control-envelope-echo-repair",
+    taskProfile: "chatops",
+    goal: responseOnlyControlEchoGoal,
+    responses: [
+      assistant(JSON.stringify(responseOnlyScope)),
+      assistant("I will answer the new question directly rather than repeat runtime metadata."),
+    ],
+  });
+  assert.equal(
+    repairedResponseOnlyControlEcho.calls.length,
+    2,
+    "a response-only control-envelope echo was accepted without repair"
+  );
+  assert.equal(
+    repairedResponseOnlyControlEcho.result.result,
+    "I will answer the new question directly rather than repeat runtime metadata."
+  );
+  assert.equal(
+    repairedResponseOnlyControlEcho.events.filter(
+      (event) => event.type === "response_only.context_echo_rejected"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedResponseOnlyControlEcho.events.filter(
+      (event) => event.type === "response_only.context_echo_repaired"
+    ).length,
+    1
+  );
+
+  const staleBotMessage = "哈哈，这是马老师能量传输的副作用，能把知识讲得有趣些。";
+  const currentChatMessage = "不会最后科研做不成，被训练成段子手了吧？";
+  const staleBotContextGoal = [
+    "You are the response-only reasoning backend for a chat host.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify(responseOnlyScope)}`,
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({ response: "natural reply to the current message", handled: true }),
+    "Current message:",
+    currentChatMessage,
+    "Recent same-chat context:",
+    JSON.stringify([
+      { local_id: 481, sender_display: "LabAgent", content: staleBotMessage, is_self: true },
+      { local_id: 482, sender_display: "sunnyyty", content: currentChatMessage, is_self: false },
+    ]),
+  ].join("\n");
+  const repairedStaleBotContextEcho = await runCase({
+    id: "response-only-prior-self-message-echo-repair",
+    taskProfile: "chatops",
+    goal: staleBotContextGoal,
+    responses: [
+      assistant(JSON.stringify({ response: staleBotMessage, handled: true })),
+      assistant(JSON.stringify({
+        response: "不会。幽默只是表达方式，科研判断仍要靠证据和实验。",
+        handled: true,
+      })),
+    ],
+  });
+  assert.equal(
+    repairedStaleBotContextEcho.calls.length,
+    2,
+    "a prior bot-authored chat message was accepted as the answer to a different current message"
+  );
+  assert.equal(
+    JSON.parse(repairedStaleBotContextEcho.result.result).response,
+    "不会。幽默只是表达方式，科研判断仍要靠证据和实验。"
+  );
+  assert(
+    repairedStaleBotContextEcho.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /prior bot-authored chat message/i.test(String(message.content || "")) &&
+        /"response":string, "handled":boolean/i.test(String(message.content || ""))
+    ),
+    "the context-echo repair omitted the current-turn boundary or JSON contract"
+  );
+
+  const explicitPriorMessageRepeat = await runCase({
+    id: "response-only-explicit-prior-message-repeat",
+    taskProfile: "chatops",
+    goal: [
+      "Return the finished chat response only.",
+      `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify(responseOnlyScope)}`,
+      "Current message:",
+      `Please repeat this exact prior sentence without changing it: ${staleBotMessage}`,
+      "Recent same-chat context:",
+      JSON.stringify([
+        { local_id: 481, sender_display: "LabAgent", content: staleBotMessage, is_self: true },
+      ]),
+    ].join("\n"),
+    responses: [assistant(staleBotMessage)],
+  });
+  assert.equal(
+    explicitPriorMessageRepeat.calls.length,
+    1,
+    "an explicit request to repeat prior text triggered an unnecessary context-echo repair"
+  );
+  assert.equal(explicitPriorMessageRepeat.result.result, staleBotMessage);
+
+  const quotedPriorMessageQuestion = await runCase({
+    id: "response-only-quoted-prior-message-is-not-repeat-permission",
+    taskProfile: "chatops",
+    goal: [
+      "Return the finished chat response only.",
+      `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify(responseOnlyScope)}`,
+      "Current message:",
+      `Why did you previously say this: ${staleBotMessage}`,
+      "Recent same-chat context:",
+      JSON.stringify([
+        { local_id: 481, sender_display: "LabAgent", content: staleBotMessage, is_self: true },
+      ]),
+    ].join("\n"),
+    responses: [
+      assistant(staleBotMessage),
+      assistant("That sentence continued the group's joke, but it did not answer the later question."),
+    ],
+  });
+  assert.equal(
+    quotedPriorMessageQuestion.calls.length,
+    2,
+    "quoting an old bot message was mistaken for an explicit request to repeat it"
+  );
+  assert.equal(
+    quotedPriorMessageQuestion.result.result,
+    "That sentence continued the group's joke, but it did not answer the later question."
+  );
+
+  const repeatedStaleBotContextEcho = await runCase({
+    id: "response-only-prior-self-message-echo-fail-closed",
+    taskProfile: "chatops",
+    goal: staleBotContextGoal,
+    responses: [
+      assistant(JSON.stringify({ response: staleBotMessage, handled: true })),
+      assistant(JSON.stringify({ response: staleBotMessage, handled: true })),
+    ],
+  });
+  assert.equal(repeatedStaleBotContextEcho.calls.length, 2);
+  assert.equal(repeatedStaleBotContextEcho.result.stopped, true);
+  assert.equal(repeatedStaleBotContextEcho.result.reason, "stale_response_context_replay");
+  assert.deepEqual(Object.keys(JSON.parse(repeatedStaleBotContextEcho.result.result)), [
+    "response",
+    "handled",
+  ]);
+  assert(
+    !repeatedStaleBotContextEcho.events.some((event) => event.type === "session.finished"),
+    "a repeated stale bot-message replay was persisted as a successful finish"
+  );
+
+  const staleEchoAfterSourceFreeRepair = await runCase({
+    id: "response-only-stale-echo-after-source-free-repair",
+    taskProfile: "chatops",
+    goal: staleBotContextGoal,
+    responses: [
+      assistant(JSON.stringify({
+        response:
+          "The publication appeared in 2025 and was validated on 12,000 cases with 94.2% accuracy.",
+        handled: true,
+      })),
+      assistant(JSON.stringify({ response: staleBotMessage, handled: true })),
+    ],
+  });
+  assert.equal(staleEchoAfterSourceFreeRepair.calls.length, 2);
+  assert.equal(staleEchoAfterSourceFreeRepair.result.stopped, true);
+  assert.equal(
+    staleEchoAfterSourceFreeRepair.result.reason,
+    "stale_response_context_replay",
+    "a source-free evidence repair reintroduced a stale bot message and still finished"
+  );
+  assert(
+    staleEchoAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the production-shaped first answer did not exercise source-free repair"
+  );
+  assert(
+    !staleEchoAfterSourceFreeRepair.events.some((event) => event.type === "session.finished"),
+    "a stale bot message introduced by a later validator repair was persisted as successful"
+  );
+
   const boundedTranscriptResponseGoal = [
     "You are the response-only reasoning backend for a chat host.",
     `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
