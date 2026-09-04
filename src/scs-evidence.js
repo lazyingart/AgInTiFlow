@@ -1878,9 +1878,13 @@ function sourceFreeResponseHasEvidence(ledger = {}) {
 }
 
 function sourceFreeClaimSegments(text = "") {
-  return String(text || "")
+  const protectedAbbreviations = String(text || "").replace(
+    /\b(?:e\.g|i\.e)\./giu,
+    (match) => match.replace(/\./g, "\uE000")
+  );
+  return protectedAbbreviations
     .split(/(?:[\n\r]+|(?<=[.!?。！？;；]))/u)
-    .map((item) => item.trim())
+    .map((item) => item.replace(/\uE000/g, ".").trim())
     .filter(Boolean);
 }
 
@@ -1956,6 +1960,21 @@ function sourceFreeRequestExplicitlyAsksForSpeculation(goal = "") {
     /(?:求める|必要|含める|追加|提供|作成|提示|予測して)[^。！？；\n]{0,80}(?:反証可能な|高リスク|作業)?(?:仮説|予測|予想|推測)/u.test(
       value
     )
+  );
+}
+
+function sourceFreeRequestRequiresNamedEvidenceGrounding(goal = "") {
+  const payload = parseAgintiEvidenceScope(goal);
+  const request = String(payload?.request || "").trim();
+  if (!request) return false;
+  return (
+    /\b(?:research|evidence|source-grounded|literature|paper|publication|study|inspiration|state\s+of\s+the\s+art|new\s+advances?|frontier)\b/iu.test(
+      request
+    ) ||
+    /(?:研究|调研|調研|证据|證據|来源|來源|文献|文獻|论文|論文|灵感|靈感|新进展|新進展|前沿|同行)/u.test(
+      request
+    ) ||
+    /(?:研究|調査|証拠|出典|文献|論文|着想|ひらめき|新展開|最前線)/u.test(request)
   );
 }
 
@@ -2051,7 +2070,10 @@ function sourceFreeClaimSegmentOnlyDescribesTaskIntent(text = "") {
   return !assertsExternalOutcome;
 }
 
-function sourceFreeExternalClaimCategoriesForSegment(text = "") {
+function sourceFreeExternalClaimCategoriesForSegment(
+  text = "",
+  { requireNamedEvidenceGrounding = false } = {}
+) {
   const value = String(text || "");
   if (!value.trim()) return [];
   const categories = [];
@@ -2083,15 +2105,30 @@ function sourceFreeExternalClaimCategoriesForSegment(text = "") {
     "external_evidence",
     /\b(?:according\s+to|as\s+reported\s+by|sources?\s+(?:show|say|indicate|confirm|report)|cit(?:e|ation|ed)|doi\s*[:/]|arxiv\s*[:/]|the\s+(?:paper|study|source|evidence)\s+(?:shows|states|reports|confirms|validates))\b|(?:根据|根據|据|據|来源|來源|资料|資料|证据|證據|文献|文獻|论文|論文|引用)[^。！？；\n]{0,50}(?:显示|顯示|表明|指出|报道|報道|证明|證明|验证|驗證|确认|確認)|(?:によると|出典|証拠|根拠|引用|論文|研究)[^。！？；\n]{0,50}(?:示す|示した|報告|確認|検証)/iu
   );
+  if (requireNamedEvidenceGrounding) {
+    add(
+      "named_source_evidence",
+      /(?:\b(?:Nature(?:\s+[A-Z][A-Za-z-]+){0,4}|Science(?:\s+[A-Z][A-Za-z-]+){0,4}|Cell(?:\s+[A-Z][A-Za-z-]+){0,4}|[A-Z][A-Za-z&-]+(?:\s+[A-Z][A-Za-z&-]+){0,5}\s+(?:Journal|Review|Proceedings))\b[^.!?;。！？；\n]{0,180}\b(?:provid(?:e|es|ed)\s+(?:(?:the|first|indirect|direct|initial|supporting)\s+){0,4}evidence|show(?:s|ed)?|demonstrat(?:e|es|ed)|support(?:s|ed)?|report(?:s|ed)?|find(?:s|ings)?|establish(?:es|ed)?)\b)|(?:《[^》\n]{2,100}》[^。！？；\n]{0,90}(?:提及|报道|報道|指出|显示|顯示|表明|发现|發現|验证|驗證|证实|證實|介绍|介紹))|(?:「[^」\n]{2,100}」[^。！？；\n]{0,90}(?:報告|示す|示した|指摘|発見|検証|確認|紹介))/iu
+    );
+    add(
+      "named_external_resource",
+      /\b(?:open[-\s]?source|publicly\s+available|released|available)\s+(?:["'“‘「『][^"'”’」』\n]{2,80}["'”’」』]|[A-Z][A-Za-z0-9._-]{2,})(?:\s+(?:Python|JavaScript|R))?\s+(?:toolkit|tool|library|package|repository|repo|dataset|platform|framework|model)\b|(?:开源|開源|公开可用|公開可用|已经发布|已經發布)[的\s]*(?:《[^》\n]{2,80}》|["'“‘「『][^"'”’」』\n]{2,80}["'”’」』]|[A-Z][A-Za-z0-9._-]{2,})(?:\s*(?:Python|JavaScript|R))?\s*(?:工具包|工具|库|庫|软件包|軟件包|项目|項目|仓库|倉庫|数据集|資料集|平台|框架|模型)|(?:オープンソース|公開済み|利用可能な)[の\s]*(?:「[^」\n]{2,80}」|[A-Z][A-Za-z0-9._-]{2,})(?:\s*(?:Python|JavaScript|R))?\s*(?:ツールキット|ツール|ライブラリ|パッケージ|リポジトリ|データセット|プラットフォーム|フレームワーク|モデル)/iu
+    );
+  }
   return unique(categories);
 }
 
-function sourceFreeExternalClaimAssessment(text = "", { allowExplicitSpeculation = false } = {}) {
+function sourceFreeExternalClaimAssessment(
+  text = "",
+  { allowExplicitSpeculation = false, requireNamedEvidenceGrounding = false } = {}
+) {
   const segments = sourceFreeClaimSegments(text);
   const categories = [];
   const unsupported = [];
   for (const segment of segments) {
-    const segmentCategories = sourceFreeExternalClaimCategoriesForSegment(segment);
+    const segmentCategories = sourceFreeExternalClaimCategoriesForSegment(segment, {
+      requireNamedEvidenceGrounding,
+    });
     if (!segmentCategories.length) continue;
     const forecastOnly =
       segmentCategories.length === 1 && segmentCategories[0] === "forecast";
@@ -2114,7 +2151,12 @@ function sourceFreeExternalClaimAssessment(text = "", { allowExplicitSpeculation
     const explicitlySpeculative =
       allowExplicitSpeculation && sourceFreeClaimSegmentIsExplicitSpeculation(segment);
     const assertsEvidence = segmentCategories.some((category) =>
-      ["validation", "external_evidence"].includes(category)
+      [
+        "validation",
+        "external_evidence",
+        "named_source_evidence",
+        "named_external_resource",
+      ].includes(category)
     );
     if (
       !deniesVerification &&
@@ -2161,8 +2203,10 @@ export function evaluateSourceFreeResponseClaims({
     responseOnlyScopeHasFreshEvidenceManifest(goal) ||
     sourceFreeResponseHasEvidence(evidenceLedger);
   const allowExplicitSpeculation = sourceFreeRequestExplicitlyAsksForSpeculation(goal);
+  const requireNamedEvidenceGrounding = sourceFreeRequestRequiresNamedEvidenceGrounding(goal);
   const claimAssessment = sourceFreeExternalClaimAssessment(candidateResult, {
     allowExplicitSpeculation,
+    requireNamedEvidenceGrounding,
   });
   const categories = claimAssessment.categories;
   const unsupportedClaims = claimAssessment.unsupported;

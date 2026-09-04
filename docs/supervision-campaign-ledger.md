@@ -1665,3 +1665,28 @@ targets are blocked without creating files, that an `apply_patch` PDF add is
 also blocked, and that representative text-native source formats still work.
 No compiler, live model, LabCanvas runtime mutation, queue action, schedule, or
 transport operation is involved.
+
+### Source-free inspiration cannot invent named evidence
+
+`labcanvas-source-free-inspiration-grounding-137` follows retained production
+session `web-agent-labcanvas-98f06435-ce9d-4300-b2b2-e8c4399d46bc`. A scheduled
+inspiration turn had no fresh evidence manifest or scoped tool evidence, yet
+the fallback attributed claims to a magazine and a named journal, described
+results as already validated, and recommended a purported open-source research
+toolkit. The answer mixed those assertions with a requested high-risk
+prediction, which made the unsupported grounding look plausible.
+
+Source-free research and inspiration responses now distinguish two independent
+things: the assistant may still propose its own clearly labeled, falsifiable
+hypothesis or experiment, but a named publication, quoted source, or claimed
+named research resource requires current scoped evidence. Sentence analysis
+also keeps common `e.g.` and `i.e.` abbreviations intact so an attribution and
+its evidence claim cannot be separated by punctuation tokenization.
+
+The production-shaped regression covers the retained English and Chinese
+claims, equivalent claims with the year removed, a named-tool assertion, a
+source-free hypothesis positive control, and the same answer with a current
+evidence ledger. End-to-end cases prove that one correction preserves the
+caller's five-field JSON envelope and that a second unsupported answer fails
+closed without `session.finished`. No live model, LocalLLM inference, LabCanvas
+runtime change, queue action, schedule, or transport operation is involved.

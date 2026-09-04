@@ -449,6 +449,76 @@ assert.equal(
   true,
   "an explicitly labeled Japanese falsifiable prediction was rejected"
 );
+const sourceFreeInspirationGoal = [
+  "Create one concise, useful inspiration point with a falsifiable prediction and experiment.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request:
+      "Create one concise research inspiration point with a falsifiable prediction and experiment.",
+  })}`,
+].join("\n");
+const retainedNamedJournalEvidence = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "Recent advances in 3D bioprinting (e.g., Nature Biomedical Engineering) provide the first indirect evidence that organoids can exhibit self-organizing states.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedNamedJournalEvidence.ok,
+  false,
+  "a named journal was accepted as evidence after the model omitted the publication year"
+);
+assert(retainedNamedJournalEvidence.categories.includes("named_source_evidence"));
+const retainedNamedToolkitClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "Actionable next step: monitor synchronization using the open-source 'NeuroSync' Python toolkit.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedNamedToolkitClaim.ok,
+  false,
+  "a claimed named open-source research toolkit bypassed source-free grounding"
+);
+assert(retainedNamedToolkitClaim.categories.includes("named_external_resource"));
+const retainedQuotedChineseSource = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "高风险预测：工程化细菌与类器官可能形成异构计算网络。《环球科学》提及细菌晶体管；下一步做盲法对照。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedQuotedChineseSource.ok,
+  false,
+  "a quoted Chinese publication claim was laundered by a requested prediction"
+);
+assert(retainedQuotedChineseSource.categories.includes("named_source_evidence"));
+const sourceFreeExperimentWithoutAttribution = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "这是一个尚未验证的假设：工程化细菌与类器官可能形成异构计算网络。下一步做盲法对照实验，并预先写明失败条件。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  sourceFreeExperimentWithoutAttribution.ok,
+  true,
+  "a source-free assistant-owned hypothesis and experiment was incorrectly rejected"
+);
+const groundedNamedResearchResource = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "The current evidence manifest identifies the open-source 'NeuroSync' Python toolkit.",
+  evidenceLedger: {
+    itemCount: 1,
+    categories: ["source"],
+    items: [{ category: "source", verified: true }],
+  },
+});
+assert.equal(
+  groundedNamedResearchResource.ok,
+  true,
+  "a named research resource backed by current scoped evidence was rejected"
+);
 const attributedPrediction = evaluateSourceFreeResponseClaims({
   goal: sourceFreePredictionGoal,
   candidateResult: "该报告预测2030年底前产品将上线。",
@@ -1300,6 +1370,115 @@ try {
   assert(
     !repeatedStaleBotContextEcho.events.some((event) => event.type === "session.finished"),
     "a repeated stale bot-message replay was persisted as a successful finish"
+  );
+
+  const sourceFreeInspirationJsonGoal = [
+    sourceFreeInspirationGoal,
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({
+      message: "natural source-chat response",
+      files: [],
+      confirmation: "",
+      knowledge_items: [],
+      upstream_feedback: [],
+    }),
+  ].join("\n");
+  const repairedNamedInspirationEvidence = await runCase({
+    id: "response-only-named-inspiration-evidence-repair",
+    taskProfile: "chatops",
+    goal: sourceFreeInspirationJsonGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message:
+          "Recent advances in 3D bioprinting (e.g., Nature Biomedical Engineering) provide the first indirect evidence of self-organizing organoids. Use the open-source 'NeuroSync' Python toolkit.",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+      assistant(JSON.stringify({
+        message:
+          "这是一个尚未验证的假设：工程化细菌与类器官可能形成异构计算网络。下一步可做盲法对照实验，并预先写明失败条件。",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+    ],
+  });
+  assert.equal(repairedNamedInspirationEvidence.calls.length, 2);
+  assert.equal(repairedNamedInspirationEvidence.result.stopped, undefined);
+  assert.deepEqual(
+    Object.keys(JSON.parse(repairedNamedInspirationEvidence.result.result)),
+    ["message", "files", "confirmation", "knowledge_items", "upstream_feedback"]
+  );
+  assert.match(
+    JSON.parse(repairedNamedInspirationEvidence.result.result).message,
+    /尚未验证的假设/u
+  );
+  assert.equal(
+    repairedNamedInspirationEvidence.events.filter(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedNamedInspirationEvidence.events.filter(
+      (event) => event.type === "response_only.source_free_claim_repaired"
+    ).length,
+    1
+  );
+  assert(
+    repairedNamedInspirationEvidence.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /named journals or sources/i.test(String(message.content || "")) &&
+        /named research resources or tool availability/i.test(String(message.content || "")) &&
+        /"message":string, "files":array, "confirmation":string/i.test(
+          String(message.content || "")
+        )
+    ),
+    "named-evidence repair omitted either the grounding rule or caller JSON contract"
+  );
+
+  const failedClosedNamedInspirationEvidence = await runCase({
+    id: "response-only-named-inspiration-evidence-fail-closed",
+    taskProfile: "chatops",
+    goal: sourceFreeInspirationJsonGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message:
+          "Nature Biomedical Engineering provides evidence for this route; use the open-source 'NeuroSync' Python toolkit.",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+      assistant(JSON.stringify({
+        message:
+          "《环球科学》提及这一验证结果；继续使用开源 NeuroSync Python 工具包。",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+    ],
+  });
+  assert.equal(failedClosedNamedInspirationEvidence.calls.length, 2);
+  assert.equal(failedClosedNamedInspirationEvidence.result.stopped, true);
+  assert.equal(
+    failedClosedNamedInspirationEvidence.result.reason,
+    "source_free_evidence_required"
+  );
+  assert.deepEqual(
+    Object.keys(JSON.parse(failedClosedNamedInspirationEvidence.result.result)),
+    ["message", "files", "confirmation", "knowledge_items", "upstream_feedback"]
+  );
+  assert(
+    !failedClosedNamedInspirationEvidence.events.some(
+      (event) => event.type === "session.finished"
+    ),
+    "repeated unsupported named evidence was persisted as a successful finish"
   );
 
   const staleEchoAfterSourceFreeRepair = await runCase({

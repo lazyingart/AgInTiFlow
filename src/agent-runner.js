@@ -4413,7 +4413,7 @@ function responseOnlySourceFreeRepairInstruction(assessment = {}, outputContract
   return [
     "No fresh AgInTi evidence manifest or scoped tool evidence is available for this response-only turn.",
     `Your previous answer asserted unsupported external facts (${categories}).`,
-    "Do not claim publications, years, validation, benchmarks, quantitative metrics, citations, attributed forecasts, or source-backed conclusions.",
+    "Do not claim publications, named journals or sources, years, validation, benchmarks, quantitative metrics, citations, attributed forecasts, named research resources or tool availability, or source-backed conclusions.",
     "If the current request explicitly asks for a forecast, you may provide only your own clearly labeled, falsifiable hypothesis or prediction; do not attribute it to a report, paper, study, source, company, or authority.",
     "This rule applies equally to multilingual wording such as 已有验证, 高风险预测, 検証済み, or 反証可能な予測.",
     "Return a concise locally framed hypothesis, or state that the requested external claim cannot be verified from this run.",
