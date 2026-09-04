@@ -5049,6 +5049,59 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     };
   }
 
+  async function stopForResponseOnlySourceFreeClaims({
+    step,
+    assessment,
+    contract,
+    mode = "response-only-fail-closed",
+  }) {
+    const stoppedResult = responseOnlyContractFallbackResult(
+      contract,
+      responseOnlySourceFreeStopResult(assessment)
+    );
+    const fallback = {
+      step,
+      mode,
+      reason: assessment.reason,
+      categories: assessment.categories,
+      unsupportedClaims: assessment.unsupportedClaims || [],
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      sourceFreeClaimBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "source_free_evidence_required", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.source_free_claim_failed_closed", fallback);
+    await store.appendEvent("session.stopped", {
+      reason: "source_free_evidence_required",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.source_free_claim_failed_closed", fallback);
+    observers.event("session.stopped", {
+      reason: "source_free_evidence_required",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "source_free_evidence_required",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
   await store.appendEvent("model.requested", {
     step: 1,
     provider: config.provider,
@@ -5071,7 +5124,71 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   let finalAssistantMessage = rawAssistantMessage;
   let finalResponseStep = 1;
   const outputContract = responseOnlyJsonContract(config, state);
+  let perfectAuditReviewedResult = "";
   let outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+
+  async function confirmResponseOnlyPerfectAudit(assessment) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only-perfect-audit-confirmation",
+      acceptanceKey: assessment.acceptanceKey,
+      scoreKey: assessment.scoreKey,
+      scoreCount: assessment.scoreCount,
+      maximumScore: assessment.maximumScore,
+      issueKeys: assessment.issueKeys,
+    };
+    await store.appendEvent("response_only.perfect_audit_confirmation_requested", detail);
+    observers.event("response_only.perfect_audit_confirmation_requested", detail);
+    state.messages.push({
+      role: "user",
+      content: responseOnlyPerfectAuditInstruction(assessment, outputContract),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-perfect-audit-confirmation",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-perfect-audit-confirmation",
+    });
+    const confirmationResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-perfect-audit-confirmation",
+    });
+    finalAssistantMessage = confirmationResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return {
+        terminal: await stopForOutputContract({
+          step: finalResponseStep,
+          assessment: outputAssessment,
+          contract: outputContract,
+          mode: "response-only-perfect-audit-confirmation-contract-fail-closed",
+        }),
+      };
+    }
+    const confirmedAssessment = assessResponseOnlyPerfectAudit({
+      goal: completionContractGoal(config, state),
+      result,
+    });
+    perfectAuditReviewedResult = confirmedAssessment.requiresConfirmation ? result : "";
+    const reviewed = {
+      ...detail,
+      step: finalResponseStep,
+      outcome: confirmedAssessment.requiresConfirmation ? "confirmed-perfect" : "revised",
+    };
+    await store.appendEvent("response_only.perfect_audit_reviewed", reviewed);
+    observers.event("response_only.perfect_audit_reviewed", reviewed);
+    return { terminal: null, assessment: confirmedAssessment };
+  }
+
   if (!outputAssessment.ok) {
     const detail = {
       step: finalResponseStep,
@@ -5199,66 +5316,13 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     await store.appendEvent("response_only.empty_payload_repaired", repaired);
     observers.event("response_only.empty_payload_repaired", repaired);
   }
-  const perfectAuditAssessment = assessResponseOnlyPerfectAudit({
+  let perfectAuditAssessment = assessResponseOnlyPerfectAudit({
     goal: completionContractGoal(config, state),
     result,
   });
   if (perfectAuditAssessment.requiresConfirmation) {
-    const detail = {
-      step: finalResponseStep,
-      mode: "response-only-perfect-audit-confirmation",
-      acceptanceKey: perfectAuditAssessment.acceptanceKey,
-      scoreKey: perfectAuditAssessment.scoreKey,
-      scoreCount: perfectAuditAssessment.scoreCount,
-      maximumScore: perfectAuditAssessment.maximumScore,
-      issueKeys: perfectAuditAssessment.issueKeys,
-    };
-    await store.appendEvent("response_only.perfect_audit_confirmation_requested", detail);
-    observers.event("response_only.perfect_audit_confirmation_requested", detail);
-    state.messages.push({
-      role: "user",
-      content: responseOnlyPerfectAuditInstruction(perfectAuditAssessment, outputContract),
-    });
-    await store.saveState(state);
-    finalResponseStep += 1;
-    await store.appendEvent("model.requested", {
-      step: finalResponseStep,
-      provider: config.provider,
-      model: config.model,
-      mode: "response-only-perfect-audit-confirmation",
-    });
-    observers.event("model.requested", {
-      step: finalResponseStep,
-      provider: config.provider,
-      model: config.model,
-      mode: "response-only-perfect-audit-confirmation",
-    });
-    const confirmationResponse = await requestWithResponseOnlyLocalContextRecovery({
-      step: finalResponseStep,
-      mode: "response-only-perfect-audit-confirmation",
-    });
-    finalAssistantMessage = confirmationResponse.choices[0]?.message;
-    result = responseOnlyResultFromMessage(finalAssistantMessage);
-    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
-    if (!outputAssessment.ok) {
-      return await stopForOutputContract({
-        step: finalResponseStep,
-        assessment: outputAssessment,
-        contract: outputContract,
-        mode: "response-only-perfect-audit-confirmation-contract-fail-closed",
-      });
-    }
-    const confirmedAssessment = assessResponseOnlyPerfectAudit({
-      goal: completionContractGoal(config, state),
-      result,
-    });
-    const reviewed = {
-      ...detail,
-      step: finalResponseStep,
-      outcome: confirmedAssessment.requiresConfirmation ? "confirmed-perfect" : "revised",
-    };
-    await store.appendEvent("response_only.perfect_audit_reviewed", reviewed);
-    observers.event("response_only.perfect_audit_reviewed", reviewed);
+    const review = await confirmResponseOnlyPerfectAudit(perfectAuditAssessment);
+    if (review.terminal) return review.terminal;
   }
   let internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
     goal: completionContractGoal(config, state),
@@ -5551,51 +5615,37 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       await store.appendEvent("response_only.source_free_claim_repaired", repaired);
       observers.event("response_only.source_free_claim_repaired", repaired);
     } else {
-      result = responseOnlyContractFallbackResult(
-        outputContract,
-        responseOnlySourceFreeStopResult(sourceFreeAssessment)
-      );
-      const fallback = {
+      return await stopForResponseOnlySourceFreeClaims({
         step: finalResponseStep,
-        mode: "response-only-fail-closed",
-        reason: sourceFreeAssessment.reason,
-        categories: sourceFreeAssessment.categories,
-        unsupportedClaims: sourceFreeAssessment.unsupportedClaims || [],
-        result: publicCompletionText(result, 500),
-      };
-      state.meta = state.meta || {};
-      state.meta.responseOnly = {
-        stoppedAt: new Date().toISOString(),
-        provider: config.provider,
-        model: config.model,
-        sourceFreeClaimBlocked: true,
-      };
-      state.updatedAt = state.meta.responseOnly.stoppedAt;
-      state.messages.push({ role: "assistant", content: result });
-      appendChatEntry(state, "assistant", result);
-      updateGoalStatus(state, "paused", "source_free_evidence_required", state.updatedAt);
-      await store.saveState(state);
-      await store.appendEvent("response_only.source_free_claim_failed_closed", fallback);
-      await store.appendEvent("session.stopped", {
-        reason: "source_free_evidence_required",
-        result,
-        mode: "response-only",
+        assessment: sourceFreeAssessment,
+        contract: outputContract,
       });
-      observers.event("response_only.source_free_claim_failed_closed", fallback);
-      observers.event("session.stopped", {
-        reason: "source_free_evidence_required",
-        result,
-        sessionId,
-        mode: "response-only",
+    }
+  }
+
+  perfectAuditAssessment = assessResponseOnlyPerfectAudit({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (
+    perfectAuditAssessment.requiresConfirmation &&
+    perfectAuditReviewedResult !== result
+  ) {
+    const review = await confirmResponseOnlyPerfectAudit(perfectAuditAssessment);
+    if (review.terminal) return review.terminal;
+    sourceFreeAssessment = await assessResponseOnlySourceFreeClaims({
+      config,
+      state,
+      store,
+      result,
+    });
+    if (!sourceFreeAssessment.ok) {
+      return await stopForResponseOnlySourceFreeClaims({
+        step: finalResponseStep,
+        assessment: sourceFreeAssessment,
+        contract: outputContract,
+        mode: "response-only-post-audit-source-free-fail-closed",
       });
-      emitConsole(config, result, { kind: "assistant", markdown: true });
-      return {
-        sessionId,
-        stopped: true,
-        reason: "source_free_evidence_required",
-        result,
-        ...goalRunMetadata(state),
-      };
     }
   }
 

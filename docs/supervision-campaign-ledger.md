@@ -1853,3 +1853,27 @@ stop, including the source-free rejection, transcript-quality fail-closed
 event, parseable limitation message, and absence of `session.finished`. No live
 model, LocalLLM inference, LabCanvas runtime change, queue action, schedule, or
 transport operation is involved.
+
+### Later repairs cannot bypass skeptical audit confirmation
+
+`labcanvas-response-only-post-repair-perfect-audit-145` closes the remaining
+semantic validator-order gap. A qualified audit containing an unsupported
+journal validation claim correctly entered source-free repair. Its replacement
+then marked every dimension perfect, accepted the malformed multilingual
+tutorial, and reported no issue. Because the perfect-audit gate had already
+seen the earlier rejected review, the unverified replacement previously
+finished after two calls.
+
+Perfect-audit confirmation is now a bounded reusable stage that records the
+exact reviewed result. If a later repair creates a different blanket-perfect
+audit, AgInTiFlow performs one late skeptical confirmation. The resulting audit
+then passes through the final output, grounding, payload, current-turn,
+scaffold, and transcript invariants before completion. A late confirmation
+cannot silently reintroduce unsupported external claims.
+
+The production-shaped regression proves the pre-fix two-call acceptance and a
+fixed three-call path whose independent review finds the malformed Japanese,
+returns `accepted=false`, preserves the caller schema, and finishes normally.
+Existing initially perfect, already rejected, qualified, and non-audit controls
+remain unchanged. No live model, LocalLLM inference, LabCanvas runtime change,
+queue action, schedule, or transport operation is involved.

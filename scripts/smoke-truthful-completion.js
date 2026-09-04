@@ -2167,6 +2167,57 @@ try {
     "host control language introduced by a later validator repair was persisted as successful"
   );
 
+  const perfectAuditAfterSourceFreeRepair = await runCase({
+    id: "response-only-perfect-audit-after-source-free-repair",
+    taskProfile: "chatops",
+    goal: perfectAuditGoal,
+    responses: [
+      assistant(JSON.stringify({
+        ...revisedAudit,
+        critical_issues: [
+          "Nature Biomedical Engineering validated this in 2025 on 12,000 cases with 94.2% accuracy.",
+        ],
+        revision_instructions: ["Use the reported validated benchmark."],
+      })),
+      assistant(JSON.stringify(blanketPerfectAudit)),
+      assistant(JSON.stringify(revisedAudit)),
+    ],
+  });
+  assert.equal(
+    perfectAuditAfterSourceFreeRepair.calls.length,
+    3,
+    "a blanket-perfect audit introduced by source-free repair bypassed skeptical confirmation"
+  );
+  assert.equal(JSON.parse(perfectAuditAfterSourceFreeRepair.result.result).accepted, false);
+  assert.match(
+    JSON.parse(perfectAuditAfterSourceFreeRepair.result.result).critical_issues[0],
+    /サイズ交换/u
+  );
+  assert.equal(
+    perfectAuditAfterSourceFreeRepair.events.filter(
+      (event) => event.type === "response_only.perfect_audit_confirmation_requested"
+    ).length,
+    1
+  );
+  assert.equal(
+    perfectAuditAfterSourceFreeRepair.events.find(
+      (event) => event.type === "response_only.perfect_audit_reviewed"
+    )?.data?.outcome,
+    "revised"
+  );
+  assert(
+    perfectAuditAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the audit cross-validator fixture did not exercise source-free repair"
+  );
+  assert(
+    perfectAuditAfterSourceFreeRepair.events.some(
+      (event) => event.type === "session.finished"
+    ),
+    "the skeptically revised audit did not complete normally"
+  );
+
   const boundedTranscriptResponseGoal = [
     "You are the response-only reasoning backend for a chat host.",
     `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
