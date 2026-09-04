@@ -146,6 +146,7 @@ import {
   evaluateScsEvidence,
   evaluateScsSemanticContract,
   evaluateRequestedArtifactRequirements,
+  evaluateReaderFacingResearchEvidenceClaims,
   augmentScsTaskContractWithProjectVerification,
   evaluateSourceFreeResponseClaims,
   agintiEvidenceScopeLine,
@@ -16314,7 +16315,7 @@ function researchEvidenceIdentifiers(value = "") {
   return identifiers;
 }
 
-function newlyIntroducedResearchEvidenceIdentifiers(args = {}) {
+function researchMutationText(args = {}) {
   let proposed = String(args.content || args.replace || "");
   let prior = String(args.search || "");
   if (typeof args.patch === "string" && args.patch.trim()) {
@@ -16328,6 +16329,11 @@ function newlyIntroducedResearchEvidenceIdentifiers(args = {}) {
     proposed = added.join("\n");
     prior = removed.join("\n");
   }
+  return { proposed, prior };
+}
+
+function newlyIntroducedResearchEvidenceIdentifiers(args = {}) {
+  const { proposed, prior } = researchMutationText(args);
   const priorIdentifiers = researchEvidenceIdentifiers(prior);
   return [...researchEvidenceIdentifiers(proposed)].filter(
     (item) => !priorIdentifiers.has(item)
@@ -16423,13 +16429,18 @@ export function researchEvidenceManifestMutationBlock(
       },
     };
   }
+  const { proposed } = researchMutationText(args);
   const introducedIdentifiers = newlyIntroducedResearchEvidenceIdentifiers(args);
-  if (!introducedIdentifiers.length) return null;
+  const researchClaimAssessment = evaluateReaderFacingResearchEvidenceClaims({
+    candidateText: proposed,
+  });
+  const unsupportedClaims = researchClaimAssessment.unsupportedClaims || [];
+  if (!introducedIdentifiers.length && !unsupportedClaims.length) return null;
   const manifestText = readResearchEvidenceManifestText(requiredPaths, commandCwd);
   if (!manifestText) {
     return {
       reason:
-        "The authoritative research evidence manifest is no longer readable, so newly cited reader-facing claims cannot be checked before mutation.",
+        "The authoritative research evidence manifest is no longer readable, so reader-facing evidence identifiers and attributed claims cannot be checked before mutation.",
       category: "research-evidence-manifest-unavailable",
       requiredPaths,
       targetPaths: readerFacingTargets,
@@ -16438,7 +16449,7 @@ export function researchEvidenceManifestMutationBlock(
         autoRecover: true,
         summary: "The evidence source changed or disappeared after it was read.",
         instruction:
-          `Restore and reread ${requiredPaths[0]} before adding citations or evidence identifiers.`,
+          `Restore and reread ${requiredPaths[0]} before adding citations, evidence identifiers, or attributed findings.`,
         options: ["Restore the exact task evidence manifest and read it again."],
       },
     };
@@ -16446,24 +16457,52 @@ export function researchEvidenceManifestMutationBlock(
   const unsupportedIdentifiers = introducedIdentifiers.filter(
     (item) => !researchEvidenceManifestSupportsIdentifier(manifestText, item)
   );
-  if (!unsupportedIdentifiers.length) return null;
+  if (unsupportedIdentifiers.length) {
+    return {
+      reason:
+        `The proposed research edit introduces identifiers absent from the authoritative evidence manifest: ${unsupportedIdentifiers.join(", ")}. ` +
+        "Use only traceable identifiers present in that manifest, or clearly label uncited analysis without fabricating attribution.",
+      category: "research-evidence-identifier-unsupported",
+      requiredPaths,
+      unsupportedIdentifiers,
+      targetPaths: readerFacingTargets,
+      permissionAdvice: {
+        category: "research-evidence-identifier-unsupported",
+        autoRecover: true,
+        summary: "The proposed report edit adds ungrounded citation or source identifiers.",
+        instruction:
+          "Revise the bounded passage using only citation keys, DOI values, URLs, arXiv IDs, and evidence IDs present in the authoritative manifest.",
+        options: [
+          "Use a supported manifest identifier.",
+          "Remove the unsupported attribution and state the claim as a bounded hypothesis when appropriate.",
+        ],
+      },
+    };
+  }
+  const untraceableClaims = unsupportedClaims.filter((claim) => {
+    const identifiers = [...researchEvidenceIdentifiers(claim.preview || "")];
+    return !identifiers.some((identifier) =>
+      researchEvidenceManifestSupportsIdentifier(manifestText, identifier)
+    );
+  });
+  if (!untraceableClaims.length) return null;
   return {
     reason:
-      `The proposed research edit introduces identifiers absent from the authoritative evidence manifest: ${unsupportedIdentifiers.join(", ")}. ` +
-      "Use only traceable identifiers present in that manifest, or clearly label uncited analysis without fabricating attribution.",
-    category: "research-evidence-identifier-unsupported",
+      "The proposed research edit attributes an external finding without a traceable identifier from the authoritative evidence manifest. " +
+      "Cite a supported manifest source in the same claim, or rewrite it as clearly labeled analysis or hypothesis.",
+    category: "research-evidence-attribution-untraceable",
     requiredPaths,
-    unsupportedIdentifiers,
+    untraceableClaims,
     targetPaths: readerFacingTargets,
     permissionAdvice: {
-      category: "research-evidence-identifier-unsupported",
+      category: "research-evidence-attribution-untraceable",
       autoRecover: true,
-      summary: "The proposed report edit adds ungrounded citation or source identifiers.",
+      summary: "The proposed report edit contains an untraceable attributed research claim.",
       instruction:
-        "Revise the bounded passage using only citation keys, DOI values, URLs, arXiv IDs, and evidence IDs present in the authoritative manifest.",
+        "Revise the bounded claim so it cites an identifier present in the authoritative manifest, or remove the attribution and label any inference explicitly.",
       options: [
-        "Use a supported manifest identifier.",
-        "Remove the unsupported attribution and state the claim as a bounded hypothesis when appropriate.",
+        "Cite a supported manifest identifier in the attributed claim.",
+        "Rewrite the statement as clearly labeled analysis or a falsifiable hypothesis.",
       ],
     },
   };

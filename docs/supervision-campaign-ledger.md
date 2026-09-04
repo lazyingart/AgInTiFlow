@@ -1909,3 +1909,28 @@ exact-task evidence manifest blocks the write even though the executor would
 later anchor that basename inside the one authoritative artifact root. Filename
 recovery therefore cannot turn unsupported report prose into a successful
 mutation.
+
+### Named research claims remain traceable after manifest read
+
+`labcanvas-research-attribution-traceability-148` closes a source-integrity gap
+after the authoritative manifest has been read. The existing mutation boundary
+rejected invented citation keys, DOI values, URLs, arXiv IDs, and evidence IDs,
+but returned early when polished prose omitted an identifier entirely. A weak
+backend could therefore write a sentence such as `Chen et al. (2026) proved
+...` without connecting that attribution to any manifest source.
+
+Reader-facing research mutations now reuse the same multilingual external-claim
+assessment used by response-only grounding. An attributed evidence claim must
+contain at least one identifier supported by the task-authoritative manifest.
+The check is claim-level and applies only under an explicit current research
+evidence contract after the manifest has been completely read. Ordinary
+synthesis, clearly labeled assistant-owned hypotheses, manifest edits, stale
+contracts, and named claims with supported identifiers retain their previous
+behavior.
+
+The production-shaped regression first proves the pre-fix acceptance. It then
+rejects uncited named-study claims in English, Chinese, and Japanese, accepts a
+supported `S1` citation, and preserves ordinary synthesis and a falsifiable
+working hypothesis. No live provider, LocalLLM inference, LabCanvas runtime
+change, queue action, schedule, transport operation, or external side effect is
+involved.

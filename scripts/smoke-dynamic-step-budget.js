@@ -14297,6 +14297,65 @@ try {
     ) === null,
     "a complete read of the authoritative evidence manifest did not unlock the report repair"
   );
+  const uncitedNamedResearchAttributionBlock =
+    researchEvidenceManifestMutationBlock(
+      groundedResearchState,
+      "apply_patch",
+      {
+        ...attributedResearchPatch,
+        replace: "Chen et al. (2026) proved organoid self-repair under stress.",
+      },
+      { commandCwd: workspace, taskProfile: "research" }
+    );
+  assert(
+    uncitedNamedResearchAttributionBlock?.category ===
+      "research-evidence-attribution-untraceable" &&
+      uncitedNamedResearchAttributionBlock.untraceableClaims?.some((item) =>
+        /Chen et al\./u.test(item.preview || "")
+    ),
+    "a completed manifest read allowed an uncited named-study assertion into reader-facing prose"
+  );
+  for (const [label, replace] of [
+    ["Chinese", "陈等人（2026）证明类器官在压力下会自我修复。"],
+    ["Japanese", "山田ら（2026年）は、オルガノイドがストレス下で自己修復すると実証した。"],
+  ]) {
+    assert(
+      researchEvidenceManifestMutationBlock(
+        groundedResearchState,
+        "apply_patch",
+        { ...attributedResearchPatch, replace },
+        { commandCwd: workspace, taskProfile: "research" }
+      )?.category === "research-evidence-attribution-untraceable",
+      `an uncited named-study assertion in ${label} bypassed manifest traceability`
+    );
+  }
+  assert(
+    researchEvidenceManifestMutationBlock(
+      groundedResearchState,
+      "apply_patch",
+      {
+        ...attributedResearchPatch,
+        replace:
+          "Chen et al. (2026) proved the bounded organoid result \\citep{S1}.",
+      },
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "a named-study assertion with a supported manifest citation was blocked"
+  );
+  for (const replace of [
+    "These bounded observations motivate a follow-up experiment.",
+    "Working hypothesis: organoid self-repair may increase under stress; test this with a blinded control.",
+  ]) {
+    assert(
+      researchEvidenceManifestMutationBlock(
+        groundedResearchState,
+        "apply_patch",
+        { ...attributedResearchPatch, replace },
+        { commandCwd: workspace, taskProfile: "research" }
+      ) === null,
+      "ordinary synthesis or explicitly labeled hypothesis was overblocked by attribution grounding"
+    );
+  }
   const unsupportedResearchIdentifierBlock =
     researchEvidenceManifestMutationBlock(
       groundedResearchState,

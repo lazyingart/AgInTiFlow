@@ -1879,7 +1879,7 @@ function sourceFreeResponseHasEvidence(ledger = {}) {
 
 function sourceFreeClaimSegments(text = "") {
   const protectedAbbreviations = String(text || "").replace(
-    /\b(?:e\.g|i\.e)\./giu,
+    /\b(?:e\.g|i\.e|et\s+al)\./giu,
     (match) => match.replace(/\./g, "\uE000")
   );
   return protectedAbbreviations
@@ -2108,7 +2108,7 @@ function sourceFreeExternalClaimCategoriesForSegment(
   if (requireNamedEvidenceGrounding) {
     add(
       "named_source_evidence",
-      /(?:\b(?:Nature(?:\s+[A-Z][A-Za-z-]+){0,4}|Science(?:\s+[A-Z][A-Za-z-]+){0,4}|Cell(?:\s+[A-Z][A-Za-z-]+){0,4}|[A-Z][A-Za-z&-]+(?:\s+[A-Z][A-Za-z&-]+){0,5}\s+(?:Journal|Review|Proceedings))\b[^.!?;。！？；\n]{0,180}\b(?:provid(?:e|es|ed)\s+(?:(?:the|first|indirect|direct|initial|supporting)\s+){0,4}evidence|show(?:s|ed)?|demonstrat(?:e|es|ed)|support(?:s|ed)?|report(?:s|ed)?|find(?:s|ings)?|establish(?:es|ed)?)\b)|(?:《[^》\n]{2,100}》[^。！？；\n]{0,90}(?:提及|报道|報道|指出|显示|顯示|表明|发现|發現|验证|驗證|证实|證實|介绍|介紹))|(?:「[^」\n]{2,100}」[^。！？；\n]{0,90}(?:報告|示す|示した|指摘|発見|検証|確認|紹介))/iu
+      /(?:\b(?:Nature(?:\s+[A-Z][A-Za-z-]+){0,4}|Science(?:\s+[A-Z][A-Za-z-]+){0,4}|Cell(?:\s+[A-Z][A-Za-z-]+){0,4}|[A-Z][A-Za-z&-]+(?:\s+[A-Z][A-Za-z&-]+){0,5}\s+(?:Journal|Review|Proceedings))\b[^.!?;。！？；\n]{0,180}\b(?:provid(?:e|es|ed)\s+(?:(?:the|first|indirect|direct|initial|supporting)\s+){0,4}evidence|show(?:s|ed)?|demonstrat(?:e|es|ed)|support(?:s|ed)?|report(?:s|ed)?|find(?:s|ings)?|establish(?:es|ed)?)\b)|(?:\b[A-Z][A-Za-z'’-]{1,40}(?:\s+(?:et\s+al\.?|and\s+[A-Z][A-Za-z'’-]{1,40}))?\s*\((?:19|20)\d{2}[a-z]?\)[^.!?;。！？；\n]{0,120}\b(?:report(?:s|ed)?|find(?:s|ings)?|found|show(?:s|ed)?|demonstrat(?:e|es|ed)|prov(?:e|es|ed)|validat(?:e|es|ed)|confirm(?:s|ed)?|observ(?:e|es|ed)|identif(?:y|ies|ied)|conclud(?:e|es|ed)|suggest(?:s|ed)?|establish(?:es|ed)?|propos(?:e|es|ed))\b)|(?:[\p{Script=Han}]{1,12}(?:等(?:人)?|团队|團隊)(?:\s*[（(](?:19|20)\d{2}[a-z]?[）)])?[^。！？；\n]{0,100}(?:报道|報道|指出|显示|顯示|表明|发现|發現|证明|證明|验证|驗證|证实|證實|确认|確認|观察|觀察|提出|建立))|(?:[\p{Script=Han}\p{Script=Katakana}\p{Script=Hiragana}]{1,20}ら(?:\s*[（(](?:19|20)\d{2}[a-z]?年?[）)])?[^。！？；\n]{0,100}(?:報告|示す|示した|発見|証明|実証|検証|確認|観察|提案|確立))|(?:《[^》\n]{2,100}》[^。！？；\n]{0,90}(?:提及|报道|報道|指出|显示|顯示|表明|发现|發現|验证|驗證|证实|證實|介绍|介紹))|(?:「[^」\n]{2,100}」[^。！？；\n]{0,90}(?:報告|示す|示した|指摘|発見|検証|確認|紹介))/iu
     );
     add(
       "named_external_resource",
@@ -2180,6 +2180,19 @@ function sourceFreeExternalClaimAssessment(
       categories.length > 0 &&
       unsupported.length === 0 &&
       segments.some((segment) => sourceFreeClaimSegmentIsExplicitSpeculation(segment)),
+  };
+}
+
+export function evaluateReaderFacingResearchEvidenceClaims({ candidateText = "" } = {}) {
+  const assessment = sourceFreeExternalClaimAssessment(candidateText, {
+    allowExplicitSpeculation: true,
+    requireNamedEvidenceGrounding: true,
+  });
+  return {
+    categories: assessment.categories,
+    unsupportedClaims: assessment.unsupported,
+    explicitlyUnverified: assessment.explicitlyUnverified,
+    explicitlySpeculative: assessment.explicitlySpeculative,
   };
 }
 
