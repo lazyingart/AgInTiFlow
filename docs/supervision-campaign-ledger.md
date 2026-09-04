@@ -828,3 +828,29 @@ The production-shaped regression proves that the explicit host directive
 survives `AGINTI_EVIDENCE_SCOPE_JSON`, a private routine note is insufficient,
 a real scoped report source satisfies the handoff, and ordinary or conditional
 PDF workflows retain their existing contracts.
+
+### Unchanged canvas artifacts are delivered once per goal revision
+
+`labcanvas-canvas-delivery-idempotency-103` follows the same retained LabCanvas
+session, `web-agent-labcanvas-e654a5b9-6486-4718-b8fd-c76f1c05626e`, after the
+host-compilation contract defect had pushed LocalLLM into a weak convergence
+loop. The event ledger contains 52 successful `send_to_canvas` calls and 52
+`canvas.item` events for the exact same task-local `report.md`, with no finish
+event. Cosmetic title changes generated another durable artifact copy and were
+credited as progress, so the ordinary no-progress guard could never converge.
+
+Canvas dispatch now keeps a bounded revision-scoped delivery ledger. Its
+identity includes the normalized workspace path, file bytes and SHA-256,
+renderer kind, and selection intent; inline artifacts use their content hash.
+Changing a title or note cannot resend an unchanged artifact. A duplicate
+returns a successful skipped result that points the model toward `finish`, emits
+one diagnostic suppression event, creates no copied artifact, and does not
+advance the stagnation epoch. A changed file remains deliverable because its
+content fingerprint changes, and a later user goal revision gets an independent
+delivery scope.
+
+The end-to-end scripted model regression reads and delivers one report, retries
+the same bytes under a different title, receives the completion redirect, then
+observes a host-side file revision and successfully delivers those new bytes.
+It asserts two substantive canvas items, one suppression, two persisted files,
+and no false progress credit for the duplicate.

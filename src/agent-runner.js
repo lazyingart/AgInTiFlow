@@ -11397,6 +11397,59 @@ function canvasTargetExists(args = {}, config = {}) {
   });
 }
 
+async function canvasDeliveryFingerprint(payload = {}, config = {}) {
+  const identity = {
+    kind: String(payload.kind || ""),
+    selected: payload.selected !== false,
+  };
+  if (payload.path) {
+    try {
+      const target = resolveWorkspacePath(config, payload.path);
+      const stat = await fs.stat(target.absolutePath);
+      if (!stat.isFile()) return "";
+      identity.path = target.relativePath;
+      identity.bytes = stat.size;
+      identity.sha256 = await hashExactOutputFile(target.absolutePath);
+    } catch {
+      return "";
+    }
+  }
+  if (payload.content) identity.contentSha256 = hashForLog(payload.content);
+  if (!payload.path && !payload.content) {
+    identity.noteSha256 = hashForLog(payload.note || "");
+    identity.title = String(payload.title || "");
+  }
+  return hashForLog(JSON.stringify(identity));
+}
+
+function priorCanvasDelivery(state = {}, fingerprint = "") {
+  if (!fingerprint) return null;
+  const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  return [...(Array.isArray(state.meta?.canvasDeliveries) ? state.meta.canvasDeliveries : [])]
+    .reverse()
+    .find(
+      (entry) =>
+        Number(entry?.goalRevision || 0) === goalRevision &&
+        String(entry?.fingerprint || "") === fingerprint
+    ) || null;
+}
+
+function recordCanvasDelivery(state = {}, fingerprint = "", canvasItem = {}) {
+  if (!fingerprint) return;
+  state.meta = state.meta || {};
+  const deliveries = Array.isArray(state.meta.canvasDeliveries)
+    ? state.meta.canvasDeliveries
+    : [];
+  deliveries.push({
+    fingerprint,
+    goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    artifactId: String(canvasItem.artifactId || ""),
+    path: String(canvasItem.path || ""),
+    deliveredAt: new Date().toISOString(),
+  });
+  state.meta.canvasDeliveries = deliveries.slice(-40);
+}
+
 export function repeatedNoProgressToolBlock(state, toolName, args = {}, config = {}) {
   const toolLoop = state.meta?.toolLoop || {};
   const stagnationEpoch = Math.max(0, Number(toolLoop.stagnationEpoch || 0));
@@ -21881,6 +21934,41 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           };
         }
 
+        const deliveryFingerprint = await canvasDeliveryFingerprint(
+          normalized.payload,
+          config
+        );
+        const priorDelivery = priorCanvasDelivery(state, deliveryFingerprint);
+        if (priorDelivery) {
+          const reason =
+            "This unchanged artifact was already sent to canvas during the current request. Do not send it again; finish now if no other deliverable remains.";
+          const result = {
+            ok: true,
+            skipped: true,
+            duplicate: true,
+            reason,
+            toolName: "send_to_canvas",
+            args: safeArgs,
+            artifactId: priorDelivery.artifactId,
+            path: normalized.payload.path,
+            category: "duplicate-canvas-delivery",
+          };
+          await store.appendEvent("canvas.duplicate_suppressed", {
+            artifactId: priorDelivery.artifactId,
+            path: normalized.payload.path,
+            goalRevision: priorDelivery.goalRevision,
+            fingerprint: deliveryFingerprint,
+          });
+          observers.event("canvas.duplicate_suppressed", {
+            artifactId: priorDelivery.artifactId,
+            path: normalized.payload.path,
+            goalRevision: priorDelivery.goalRevision,
+          });
+          await store.appendEvent("tool.completed", result);
+          observers.event("tool.completed", result);
+          return result;
+        }
+
         const persisted = await persistCanvasPayloadFile(normalized.payload, { config, store });
         if (!persisted.ok) {
           await store.appendEvent("tool.blocked", {
@@ -21911,6 +21999,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           commandCwd: config.commandCwd,
         };
         await store.appendEvent("canvas.item", canvasItem);
+        recordCanvasDelivery(state, deliveryFingerprint, canvasItem);
         observers.event("canvas.item", canvasItem);
         if (canvasItem.selected) {
           await store.appendEvent("canvas.selected", {

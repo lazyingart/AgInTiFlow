@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   buildArtifacts,
   normalizeCanvasPayload,
@@ -8,7 +9,25 @@ import {
   readArtifactContent,
   resolveArtifactFile,
 } from "../src/artifact-tunnel.js";
+import { runAgent } from "../src/agent-runner.js";
+import { resolveRuntimeConfig } from "../src/config.js";
 import { SessionStore } from "../src/session-store.js";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function assistant(content, toolCalls = []) {
+  return {
+    choices: [{ message: { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) } }],
+  };
+}
+
+function toolCall(id, name, args) {
+  return {
+    id,
+    type: "function",
+    function: { name, arguments: JSON.stringify(args) },
+  };
+}
 
 async function main() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-canvas-artifacts-"));
@@ -45,6 +64,190 @@ async function main() {
   }
   if (!/^durable-report--[A-Za-z0-9_-]{8}\.md$/.test(path.basename(persisted.payload.sessionFilePath))) {
     throw new Error(`canvas persistence put an opaque id before the filename: ${persisted.payload.sessionFilePath}`);
+  }
+
+  const scriptedResponses = [
+    assistant("Reading the existing report before delivery.", [
+      toolCall("canvas-read", "read_file", {
+        path: "durable-report.md",
+        lineLimit: 80,
+      }),
+    ]),
+    assistant("Sending the report.", [
+      toolCall("canvas-initial", "send_to_canvas", {
+        title: "Durable report",
+        kind: "markdown",
+        path: "durable-report.md",
+        selected: true,
+      }),
+    ]),
+    assistant("Trying the same unchanged report with a cosmetic title change.", [
+      toolCall("canvas-duplicate", "send_to_canvas", {
+        title: "Durable report final",
+        kind: "markdown",
+        path: "durable-report.md",
+        selected: true,
+      }),
+    ]),
+    assistant("Sending the report after its content changed between turns.", [
+      toolCall("canvas-revised", "send_to_canvas", {
+        title: "Durable report revised",
+        kind: "markdown",
+        path: "durable-report.md",
+        selected: true,
+      }),
+    ]),
+    assistant("", [
+      toolCall("canvas-finish", "finish", {
+        result: "Sent the initial report once and its revised content once.",
+      }),
+    ]),
+  ];
+  const modelCalls = [];
+  const client = {
+    chat: {
+      completions: {
+        create: async (payload) => {
+          modelCalls.push(payload);
+          if (modelCalls.length === 4) {
+            await fs.writeFile(
+              sourcePath,
+              "# Durable report\n\nA host-side interruption revised this artifact between model turns.\n",
+              "utf8"
+            );
+          }
+          const response = scriptedResponses.shift();
+          if (!response) throw new Error("duplicate canvas smoke exhausted scripted responses");
+          return response;
+        },
+      },
+    },
+  };
+  const clientFactory = async () => client;
+  clientFactory.agintiDeterministicTest = true;
+  const idempotencySessionId = "canvas-idempotency-smoke";
+  const idempotencyConfig = resolveRuntimeConfig(
+    {
+      provider: "openai",
+      routingMode: "manual",
+      model: "scripted-canvas-model",
+      goal: "Read durable-report.md, send each distinct content revision to canvas once, and finish without editing it yourself.",
+      commandCwd: workspace,
+      allowFileTools: true,
+      allowShellTool: false,
+      maxSteps: 6,
+    },
+    {
+      baseDir: root,
+      packageDir: repoRoot,
+      provider: "openai",
+      routingMode: "manual",
+      model: "scripted-canvas-model",
+      sessionId: idempotencySessionId,
+      commandCwd: workspace,
+      allowFileTools: true,
+      allowShellTool: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowParallelScouts: false,
+      enableScs: "off",
+      clientFactory,
+    }
+  );
+  Object.assign(idempotencyConfig, {
+    apiKey: "scripted-test-only",
+    sessionsDir,
+    projectSessionsDir: path.join(workspace, ".aginti-sessions"),
+    useDockerSandbox: false,
+    sandboxMode: "host",
+    packageInstallPolicy: "block",
+    allowFileTools: true,
+    allowShellTool: false,
+    allowWrapperTools: false,
+    allowAuxiliaryTools: false,
+    allowWebSearch: false,
+    allowMcpTools: false,
+    allowParallelScouts: false,
+    scsActive: false,
+    enableScs: "off",
+    executionPolicy: {
+      tier: "focused",
+      requiresPlan: false,
+      reason: "Scripted canvas idempotency regression.",
+    },
+    clientFactory,
+    modelTimeoutMs: 1_000,
+  });
+  const idempotencyRun = await runAgent(idempotencyConfig);
+  const idempotencyStore = new SessionStore(sessionsDir, idempotencySessionId, {
+    projectRoot: workspace,
+    commandCwd: workspace,
+    projectSessionsDir: idempotencyConfig.projectSessionsDir,
+  });
+  const idempotencyEvents = await idempotencyStore.loadEvents();
+  const deliveredItems = idempotencyEvents.filter((event) => event.type === "canvas.item");
+  const suppressedItems = idempotencyEvents.filter(
+    (event) => event.type === "canvas.duplicate_suppressed"
+  );
+  const duplicateToolResult = idempotencyEvents.find(
+    (event) =>
+      event.type === "tool.completed" &&
+      event.data?.category === "duplicate-canvas-delivery"
+  );
+  if (idempotencyRun.result !== "Sent the initial report once and its revised content once.") {
+    throw new Error(`canvas idempotency run did not finish: ${idempotencyRun.result}`);
+  }
+  if (modelCalls.length !== 5 || scriptedResponses.length !== 0) {
+    throw new Error(`canvas idempotency run used ${modelCalls.length} model calls`);
+  }
+  if (deliveredItems.length !== 2 || suppressedItems.length !== 1) {
+    throw new Error(
+      `expected two content-revision deliveries and one suppression, got ${deliveredItems.length}/${suppressedItems.length}`
+    );
+  }
+  if (deliveredItems[0].data?.artifactId !== suppressedItems[0].data?.artifactId) {
+    throw new Error("duplicate canvas suppression did not retain the original artifact identity");
+  }
+  if (
+    duplicateToolResult?.data?.ok !== true ||
+    duplicateToolResult?.data?.skipped !== true ||
+    !/finish now/i.test(duplicateToolResult?.data?.reason || "")
+  ) {
+    throw new Error("duplicate canvas result did not redirect the fallback model toward completion");
+  }
+  const idempotencyState = await idempotencyStore.loadState();
+  if (idempotencyState.meta?.canvasDeliveries?.length !== 2) {
+    throw new Error("canvas delivery ledger did not retain exactly the two content revisions");
+  }
+  const canvasToolEntries = (idempotencyState.meta?.toolLoop?.recent || []).filter(
+    (entry) => entry.toolName === "send_to_canvas"
+  );
+  if (
+    canvasToolEntries.length !== 3 ||
+    canvasToolEntries[0].successfulMutation !== true ||
+    canvasToolEntries[1].successfulMutation !== false ||
+    canvasToolEntries[2].successfulMutation !== true
+  ) {
+    throw new Error("duplicate canvas delivery was still credited as runtime progress");
+  }
+  const persistedCanvasFiles = await fs.readdir(
+    path.join(idempotencyStore.artifactsDir, "canvas")
+  );
+  if (persistedCanvasFiles.length !== 2) {
+    throw new Error(`duplicate canvas delivery persisted ${persistedCanvasFiles.length} snapshots`);
+  }
+  const persistedCanvasContents = await Promise.all(
+    persistedCanvasFiles.map((filename) =>
+      fs.readFile(path.join(idempotencyStore.artifactsDir, "canvas", filename), "utf8")
+    )
+  );
+  if (
+    !persistedCanvasContents.some((content) => content.includes("survive canvas preview cleanup")) ||
+    !persistedCanvasContents.some((content) => content.includes("host-side interruption revised"))
+  ) {
+    throw new Error("canvas idempotency snapshots did not preserve both distinct file revisions");
   }
 
   const genericNamed = normalizeCanvasPayload(
