@@ -449,6 +449,41 @@ assert.equal(
   true,
   "a response-only routing JSON project label was misclassified as an unsupported forecast"
 );
+const responseOnlyPublishRouterJson = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    route_kind: "publish_video",
+    project: "lazyedit",
+    worker_needed: true,
+    needs_recent_media: true,
+    public_publish_intent: true,
+    public_publish_allowed: true,
+    reason:
+      "The user explicitly requested publishing the referenced video, so the worker is expected to use the established LazyEdit routine.",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  responseOnlyPublishRouterJson.ok,
+  true,
+  "an operational publish-route assignment was misclassified as an external forecast"
+);
+const responseOnlyRouterWithForecast = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    route_kind: "research_or_summary",
+    project: "generic",
+    worker_needed: true,
+    reason:
+      "The user requests routing, but the report predicts market demand will grow by 20% next year.",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  responseOnlyRouterWithForecast.ok,
+  false,
+  "a routing explanation laundered an unsupported external forecast"
+);
 const actualSourceFreeProjection = evaluateSourceFreeResponseClaims({
   goal: sourceFreeResearchGoal,
   candidateResult: "The report projects that demand will grow by 20% next year.",

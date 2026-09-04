@@ -628,6 +628,66 @@ assert.equal(
   1
 );
 
+const publishRouterClassification = JSON.stringify({
+  route_kind: "publish_video",
+  project: "lazyedit",
+  worker_needed: true,
+  needs_recent_media: true,
+  public_publish_intent: true,
+  public_publish_allowed: true,
+  external_action_allowed: true,
+  delivery_mode: "agent_decide",
+  source_policy: "recent_media",
+  reason:
+    "The user explicitly requested publishing the referenced video, so the worker is expected to use the established LazyEdit routine.",
+  ack: "",
+  chat_reply: "",
+  confidence: 0.96,
+});
+const publishRouterRequest = [
+  "Classify the current chat request for a backend worker.",
+  "Return only JSON. No markdown.",
+  "JSON schema:",
+  JSON.stringify({
+    route_kind: "publish_video|chat_only",
+    project: "lazyedit|generic",
+    worker_needed: true,
+    needs_recent_media: false,
+    public_publish_intent: false,
+    public_publish_allowed: false,
+    external_action_allowed: true,
+    delivery_mode: "agent_decide|chat_attachment",
+    source_policy: "current_request_only|recent_media",
+    reason: "short reason",
+    ack: "",
+    chat_reply: "",
+    confidence: 0.0,
+  }, null, 2),
+].join("\n");
+const publishRouterSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-publish-router-json-handoff",
+  request: publishRouterRequest,
+  localResponses: [publishRouterClassification],
+});
+assert.equal(publishRouterSourceFreeHandoff.result.stopped, undefined);
+assert.equal(publishRouterSourceFreeHandoff.result.result, publishRouterClassification);
+assert.deepEqual(
+  publishRouterSourceFreeHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm"],
+  "a safe publish route did not finish on the first LocalLLM fallback response"
+);
+assert.equal(
+  publishRouterSourceFreeHandoff.events.filter(
+    (event) => event.type === "response_only.source_free_claim_rejected"
+  ).length,
+  0,
+  "operational publish routing still triggered a source-free forecast repair"
+);
+assert.equal(
+  publishRouterSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
 const explicitRouterSchema = {
   route_kind: "research_or_summary",
   project: "labcanvas|generic",

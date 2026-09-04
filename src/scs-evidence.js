@@ -1998,6 +1998,25 @@ function sourceFreeClaimSegmentOnlyMentionsCandidateForecast(text = "") {
   return !assertsForecastDetails;
 }
 
+function sourceFreeClaimSegmentOnlyDescribesTaskIntent(text = "") {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  const taskContext =
+    /\b(?:user|request|task|worker|agent|router?|workflow|routine|instruction)\b/iu.test(value) ||
+    /(?:用户|用戶|请求|請求|任务|任務|工作流|流程|代理|路由|指令)/u.test(value) ||
+    /(?:ユーザー|依頼|要求|タスク|ワーカー|エージェント|ルート|手順|指示)/u.test(value);
+  const describesAssignment =
+    /\b(?:asks?|requested?|requires?|needs?|routes?|classif(?:y|ies|ied)|should|must|is\s+expected\s+to)\b/iu.test(value) ||
+    /(?:要求|请求|請求|需要|应当|應當|应该|應該|路由|分类|分類|交给|交給|由[^。！？；\n]{0,30}(?:处理|處理|执行|執行)|预计由|預計由)/u.test(value) ||
+    /(?:依頼|要求|必要|ルーティング|分類|処理すべき|実行すべき|担当する見込み)/u.test(value);
+  if (!taskContext || !describesAssignment) return false;
+  const assertsExternalOutcome =
+    /\b(?:19|20)\d{2}\b|\b(?:next|coming|future)\s+(?:year|years|decade)\b|\b(?:market|demand|revenue|sales|accuracy|latency|throughput)\b[^.!?;\n]{0,80}\b(?:will|would|expected\s+to|forecast|predict|project|grow|increase|decrease|reach|decline)\b|\b\d+(?:\.\d+)?\s*%/iu.test(value) ||
+    /(?:19|20)\d{2}\s*年|(?:未来|今后|今後|年内|年內|年前|年底|年末)[^。！？；\n]{0,50}(?:将|將|会|會|达到|達到|增长|增長|下降|上线|上線|成为|成為)|(?:市场|市場|需求|营收|營收|销售|銷售|准确率|準確率|延迟|延遲)[^。！？；\n]{0,80}(?:预计|預計|预测|預測|增长|增長|下降|达到|達到)/u.test(value) ||
+    /(?:19|20)\d{2}\s*年|(?:将来|今後|年内|年末|までに)[^。！？；\n]{0,50}(?:なる|増加|減少|達する|実現|公開|発売)|(?:市場|需要|売上|精度|遅延)[^。！？；\n]{0,80}(?:予測|予想|増加|減少|達する)/u.test(value);
+  return !assertsExternalOutcome;
+}
+
 function sourceFreeExternalClaimCategoriesForSegment(text = "") {
   const value = String(text || "");
   if (!value.trim()) return [];
@@ -2043,7 +2062,10 @@ function sourceFreeExternalClaimAssessment(text = "", { allowExplicitSpeculation
     if (
       segmentCategories.length === 1 &&
       segmentCategories[0] === "forecast" &&
-      sourceFreeClaimSegmentOnlyMentionsCandidateForecast(segment)
+      (
+        sourceFreeClaimSegmentOnlyMentionsCandidateForecast(segment) ||
+        sourceFreeClaimSegmentOnlyDescribesTaskIntent(segment)
+      )
     ) {
       continue;
     }

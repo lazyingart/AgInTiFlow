@@ -1258,3 +1258,24 @@ available when it can reveal evidence omitted by the earlier listing.
 The focused regression proves cross-tool depth-1 equivalence, exact-listing
 convergence, and a depth-2 to depth-3 refinement. It does not change filesystem
 permissions, traversal limits, host transport, or LabCanvas runtime policy.
+
+### Route assignments are not external forecasts
+
+`labcanvas-operational-route-forecast-120` comes from retained production
+session `web-agent-labcanvas-0aa6abef-47a0-4f2a-b07e-ae36281ecd6f`. After a
+DeepSeek `402`, LocalLLM returned a structurally correct `publish_video` route
+for the user's explicit request. The source-free claim guard interpreted the
+route explanation as a forecast, rejected it twice, and replaced it with an
+irrelevant no-evidence blocker.
+
+The forecast classifier now separates bounded task-assignment language from
+claims about external future outcomes. Wording such as a user requesting work
+and a worker being expected to use an established routine is operational intent,
+not a market or scientific prediction. Dates, future periods, quantitative
+growth, demand, revenue, accuracy, and similar outcome claims remain guarded.
+
+Focused evaluator checks cover the production-shaped publish route and an
+unsupported 20% next-year demand forecast. The provider-handoff regression
+forces DeepSeek quota failure and proves the valid LocalLLM route finishes on
+its first response without weakening explicit JSON schema checks or changing
+LabCanvas routing policy.
