@@ -460,6 +460,51 @@ assert.equal(
   "a genuine source-free projection bypassed the forecast guard"
 );
 assert(actualSourceFreeProjection.categories.includes("forecast"));
+const retainedCandidateForecastMention = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    summary:
+      "候选结果覆盖了类器官检测分诊系统的结构性矛盾与可证伪预测，但缺少PDF附件及关联分析。",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedCandidateForecastMention.ok,
+  true,
+  "a retained auditor mention of candidate forecast content was treated as the auditor's own forecast"
+);
+const englishCandidateForecastMention = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "The candidate response includes a falsifiable prediction but omits supporting evidence.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  englishCandidateForecastMention.ok,
+  true,
+  "an English auditor mention of candidate forecast content was rejected"
+);
+const japaneseCandidateForecastMention = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "候補回答は反証可能な予測を含んでいますが、根拠を欠きます。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  japaneseCandidateForecastMention.ok,
+  true,
+  "a Japanese auditor mention of candidate forecast content was rejected"
+);
+const candidateForecastAssertion = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "The candidate response includes a prediction that demand will grow by 20% next year.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  candidateForecastAssertion.ok,
+  false,
+  "a future outcome embedded in a candidate-content summary bypassed the source-free guard"
+);
 const sourcedResponseOnlyClaim = evaluateSourceFreeResponseClaims({
   goal: sourceFreeResearchGoal,
   candidateResult:

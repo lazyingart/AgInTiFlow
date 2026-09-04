@@ -1971,6 +1971,33 @@ function sourceFreeClaimSegmentDeniesVerification(text = "") {
   );
 }
 
+function sourceFreeClaimSegmentOnlyMentionsCandidateForecast(text = "") {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  const reportsCandidateContent =
+    /\b(?:candidate|submitted|provided)\s+(?:result|response|answer|output|text|content)\b[^.!?;\n]{0,120}\b(?:contains?|includes?|covers?|mentions?|discusses?|describes?|labels?|frames?)\b[^.!?;\n]{0,100}\b(?:prediction|forecast|projection|hypothesis|speculation)\b/iu.test(
+      value
+    ) ||
+    /(?:候选|候選|提交的|所给|所給|该|該)(?:结果|結果|回答|响应|響應|输出|輸出|文本|内容|內容)[^。！？；\n]{0,120}(?:包含|包括|覆盖|覆蓋|提到|提及|讨论|討論|描述|列出|标注|標註)[^。！？；\n]{0,100}(?:预测|預測|预期|預期|推测|推測|假设|假說)/u.test(
+      value
+    ) ||
+    /(?:候補|提出された|与えられた)(?:結果|回答|応答|出力|文章|内容)[^。！？；\n]{0,120}(?:(?:含む|含んで|取り上げ|言及|説明|記載)[^。！？；\n]{0,100}(?:予測|予想|見込み|仮説|推測)|(?:予測|予想|見込み|仮説|推測)[^。！？；\n]{0,100}(?:を)?(?:含む|含んで|取り上げ|言及|説明|記載))/u.test(
+      value
+    );
+  if (!reportsCandidateContent) return false;
+  const assertsForecastDetails =
+    /\b(?:19|20)\d{2}\b|\b(?:next|coming)\s+(?:year|years|decade)\b|\b(?:will|would|shall|projected\s+to|expected\s+to)\b|\b\d+(?:\.\d+)?\s*%/iu.test(
+      value
+    ) ||
+    /(?:19|20)\d{2}\s*年|(?:未来|今后|今後|年内|年內|年前|年底|年末)[^。！？；\n]{0,50}(?:将|將|会|會|达到|達到|增长|增長|下降|上线|上線|成为|成為)|(?:将|將|会|會)[^。！？；\n]{0,50}(?:达到|達到|增长|增長|下降|上线|上線|成为|成為)/u.test(
+      value
+    ) ||
+    /(?:19|20)\d{2}\s*年|(?:将来|今後|年内|年末|までに)[^。！？；\n]{0,50}(?:なる|増加|減少|達する|実現|公開|発売)|(?:なる|増加|減少|達する|実現|公開|発売)(?:見込み|予測|予想)/u.test(
+      value
+    );
+  return !assertsForecastDetails;
+}
+
 function sourceFreeExternalClaimCategoriesForSegment(text = "") {
   const value = String(text || "");
   if (!value.trim()) return [];
@@ -2013,6 +2040,13 @@ function sourceFreeExternalClaimAssessment(text = "", { allowExplicitSpeculation
   for (const segment of segments) {
     const segmentCategories = sourceFreeExternalClaimCategoriesForSegment(segment);
     if (!segmentCategories.length) continue;
+    if (
+      segmentCategories.length === 1 &&
+      segmentCategories[0] === "forecast" &&
+      sourceFreeClaimSegmentOnlyMentionsCandidateForecast(segment)
+    ) {
+      continue;
+    }
     categories.push(...segmentCategories);
     const deniesVerification = sourceFreeClaimSegmentDeniesVerification(segment);
     const explicitlyUnverified = sourceFreeClaimSegmentHasExplicitUnverifiedFraming(segment);

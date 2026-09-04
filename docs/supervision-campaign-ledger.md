@@ -1173,3 +1173,27 @@ thirteen required fields with only `route_kind` invalid, and proves that one
 LocalLLM repair restores a declared value before the runtime records a finish.
 The focused provider-handoff test, syntax checks, and full package suite pass
 without real LocalLLM inference or any LabCanvas policy change.
+
+### Candidate forecast mentions are not forecast claims
+
+`labcanvas-auditor-forecast-mention-116` comes from retained production
+session `web-agent-labcanvas-7159acc2-9bbe-4254-825b-ed6819f8e269`. A completion
+auditor wrote that the candidate covered a `可证伪预测` but omitted a requested
+PDF and related analysis. The source-free claim guard treated that
+metalinguistic mention as the auditor making an unsupported forecast, forced a
+second model turn, and risked replacing a useful missing-work diagnosis with a
+less accurate answer.
+
+The source-free claim classifier now distinguishes a candidate-content summary
+that merely says a prediction, forecast, projection, hypothesis, or speculation
+is present from a summary that repeats an actual future outcome. The narrow
+exception covers explicit candidate/result/response language in English,
+Chinese, and Japanese only when forecast is the sole detected claim category
+and no year, future marker, projected outcome, or quantitative forecast appears.
+Publication, validation, metric, evidence, and attributed-forecast checks are
+unchanged.
+
+The regression uses the exact retained Chinese wording plus English and
+Japanese controls. A candidate-summary sentence that asserts 20% growth next
+year remains rejected. Truthful-completion, provider-handoff, syntax, and the
+full package suite pass without real LocalLLM inference.
