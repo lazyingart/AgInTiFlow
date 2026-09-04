@@ -75,6 +75,24 @@ try {
     "Docker workspace mode could not write through the exact host workspace path"
   );
 
+  let failedCommandError = null;
+  try {
+    await runToolchainCommand("false", config);
+  } catch (error) {
+    failedCommandError = error;
+  }
+  assert(failedCommandError, "a failing Docker command unexpectedly succeeded");
+  assert(
+    /exited with code 1 without stderr output/i.test(String(failedCommandError.stderr || "")),
+    "a failing Docker command omitted its concise exit status"
+  );
+  assert(
+    !/docker run|NPM_CONFIG_USERCONFIG|\/aginti-(?:home|env|cache)/i.test(
+      `${failedCommandError.message || ""}\n${failedCommandError.stderr || ""}`
+    ),
+    "a failing Docker command leaked its internal sandbox invocation"
+  );
+
   const abortController = new AbortController();
   const abortCommand = `python3 -c 'import time; time.sleep(20)'`;
   const abortPolicy = evaluateCommandPolicy(abortCommand, { ...config, packageInstallPolicy: "allow" });

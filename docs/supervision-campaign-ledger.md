@@ -740,3 +740,35 @@ startup/send/mutation shell commands blocked by the existing permission policy.
 The focused persisted-runtime regression verifies both exact aliases and the
 negative mutating command case; the tmux guardrail, progressive-tool,
 provider-handoff, syntax, package-audit, dry-pack, and full npm suites pass.
+
+### Model-safe Docker failure evidence
+
+`labcanvas-model-safe-docker-failure-100` was derived from retained production
+session `web-agent-labcanvas-968d0e66-a494-40fd-b2f7-0290c687a4ea`. DeepSeek
+first failed with `402 Insufficient Balance`, then the same session resumed on
+LocalLLM and preserved its goal, plan, artifact paths, and tool evidence. The
+local context guard also behaved correctly: each oversized request was reduced
+from roughly 26K-57K message tokens to 8K-12K before retry. Context compaction
+was therefore not the defect.
+
+The actual failure boundary was a sandboxed LaTeX command that exited nonzero
+without writing native stderr. Node's raw child-process exception embedded the
+complete internal `docker run` invocation, mounts, environment setup, and
+wrapped shell in the model-visible `run_command` result. LocalLLM copied that
+runtime implementation detail into its next tool call, where the secret-path
+guard correctly blocked it and stopped the otherwise recoverable document run.
+
+AgInTiFlow now normalizes only failed sandbox command exceptions at the Docker
+boundary. The model and public event stream retain the real exit code, command
+stdout, native stderr when present, and a concise fallback when stderr is
+empty; they no longer receive the Docker wrapper. The raw redacted exception
+remains available only in the bounded private sandbox diagnostic ring. This
+keeps audit evidence useful while preventing smaller fallback models from
+replaying container internals as user commands.
+
+Deterministic regressions cover empty-stderr and compiler-stderr failures. A
+real toolchain-container check confirms that a failing command reports exit
+code `1` without exposing `docker run`, sandbox environment variables, or
+internal mount paths. Syntax, LocalLLM nested failure recovery, DeepSeek to
+LocalLLM provider handoff, coding tools, Docker command, and Docker toolchain
+checks pass.

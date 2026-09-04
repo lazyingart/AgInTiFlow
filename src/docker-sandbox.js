@@ -58,6 +58,37 @@ function buildDockerInvocation(args) {
   return ["docker", ...args].map(shellEscape).join(" ");
 }
 
+export function normalizeDockerSandboxCommandError(error) {
+  if (!error || typeof error !== "object") {
+    const normalized = new Error("Docker sandbox command failed.");
+    normalized.code = 1;
+    normalized.stderr = normalized.message;
+    normalized.stdout = "";
+    return normalized;
+  }
+
+  const code = Number.isInteger(error.code) ? error.code : 1;
+  const stdout = redactSensitiveText(String(error.stdout || "")).trim();
+  const stderr = redactSensitiveText(String(error.stderr || "")).trim();
+  const aborted = error.name === "AbortError" || error.code === "ABORT_ERR";
+  const timedOut = Boolean(error.killed) || error.code === "ETIMEDOUT";
+  const fallbackMessage = aborted
+    ? "Docker sandbox command was interrupted."
+    : timedOut
+      ? "Docker sandbox command timed out."
+      : `Docker sandbox command exited with code ${code} without stderr output.`;
+  const message = stderr || fallbackMessage;
+  const normalized = new Error(message);
+  normalized.name = aborted ? "AbortError" : "DockerSandboxCommandError";
+  normalized.code = error.code ?? code;
+  normalized.exitCode = code;
+  normalized.stdout = stdout;
+  normalized.stderr = stderr || fallbackMessage;
+  if (error.signal) normalized.signal = error.signal;
+  if (error.killed !== undefined) normalized.killed = Boolean(error.killed);
+  return normalized;
+}
+
 async function execDocker(args, options = {}) {
   const execOptions = {
     timeout: options.timeout ?? 30000,
@@ -501,15 +532,26 @@ export async function runDockerSandboxCommand(command, config, policy = evaluate
     policy.gitOnly === true && /\bgit\s+commit\b/i.test(String(command || ""))
       ? await ensureDockerGitIdentity(config, persistentDirs)
       : { configured: false, containerPath: "" };
-  const result = await execDocker(dockerRunArgs(command, config, policy, persistentDirs, {
-    containerName,
-    gitIdentityConfigured: gitIdentity.configured === true,
-  }), {
-    timeout: dockerExecTimeoutMs(policy),
-    maxBuffer: 300 * 1024,
-    signal: options.signal,
-    containerName,
-  });
+  let result;
+  try {
+    result = await execDocker(dockerRunArgs(command, config, policy, persistentDirs, {
+      containerName,
+      gitIdentityConfigured: gitIdentity.configured === true,
+    }), {
+      timeout: dockerExecTimeoutMs(policy),
+      maxBuffer: 300 * 1024,
+      signal: options.signal,
+      containerName,
+    });
+  } catch (error) {
+    recordSandboxLog("sandbox.command.failed", {
+      command,
+      category: policy.category,
+      sandboxMode: policy.sandboxMode,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw normalizeDockerSandboxCommandError(error);
+  }
 
   const payload = {
     stdout: result.stdout.trim().slice(0, 12000),
