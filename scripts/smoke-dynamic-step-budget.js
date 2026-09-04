@@ -10602,7 +10602,7 @@ try {
       {
         meta: {
           toolLoop: {
-            staticCounts: { [repeatedWebQuerySignature]: 2 },
+            staticCounts: { [repeatedWebQuerySignature]: 1 },
             staticOrder: [repeatedWebQuerySignature],
             staticTotal: 1,
           },
@@ -10612,7 +10612,24 @@ try {
       { query: "project memo guidance", maxResults: 5 },
       { commandCwd: workspace }
     )?.category === "repeated-read-only-call",
-    "a third semantically identical web search was not blocked"
+    "a second semantically identical successful web search was not blocked"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedWebQuerySignature]: 1 },
+            staticOrder: [repeatedWebQuerySignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "web_search",
+      { query: "project memo guidance primary source" },
+      { commandCwd: workspace }
+    ) === null,
+    "a materially refined web query was blocked by successful-search idempotency"
   );
   assert(
     !shouldResetStaticDiscoveryPhase({ ok: false, toolName: "read_image", args: { path: "missing.png" } }),

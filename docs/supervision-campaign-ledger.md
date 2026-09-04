@@ -1197,3 +1197,25 @@ The regression uses the exact retained Chinese wording plus English and
 Japanese controls. A candidate-summary sentence that asserts 20% growth next
 year remains rejected. Truthful-completion, provider-handoff, syntax, and the
 full package suite pass without real LocalLLM inference.
+
+### Successful equivalent web searches are single-use evidence
+
+`labcanvas-successful-web-search-idempotency-117` comes from retained
+production session `web-agent-labcanvas-3ff222ef-af1c-4301-8799-4c6ca71368d2`.
+During one medical-research task, two generic discovery queries each completed
+successfully 48 times and one exact paper-title query completed successfully 45
+times. The static-discovery guard normalized equivalent search arguments but
+deliberately allowed two successful calls before blocking, while context
+recovery in the older runtime repeatedly reopened that allowance.
+
+Equivalent successful `web_search` calls are now reusable after the first call
+in an unchanged task state, matching the existing exact-file-read boundary.
+Provider, result-count, whitespace, and capitalization changes do not bypass
+the guard because they do not change the information need. A materially
+refined query remains available, and successful task mutations still advance
+the stagnation epoch through the existing progress machinery.
+
+The focused regression proves that the second semantically identical query is
+blocked while a query with an added primary-source constraint remains allowed.
+The dynamic-step smoke, syntax checks, and full package suite pass without live
+web requests, real LocalLLM inference, or any LabCanvas runtime-policy change.
