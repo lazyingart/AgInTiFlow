@@ -1809,3 +1809,25 @@ retains the source-free rejection event, confirms exactly two model calls,
 checks the schema-valid stopped result, and proves there is no
 `session.finished` event. No live model, LocalLLM inference, LabCanvas runtime
 change, queue action, schedule, or transport operation is involved.
+
+### Later repairs cannot reintroduce host control language
+
+`labcanvas-response-only-post-repair-scaffold-143` extends the final-boundary
+audit beyond empty payloads. A response with unsupported publication numbers
+correctly entered source-free repair, but its replacement merely acknowledged
+that a WeCom message had been routed into LabCanvas and that the output format
+was followed. The early scaffold check had already passed, so this host-facing
+implementation detail was previously accepted as a successful human reply.
+
+Response-only completion now repeats the existing internal-scaffold detector at
+the final acceptance boundary. If any later evidence or transcript repair
+introduces host routing acknowledgements, private packet identifiers, recovery
+instructions, or output-contract narration, the turn stops using the caller's
+exact JSON envelope. This final check records the defect but does not spend a
+third model call after the bounded repair budget is exhausted.
+
+The production-shaped regression proves the vulnerable pre-fix finish and the
+fixed two-call fail-closed result, including one source-free rejection, one
+scaffold rejection, no extra scaffold-repair request, schema preservation, and
+no `session.finished` event. No live model, LocalLLM inference, LabCanvas
+runtime change, queue action, schedule, or transport operation is involved.

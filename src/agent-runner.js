@@ -5624,6 +5624,30 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     });
   }
 
+  internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
+    goal: completionContractGoal(config, state),
+    messages: state.messages,
+    result,
+  });
+  if (internalScaffoldLeak.leaks) {
+    const finalDecision = await rejectInternalRuntimeScaffoldCompletion({
+      config,
+      state,
+      store,
+      observers,
+      step: finalResponseStep,
+      mode: "response-only-post-repair",
+      candidateResult: result,
+      leak: internalScaffoldLeak,
+      allowRepair: false,
+    });
+    return await stopForResponseOnlyInternalScaffold({
+      step: finalResponseStep,
+      decision: finalDecision,
+      contract: outputContract,
+    });
+  }
+
   state.meta = state.meta || {};
   state.meta.responseOnly = {
     completedAt: new Date().toISOString(),
@@ -25644,6 +25668,7 @@ async function rejectInternalRuntimeScaffoldCompletion({
   mode,
   candidateResult,
   leak,
+  allowRepair = true,
 }) {
   state.meta = state.meta || {};
   const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
@@ -25655,7 +25680,7 @@ async function rejectInternalRuntimeScaffoldCompletion({
     mode,
     key,
     repairAttempt: attempts + 1,
-    maxRepairAttempts: 1,
+    maxRepairAttempts: allowRepair ? 1 : 0,
     markers: leak.markers,
     sourceKinds: leak.sourceKinds,
     resultChars: String(candidateResult || "").length,
@@ -25673,7 +25698,7 @@ async function rejectInternalRuntimeScaffoldCompletion({
     state.messages.pop();
   }
 
-  if (attempts < 1) {
+  if (allowRepair && attempts < 1) {
     state.meta.internalRuntimeScaffoldRepair = {
       key,
       attempts: attempts + 1,

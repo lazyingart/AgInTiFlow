@@ -2113,6 +2113,60 @@ try {
     "a stale bot message introduced by a later validator repair was persisted as successful"
   );
 
+  const hostAcknowledgementAfterSourceFreeRepair = await runCase({
+    id: "response-only-host-acknowledgement-after-source-free-repair",
+    taskProfile: "chatops",
+    goal: sourceFreeInspirationJsonGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message:
+          "The publication appeared in 2025 and was validated on 12,000 cases with 94.2% accuracy.",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+      assistant(JSON.stringify({
+        message: retainedEnglishHostAcknowledgement,
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+    ],
+  });
+  assert.equal(hostAcknowledgementAfterSourceFreeRepair.calls.length, 2);
+  assert.equal(
+    hostAcknowledgementAfterSourceFreeRepair.result.stopped,
+    true,
+    "a source-free evidence repair reintroduced a host acknowledgement and still finished"
+  );
+  assert.equal(hostAcknowledgementAfterSourceFreeRepair.result.reason, "model_did_not_execute");
+  assert(
+    hostAcknowledgementAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the cross-validator fixture did not exercise source-free repair"
+  );
+  assert.equal(
+    hostAcknowledgementAfterSourceFreeRepair.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    1
+  );
+  assert(
+    !hostAcknowledgementAfterSourceFreeRepair.events.some(
+      (event) => event.type === "completion.internal_runtime_scaffold_repair_requested"
+    ),
+    "the final-boundary guard spent another repair attempt after the bounded repair budget"
+  );
+  assert(
+    !hostAcknowledgementAfterSourceFreeRepair.events.some(
+      (event) => event.type === "session.finished"
+    ),
+    "host control language introduced by a later validator repair was persisted as successful"
+  );
+
   const boundedTranscriptResponseGoal = [
     "You are the response-only reasoning backend for a chat host.",
     `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
