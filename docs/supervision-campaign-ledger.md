@@ -1618,3 +1618,26 @@ maintenance. The earlier unrelated-anchor contamination in document validation
 was already fixed by `84f488f`; this scenario adds only the missing evidence-use
 boundary. No live DeepSeek or LocalLLM inference, LabCanvas host change, queue
 action, schedule, or transport operation is involved.
+
+### Host-owned document compilation is a dispatch boundary
+
+`labcanvas-host-compiler-dispatch-135` follows retained production session
+`web-agent-labcanvas-874e9cf8-2ae9-4238-8289-bc2797dd008a`. Its report-repair
+contract prohibited agent-side document compilation and assigned the derived
+PDF build and inspection to the LabCanvas host. The fallback nevertheless ran
+the same `latexmk` build twice. AgInTiFlow already used host ownership to shape
+its prompt and completion evidence, but did not enforce it before shell dispatch.
+
+The shared host-compilation recognizer now covers the retained natural wording
+that asks the agent to let the host compiler build the PDF, including a preceding
+compound prohibition such as "do not install or invoke." When that explicit
+ownership contract is current, direct or bounded shell-wrapped LaTeX, Tectonic,
+Pandoc, Typst, and Make compiler invocations are blocked before execution. The
+model receives one automatic source-only recovery instruction and the rest of
+the same assistant tool batch cannot act on the invalid stage transition.
+
+The regression uses the retained command shape and covers environment prefixes,
+shell wrappers, and alternate document compilers. Read-only tool discovery,
+source validators, ordinary agent-owned compilation, and conditional host
+fallback remain available. No compiler command, live model, LabCanvas runtime
+mutation, queue action, schedule, or transport operation is involved.

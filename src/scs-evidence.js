@@ -674,7 +674,7 @@ export function hostManagedDocumentCompilationRequested(goal = "") {
   const source = String(goal || "").replace(/\s+/gu, " ").trim();
   if (!source) return false;
   const agentCompilationProhibited = Boolean(
-    /\bdo\s+not\s+(?:invoke|run|use)\b[^.!?;。！？；]{0,220}\b(?:document\s+compiler|latexmk|pdflatex|xelatex|lualatex|latex|pandoc|make)\b/iu.test(
+    /\bdo\s+not\b[^.!?;。！？；]{0,80}\b(?:invoke|run|use)\b[^.!?;。！？；]{0,220}\b(?:document\s+compiler|latexmk|pdflatex|xelatex|lualatex|latex|pandoc|make)\b/iu.test(
       source
     ) ||
       /(?:不要|不得|无需|不需要)(?:调用|运行|使用).{0,100}(?:LaTeX|latexmk|pdflatex|xelatex|lualatex|pandoc|文档编译器)/u.test(
@@ -685,13 +685,16 @@ export function hostManagedDocumentCompilationRequested(goal = "") {
     /\b(?:the\s+)?(?:labcanvas\s+)?host(?:\s+(?:compiler|recovery|stage)){0,2}\s+(?:alone\s+)?(?:owns|handles?|performs?|will\s+(?:build|compile|handle|perform|render|validate|revalidate))\b/iu.test(
       source
     ) ||
+      /\blet\s+(?:the\s+)?(?:labcanvas\s+)?host(?:\s+(?:compiler|recovery|stage)){0,2}\s+(?:build|compile|handle|perform|render|validate|revalidate)\b/iu.test(
+        source
+      ) ||
       /(?:由|交给)(?:\s*LabCanvas)?(?:主机|宿主)(?:编译|构建|渲染|验证)/u.test(
         source
       )
   );
   if (agentCompilationProhibited && explicitHostCompilation) return true;
   if (
-    /\bdo\s+not\s+(?:invoke|run|use)\b[^.!?;。！？；]{0,180}\b(?:document\s+compiler|latexmk|pdflatex|xelatex|lualatex|latex|pandoc|make)\b[^.!?;。！？；]{0,180}\b(?:labcanvas\s+)?host\b/iu.test(
+    /\bdo\s+not\b[^.!?;。！？；]{0,80}\b(?:invoke|run|use)\b[^.!?;。！？；]{0,180}\b(?:document\s+compiler|latexmk|pdflatex|xelatex|lualatex|latex|pandoc|make)\b[^.!?;。！？；]{0,180}\b(?:labcanvas\s+)?host\b/iu.test(
       source
     ) ||
     /(?:不要|不得|无需|不需要)(?:调用|运行|使用).{0,80}(?:LaTeX|latexmk|pdflatex|xelatex|文档编译器).{0,100}(?:由|交给)(?:\s*LabCanvas)?(?:主机|宿主)(?:编译|构建|渲染|验证)/u.test(

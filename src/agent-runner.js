@@ -5790,6 +5790,103 @@ export function incompatibleDocumentCompilerSourceBlock(toolName, args = {}) {
   return null;
 }
 
+const HOST_MANAGED_DOCUMENT_COMPILERS = new Set([
+  "latex",
+  "latexmk",
+  "lualatex",
+  "make",
+  "pandoc",
+  "pdflatex",
+  "tectonic",
+  "xelatex",
+]);
+
+function hostManagedDocumentCompilerExecutable(command = "", depth = 0) {
+  if (depth > 2) return "";
+  const sequence = parseTopLevelShellSequence(String(command || "").trim());
+  if (
+    !sequence.commands.length ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return "";
+  }
+  const tokenBasename = (value) =>
+    path.posix.basename(String(value || "").replace(/\\/gu, "/"))
+      .toLocaleLowerCase("en-US");
+  for (const segment of sequence.commands) {
+    const tokens = tokenizeShellWords(segment).map((token) => String(token || ""));
+    let index = 0;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] || "")) index += 1;
+    if (tokenBasename(tokens[index]) === "env") {
+      index += 1;
+      while (
+        /^-/.test(tokens[index] || "") ||
+        /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] || "")
+      ) {
+        index += 1;
+      }
+    }
+    while (["command", "exec", "nohup"].includes(tokenBasename(tokens[index]))) {
+      index += 1;
+    }
+    const executable = tokenBasename(tokens[index]);
+    if (HOST_MANAGED_DOCUMENT_COMPILERS.has(executable)) return executable;
+    if (executable === "typst" && tokens[index + 1] === "compile") return "typst";
+    if (["bash", "sh", "zsh"].includes(executable)) {
+      const shellFlagIndex = tokens
+        .slice(index + 1)
+        .findIndex((token) => /^-[a-z]*c[a-z]*$/iu.test(token));
+      if (shellFlagIndex >= 0) {
+        const nestedCommand = tokens[index + shellFlagIndex + 2] || "";
+        const nestedExecutable = hostManagedDocumentCompilerExecutable(
+          nestedCommand,
+          depth + 1
+        );
+        if (nestedExecutable) return nestedExecutable;
+      }
+    }
+  }
+  return "";
+}
+
+export function hostManagedDocumentCompilerInvocationBlock(
+  state = {},
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (toolName !== "run_command") return null;
+  if (!hostManagedDocumentCompilationRequested(completionContractGoal(config, state))) {
+    return null;
+  }
+  const compiler = hostManagedDocumentCompilerExecutable(args.command || "");
+  if (!compiler) return null;
+  return {
+    blocked: true,
+    recoverable: true,
+    stopRun: false,
+    needsApproval: false,
+    category: "host-managed-document-compiler-dispatch",
+    reason:
+      `The current task assigns document compilation to the host, so ${compiler} must not run in the agent session. ` +
+      "Complete and verify the requested editable source, then finish so the host stage can compile and inspect the derived document.",
+    error: "Document compilation is owned by the host stage.",
+    permissionAdvice: {
+      category: "host-managed-document-compiler-dispatch",
+      autoRecover: true,
+      summary: "The proposed compiler call belongs to the declared host stage.",
+      instruction:
+        "Do not retry a compiler or build wrapper. Continue only the bounded source repair and return the complete editable source for host compilation.",
+      options: [
+        "Finish the task-scoped editable source for the host compiler.",
+        "Report a concrete source-level blocker without invoking a document compiler.",
+      ],
+    },
+  };
+}
+
 export function normalizeNoMatchQueryResult(result = {}, policy = {}) {
   if (
     policy?.noMatchExitIsSuccess !== true ||
@@ -21971,6 +22068,24 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       toolName,
       args: safeArgs,
     };
+  }
+
+  const hostDocumentCompilerBlock = hostManagedDocumentCompilerInvocationBlock(
+    state,
+    toolName,
+    args,
+    config
+  );
+  if (hostDocumentCompilerBlock) {
+    const result = {
+      ok: false,
+      toolName,
+      args: safeArgs,
+      ...hostDocumentCompilerBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
   }
 
   const documentCompilerSourceBlock = incompatibleDocumentCompilerSourceBlock(

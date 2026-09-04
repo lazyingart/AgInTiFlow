@@ -75,6 +75,7 @@ import {
   prospectivePythonExactPatchSyntaxBlock,
   preservesCurrentTaskBoundary,
   researchEvidenceManifestMutationBlock,
+  hostManagedDocumentCompilerInvocationBlock,
   completionExternalBlockerCanClose,
   pythonTopLevelDefinitionDuplicates,
   recordCanonicalGeneratedOutputProgress,
@@ -92,6 +93,7 @@ import {
   toolResultWorkspacePath,
   runtimeMessagesSinceLatestContinuationBoundary,
   shellDiagnosticHint,
+  shouldShortCircuitToolBatch,
   rememberCompletedDeepResearch,
   forbiddenCurrentTestRerunBlock,
   unchangedFailedTestRerunBlock,
@@ -14340,6 +14342,90 @@ try {
       { commandCwd: workspace, taskProfile: "research" }
     ) === null,
     "the report evidence boundary blocked an explicitly targeted manifest edit"
+  );
+  const retainedHostCompilationGoal = [
+    "Materially revise a source file inside the exact task artifact directory and return the replacement PDF.",
+    "Do not install or invoke LaTeX, make, apt, conda, or package managers inside the agent.",
+    "Write complete task-scoped sources and let the LabCanvas host compiler build and inspect the PDF.",
+  ].join(" ");
+  const retainedHostCompilationState = {
+    goal: retainedHostCompilationGoal,
+    meta: {
+      taskProfile: "research",
+      goalContract: {
+        revision: 1,
+        activeGoal: retainedHostCompilationGoal,
+        currentRequest: retainedHostCompilationGoal,
+      },
+    },
+  };
+  for (const command of [
+    `cd ${researchArtifactRoot} && latexmk -pdf -pdflatex='pdflatex -interaction=nonstopmode' -synctex=1 -quiet research-briefing.tex`,
+    "env TEXINPUTS=. xelatex -interaction=nonstopmode research-briefing.tex",
+    "bash -lc 'cd output/research-task-134 && tectonic research-briefing.tex'",
+    "make report",
+    "pandoc research-briefing.tex -o research-briefing.pdf",
+    "typst compile research-briefing.typ research-briefing.pdf",
+  ]) {
+    const hostCompilerBlock = hostManagedDocumentCompilerInvocationBlock(
+      retainedHostCompilationState,
+      "run_command",
+      { command },
+      { commandCwd: workspace, taskProfile: "research" }
+    );
+    assert(
+      hostCompilerBlock?.category === "host-managed-document-compiler-dispatch" &&
+        hostCompilerBlock.permissionAdvice?.autoRecover === true &&
+        shouldShortCircuitToolBatch(hostCompilerBlock),
+      `host-owned document compilation was dispatched by the fallback: ${command}`
+    );
+  }
+  for (const command of [
+    "which latexmk",
+    "printf '%s\\n' latexmk",
+    "python scripts/check_report_source.py research-briefing.tex",
+  ]) {
+    assert(
+      hostManagedDocumentCompilerInvocationBlock(
+        retainedHostCompilationState,
+        "run_command",
+        { command },
+        { commandCwd: workspace, taskProfile: "research" }
+      ) === null,
+      `host compiler ownership blocked a non-compiling source check: ${command}`
+    );
+  }
+  assert(
+    hostManagedDocumentCompilerInvocationBlock(
+      {
+        goal: "Create report.tex, compile report.pdf with xelatex, and inspect it.",
+        meta: {
+          taskProfile: "research",
+          goalContract: {
+            revision: 1,
+            activeGoal: "Create report.tex, compile report.pdf with xelatex, and inspect it.",
+          },
+        },
+      },
+      "run_command",
+      { command: "xelatex -interaction=nonstopmode report.tex" },
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "ordinary agent-owned document compilation was overblocked"
+  );
+  assert(
+    hostManagedDocumentCompilerInvocationBlock(
+      {
+        goal: [
+          "Create report.tex and compile report.pdf.",
+          "If compilation is unavailable, the host recovery stage may compile it.",
+        ].join(" "),
+      },
+      "run_command",
+      { command: "pdflatex report.tex" },
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "a conditional host fallback was mistaken for exclusive host ownership"
   );
   for (const patch of [
     '*** Begin Patch\n*** Delete File: "report.md"\n*** End Patch',
