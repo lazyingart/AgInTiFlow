@@ -497,6 +497,73 @@ assert.equal(
   1
 );
 
+const sourceFreeJsonContractRequest = [
+  "Correct the unsupported claim while preserving the response envelope.",
+  "Return one strict JSON object and no prose:",
+  JSON.stringify({ message: "", files: [], confirmation: "" }, null, 2),
+].join("\n");
+const sourceFreeRepairDropsJsonContract = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-repair-drops-json-contract",
+  request: sourceFreeJsonContractRequest,
+  localResponses: [
+    JSON.stringify({
+      message: "The paper was published in 2025 and validated on a 12,000-case benchmark.",
+      files: [],
+      confirmation: "",
+    }),
+    JSON.stringify({ message: "No fresh evidence is available, so I cannot verify that claim." }),
+  ],
+});
+assert.equal(sourceFreeRepairDropsJsonContract.result.stopped, true);
+assert.equal(
+  sourceFreeRepairDropsJsonContract.result.reason,
+  "response_only_output_contract_required"
+);
+assert.equal(
+  sourceFreeRepairDropsJsonContract.events.filter(
+    (event) => event.type === "response_only.output_contract_failed_closed"
+  ).length,
+  1
+);
+assert.equal(
+  sourceFreeRepairDropsJsonContract.events.filter((event) => event.type === "session.finished").length,
+  0,
+  "a source-free repair that dropped required JSON keys was persisted as finished"
+);
+
+const sourceFreeRepairPreservesJsonContract = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-repair-preserves-json-contract",
+  request: sourceFreeJsonContractRequest,
+  localResponses: [
+    JSON.stringify({
+      message: "The paper was published in 2025 and validated on a 12,000-case benchmark.",
+      files: [],
+      confirmation: "",
+    }),
+    JSON.stringify({
+      message: "No fresh evidence is available, so I cannot verify that claim.",
+      files: [],
+      confirmation: "",
+    }),
+  ],
+});
+assert.equal(sourceFreeRepairPreservesJsonContract.result.stopped, undefined);
+assert.deepEqual(Object.keys(JSON.parse(sourceFreeRepairPreservesJsonContract.result.result)), [
+  "message",
+  "files",
+  "confirmation",
+]);
+assert.equal(
+  sourceFreeRepairPreservesJsonContract.events.filter(
+    (event) => event.type === "response_only.source_free_claim_repaired"
+  ).length,
+  1
+);
+assert.equal(
+  sourceFreeRepairPreservesJsonContract.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
 const requestedFalsifiablePrediction = [
   "Create one concise inspiration message from the supplied conceptual context.",
   "Include one clearly labeled, falsifiable 3/5/10-year prediction as your own hypothesis.",

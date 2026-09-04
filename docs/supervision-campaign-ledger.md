@@ -1048,3 +1048,30 @@ The regression uses the exact retained invitation and proves it passes without
 a repair. A negative control proves that `The market analysis projects that
 demand will grow next year` remains rejected. Truthful-completion and syntax
 checks pass before the full package gate.
+
+### Response-only repairs preserve the output contract
+
+`labcanvas-response-only-repair-contract-111` is derived from retained
+production session `web-agent-labcanvas-21296064-9835-461b-8179-5c8cf5f367a2`.
+The authoritative WeCom router request required a strict multi-field JSON
+object. A source-free factual answer triggered the evidence repair path, whose
+replacement returned only `response` and internal routing narration. The JSON
+contract validator was added after that production event, but a validation-
+order gap remained: it checked the first answer before source-free repair and
+did not check the replacement afterward. A schema-valid first answer could
+therefore still finish with a schema-invalid correction.
+
+The source-free repair instruction now repeats the exact required top-level key
+types when an explicit JSON contract exists. Its replacement passes the same
+contract validator before the repair is accepted or `session.finished` is
+recorded. A replacement that drops keys stops through the existing output-
+contract failure path; it does not get an additional model turn. This keeps the
+repair bounded while preventing one validator from undoing another validator's
+guarantee.
+
+The provider-handoff regression forces DeepSeek quota failure, supplies an
+initial schema-valid but unsupported factual claim, and then exercises both
+LocalLLM outcomes. Dropping `files` and `confirmation` fails closed with no
+terminal finish; preserving all three fields completes once. Provider handoff,
+source-free evidence, JSON repair, and syntax checks pass before the full
+package gate.
