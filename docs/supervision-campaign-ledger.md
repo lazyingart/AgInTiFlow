@@ -1319,3 +1319,25 @@ task-state epoch remain available.
 The focused regression covers path aliases, prompt/provider variation, the
 two-pass cap, and a higher-detail positive control. It does not select or change
 any perception provider and performs no live vision inference.
+
+### Structured workspace discovery converges after one complete result
+
+`labcanvas-structured-workspace-idempotency-123` uses retained production
+sessions `web-agent-labcanvas-ad4601f6-840b-46c8-b4a1-018491a847bb` and
+`web-agent-labcanvas-6a712fc4-a1a4-4128-801d-46771cb3c50a`. Exact successful
+`search_files` calls were repeated up to five times, while one rich root
+`inspect_project` result was repeated after it had already returned the complete
+manifest and source-directory inventory.
+
+Exact structured file searches, project inspections, directory listings, and
+equivalent plain `ls` calls now share one-use semantic discovery identities in
+unchanged task state. Case-insensitive search identity ignores letter case.
+Project inspection identity preserves material `maxDepth` and `includeFiles`
+scope, and directory identity continues to preserve depth, so a refined search,
+deeper listing, or richer inspection remains available. Successful mutation or
+other concrete progress still starts a fresh discovery phase.
+
+The focused regression covers exact workspace-search reuse, refined-search and
+richer-inspection positive controls, listing depth, and cross-tool `list_files`
+to `ls` equivalence. This changes no workspace permissions, tool availability,
+provider selection, or LabCanvas runtime policy.

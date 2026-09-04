@@ -15971,7 +15971,7 @@ Do not prefix, suffix, wrap, redirect, pipe, or combine that validator command.`
       {
         meta: {
           toolLoop: {
-            staticCounts: { [shallowListSignature]: 2 },
+            staticCounts: { [shallowListSignature]: 1 },
             staticOrder: [shallowListSignature],
             staticTotal: 1,
           },
@@ -15988,7 +15988,29 @@ Do not prefix, suffix, wrap, redirect, pipe, or combine that validator command.`
       {
         meta: {
           toolLoop: {
-            staticCounts: { [shallowListSignature]: 2 },
+            staticCounts: {
+              [staticToolCallSignature(
+                "list_files",
+                { path: "../Musia", maxDepth: 1 },
+                semanticListContext
+              )]: 1,
+            },
+            staticTotal: 1,
+          },
+        },
+      },
+      "run_command",
+      { command: "ls -la /tmp/Musia" },
+      semanticListContext
+    )?.category === "repeated-read-only-call",
+    "an equivalent plain ls bypassed a successful structured directory listing"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [shallowListSignature]: 1 },
             staticOrder: [shallowListSignature],
             staticTotal: 1,
           },
@@ -15999,6 +16021,81 @@ Do not prefix, suffix, wrap, redirect, pipe, or combine that validator command.`
       semanticListContext
     ) === null,
     "a materially deeper directory listing was blocked as an exact repeat"
+  );
+  const projectInspectSignature = staticToolCallSignature(
+    "inspect_project",
+    { path: ".", maxDepth: 6, includeFiles: true },
+    semanticListContext
+  );
+  assert(
+    projectInspectSignature !==
+      staticToolCallSignature("inspect_project", { path: "." }, semanticListContext),
+    "a materially richer project inspection reused the default summary signature"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [projectInspectSignature]: 1 },
+            staticOrder: [projectInspectSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "inspect_project",
+      { path: ".", maxDepth: 6, includeFiles: true },
+      semanticListContext
+    )?.category === "repeated-read-only-call",
+    "an exact successful project inspection remained repeatable"
+  );
+  const fileSearchSignature = staticToolCallSignature(
+    "search_files",
+    { path: "src", query: "Waiting_Confirmation" },
+    semanticListContext
+  );
+  assert(
+    fileSearchSignature ===
+      staticToolCallSignature(
+        "search_files",
+        { path: "src", query: "waiting_confirmation", caseSensitive: false },
+        semanticListContext
+      ),
+    "case-insensitive workspace searches did not share one semantic signature"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [fileSearchSignature]: 1 },
+            staticOrder: [fileSearchSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "search_files",
+      { path: "src", query: "waiting_confirmation" },
+      semanticListContext
+    )?.category === "repeated-read-only-call",
+    "an equivalent successful workspace search remained repeatable"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [fileSearchSignature]: 1 },
+            staticOrder: [fileSearchSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "search_files",
+      { path: "src", query: "waiting_confirmation_handler" },
+      semanticListContext
+    ) === null,
+    "a materially refined workspace search was blocked by exact-search idempotency"
   );
   assert(
     shouldActivateScs("auto", {

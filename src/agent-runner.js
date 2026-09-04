@@ -11398,10 +11398,14 @@ export function repeatedStaticToolBlock(state, toolName, args = {}, config = {})
   });
   const priorCalls = Number(toolLoop.staticCounts?.[signature] || 0);
   const staticTotal = Number(toolLoop.staticTotal || 0);
-  // Successful file reads, equivalent searches, and unchanged URL opens are
-  // reusable evidence. A second identical call adds latency and can amplify
-  // after compaction; the model can still refine a query or read a new range.
-  const repeatLimit = ["open_url", "read_file", "read_web_page", "web_search"].includes(toolName) ? 1 : 2;
+  // Successful structured reads are reusable evidence. Key the one-use rule by
+  // semantic signature so changing from list_files to an equivalent plain ls
+  // cannot reopen the same discovery. Image perception deliberately retains a
+  // second targeted pass; other read-only diagnostics keep their bounded retry.
+  const oneUseDiscovery = /^(?:browser-open|file-read|file-search|filesystem-list|project-inspect|web-read|web-search):/.test(
+    signature
+  );
+  const repeatLimit = oneUseDiscovery ? 1 : 2;
   if (priorCalls < repeatLimit && staticTotal < STATIC_DISCOVERY_CONVERGENCE_LIMIT) return null;
   const exactOutputs = state.meta?.scs?.taskContract?.exactOutputPaths || [];
   const phaseExhausted = staticTotal >= STATIC_DISCOVERY_CONVERGENCE_LIMIT;

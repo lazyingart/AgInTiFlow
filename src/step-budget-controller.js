@@ -205,6 +205,12 @@ function canonicalListDepth(value) {
   return Math.min(Math.max(Math.floor(requested), 1), 8);
 }
 
+function canonicalInspectDepth(value) {
+  const requested = Number(value);
+  if (!Number.isFinite(requested) || requested <= 0) return 6;
+  return Math.min(Math.max(Math.floor(requested), 1), 10);
+}
+
 function canonicalWebReadCharBand(value) {
   const requested = Number(value);
   const bounded = Math.min(
@@ -268,7 +274,11 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
     ].join(":");
   }
   if (toolName === "inspect_project") {
-    return `project-inspect:${canonicalDiscoveryPath(args.path, commandCwd)}`;
+    return `project-inspect:${stableStringify({
+      path: canonicalDiscoveryPath(args.path, commandCwd),
+      maxDepth: canonicalInspectDepth(args.maxDepth),
+      includeFiles: Boolean(args.includeFiles),
+    })}`;
   }
   if (toolName === "read_file") {
     return `file-read:${stableStringify({
@@ -287,10 +297,12 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
     })}`;
   }
   if (toolName === "search_files") {
+    const caseSensitive = Boolean(args.caseSensitive);
+    const query = String(args.query || "").trim();
     return `file-search:${stableStringify({
       path: canonicalDiscoveryPath(args.path, commandCwd),
-      query: String(args.query || "").trim(),
-      caseSensitive: Boolean(args.caseSensitive),
+      query: caseSensitive ? query : query.toLocaleLowerCase("en-US"),
+      caseSensitive,
     })}`;
   }
   if (toolName === "web_search") {
