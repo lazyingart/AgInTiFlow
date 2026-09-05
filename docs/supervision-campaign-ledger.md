@@ -2339,3 +2339,23 @@ validator remain covered; regressions prove both negative controls and exact
 one-call completion for the retained requirement. No live provider or LocalLLM
 inference, LabCanvas runtime change, queue action, schedule, transport
 operation, or external side effect is involved.
+
+### Completion-audit IDs stay bound to the exact task packet
+
+`labcanvas-completion-audit-item-identity-168` continues the retained LabCanvas
+session `web-agent-labcanvas-7159acc2-9bbe-4254-825b-ed6819f8e269`. Its fallback
+copied example IDs `source:123` and `interruption:456` from the output schema
+instead of classifying the actual packet items, yet the structurally valid JSON
+could reach terminal success. That could mark the wrong chat message covered
+while silently omitting a consecutive or interrupted request.
+
+Explicit completion-audit turns now derive their allowed IDs from the final
+task packet and require every request item to appear exactly once across
+`covered_item_ids` and `missing[].item_id`. Unknown, omitted, duplicated,
+overlapping, and malformed references receive one bounded repair with the exact
+allowed IDs. If repair still fails, the run stops without `session.finished`
+and returns a schema-valid audit that conservatively marks every actual item
+missing. The retained phantom-ID case, valid result, overlap, repeated failure,
+and an unrelated strict JSON envelope are covered. No live provider or LocalLLM
+inference, LabCanvas runtime change, queue action, schedule, transport
+operation, or external side effect is involved.

@@ -4452,7 +4452,12 @@ function responseOnlyJsonContract(config = {}, state = {}) {
       .filter(Boolean);
     if (values.length) enumValues[key] = [...new Set(values)];
   }
-  return { requiredKeys, keyTypes, enumValues };
+  return {
+    requiredKeys,
+    keyTypes,
+    enumValues,
+    completionAudit: responseOnlyCompletionAuditIdentityContract(source, requiredKeys),
+  };
 }
 
 function parseStrictResponseOnlyJson(result = "") {
@@ -4464,6 +4469,75 @@ function parseStrictResponseOnlyJson(result = "") {
   } catch {
     return null;
   }
+}
+
+function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys = []) {
+  const text = String(source || "");
+  const explicitRole = /(?:^|\n)\s*Role\s*:\s*completion[_ -]?audit\s*(?:\n|$)/iu.test(text);
+  const auditShape = ["covered_item_ids", "missing", "legitimate_blocker"]
+    .every((key) => requiredKeys.includes(key));
+  if (!explicitRole || !auditShape) return null;
+  const packet = responseOnlyTaskPacket(text);
+  const allowedItemIds = [
+    ...new Set(
+      (Array.isArray(packet?.request_items) ? packet.request_items : [])
+        .map((item) => String(item?.item_id || "").trim())
+        .filter(Boolean)
+    ),
+  ];
+  return allowedItemIds.length ? { allowedItemIds } : null;
+}
+
+function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) {
+  const allowedItemIds = Array.isArray(contract?.allowedItemIds)
+    ? contract.allowedItemIds
+    : [];
+  if (!allowedItemIds.length) {
+    return {
+      ok: true,
+      invalidItemIds: [],
+      omittedItemIds: [],
+      duplicateItemIds: [],
+      malformedItemReferences: [],
+    };
+  }
+
+  const references = [];
+  const malformedItemReferences = [];
+  for (const [index, itemId] of (Array.isArray(value.covered_item_ids)
+    ? value.covered_item_ids
+    : []).entries()) {
+    const normalized = typeof itemId === "string" ? itemId.trim() : "";
+    if (!normalized) malformedItemReferences.push(`covered_item_ids[${index}]`);
+    else references.push(normalized);
+  }
+  for (const [index, item] of (Array.isArray(value.missing) ? value.missing : []).entries()) {
+    const normalized = item && typeof item === "object" && !Array.isArray(item)
+      ? String(item.item_id || "").trim()
+      : "";
+    if (!normalized) malformedItemReferences.push(`missing[${index}].item_id`);
+    else references.push(normalized);
+  }
+
+  const allowed = new Set(allowedItemIds);
+  const counts = new Map();
+  for (const itemId of references) counts.set(itemId, (counts.get(itemId) || 0) + 1);
+  const invalidItemIds = [...new Set(references.filter((itemId) => !allowed.has(itemId)))];
+  const omittedItemIds = allowedItemIds.filter((itemId) => !counts.has(itemId));
+  const duplicateItemIds = [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([itemId]) => itemId);
+  return {
+    ok:
+      invalidItemIds.length === 0 &&
+      omittedItemIds.length === 0 &&
+      duplicateItemIds.length === 0 &&
+      malformedItemReferences.length === 0,
+    invalidItemIds,
+    omittedItemIds,
+    duplicateItemIds,
+    malformedItemReferences,
+  };
 }
 
 function responseOnlyAuditScoreRange(goal = "") {
@@ -4541,7 +4615,18 @@ function responseOnlyPerfectAuditInstruction(assessment = {}, contract = null) {
 }
 
 function assessResponseOnlyJsonContract(result, contract) {
-  if (!contract) return { ok: true, missingKeys: [], typeMismatches: [], enumMismatches: [] };
+  if (!contract) {
+    return {
+      ok: true,
+      missingKeys: [],
+      typeMismatches: [],
+      enumMismatches: [],
+      invalidItemIds: [],
+      omittedItemIds: [],
+      duplicateItemIds: [],
+      malformedItemReferences: [],
+    };
+  }
   const value = parseStrictResponseOnlyJson(result);
   if (!value) {
     return {
@@ -4549,6 +4634,10 @@ function assessResponseOnlyJsonContract(result, contract) {
       missingKeys: [...contract.requiredKeys],
       typeMismatches: [],
       enumMismatches: [],
+      invalidItemIds: [],
+      omittedItemIds: contract.completionAudit?.allowedItemIds || [],
+      duplicateItemIds: [],
+      malformedItemReferences: [],
       reason: "The response was not exactly one valid JSON object.",
     };
   }
@@ -4562,20 +4651,31 @@ function assessResponseOnlyJsonContract(result, contract) {
     const allowed = contract.enumValues?.[key];
     return Array.isArray(allowed) && allowed.length && Object.hasOwn(value, key) && !allowed.includes(value[key]);
   });
+  const completionAuditIdentity = assessResponseOnlyCompletionAuditIdentity(
+    value,
+    contract.completionAudit
+  );
+  const structurallyValid =
+    missingKeys.length === 0 &&
+    typeMismatches.length === 0 &&
+    enumMismatches.length === 0;
   return {
-    ok: missingKeys.length === 0 && typeMismatches.length === 0 && enumMismatches.length === 0,
+    ...completionAuditIdentity,
+    ok: structurallyValid && completionAuditIdentity.ok,
     missingKeys,
     typeMismatches,
     enumMismatches,
-    reason: missingKeys.length || typeMismatches.length || enumMismatches.length
+    reason: !structurallyValid
       ? "The response did not match the explicit top-level JSON contract."
-      : "The explicit JSON contract is satisfied.",
+      : !completionAuditIdentity.ok
+        ? "The completion audit did not classify the exact task-packet item IDs once each."
+        : "The explicit JSON contract is satisfied.",
   };
 }
 
 function responseOnlyJsonKeyContractText(contract) {
   if (!contract) return "";
-  return contract.requiredKeys
+  const keyContract = contract.requiredKeys
     .map((key) => {
       const allowed = contract.enumValues?.[key];
       const enumText = Array.isArray(allowed) && allowed.length
@@ -4584,6 +4684,10 @@ function responseOnlyJsonKeyContractText(contract) {
       return `${JSON.stringify(key)}:${contract.keyTypes[key]}${enumText}`;
     })
     .join(", ");
+  const allowedItemIds = contract.completionAudit?.allowedItemIds || [];
+  return allowedItemIds.length
+    ? `${keyContract}; completion-audit item IDs must each appear exactly once across covered_item_ids or missing[].item_id and must come from: ${allowedItemIds.map((value) => JSON.stringify(value)).join(", ")}`
+    : keyContract;
 }
 
 function responseOnlyJsonRepairInstruction(contract, assessment = {}) {
@@ -4592,6 +4696,10 @@ function responseOnlyJsonRepairInstruction(contract, assessment = {}) {
     assessment.missingKeys?.length ? `missing keys: ${assessment.missingKeys.join(", ")}` : "",
     assessment.typeMismatches?.length ? `wrong value types: ${assessment.typeMismatches.join(", ")}` : "",
     assessment.enumMismatches?.length ? `values outside their declared enums: ${assessment.enumMismatches.join(", ")}` : "",
+    assessment.invalidItemIds?.length ? `item IDs absent from the exact task packet: ${assessment.invalidItemIds.join(", ")}` : "",
+    assessment.omittedItemIds?.length ? `unclassified task item IDs: ${assessment.omittedItemIds.join(", ")}` : "",
+    assessment.duplicateItemIds?.length ? `item IDs classified more than once: ${assessment.duplicateItemIds.join(", ")}` : "",
+    assessment.malformedItemReferences?.length ? `malformed item references: ${assessment.malformedItemReferences.join(", ")}` : "",
   ].filter(Boolean).join("; ");
   return [
     "Your previous response violated the current explicit JSON output contract.",
@@ -4658,6 +4766,15 @@ function responseOnlyContractFallbackResult(contract, message) {
     (key) => contract.keyTypes[key] === "string" && !contract.enumValues?.[key]?.length
   );
   if (messageKey) value[messageKey] = message;
+  const completionAuditItemIds = contract.completionAudit?.allowedItemIds || [];
+  if (completionAuditItemIds.length) {
+    value.covered_item_ids = [];
+    value.missing = completionAuditItemIds.map((itemId) => ({
+      item_id: itemId,
+      requirement: message,
+      kind: "reply",
+    }));
+  }
   return JSON.stringify(value);
 }
 
@@ -4770,6 +4887,10 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       missingKeys: assessment.missingKeys,
       typeMismatches: assessment.typeMismatches,
       enumMismatches: assessment.enumMismatches,
+      invalidItemIds: assessment.invalidItemIds,
+      omittedItemIds: assessment.omittedItemIds,
+      duplicateItemIds: assessment.duplicateItemIds,
+      malformedItemReferences: assessment.malformedItemReferences,
       result: publicCompletionText(stoppedResult, 500),
     };
     state.meta = state.meta || {};
@@ -5218,6 +5339,10 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       missingKeys: outputAssessment.missingKeys,
       typeMismatches: outputAssessment.typeMismatches,
       enumMismatches: outputAssessment.enumMismatches,
+      invalidItemIds: outputAssessment.invalidItemIds,
+      omittedItemIds: outputAssessment.omittedItemIds,
+      duplicateItemIds: outputAssessment.duplicateItemIds,
+      malformedItemReferences: outputAssessment.malformedItemReferences,
       preview: publicCompletionText(result, 300),
     };
     await store.appendEvent("response_only.output_contract_rejected", detail);
@@ -25252,6 +25377,10 @@ async function enforceToolCapableOutputContract({
     missingKeys: assessment.missingKeys,
     typeMismatches: assessment.typeMismatches,
     enumMismatches: assessment.enumMismatches,
+    invalidItemIds: assessment.invalidItemIds,
+    omittedItemIds: assessment.omittedItemIds,
+    duplicateItemIds: assessment.duplicateItemIds,
+    malformedItemReferences: assessment.malformedItemReferences,
     preview: publicCompletionText(candidateResult, 300),
   };
   await store.appendEvent("completion.output_contract_rejected", detail);

@@ -628,6 +628,75 @@ const retainedCompletionAuditRequirementResult = {
   complexity: "low",
   summary: "The candidate omitted the requested artifact.",
 };
+const completionAuditItemIdentityGoal = [
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Return the completion audit JSON only.",
+  })}`,
+  "Role: completion_audit",
+  "Original prompt:",
+  "You are a fast completion auditor for one exact task.",
+  "Return JSON only:",
+  JSON.stringify({
+    covered_item_ids: ["source:123"],
+    missing: [{
+      item_id: "interruption:456",
+      requirement: "specific omitted action",
+      kind: "reply|artifact|action",
+    }],
+    legitimate_blocker: false,
+    complexity: "low|medium|high",
+    summary: "one short private diagnostic",
+  }),
+  "Task packet:",
+  JSON.stringify({
+    task_id: "retained-completion-audit",
+    request_items: [
+      { item_id: "task:actual-message", text: "Answer the current question." },
+      { item_id: "interruption:actual-pdf", text: "Also attach the requested PDF." },
+    ],
+  }),
+].join("\n");
+const retainedPhantomCompletionAuditResult = {
+  covered_item_ids: ["source:123"],
+  missing: [{
+    item_id: "interruption:456",
+    requirement: "specific omitted action",
+    kind: "artifact",
+  }],
+  legitimate_blocker: false,
+  complexity: "medium",
+  summary: "The candidate omitted one requested artifact.",
+};
+const validCompletionAuditIdentityResult = {
+  covered_item_ids: ["task:actual-message"],
+  missing: [{
+    item_id: "interruption:actual-pdf",
+    requirement: "Attach the requested PDF.",
+    kind: "artifact",
+  }],
+  legitimate_blocker: false,
+  complexity: "medium",
+  summary: "The answer is present, but its requested PDF is missing.",
+};
+const overlappingCompletionAuditIdentityResult = {
+  ...validCompletionAuditIdentityResult,
+  missing: [
+    {
+      item_id: "task:actual-message",
+      requirement: "Answer the current question.",
+      kind: "reply",
+    },
+    ...validCompletionAuditIdentityResult.missing,
+  ],
+};
+const malformedCompletionAuditIdentityResult = {
+  ...validCompletionAuditIdentityResult,
+  missing: [{
+    requirement: "Attach the requested PDF.",
+    kind: "artifact",
+  }],
+};
 assert.equal(
   evaluateSourceFreeResponseClaims({
     goal: completionAuditSourceFreeGoal,
@@ -1339,6 +1408,115 @@ assert(longStructuredPathContract.excludedOutputPaths.includes(longStructuredExc
 assert(longStructuredPathContract.declaredSourceRoots.includes(longDeclaredSourceRoot));
 
 try {
+  const repairedCompletionAuditIdentity = await runCase({
+    id: "response-only-completion-audit-item-identity-repair",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [
+      assistant(JSON.stringify(retainedPhantomCompletionAuditResult)),
+      assistant(JSON.stringify(validCompletionAuditIdentityResult)),
+    ],
+  });
+  assert.equal(repairedCompletionAuditIdentity.calls.length, 2);
+  assert.deepEqual(
+    JSON.parse(repairedCompletionAuditIdentity.result.result),
+    validCompletionAuditIdentityResult
+  );
+  const phantomIdentityRejection = repairedCompletionAuditIdentity.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  );
+  assert(phantomIdentityRejection, "phantom completion-audit item IDs were accepted without repair");
+  assert.deepEqual(
+    phantomIdentityRejection.data.invalidItemIds.sort(),
+    ["interruption:456", "source:123"]
+  );
+  assert.deepEqual(
+    phantomIdentityRejection.data.omittedItemIds.sort(),
+    ["interruption:actual-pdf", "task:actual-message"]
+  );
+  assert.match(
+    repairedCompletionAuditIdentity.calls[1].messages.map((message) => message.content).join("\n"),
+    /must each appear exactly once[\s\S]*task:actual-message[\s\S]*interruption:actual-pdf/iu
+  );
+  assert(
+    repairedCompletionAuditIdentity.events.some(
+      (event) => event.type === "response_only.output_contract_repaired"
+    ),
+    "valid task-scoped completion-audit IDs did not complete the bounded repair"
+  );
+
+  const repairedOverlappingCompletionAudit = await runCase({
+    id: "response-only-completion-audit-item-identity-overlap",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [
+      assistant(JSON.stringify(overlappingCompletionAuditIdentityResult)),
+      assistant(JSON.stringify(validCompletionAuditIdentityResult)),
+    ],
+  });
+  assert.equal(repairedOverlappingCompletionAudit.calls.length, 2);
+  assert.deepEqual(
+    repairedOverlappingCompletionAudit.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.duplicateItemIds,
+    ["task:actual-message"]
+  );
+
+  const repairedMalformedCompletionAudit = await runCase({
+    id: "response-only-completion-audit-item-identity-malformed",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [
+      assistant(JSON.stringify(malformedCompletionAuditIdentityResult)),
+      assistant(JSON.stringify(validCompletionAuditIdentityResult)),
+    ],
+  });
+  assert.equal(repairedMalformedCompletionAudit.calls.length, 2);
+  assert.deepEqual(
+    repairedMalformedCompletionAudit.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.malformedItemReferences,
+    ["missing[0].item_id"]
+  );
+
+  const repeatedPhantomCompletionAudit = await runCase({
+    id: "response-only-completion-audit-item-identity-stop",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [
+      assistant(JSON.stringify(retainedPhantomCompletionAuditResult)),
+      assistant(JSON.stringify(retainedPhantomCompletionAuditResult)),
+    ],
+  });
+  assert.equal(repeatedPhantomCompletionAudit.calls.length, 2);
+  assert.equal(repeatedPhantomCompletionAudit.result.stopped, true);
+  assert.equal(
+    repeatedPhantomCompletionAudit.result.reason,
+    "response_only_output_contract_required"
+  );
+  const safeAuditStop = JSON.parse(repeatedPhantomCompletionAudit.result.result);
+  assert.deepEqual(safeAuditStop.covered_item_ids, []);
+  assert.deepEqual(
+    safeAuditStop.missing.map((item) => item.item_id).sort(),
+    ["interruption:actual-pdf", "task:actual-message"]
+  );
+  assert(
+    !repeatedPhantomCompletionAudit.events.some((event) => event.type === "session.finished"),
+    "repeated phantom completion-audit IDs reached terminal success"
+  );
+
+  const validCompletionAuditIdentity = await runCase({
+    id: "response-only-completion-audit-item-identity-valid",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [assistant(JSON.stringify(validCompletionAuditIdentityResult))],
+  });
+  assert.equal(validCompletionAuditIdentity.calls.length, 1);
+  assert.deepEqual(
+    JSON.parse(validCompletionAuditIdentity.result.result),
+    validCompletionAuditIdentityResult
+  );
+
   const retainedCompletionAuditRequirement = await runCase({
     id: "response-only-completion-audit-requirement",
     taskProfile: "chatops",
