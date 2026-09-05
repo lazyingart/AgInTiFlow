@@ -2320,3 +2320,22 @@ file normalization and do not activate the integration. This is metadata-driven
 rather than a protocols.io exception and does not weaken path-noise isolation.
 No live provider or LocalLLM inference, LabCanvas runtime change, queue action,
 schedule, transport operation, or external side effect is involved.
+
+### Completion-audit requirements are diagnostics, not external claims
+
+`labcanvas-completion-audit-requirement-source-free-167` follows retained
+LabCanvas session `web-agent-labcanvas-7159acc2-9bbe-4254-825b-ed6819f8e269`.
+The completion auditor correctly returned the missing requirement
+`Per reprocess instruction, put the validated PDF itself in candidate_result.`
+The generic source-free claim validator then read the diagnostic phrase
+`validated PDF` as an assertion of external validation and rejected the audit,
+spending an unnecessary model turn before the retained run was interrupted.
+
+For an explicit completion-audit role with the declared audit schema, source-
+free claim scanning now uses a temporary copy with only
+`missing[].requirement` removed. The actual audit result is unchanged. The
+auditor's `summary`, ordinary response-only output, and every other evidence
+validator remain covered; regressions prove both negative controls and exact
+one-call completion for the retained requirement. No live provider or LocalLLM
+inference, LabCanvas runtime change, queue action, schedule, transport
+operation, or external side effect is involved.

@@ -601,6 +601,63 @@ const sourceFreeResearchGoal = [
     request: "Correct the research status from the host-managed response context.",
   })}`,
 ].join("\n");
+const completionAuditSourceFreeGoal = [
+  "You are a fast completion auditor for one exact task.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Return the completion audit JSON only.",
+  })}`,
+  "Role: completion_audit",
+  "Return JSON only:",
+  JSON.stringify({
+    covered_item_ids: ["source:123"],
+    missing: [{ item_id: "source:456", requirement: "specific omitted action", kind: "reply|artifact|action" }],
+    legitimate_blocker: false,
+    complexity: "low|medium|high",
+    summary: "one short private diagnostic",
+  }),
+].join("\n");
+const retainedCompletionAuditRequirementResult = {
+  covered_item_ids: [],
+  missing: [{
+    item_id: "task:1",
+    requirement: "Per reprocess instruction, put the validated PDF itself in candidate_result.",
+    kind: "artifact",
+  }],
+  legitimate_blocker: false,
+  complexity: "low",
+  summary: "The candidate omitted the requested artifact.",
+};
+assert.equal(
+  evaluateSourceFreeResponseClaims({
+    goal: completionAuditSourceFreeGoal,
+    candidateResult: JSON.stringify(retainedCompletionAuditRequirementResult),
+    evidenceLedger: { itemCount: 0, categories: [], items: [] },
+  }).ok,
+  true,
+  "a completion auditor's diagnostic missing requirement was treated as an external validation claim"
+);
+assert.equal(
+  evaluateSourceFreeResponseClaims({
+    goal: sourceFreeResearchGoal,
+    candidateResult: JSON.stringify(retainedCompletionAuditRequirementResult),
+    evidenceLedger: { itemCount: 0, categories: [], items: [] },
+  }).ok,
+  false,
+  "ordinary response-only output bypassed validation grounding through an audit-shaped object"
+);
+assert.equal(
+  evaluateSourceFreeResponseClaims({
+    goal: completionAuditSourceFreeGoal,
+    candidateResult: JSON.stringify({
+      ...retainedCompletionAuditRequirementResult,
+      summary: "The paper was validated in 2025 on 12,000 patients.",
+    }),
+    evidenceLedger: { itemCount: 0, categories: [], items: [] },
+  }).ok,
+  false,
+  "a completion auditor's own unsupported factual summary bypassed source-free grounding"
+);
 const unsafeSourceFreeClaim = evaluateSourceFreeResponseClaims({
   goal: sourceFreeResearchGoal,
   candidateResult:
@@ -1282,6 +1339,32 @@ assert(longStructuredPathContract.excludedOutputPaths.includes(longStructuredExc
 assert(longStructuredPathContract.declaredSourceRoots.includes(longDeclaredSourceRoot));
 
 try {
+  const retainedCompletionAuditRequirement = await runCase({
+    id: "response-only-completion-audit-requirement",
+    taskProfile: "chatops",
+    goal: completionAuditSourceFreeGoal,
+    responses: [assistant(JSON.stringify(retainedCompletionAuditRequirementResult))],
+  });
+  assert.equal(
+    retainedCompletionAuditRequirement.calls.length,
+    1,
+    "a valid completion-audit requirement consumed an unnecessary repair turn"
+  );
+  assert.deepEqual(
+    JSON.parse(retainedCompletionAuditRequirement.result.result),
+    retainedCompletionAuditRequirementResult
+  );
+  assert(
+    !retainedCompletionAuditRequirement.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the retained completion-audit requirement still triggered source-free rejection"
+  );
+  assert(
+    retainedCompletionAuditRequirement.events.some((event) => event.type === "session.finished"),
+    "the valid completion audit did not finish normally"
+  );
+
   const explanation = await runCase({
     id: "ordinary-explanation",
     goal: "Explain why recursion needs a base case.",

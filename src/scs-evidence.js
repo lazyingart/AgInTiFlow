@@ -2284,6 +2284,34 @@ function sourceFreeExternalClaimAssessment(
   };
 }
 
+function sourceFreeCompletionAuditClaimText(goal = "", candidateResult = "") {
+  const contract = String(goal || "");
+  const isCompletionAudit =
+    /(?:^|\n)\s*Role\s*:\s*completion[_ -]?audit\s*(?:\n|$)/iu.test(contract) ||
+    /\bcompletion[ -]+auditor\b/iu.test(contract);
+  const hasAuditSchema =
+    /\bcovered_item_ids\b/iu.test(contract) &&
+    /\bmissing\b/iu.test(contract) &&
+    /\blegitimate_blocker\b/iu.test(contract);
+  if (!isCompletionAudit || !hasAuditSchema) return String(candidateResult || "");
+  const raw = String(candidateResult || "").trim();
+  const jsonText = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu)?.[1] || raw;
+  try {
+    const value = JSON.parse(jsonText);
+    if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.missing)) {
+      return raw;
+    }
+    const missing = value.missing.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+      const { requirement: _diagnosticRequirement, ...diagnosticMetadata } = item;
+      return diagnosticMetadata;
+    });
+    return JSON.stringify({ ...value, missing });
+  } catch {
+    return raw;
+  }
+}
+
 export function evaluateReaderFacingResearchEvidenceClaims({ candidateText = "" } = {}) {
   const assessment = sourceFreeExternalClaimAssessment(candidateText, {
     allowExplicitSpeculation: true,
@@ -2318,10 +2346,13 @@ export function evaluateSourceFreeResponseClaims({
     sourceFreeResponseHasEvidence(evidenceLedger);
   const allowExplicitSpeculation = sourceFreeRequestExplicitlyAsksForSpeculation(goal);
   const requireNamedEvidenceGrounding = sourceFreeRequestRequiresNamedEvidenceGrounding(goal);
-  const claimAssessment = sourceFreeExternalClaimAssessment(candidateResult, {
-    allowExplicitSpeculation,
-    requireNamedEvidenceGrounding,
-  });
+  const claimAssessment = sourceFreeExternalClaimAssessment(
+    sourceFreeCompletionAuditClaimText(goal, candidateResult),
+    {
+      allowExplicitSpeculation,
+      requireNamedEvidenceGrounding,
+    }
+  );
   const categories = claimAssessment.categories;
   const unsupportedClaims = claimAssessment.unsupported;
   const explicitlyUnverified = claimAssessment.explicitlyUnverified;
