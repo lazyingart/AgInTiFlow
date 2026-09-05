@@ -464,6 +464,7 @@ const SKILL_ID_STOP_WORDS = new Set([
   "aginti",
   "for",
   "development",
+  "external",
   "of",
   "the",
   "production",

@@ -2210,3 +2210,16 @@ video-face trigger phrases still select the workflow, while a focused PDF
 replacement keeps document skills and omits video guidance. The change affects
 only skill discovery; task memory, evidence contracts, tool availability, and
 LabCanvas policy remain unchanged.
+
+### Response-only chat does not load an external-media workflow
+
+`labcanvas-response-only-external-skill-routing-161` follows retained
+response-only LabCanvas sessions that selected `doubao-external-audio-video`.
+The current-task scoping itself was correct, but its generic phrase "without
+external execution" matched the single `external` token in that skill ID.
+
+`external` is now ignored as a standalone skill-ID routing token. An ordinary
+response-only chat turn no longer spends local context on Doubao guidance, and
+an explicit Doubao external-audio video request still selects the workflow via
+its specific trigger. No response contract, execution policy, memory, provider,
+or host integration behavior changes.

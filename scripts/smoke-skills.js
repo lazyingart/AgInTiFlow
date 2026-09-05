@@ -170,6 +170,20 @@ assert(
   ),
   "the focused video-face replacement request lost its relevant skill"
 );
+const directChatSkills = selectedIds(
+  "Answer the current chat turn directly without external execution.",
+  "chatops"
+);
+assert(
+  !directChatSkills.includes("doubao-external-audio-video"),
+  `response-only chat selected unrelated Doubao guidance: ${directChatSkills.join(", ")}`
+);
+assert(
+  selectedIds("Use Doubao to generate a video from this external audio track.").includes(
+    "doubao-external-audio-video"
+  ),
+  "an explicit Doubao external-audio video request lost its relevant skill"
+);
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");
