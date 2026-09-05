@@ -38,6 +38,88 @@ AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create the requested PDF f
 
 For `chat-response`, ordinary conversation and routing do not require file or command evidence. `host-managed-response` is for content-only subtasks such as a LaTeX body, translation, completion audit, or scheduled lesson where LabCanvas owns persistence, compilation, validation, and delivery. For `task`, evidence requirements are inferred only from the exact request, not from surrounding wrapper prose. Artifact requests still require real artifacts.
 
+## Completion-Audit Artifact Coverage
+
+A completion audit cannot mark an exact task item covered merely because its
+candidate contains a substantive text answer. When that item directly asks to
+create, attach, send, save, download, or otherwise deliver a file, the
+candidate must contain compatible material artifact evidence.
+
+Accepted evidence includes structured `files`, `artifacts`, `attachments`, or
+deliverable records with a matching extension, MIME type, or media kind. A
+nonempty `generated_pdf_content` field also satisfies a PDF requirement when
+the host owns compilation. Plain prose such as `the PDF was sent` does not.
+The boundary covers document, image, video, audio, archive, and common CAD
+formats in English, Chinese, and Japanese.
+
+Artifact intent remains scoped to the output. Reading `report.pdf`, analyzing
+an attached video, or returning a summary of a video does not require the input
+file to be returned. Explicit `do not attach a PDF` wording likewise remains a
+text-only request. A completion audit also enforces explicit negative delivery
+contracts. It cannot cover `create no files or attachments` when the structured
+candidate contains outbound files or generated document/media content. A
+format-specific exclusion such as `send PDF only; do not attach Markdown`
+rejects only the forbidden format. If another exact request item in the same
+packet positively requires an artifact, that independent requirement remains
+valid instead of being erased by the first item's preference.
+
+An invalid audit receives one bounded repair; repeated invalid coverage fails
+closed with the exact task item retained as missing and classified as an
+artifact requirement. LabCanvas still owns transport, compilation, validation,
+and delivery.
+
+## Source-Free Hypotheses And Experiment Plans
+
+A scheduled inspiration may explicitly ask for an original, falsifiable idea
+without supplying a fresh literature manifest. That is different from claiming
+that a paper, benchmark, or completed experiment proves the idea. AgInTi accepts
+the former only when the response locally labels it as the assistant's own
+unverified hypothesis or prediction.
+
+Numeric settings in a proposed experiment, such as group counts, durations, or
+sampling intervals, are treated as protocol parameters rather than observed
+benchmark results. The exception is narrow: wording that claims an experiment
+already found, validated, achieved, or improved a result remains evidence
+gated, as do named papers, journals, datasets, and external research tools.
+This keeps quiet-period inspiration useful when a hosted provider hands off to
+LocalLLM without allowing proposal language to launder unsupported facts.
+
+## Bounded Media Source Quality
+
+When a response-only packet explicitly asks AgInTi to summarize actual speech,
+the packet's transcript is the speech authority. A title, description, author,
+or hashtag may identify the source, but it cannot substitute for speech.
+
+AgInTi checks a structured bounded transcript before accepting the response. A
+long transcript with no content, implausibly little content, or extreme
+repetition is treated as unusable. The backend receives one bounded repair turn
+that must:
+
+- disclose that the actual speech cannot be summarized reliably;
+- avoid inferring speech, visuals, or events from metadata;
+- label any metadata-based theme explicitly as title- or description-based;
+- preserve the caller's JSON schema and truthful delivery flags.
+
+If the repair repeats the unsupported summary, the turn stops with a
+schema-compatible limitation instead of recording invented content as a
+successful response. Reliable transcripts and requests that only ask to
+identify supplied metadata are unaffected. Exact-source download,
+transcription, attachments, and chat delivery remain host-owned routines.
+
+## Fail-Closed Envelope Integrity
+
+A response-only safety stop must preserve an explicit caller JSON envelope.
+This applies when a backend repeats an unsupported source claim and when it
+fails the JSON contract itself after the single bounded repair turn. The
+fallback object keeps every required top-level key, value type, and declared
+string enum; it places the private diagnostic in a non-enum field such as
+`message`, `summary`, or `reason`. It never replaces a route enum with prose.
+
+The session remains stopped and does not record `session.finished`. Envelope
+preservation only lets the host parse and recover the task reliably; it does
+not convert the failed turn into success, select a provider, or change any
+LabCanvas queue, schedule, transport, or routing policy.
+
 ## Provider Tool-Batch Recovery
 
 AgInTi requests one effectful tool call at a time, but some OpenAI-compatible
@@ -51,6 +133,63 @@ Malformed calls, duplicate IDs, unavailable tools, hidden arguments, or an
 oversized batch still stop with `tool_contract_violation`. A host may resume
 the same saved session with another provider after that categorized stop; it
 must not replay the original request or duplicate earlier side effects.
+
+## Secret-Bearing Derived Content
+
+Private source packets can legitimately contain signed media URLs, cookies, or
+token-shaped fields that must not be copied into a reader-facing artifact.
+Workspace secret guards remain authoritative: the proposed write is blocked
+before any file mutation.
+
+That block is a content-correction event, not a request for stronger runtime
+permission. AgInTi receives one bounded automatic recovery instruction to
+remove the private field or replace its value with `[REDACTED]`, retain the
+useful non-sensitive content, and write the originally requested derived
+artifact. It must not edit the authoritative source record merely to sanitize a
+summary, repeat the blocked value, or expose the value in its final response.
+Other protected-path, outside-workspace, destructive, and
+permission-sensitive blocks keep their existing approval behavior.
+
+## Local Artifact Preview Recovery
+
+`open_url` is only for remote `http` and `https` sources. A fallback model may
+still copy a local artifact path into a `file://` URL when it intends to inspect
+a generated PDF, HTML page, image, or text file. The remote-browser guard keeps
+that URL blocked, but the mistake is a tool-selection error rather than a
+request for stronger permission.
+
+AgInTi receives one bounded automatic correction. It converts the local URL to
+an authorized workspace-relative path and chooses `open_workspace_file` for a
+single rendered file, `preview_workspace` for a static site or directory, or
+`read_file` when textual inspection is enough. It must not retry `open_url`,
+start a temporary localhost server, or ask the user to elevate the sandbox.
+The replacement workspace tool still enforces its normal path and read-root
+rules, so an outside-workspace or protected target remains blocked.
+
+## Current-Turn Response Fidelity
+
+Response-only prompts contain host control metadata and may contain prior
+bot-authored messages for conversational continuity. Neither is an answer to
+the current inbound message. AgInTiFlow therefore rejects two exact replay
+forms before accepting completion:
+
+- a returned JSON object that is identical to an
+  `AGINTI_EVIDENCE_SCOPE_JSON` control envelope;
+- a substantive primary response field that exactly repeats a prior
+  `is_self: true` chat message while the current message asks something else.
+
+The backend receives one bounded repair turn that identifies the current
+message as authoritative and preserves any explicit JSON key and type
+contract. A current message that explicitly requests a verbatim repetition is
+accepted. Merely quoting an earlier bot message to ask about it is not a repeat
+request.
+
+The replay check runs again after transcript-quality and source-free-evidence
+repairs. This prevents one validator from replacing a rejected answer with
+stale context that a later stage would otherwise accept. A repeated replay
+fails closed in the caller's parseable envelope, leaves the session stopped,
+and never records `session.finished`. This does not alter LabCanvas routing,
+provider priority, queues, schedules, transports, or chat coalescing.
 
 ## Local Context Recovery
 

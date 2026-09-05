@@ -74,6 +74,8 @@ import {
   projectTestVerificationFinishBlock,
   prospectivePythonExactPatchSyntaxBlock,
   preservesCurrentTaskBoundary,
+  researchEvidenceManifestMutationBlock,
+  hostManagedDocumentCompilerInvocationBlock,
   completionExternalBlockerCanClose,
   pythonTopLevelDefinitionDuplicates,
   recordCanonicalGeneratedOutputProgress,
@@ -91,6 +93,7 @@ import {
   toolResultWorkspacePath,
   runtimeMessagesSinceLatestContinuationBoundary,
   shellDiagnosticHint,
+  shouldShortCircuitToolBatch,
   rememberCompletedDeepResearch,
   forbiddenCurrentTestRerunBlock,
   unchangedFailedTestRerunBlock,
@@ -4807,6 +4810,40 @@ try {
       externalReadOnlyValidatorResult.projectMutationRevision === 0,
     "an absolute-interpreter acceptance validator forced a post-validation commit"
   );
+  const observedNoOpShellState = {
+    meta: {
+      goalContract: { revision: 1 },
+      projectVerification: { mutationRevision: 5 },
+    },
+  };
+  const observedNoOpShellResult = {
+    toolName: "run_command",
+    ok: true,
+    exitCode: 0,
+    args: {
+      command:
+        "for t in xelatex pdftotext; do command -v $t >/dev/null 2>&1; done; pdftotext report.pdf - | wc -c",
+    },
+    stdout: "20833\n",
+    stderr: "",
+    commandPolicy: {
+      category: "general-shell",
+      writesWorkspace: true,
+      substantiveTest: false,
+    },
+    mutationObservationComplete: true,
+    projectMutationPaths: [],
+    verifiedGeneratedOutputPaths: [],
+  };
+  recordProjectVerificationOutcome(observedNoOpShellState, observedNoOpShellResult, {
+    commandCwd: workspace,
+    taskProfile: "writing",
+  });
+  assert(
+    observedNoOpShellState.meta.projectVerification?.mutationRevision === 5 &&
+      observedNoOpShellResult.projectMutationRevision === 5,
+    "an observed byte-identical shell inspection fabricated project mutation progress"
+  );
   const shellMutationState = { meta: { goalContract: { revision: 1 } } };
   const shellMutationResult = {
     toolName: "run_command",
@@ -8546,6 +8583,29 @@ try {
   const semanticGateDocumentState = structuredClone(
     currentGoalGeneratedDocumentState
   );
+  semanticGateDocumentState.messages = [
+    {
+      role: "assistant",
+      tool_calls: [{
+        id: "read-unrelated-root-policy",
+        type: "function",
+        function: {
+          name: "read_file",
+          arguments: JSON.stringify({ path: "AGENTS.md" }),
+        },
+      }],
+    },
+    {
+      role: "tool",
+      tool_call_id: "read-unrelated-root-policy",
+      content: JSON.stringify({
+        ok: true,
+        path: "AGENTS.md",
+        content: "WeChat PYTHONPATH LazyEdit STEP WeCom CAD PCB OpenHI",
+        contentTruncated: false,
+      }),
+    },
+  ];
   semanticGateDocumentState.meta.scs = {
     taskContract: { exactInputPaths: ["TASK.md"] },
   };
@@ -8583,7 +8643,8 @@ try {
       semanticGateValidatorInput?.exactOutputPaths?.includes(
         "daily_memo.pdf"
       ) &&
-      semanticGateValidatorInput?.exactInputPaths?.includes("TASK.md"),
+      JSON.stringify(semanticGateValidatorInput?.exactInputPaths) ===
+        JSON.stringify(["TASK.md"]),
     `current-goal artifact discovery bypassed source/status quality gates or reopened the missing-artifact loop: ${JSON.stringify({
       assessment: semanticGateAssessment,
       input: semanticGateValidatorInput,
@@ -10553,11 +10614,158 @@ try {
   assert(explicitBudget.extensionsUsed === 0, "explicit resumed max-steps retained stale extension usage");
   assert(explicitBudget.resetFromExplicitOverride, "explicit resumed max-steps reset was not recorded");
   assert(isStaticDiscoveryToolCall("run_command", { command: "ls -la ../Musia" }), "static ls discovery was not classified");
+  const safeFindListCommand = 'find /aginti-env -type f -name "pdflatex" | xargs ls -la';
+  const safeFindListPolicy = classifyCommand(safeFindListCommand);
+  assert(
+    isStaticDiscoveryToolCall(
+      "run_command",
+      { command: safeFindListCommand },
+      { commandPolicy: safeFindListPolicy }
+    ),
+    "a policy-proven read-only find/xargs listing was not static discovery"
+  );
+  for (const mutatingDiscoveryShape of [
+    'find . -type f -name "*.tmp" -delete',
+    'find . -type f -exec chmod 600 {} +',
+    'cat input.txt > output.txt',
+    'jq . input.json > output.json',
+    'rg TODO src > report.txt',
+  ]) {
+    assert(
+      !isStaticDiscoveryToolCall(
+        "run_command",
+        { command: mutatingDiscoveryShape },
+        { commandPolicy: classifyCommand(mutatingDiscoveryShape) }
+      ),
+      `workspace-writing command was mislabeled as static discovery: ${mutatingDiscoveryShape}`
+    );
+  }
+  const deceptiveMutation = 'find . -type f -name "*.tmp" -delete';
+  const deceptiveMutationSignature = staticToolCallSignature(
+    "run_command",
+    { command: deceptiveMutation },
+    { commandCwd: workspace }
+  );
+  assertStrict.equal(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [deceptiveMutationSignature]: 2 },
+            staticOrder: [deceptiveMutationSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "run_command",
+      { command: deceptiveMutation },
+      { commandCwd: workspace }
+    ),
+    null,
+    "a mutation-shaped command was blocked by the read-only convergence guard"
+  );
+  assert(
+    isStaticDiscoveryToolCall(
+      "run_command",
+      { command: `cd ${workspace} && ${safeFindListCommand}` },
+      { commandCwd: workspace, commandPolicy: safeFindListPolicy }
+    ),
+    "a verified leading workspace cd hid a read-only discovery command"
+  );
   assert(isStaticDiscoveryToolCall("read_image", { path: "snapshot.png" }), "image perception was not classified as static discovery");
+  const repeatedImageReadSignature = staticToolCallSignature(
+    "read_image",
+    {
+      path: "artifacts/source-image.png",
+      prompt: "Describe the image and transcribe all visible text.",
+      provider: "localllm",
+    },
+    { commandCwd: workspace }
+  );
+  assert(
+    repeatedImageReadSignature ===
+      staticToolCallSignature(
+        "read_image",
+        {
+          imagePath: "artifacts/source-image.png",
+          prompt: "Confirm the account name and headline.",
+          provider: "openai",
+          reasoning: "xhigh",
+        },
+        { commandCwd: workspace }
+      ),
+    "prompt or provider changes bypassed one-image perception identity"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedImageReadSignature]: 1 },
+            staticOrder: [repeatedImageReadSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "read_image",
+      {
+        path: "artifacts/source-image.png",
+        prompt: "Confirm the account name and headline.",
+        provider: "openai",
+      },
+      { commandCwd: workspace }
+    ) === null,
+    "one targeted follow-up perception pass was not preserved"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedImageReadSignature]: 2 },
+            staticOrder: [repeatedImageReadSignature],
+            staticTotal: 2,
+          },
+        },
+      },
+      "read_image",
+      {
+        path: "artifacts/source-image.png",
+        prompt: "Confirm readable; transcribe headline and account.",
+      },
+      { commandCwd: workspace }
+    )?.category === "repeated-read-only-call",
+    "a third successful perception call for the unchanged image was not blocked"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedImageReadSignature]: 2 },
+            staticOrder: [repeatedImageReadSignature],
+            staticTotal: 2,
+          },
+        },
+      },
+      "read_image",
+      {
+        path: "artifacts/source-image.png",
+        prompt: "Inspect small labels at higher resolution.",
+        detail: "high",
+      },
+      { commandCwd: workspace }
+    ) === null,
+    "a higher-detail perception pass was blocked by the default-detail result"
+  );
   assert(
     isStaticDiscoveryToolCall("web_search", { query: "project memo guidance" }) &&
       isStaticDiscoveryToolCall("read_web_page", { url: "https://example.com/memo" }),
     "read-only web discovery was allowed to reset convergence"
+  );
+  assert(
+    isStaticDiscoveryToolCall("open_url", { url: "https://example.com/research#results" }),
+    "browser URL navigation was counted as durable task progress"
   );
   const repeatedWebQuerySignature = staticToolCallSignature(
     "web_search",
@@ -10578,7 +10786,7 @@ try {
       {
         meta: {
           toolLoop: {
-            staticCounts: { [repeatedWebQuerySignature]: 2 },
+            staticCounts: { [repeatedWebQuerySignature]: 1 },
             staticOrder: [repeatedWebQuerySignature],
             staticTotal: 1,
           },
@@ -10588,7 +10796,139 @@ try {
       { query: "project memo guidance", maxResults: 5 },
       { commandCwd: workspace }
     )?.category === "repeated-read-only-call",
-    "a third semantically identical web search was not blocked"
+    "a second semantically identical successful web search was not blocked"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedWebQuerySignature]: 1 },
+            staticOrder: [repeatedWebQuerySignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "web_search",
+      { query: "project memo guidance primary source" },
+      { commandCwd: workspace }
+    ) === null,
+    "a materially refined web query was blocked by successful-search idempotency"
+  );
+  const repeatedWebReadSignature = staticToolCallSignature(
+    "read_web_page",
+    {
+      url: "https://example.com/paper#results",
+      query: "  Organoid   imaging accuracy ",
+      maxChars: 10_000,
+      maxPassages: 6,
+    },
+    { commandCwd: workspace }
+  );
+  assert(
+    repeatedWebReadSignature ===
+      staticToolCallSignature(
+        "read_web_page",
+        {
+          url: "https://example.com/paper",
+          query: "organoid imaging accuracy",
+          maxChars: 11_000,
+          maxPassages: 8,
+        },
+        { commandCwd: workspace }
+      ),
+    "equivalent bounded page extractions did not share one discovery signature"
+  );
+  const repeatedWebReadState = {
+    meta: {
+      toolLoop: {
+        staticCounts: { [repeatedWebReadSignature]: 1 },
+        staticOrder: [repeatedWebReadSignature],
+        staticTotal: 1,
+      },
+    },
+  };
+  assert(
+    repeatedStaticToolBlock(
+      repeatedWebReadState,
+      "read_web_page",
+      {
+        url: "https://example.com/paper#results",
+        query: "organoid imaging accuracy",
+        maxChars: 12_000,
+        maxPassages: 8,
+      },
+      { commandCwd: workspace }
+    )?.category === "repeated-read-only-call",
+    "a second equivalent successful page extraction was not blocked"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      repeatedWebReadState,
+      "read_web_page",
+      {
+        url: "https://example.com/paper",
+        query: "organoid imaging limitations",
+        maxChars: 12_000,
+        maxPassages: 8,
+      },
+      { commandCwd: workspace }
+    ) === null,
+    "a materially different question about the same source page was blocked"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      repeatedWebReadState,
+      "read_web_page",
+      {
+        url: "https://example.com/paper",
+        query: "organoid imaging accuracy",
+        maxChars: 20_000,
+        maxPassages: 8,
+      },
+      { commandCwd: workspace }
+    ) === null,
+    "a materially deeper extraction of the same source page was blocked"
+  );
+  const repeatedBrowserUrlSignature = staticToolCallSignature(
+    "open_url",
+    { url: "https://example.com/research#results" },
+    { commandCwd: workspace }
+  );
+  assert(
+    repeatedBrowserUrlSignature ===
+      staticToolCallSignature(
+        "open_url",
+        { url: "https://example.com/research" },
+        { commandCwd: workspace }
+      ),
+    "equivalent browser URL opens did not share one canonical signature"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [repeatedBrowserUrlSignature]: 1 },
+            staticOrder: [repeatedBrowserUrlSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "open_url",
+      { url: "https://example.com/research#results" },
+      { commandCwd: workspace }
+    )?.category === "repeated-read-only-call",
+    "a second equivalent successful browser URL open was not blocked"
+  );
+  assert(
+    !shouldResetStaticDiscoveryPhase({
+      ok: true,
+      toolName: "open_url",
+      args: { url: "https://example.com/research" },
+      url: "https://example.com/research",
+    }),
+    "a successful browser URL open reset static-discovery convergence"
   );
   assert(
     !shouldResetStaticDiscoveryPhase({ ok: false, toolName: "read_image", args: { path: "missing.png" } }),
@@ -11160,6 +11500,83 @@ try {
       { commandCwd: workspace }
     )?.category === "repeated-no-progress-call",
     "dynamic failure output allowed an unchanged failing command to loop"
+  );
+  const absoluteLatexCompileArgs = {
+    command: `latexmk -pdf -interaction=nonstopmode -halt-on-error ${path.join(workspace, "reports", "brief.tex")}`,
+  };
+  const relativeLatexCompileArgs = {
+    command: `cd ${path.join(workspace, "reports")} && latexmk -pdf -interaction=nonstopmode -halt-on-error brief.tex`,
+  };
+  const absoluteLatexCompileSignature = staticToolCallSignature(
+    "run_command",
+    absoluteLatexCompileArgs,
+    { commandCwd: workspace }
+  );
+  assertStrict.equal(
+    absoluteLatexCompileSignature,
+    staticToolCallSignature("run_command", relativeLatexCompileArgs, {
+      commandCwd: workspace,
+    }),
+    "equivalent absolute-path and working-directory LaTeX builds had different failure identities"
+  );
+  assertStrict.notEqual(
+    absoluteLatexCompileSignature,
+    staticToolCallSignature(
+      "run_command",
+      {
+        command: `cd ${path.join(workspace, "reports")} && xelatex -interaction=nonstopmode -halt-on-error brief.tex`,
+      },
+      { commandCwd: workspace }
+    ),
+    "a genuinely different LaTeX compiler was collapsed into the failed latexmk attempt"
+  );
+  assertStrict.notEqual(
+    absoluteLatexCompileSignature,
+    staticToolCallSignature(
+      "run_command",
+      {
+        command: `cd ${path.join(workspace, "reports")} && latexmk -pdf -interaction=nonstopmode -halt-on-error appendix.tex`,
+      },
+      { commandCwd: workspace }
+    ),
+    "different LaTeX source files shared one failed-command identity"
+  );
+  const aliasedCompileFailureState = {
+    meta: {
+      toolLoop: {
+        stagnationEpoch: 8,
+        failedCommandAttempts: [
+          {
+            signature: absoluteLatexCompileSignature,
+            count: 2,
+            stagnationEpoch: 8,
+          },
+        ],
+        recent: [],
+      },
+    },
+  };
+  assertStrict.equal(
+    repeatedNoProgressToolBlock(
+      aliasedCompileFailureState,
+      "run_command",
+      relativeLatexCompileArgs,
+      { commandCwd: workspace }
+    )?.category,
+    "repeated-no-progress-call",
+    "a working-directory alias bypassed retained LaTeX failure convergence"
+  );
+  const postEditCompileState = structuredClone(aliasedCompileFailureState);
+  postEditCompileState.meta.toolLoop.stagnationEpoch = 9;
+  assertStrict.equal(
+    repeatedNoProgressToolBlock(
+      postEditCompileState,
+      "run_command",
+      relativeLatexCompileArgs,
+      { commandCwd: workspace }
+    ),
+    null,
+    "a source-edit epoch could not rerun the same LaTeX build"
   );
   assertStrict.equal(
     runCommandResultHasDurableProgress({
@@ -13784,6 +14201,432 @@ try {
     ) === null,
     "document-source immutability leaked into a coding profile"
   );
+  const researchArtifactRoot = path.join(workspace, "output", "research-task-134");
+  const researchManifestPath = path.join(
+    researchArtifactRoot,
+    "research-evidence-manifest.json"
+  );
+  await fs.mkdir(researchArtifactRoot, { recursive: true });
+  await fs.writeFile(
+    researchManifestPath,
+    JSON.stringify({
+      sources: [
+        { id: "S1", title: "Verified primary source" },
+        { id: "S30", title: "Different numbered source" },
+      ],
+    }),
+    "utf8"
+  );
+  const researchReportPath = "output/research-task-134/research-briefing.tex";
+  const researchManifestGoal = [
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "task",
+      request:
+        "Revise the existing report using only verified claims and sources in research-evidence-manifest.json.",
+      artifact_root: researchArtifactRoot,
+    })}`,
+    '"research_evidence_contract":{"required":true}',
+    "Use only sources and verified claims in the exact-task research-evidence-manifest.json; do not invent citations or DOI values.",
+  ].join("\n");
+  const ungroundedResearchState = {
+    goal: researchManifestGoal,
+    messages: [],
+    meta: {
+      taskProfile: "research",
+      goalContract: {
+        revision: 1,
+        activeGoal: researchManifestGoal,
+        currentRequest: researchManifestGoal,
+      },
+    },
+  };
+  const attributedResearchPatch = {
+    path: researchReportPath,
+    search: "The evidence remains limited.",
+    replace:
+      "Chen et al. (2026) proved organoid self-repair under stress \\\\citep{S3}.",
+  };
+  const unreadResearchManifestBlock = researchEvidenceManifestMutationBlock(
+    ungroundedResearchState,
+    "apply_patch",
+    attributedResearchPatch,
+    { commandCwd: workspace, taskProfile: "research" }
+  );
+  assert(
+    unreadResearchManifestBlock?.category ===
+      "research-evidence-manifest-unread" &&
+      unreadResearchManifestBlock.requiredPaths?.includes(
+        "output/research-task-134/research-evidence-manifest.json"
+      ),
+    "a reader-facing research mutation used an explicit evidence manifest without reading it"
+  );
+  const bareScopedResearchManifestBlock = researchEvidenceManifestMutationBlock(
+    ungroundedResearchState,
+    "write_file",
+    {
+      path: "research-briefing.tex",
+      content:
+        "Chen et al. (2026) proved organoid self-repair under stress \\citep{S3}.",
+    },
+    {
+      commandCwd: workspace,
+      taskProfile: "research",
+      scopedArtifactTask: true,
+      scopedArtifactRoot: "output/research-task-134",
+      workspaceWritePathScopeRoots: ["output/research-task-134"],
+    }
+  );
+  assert(
+    bareScopedResearchManifestBlock?.category ===
+      "research-evidence-manifest-unread" &&
+      bareScopedResearchManifestBlock.targetPaths?.includes(
+        "research-briefing.tex"
+      ),
+    "scoped bare report writes bypassed the authoritative evidence-manifest gate"
+  );
+  const unreadResearchShellMutationBlock = researchEvidenceManifestMutationBlock(
+    ungroundedResearchState,
+    "run_command",
+    {
+      command:
+        "cd output/research-task-134 && sed -i 's/limited/proven/' research-briefing.tex",
+    },
+    { commandCwd: workspace, taskProfile: "research" }
+  );
+  assert(
+    unreadResearchShellMutationBlock?.category ===
+      "research-evidence-manifest-unread",
+    "a direct shell edit bypassed the unread authoritative research manifest"
+  );
+  const groundedResearchState = structuredClone(ungroundedResearchState);
+  groundedResearchState.messages = [
+    {
+      role: "assistant",
+      tool_calls: [{
+        id: "read-research-evidence-manifest",
+        type: "function",
+        function: {
+          name: "read_file",
+          arguments: JSON.stringify({
+            path: "output/research-task-134/research-evidence-manifest.json",
+          }),
+        },
+      }],
+    },
+    {
+      role: "tool",
+      tool_call_id: "read-research-evidence-manifest",
+      content: JSON.stringify({
+        ok: true,
+        toolName: "read_file",
+        path: "output/research-task-134/research-evidence-manifest.json",
+        content: JSON.stringify({
+          sources: [
+            { id: "S1", title: "Verified primary source" },
+            { id: "S30", title: "Different numbered source" },
+          ],
+        }),
+        contentTruncated: false,
+        contentTruncatedByLines: false,
+      }),
+    },
+  ];
+  for (const command of [
+    "cd output/research-task-134 && sed -i 's/limited/proven/' research-briefing.tex",
+    "printf '%s\\n' 'Chen et al. (2026) proved it.' > output/research-task-134/research-briefing.tex",
+    "bash -lc \"perl -pi -e 's/limited/proven/' output/research-task-134/research-briefing.tex\"",
+    "tee output/research-task-134/research-briefing.md",
+    "python3 -c \"from pathlib import Path; Path('output/research-task-134/research-briefing.tex').write_text('invented')\"",
+  ]) {
+    assert(
+      researchEvidenceManifestMutationBlock(
+        groundedResearchState,
+        "run_command",
+        { command },
+        { commandCwd: workspace, taskProfile: "research" }
+      )?.category === "research-evidence-shell-mutation-unreviewable",
+      `a direct reader-facing shell mutation bypassed evidence review: ${command}`
+    );
+  }
+  for (const command of [
+    "grep -n 'bounded' output/research-task-134/research-briefing.tex",
+    "python3 scripts/validate_report.py output/research-task-134/research-briefing.tex",
+    "pdflatex output/research-task-134/research-briefing.tex",
+    "printf '%s\\n' pass > output/research-task-134/build.log",
+  ]) {
+    assert(
+      researchEvidenceManifestMutationBlock(
+        groundedResearchState,
+        "run_command",
+        { command },
+        { commandCwd: workspace, taskProfile: "research" }
+      ) === null,
+      `a read-only, compiler, or non-reader artifact command was overblocked: ${command}`
+    );
+  }
+  const supportedResearchPatch = {
+    ...attributedResearchPatch,
+    replace:
+      "The verified primary source documents the bounded result \\\\citep{S1}.",
+  };
+  assert(
+    researchEvidenceManifestMutationBlock(
+      groundedResearchState,
+      "apply_patch",
+      supportedResearchPatch,
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "a complete read of the authoritative evidence manifest did not unlock the report repair"
+  );
+  const uncitedNamedResearchAttributionBlock =
+    researchEvidenceManifestMutationBlock(
+      groundedResearchState,
+      "apply_patch",
+      {
+        ...attributedResearchPatch,
+        replace: "Chen et al. (2026) proved organoid self-repair under stress.",
+      },
+      { commandCwd: workspace, taskProfile: "research" }
+    );
+  assert(
+    uncitedNamedResearchAttributionBlock?.category ===
+      "research-evidence-attribution-untraceable" &&
+      uncitedNamedResearchAttributionBlock.untraceableClaims?.some((item) =>
+        /Chen et al\./u.test(item.preview || "")
+    ),
+    "a completed manifest read allowed an uncited named-study assertion into reader-facing prose"
+  );
+  for (const [label, replace] of [
+    ["Chinese", "陈等人（2026）证明类器官在压力下会自我修复。"],
+    ["Japanese", "山田ら（2026年）は、オルガノイドがストレス下で自己修復すると実証した。"],
+  ]) {
+    assert(
+      researchEvidenceManifestMutationBlock(
+        groundedResearchState,
+        "apply_patch",
+        { ...attributedResearchPatch, replace },
+        { commandCwd: workspace, taskProfile: "research" }
+      )?.category === "research-evidence-attribution-untraceable",
+      `an uncited named-study assertion in ${label} bypassed manifest traceability`
+    );
+  }
+  assert(
+    researchEvidenceManifestMutationBlock(
+      groundedResearchState,
+      "apply_patch",
+      {
+        ...attributedResearchPatch,
+        replace:
+          "Chen et al. (2026) proved the bounded organoid result \\citep{S1}.",
+      },
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "a named-study assertion with a supported manifest citation was blocked"
+  );
+  for (const replace of [
+    "These bounded observations motivate a follow-up experiment.",
+    "Working hypothesis: organoid self-repair may increase under stress; test this with a blinded control.",
+  ]) {
+    assert(
+      researchEvidenceManifestMutationBlock(
+        groundedResearchState,
+        "apply_patch",
+        { ...attributedResearchPatch, replace },
+        { commandCwd: workspace, taskProfile: "research" }
+      ) === null,
+      "ordinary synthesis or explicitly labeled hypothesis was overblocked by attribution grounding"
+    );
+  }
+  const unsupportedResearchIdentifierBlock =
+    researchEvidenceManifestMutationBlock(
+      groundedResearchState,
+      "apply_patch",
+      attributedResearchPatch,
+      { commandCwd: workspace, taskProfile: "research" }
+    );
+  assert(
+    unsupportedResearchIdentifierBlock?.category ===
+      "research-evidence-identifier-unsupported" &&
+      unsupportedResearchIdentifierBlock.unsupportedIdentifiers?.includes("s3"),
+    "a completed manifest read still allowed an unlisted citation identifier"
+  );
+  assert(
+    researchEvidenceManifestMutationBlock(
+      {
+        ...ungroundedResearchState,
+        goal: "Fix the typography in research-briefing.tex.",
+        meta: {
+          ...ungroundedResearchState.meta,
+          goalContract: {
+            revision: 2,
+            activeGoal: "Fix the typography in research-briefing.tex.",
+            currentRequest: "Fix the typography in research-briefing.tex.",
+          },
+        },
+      },
+      "apply_patch",
+      attributedResearchPatch,
+      {
+        commandCwd: workspace,
+        taskProfile: "research",
+        goal: researchManifestGoal,
+      }
+    ) === null,
+    "a stale config goal reactivated an obsolete research-manifest contract"
+  );
+  assert(
+    researchEvidenceManifestMutationBlock(
+      {
+        ...ungroundedResearchState,
+        goal: "Fix the typography in research-briefing.tex.",
+        meta: {
+          ...ungroundedResearchState.meta,
+          goalContract: {
+            revision: 1,
+            activeGoal: "Fix the typography in research-briefing.tex.",
+            currentRequest: "Fix the typography in research-briefing.tex.",
+          },
+        },
+      },
+      "apply_patch",
+      attributedResearchPatch,
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "a report edit with no explicit evidence-manifest contract was overblocked"
+  );
+  assert(
+    researchEvidenceManifestMutationBlock(
+      {
+        ...ungroundedResearchState,
+        goal: "Fix the typography in research-briefing.tex.",
+        meta: {
+          ...ungroundedResearchState.meta,
+          goalContract: {
+            revision: 2,
+            activeGoal: "Fix the typography in research-briefing.tex.",
+            currentRequest: "Fix the typography in research-briefing.tex.",
+          },
+        },
+      },
+      "run_command",
+      {
+        command:
+          "sed -i 's/old/new/' output/research-task-134/research-briefing.tex",
+      },
+      { commandCwd: workspace, taskProfile: "research", goal: researchManifestGoal }
+    ) === null,
+    "a stale config goal blocked a shell edit under the current non-manifest contract"
+  );
+  assert(
+    researchEvidenceManifestMutationBlock(
+      ungroundedResearchState,
+      "write_file",
+      {
+        path: "output/research-task-134/research-evidence-manifest.json",
+        content: JSON.stringify({ sources: [] }),
+        mode: "overwrite",
+      },
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "the report evidence boundary blocked an explicitly targeted manifest edit"
+  );
+  assert(
+    researchEvidenceManifestMutationBlock(
+      ungroundedResearchState,
+      "run_command",
+      {
+        command:
+          "sed -i 's/Verified/Reviewed/' output/research-task-134/research-evidence-manifest.json",
+      },
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "the reader-facing shell boundary blocked an explicitly targeted manifest edit"
+  );
+  const retainedHostCompilationGoal = [
+    "Materially revise a source file inside the exact task artifact directory and return the replacement PDF.",
+    "Do not install or invoke LaTeX, make, apt, conda, or package managers inside the agent.",
+    "Write complete task-scoped sources and let the LabCanvas host compiler build and inspect the PDF.",
+  ].join(" ");
+  const retainedHostCompilationState = {
+    goal: retainedHostCompilationGoal,
+    meta: {
+      taskProfile: "research",
+      goalContract: {
+        revision: 1,
+        activeGoal: retainedHostCompilationGoal,
+        currentRequest: retainedHostCompilationGoal,
+      },
+    },
+  };
+  for (const command of [
+    `cd ${researchArtifactRoot} && latexmk -pdf -pdflatex='pdflatex -interaction=nonstopmode' -synctex=1 -quiet research-briefing.tex`,
+    "env TEXINPUTS=. xelatex -interaction=nonstopmode research-briefing.tex",
+    "kpsewhich xelatex.fmt; rm -rf /tmp/texprobe && mkdir -p /tmp/texprobe && cd /tmp/texprobe && xetex -fmt=xelatex -interaction=nonstopmode -halt-on-error research-briefing.tex",
+    "bash -lc 'cd output/research-task-134 && tectonic research-briefing.tex'",
+    "make report",
+    "pandoc research-briefing.tex -o research-briefing.pdf",
+    "typst compile research-briefing.typ research-briefing.pdf",
+  ]) {
+    const hostCompilerBlock = hostManagedDocumentCompilerInvocationBlock(
+      retainedHostCompilationState,
+      "run_command",
+      { command },
+      { commandCwd: workspace, taskProfile: "research" }
+    );
+    assert(
+      hostCompilerBlock?.category === "host-managed-document-compiler-dispatch" &&
+        hostCompilerBlock.permissionAdvice?.autoRecover === true &&
+        shouldShortCircuitToolBatch(hostCompilerBlock),
+      `host-owned document compilation was dispatched by the fallback: ${command}`
+    );
+  }
+  for (const command of [
+    "which latexmk",
+    "printf '%s\\n' latexmk",
+    "python scripts/check_report_source.py research-briefing.tex",
+  ]) {
+    assert(
+      hostManagedDocumentCompilerInvocationBlock(
+        retainedHostCompilationState,
+        "run_command",
+        { command },
+        { commandCwd: workspace, taskProfile: "research" }
+      ) === null,
+      `host compiler ownership blocked a non-compiling source check: ${command}`
+    );
+  }
+  assert(
+    hostManagedDocumentCompilerInvocationBlock(
+      {
+        goal: "Create report.tex, compile report.pdf with xelatex, and inspect it.",
+        meta: {
+          taskProfile: "research",
+          goalContract: {
+            revision: 1,
+            activeGoal: "Create report.tex, compile report.pdf with xelatex, and inspect it.",
+          },
+        },
+      },
+      "run_command",
+      { command: "xelatex -interaction=nonstopmode report.tex" },
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "ordinary agent-owned document compilation was overblocked"
+  );
+  assert(
+    hostManagedDocumentCompilerInvocationBlock(
+      {
+        goal: [
+          "Create report.tex and compile report.pdf.",
+          "If compilation is unavailable, the host recovery stage may compile it.",
+        ].join(" "),
+      },
+      "run_command",
+      { command: "pdflatex report.tex" },
+      { commandCwd: workspace, taskProfile: "research" }
+    ) === null,
+    "a conditional host fallback was mistaken for exclusive host ownership"
+  );
   for (const patch of [
     '*** Begin Patch\n*** Delete File: "report.md"\n*** End Patch',
     "--- a/report.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-old",
@@ -15703,9 +16546,154 @@ Do not prefix, suffix, wrap, redirect, pipe, or combine that validator command.`
   );
   const semanticListContext = { commandCwd: "/tmp/workspace" };
   assert(
-    staticToolCallSignature("list_files", { path: "../Musia", maxDepth: 2 }, semanticListContext) ===
+    staticToolCallSignature("list_files", { path: "../Musia", maxDepth: 1 }, semanticListContext) ===
       staticToolCallSignature("run_command", { command: "ls -la /tmp/Musia" }, semanticListContext),
     "semantic discovery identity did not normalize relative/absolute list variants"
+  );
+  const shallowListSignature = staticToolCallSignature(
+    "list_files",
+    { path: "../Musia", maxDepth: 2 },
+    semanticListContext
+  );
+  const deeperListSignature = staticToolCallSignature(
+    "list_files",
+    { path: "../Musia", maxDepth: 3 },
+    semanticListContext
+  );
+  assert(
+    shallowListSignature !== deeperListSignature,
+    "materially deeper directory inspection reused the shallow listing signature"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [shallowListSignature]: 1 },
+            staticOrder: [shallowListSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "list_files",
+      { path: "../Musia", maxDepth: 2 },
+      semanticListContext
+    )?.category === "repeated-read-only-call",
+    "an exact repeated directory listing escaped convergence"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: {
+              [staticToolCallSignature(
+                "list_files",
+                { path: "../Musia", maxDepth: 1 },
+                semanticListContext
+              )]: 1,
+            },
+            staticTotal: 1,
+          },
+        },
+      },
+      "run_command",
+      { command: "ls -la /tmp/Musia" },
+      semanticListContext
+    )?.category === "repeated-read-only-call",
+    "an equivalent plain ls bypassed a successful structured directory listing"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [shallowListSignature]: 1 },
+            staticOrder: [shallowListSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "list_files",
+      { path: "../Musia", maxDepth: 3 },
+      semanticListContext
+    ) === null,
+    "a materially deeper directory listing was blocked as an exact repeat"
+  );
+  const projectInspectSignature = staticToolCallSignature(
+    "inspect_project",
+    { path: ".", maxDepth: 6, includeFiles: true },
+    semanticListContext
+  );
+  assert(
+    projectInspectSignature !==
+      staticToolCallSignature("inspect_project", { path: "." }, semanticListContext),
+    "a materially richer project inspection reused the default summary signature"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [projectInspectSignature]: 1 },
+            staticOrder: [projectInspectSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "inspect_project",
+      { path: ".", maxDepth: 6, includeFiles: true },
+      semanticListContext
+    )?.category === "repeated-read-only-call",
+    "an exact successful project inspection remained repeatable"
+  );
+  const fileSearchSignature = staticToolCallSignature(
+    "search_files",
+    { path: "src", query: "Waiting_Confirmation" },
+    semanticListContext
+  );
+  assert(
+    fileSearchSignature ===
+      staticToolCallSignature(
+        "search_files",
+        { path: "src", query: "waiting_confirmation", caseSensitive: false },
+        semanticListContext
+      ),
+    "case-insensitive workspace searches did not share one semantic signature"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [fileSearchSignature]: 1 },
+            staticOrder: [fileSearchSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "search_files",
+      { path: "src", query: "waiting_confirmation" },
+      semanticListContext
+    )?.category === "repeated-read-only-call",
+    "an equivalent successful workspace search remained repeatable"
+  );
+  assert(
+    repeatedStaticToolBlock(
+      {
+        meta: {
+          toolLoop: {
+            staticCounts: { [fileSearchSignature]: 1 },
+            staticOrder: [fileSearchSignature],
+            staticTotal: 1,
+          },
+        },
+      },
+      "search_files",
+      { path: "src", query: "waiting_confirmation_handler" },
+      semanticListContext
+    ) === null,
+    "a materially refined workspace search was blocked by exact-search idempotency"
   );
   assert(
     shouldActivateScs("auto", {

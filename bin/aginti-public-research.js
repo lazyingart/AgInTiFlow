@@ -9,6 +9,7 @@ function optionValue(argv, name) {
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) {
   console.log("Usage: aginti-public-research [--host 127.0.0.1] [--port 3211]");
+  console.log("Use --port 0 to let the operating system allocate an ephemeral loopback port.");
   console.log("Starts only the fail-closed public research API; it does not start AgInTiFlow Studio or chat.");
   process.exit(0);
 }

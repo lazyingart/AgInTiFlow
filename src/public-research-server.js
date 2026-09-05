@@ -158,7 +158,7 @@ export function createPublicResearchHttpServer(options = {}) {
 export async function listenPublicResearchServer(options = {}) {
   const env = options.env || process.env;
   const port = boundedInteger(options.port ?? env.AGINTI_PUBLIC_RESEARCH_PORT, DEFAULT_PORT, {
-    min: 1,
+    min: 0,
     max: 65535,
   });
   const created = createPublicResearchHttpServer(options);

@@ -422,9 +422,12 @@ const DESCRIPTION_STOP_WORDS = new Set([
   "checks",
   "content",
   "create",
+  "current",
   "data",
   "exact",
   "existing",
+  "explicit",
+  "explicitly",
   "file",
   "files",
   "from",
@@ -464,13 +467,21 @@ const SKILL_ID_STOP_WORDS = new Set([
   "aginti",
   "for",
   "development",
+  "external",
+  "integration",
+  "labcanvas",
   "of",
   "the",
   "production",
+  "report",
+  "reports",
+  "replacement",
+  "research",
   "skill",
   "system",
   "tool",
   "tools",
+  "validation",
   "workflow",
 ]);
 
@@ -507,6 +518,9 @@ function normalizedSkillRoutingText(goal = "") {
       (_match, extension) => ` file.${String(extension || "").toLowerCase()} `
     )
     .replace(/\b[a-z_][a-z0-9_.-]*\s*=\s*[a-z0-9_.-]+\b/gi, " ")
+    // Multi-part snake-case values are host/task contract identifiers, not
+    // natural-language evidence for selecting domain skills.
+    .replace(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+){2,}\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -517,7 +531,10 @@ function descriptionTerms(value = "") {
       String(value)
         .toLowerCase()
         .split(/[^a-z0-9+#.-]+/)
-        .filter((item) => item.length > 3 && !DESCRIPTION_STOP_WORDS.has(item))
+        .filter(
+          (item) =>
+            item.length > 3 && !englishTokenForms(item).some((form) => DESCRIPTION_STOP_WORDS.has(form))
+        )
     ),
   ];
 }
@@ -531,10 +548,51 @@ function focusedGenericSignal(goalText, needle) {
   return terms.length <= 4 && textHasTrigger(goalText, needle);
 }
 
-function scoreSkill(skill, text, taskProfile, goalText = text) {
+function dottedSkillIdentities(skill = {}) {
+  const identityText = `${skill.id || ""} ${skill.label || ""}`.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const metadataText = [skill.label, skill.description, ...(skill.triggers || [])].filter(Boolean).join(" ").toLowerCase();
+  return [
+    ...new Set(
+      [...metadataText.matchAll(/\b[a-z0-9](?:[a-z0-9-]{0,62}\.)+[a-z]{2,12}\b/g)]
+        .map((match) => match[0])
+        .filter((item) => {
+          const compact = item.replace(/[^a-z0-9]+/g, "");
+          return compact.length >= 5 && identityText.includes(compact);
+        })
+    ),
+  ];
+}
+
+function textMentionsDottedIdentity(text = "", identity = "") {
+  const source = String(text || "").toLowerCase();
+  const domain = String(identity || "").toLowerCase();
+  if (!source || !domain) return false;
+  const escaped = escapeRegExp(domain);
+  const bareDomain = new RegExp(
+    `(^|[^a-z0-9_./-])(?:[a-z0-9-]+\\.)*${escaped}(?=$|[^a-z0-9_.-])`,
+    "i"
+  );
+  if (bareDomain.test(source)) return true;
+  for (const match of source.matchAll(/\bhttps?:\/\/[^\s`'"<>]+/gi)) {
+    try {
+      const hostname = new URL(match[0].replace(/[),.;!?]+$/g, "")).hostname.toLowerCase();
+      if (hostname === domain || hostname.endsWith(`.${domain}`)) return true;
+    } catch {
+      // Ignore malformed URL-like prose and retain normal skill scoring.
+    }
+  }
+  return false;
+}
+
+function dottedSkillIdentityScore(skill, originalGoal = "") {
+  return dottedSkillIdentities(skill).some((identity) => textMentionsDottedIdentity(originalGoal, identity)) ? 6 : 0;
+}
+
+function scoreSkill(skill, text, taskProfile, goalText = text, originalGoal = goalText) {
   let score = 0;
   if (skill.id === taskProfile) score += 10;
   if (skill.triggers.includes(taskProfile)) score += 6;
+  score += dottedSkillIdentityScore(skill, originalGoal);
   const idTerms = String(skill.id || "")
     .toLowerCase()
     .split(/[^a-z0-9+#.]+/)
@@ -566,10 +624,26 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function englishTokenForms(token) {
+  const forms = new Set([token]);
+  if (token.length < 4) return [...forms];
+  if (token.endsWith("ies") && token.length > 4) {
+    forms.add(`${token.slice(0, -3)}y`);
+  } else if (token.endsWith("s") && !token.endsWith("ss") && !token.endsWith("us") && !token.endsWith("is")) {
+    forms.add(token.slice(0, -1));
+  } else if (!token.endsWith("s")) {
+    forms.add(`${token}s`);
+  }
+  return [...forms];
+}
+
 function textHasTrigger(text, needle) {
   if (!needle) return false;
   if (/^[a-z0-9]+(?:[\s_-]+[a-z0-9]+)*$/.test(needle)) {
-    const parts = needle.split(/[\s_-]+/).filter(Boolean).map(escapeRegExp);
+    const parts = needle
+      .split(/[\s_-]+/)
+      .filter(Boolean)
+      .map((part) => `(?:${englishTokenForms(part).map(escapeRegExp).join("|")})`);
     if (parts.length === 0) return false;
     return new RegExp(`(^|[^a-z0-9])${parts.join("[^a-z0-9]+")}([^a-z0-9]|$)`).test(text);
   }
@@ -583,8 +657,8 @@ export function selectSkillsForGoal(goal = "", { taskProfile = "auto", limit = 6
   const ranked = skills
     .map((skill) => ({
       skill,
-      score: scoreSkill(skill, text, taskProfile, goalText),
-      directGoalScore: scoreSkill(skill, goalText, "auto", goalText),
+      score: scoreSkill(skill, text, taskProfile, goalText, goal),
+      directGoalScore: scoreSkill(skill, goalText, "auto", goalText, goal),
     }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.skill.id.localeCompare(b.skill.id));

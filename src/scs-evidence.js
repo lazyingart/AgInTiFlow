@@ -7,6 +7,7 @@ import {
   parseTopLevelShellSequence,
   tokenizeShellWords,
 } from "./shell-syntax.js";
+import { firstJsonObject } from "./json-extraction.js";
 
 const CATEGORY_LABELS = {
   file: "file or workspace change",
@@ -343,6 +344,20 @@ function uniqueLimited(items = [], limit = 16) {
   return unique(items.map((item) => compact(item, 120)).filter(Boolean)).slice(0, limit);
 }
 
+function uniquePathList(items = [], limit = 16) {
+  return unique(
+    items
+      .map((item) => String(item || "").trim())
+      .filter(
+        (item) =>
+          item &&
+          item.length <= 1024 &&
+          !item.includes("\0") &&
+          !/[\r\n]/u.test(item)
+      )
+  ).slice(0, limit);
+}
+
 function quotedTerms(text = "") {
   const terms = [];
   const patterns = [
@@ -576,7 +591,7 @@ function inferExactOutputPaths(goal = "") {
     }
     activeOutputDir = "";
   }
-  return uniqueLimited(filterShadowedBasenames(paths), 16);
+  return uniquePathList(filterShadowedBasenames(paths), 16);
 }
 
 const REQUESTED_ARTIFACT_FORMATS = [
@@ -670,9 +685,60 @@ function artifactRequestHasOutputIntent(goal = "", taskProfile = "") {
   );
 }
 
+export function hostManagedDocumentCompilationRequested(goal = "") {
+  const source = String(goal || "").replace(/\s+/gu, " ").trim();
+  if (!source) return false;
+  const agentCompilationProhibited = Boolean(
+    /\bdo\s+not\b[^.!?;。！？；]{0,80}\b(?:invoke|run|use)\b[^.!?;。！？；]{0,220}\b(?:document\s+compiler|latexmk|pdflatex|xelatex|lualatex|latex|pandoc|make)\b/iu.test(
+      source
+    ) ||
+      /(?:不要|不得|无需|不需要)(?:调用|运行|使用).{0,100}(?:LaTeX|latexmk|pdflatex|xelatex|lualatex|pandoc|文档编译器)/u.test(
+        source
+      )
+  );
+  const explicitHostCompilation = Boolean(
+    /\b(?:the\s+)?(?:labcanvas\s+)?host(?:\s+(?:compiler|recovery|stage)){0,2}\s+(?:alone\s+)?(?:owns|handles?|performs?|will\s+(?:build|compile|handle|perform|render|validate|revalidate))\b/iu.test(
+      source
+    ) ||
+      /\blet\s+(?:the\s+)?(?:labcanvas\s+)?host(?:\s+(?:compiler|recovery|stage)){0,2}\s+(?:build|compile|handle|perform|render|validate|revalidate)\b/iu.test(
+        source
+      ) ||
+      /(?:由|交给)(?:\s*LabCanvas)?(?:主机|宿主)(?:编译|构建|渲染|验证)/u.test(
+        source
+      )
+  );
+  if (agentCompilationProhibited && explicitHostCompilation) return true;
+  if (
+    /\bdo\s+not\b[^.!?;。！？；]{0,80}\b(?:invoke|run|use)\b[^.!?;。！？；]{0,180}\b(?:document\s+compiler|latexmk|pdflatex|xelatex|lualatex|latex|pandoc|make)\b[^.!?;。！？；]{0,180}\b(?:labcanvas\s+)?host\b/iu.test(
+      source
+    ) ||
+    /(?:不要|不得|无需|不需要)(?:调用|运行|使用).{0,80}(?:LaTeX|latexmk|pdflatex|xelatex|文档编译器).{0,100}(?:由|交给)(?:\s*LabCanvas)?(?:主机|宿主)(?:编译|构建|渲染|验证)/u.test(
+      source
+    )
+  ) {
+    return true;
+  }
+
+  const ownershipPattern =
+    /\b(?:the\s+)?(?:labcanvas\s+)?host(?:\s+(?:compiler|recovery|stage)){0,2}\s+(?:alone\s+)?(?:owns|handles?|performs?|will\s+(?:build|compile|handle|perform|render|validate))\b[^.!?;。！？；]{0,120}\b(?:compil(?:ation|e)|document|latex|pdf|render|validation)\b/giu;
+  for (const match of source.matchAll(ownershipPattern)) {
+    const prefix = source.slice(Math.max(0, Number(match.index || 0) - 180), Number(match.index || 0));
+    if (
+      /\b(?:if|when)\b[^.!?;。！？；]{0,140}\b(?:cannot|can't|fails?|failure|unavailable|unsupported)\b/iu.test(
+        prefix
+      )
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") {
   const source = stripForbiddenLanguage(String(goal || ""));
   if (!artifactRequestHasOutputIntent(source, taskProfile)) return [];
+  const hostManagedCompilation = hostManagedDocumentCompilationRequested(goal);
 
   const requirements = [];
   const add = (requirement) => {
@@ -681,6 +747,7 @@ export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") 
   };
 
   for (const format of REQUESTED_ARTIFACT_FORMATS) {
+    if (hostManagedCompilation && format.extension === ".pdf") continue;
     if (!requestedArtifactFormatHasOutputIntent(source, format)) continue;
     add({
       id: `format:${format.extension}`,
@@ -702,6 +769,7 @@ export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") 
   }
 
   if (
+    !hostManagedCompilation &&
     /\bprintable\b/i.test(source) &&
     /\b(?:answer|deck|document|handout|material|practice|sheet|slides?|worksheet)\b/i.test(source)
   ) {
@@ -879,7 +947,7 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
       }
     }
   }
-  return uniqueLimited(excluded.map(normalizedContractPath), 24);
+  return uniquePathList(excluded.map(normalizedContractPath), 24);
 }
 
 function inferExactInputPaths(goal = "") {
@@ -928,7 +996,7 @@ function inferExactInputPaths(goal = "") {
       pushPath(match[1]);
     }
   }
-  return uniqueLimited(paths, 24);
+  return uniquePathList(paths, 24);
 }
 
 function inferDeclaredSourceRoots(goal = "") {
@@ -942,7 +1010,7 @@ function inferDeclaredSourceRoots(goal = "") {
       roots.push(candidate.replace(/\/+$/, ""));
     }
   }
-  return uniqueLimited(roots, 12);
+  return uniquePathList(roots, 12);
 }
 
 function requiresPerSourceChecks(goal = "") {
@@ -1345,6 +1413,12 @@ function stripHostManagedResponseNarration(goal = "") {
   return String(goal || "").replace(
     /\b(?:and\s+)?(?:write|return|provide)\s+(?:(?:a|the)\s+)?(?:(?:concise|final|normal|structured)\s+)?(?:(?:agent|task)\s+)?(?:answer|response|result)\b(?!\s+(?:as|at|file|in|into|json|markdown|pdf|text|to|under)\b)/gi,
     ""
+  ).replace(
+    /\b(?:create|draft|generate|produce|prepare)\s+(?:(?:a|an|the|one)\s+)?[^.\n;]{0,120}?\b(?:answer|response|reply|message|inspiration(?:\s+point)?|summary|chat\s+text)\b/gi,
+    ""
+  ).replace(
+    /\b(?:correct|fix|repair|replace|revise|rewrite|regenerate|update)\s+(?:(?:a|an|the)\s+)?(?:(?:prior|previous|earlier|last|current|invalid|incorrect|bad|old|failed)\s+)*(?:answer|response|reply|message|inspiration|summary|chat\s+text)\b/gi,
+    ""
   );
 }
 
@@ -1362,17 +1436,17 @@ function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
   if (String(taskProfile || "").trim().toLowerCase() === "review") {
     return (
       explicitAddMutation ||
-      /\b(?:append|copy|create|delete|edit|fix|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
+      /\b(?:append|copy|create|delete|edit|fix|implement|modify|move|patch|rebuild|refactor|regenerate|remove|rename|repair|replace|revise|rewrite|save|update|write)\b/.test(
         text
       )
     );
   }
   return (
     explicitAddMutation ||
-    /\b(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/.test(
+    /\b(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|rebuild|refactor|regenerate|remove|rename|repair|replace|revise|rewrite|save|update|write)\b/.test(
       text
     ) ||
-    /创建|写入|编辑|修复|实现|修改|更新|生成|保存|复制|移动|转换|删除|重命名|替换|追加/.test(text)
+    /创建|写入|编辑|修复|实现|修改|修订|更新|生成|重新生成|重建|保存|复制|移动|转换|删除|重命名|替换|追加/.test(text)
   );
 }
 
@@ -1701,6 +1775,10 @@ function inferRequiredToolCalls(goal = "") {
 
 function stripForbiddenLanguage(goal = "") {
   return normalizeSoftLineWraps(goal)
+    .replace(
+      /\b(?:create|attach|return|send|write|generate|produce)(?:\s*,?\s*(?:and|or)\s*(?:create|attach|return|send|write|generate|produce))*\s+no\s+(?:files?|attachments?|artifacts?)\b/gi,
+      ""
+    )
     .replace(/\b(do not|don't|dont|must not|should not|never|no need to)\s+([^.\n;]+)/gi, "")
     .replace(/\bwithout\s+([^.,:\uFF1A\n;]+)/gi, "")
     .replace(/不要([^。\n；]+)/g, "")
@@ -1716,7 +1794,7 @@ function stripCompletedWorkNarration(goal = "") {
     .replace(
       /\b(?:continue|resume)\s+(?:the\s+)?(?:same\s+)?(?:already\s+)?(?:completed|finished|verified|committed)\b[^.!?;；。！？\n]*/gi,
       (clause) =>
-        /\b(?:and|but|then)\s+(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|refactor|remove|rename|repair|replace|rewrite|save|update|write)\b/i.test(
+        /\b(?:and|but|then)\s+(?:append|build|convert|copy|create|delete|edit|fix|generate|implement|modify|move|patch|rebuild|refactor|regenerate|remove|rename|repair|replace|revise|rewrite|save|update|write)\b/i.test(
           clause
         )
           ? clause
@@ -1775,11 +1853,598 @@ export function hasAgintiEvidenceScope(goal = "") {
   return Boolean(parseAgintiEvidenceScope(goal));
 }
 
+function exactTaskPacket(goal = "") {
+  const source = String(goal || "");
+  const matches = [
+    ...source.matchAll(/(?:^|\n)\s*(?:Exact task packet|Task packet):\s*/giu),
+  ];
+  for (const match of matches.reverse()) {
+    const packet = firstJsonObject(source.slice((match.index || 0) + match[0].length));
+    if (
+      packet &&
+      typeof packet === "object" &&
+      /^labcanvas-agent-task-v\d+$/iu.test(String(packet.schema || ""))
+    ) {
+      return packet;
+    }
+  }
+  return null;
+}
+
+function sameFilesystemPath(left = "", right = "") {
+  const leftValue = String(left || "").trim();
+  const rightValue = String(right || "").trim();
+  if (!leftValue || !rightValue) return false;
+  return path.resolve(leftValue) === path.resolve(rightValue);
+}
+
+function exactTaskScopedPath(value = "", artifactRoot = "") {
+  const rawValue = String(value || "").trim();
+  const rawRoot = String(artifactRoot || "").trim();
+  if (!rawValue || !rawRoot) return "";
+  const resolvedRoot = path.resolve(rawRoot);
+  const resolvedValue = path.isAbsolute(rawValue)
+    ? path.resolve(rawValue)
+    : path.resolve(resolvedRoot, rawValue);
+  const relative = path.relative(resolvedRoot, resolvedValue);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return resolvedValue;
+  }
+  return "";
+}
+
+function scopedTaskPacketContract(goal = "") {
+  const scope = parseAgintiEvidenceScope(goal);
+  const artifactRoot = String(scope?.artifact_root || "").trim();
+  if (String(scope?.mode || "").trim().toLowerCase() !== "task" || !artifactRoot) {
+    return { exactOutputPaths: [], repairRequirements: [], qualityIssues: [] };
+  }
+  const packet = exactTaskPacket(goal);
+  if (!packet || packet.repair_packet_focused !== true) {
+    return { exactOutputPaths: [], repairRequirements: [], qualityIssues: [] };
+  }
+  const packetRoots = [
+    packet.artifact_dir,
+    packet.worker_retry_context?.artifact_dir,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  if (packetRoots.length && packetRoots.some((item) => !sameFilesystemPath(item, artifactRoot))) {
+    return { exactOutputPaths: [], repairRequirements: [], qualityIssues: [] };
+  }
+
+  const exactOutputPaths = [];
+  const qualityIssues = [];
+  for (const rejection of Array.isArray(packet.pdf_quality_rejections)
+    ? packet.pdf_quality_rejections
+    : []) {
+    const scopedPath = exactTaskScopedPath(rejection?.path, artifactRoot);
+    if (!scopedPath) continue;
+    exactOutputPaths.push(scopedPath);
+    qualityIssues.push(
+      ...(Array.isArray(rejection?.issues) ? rejection.issues : [])
+        .map((item) => compact(item, 180))
+        .filter(Boolean)
+    );
+  }
+  const repairRequirements = (Array.isArray(packet.coverage_followup?.missing)
+    ? packet.coverage_followup.missing
+    : [])
+    .map((item) => compact(item?.requirement || "", 240))
+    .filter(Boolean);
+  return {
+    exactOutputPaths: uniquePathList(exactOutputPaths, 16),
+    repairRequirements: uniqueLimited(repairRequirements, 8),
+    qualityIssues: uniqueLimited(qualityIssues, 12),
+  };
+}
+
 export function isResponseOnlyEvidenceScope(goal = "") {
   const payload = parseAgintiEvidenceScope(goal);
   if (!payload) return false;
   const mode = String(payload.mode || "").trim().toLowerCase();
   return ["chat-response", "host-managed-response", "plan-response", "read-only-answer"].includes(mode);
+}
+
+function responseOnlyScopeHasFreshEvidenceManifest(goal = "") {
+  const payload = parseAgintiEvidenceScope(goal);
+  if (!payload || typeof payload !== "object") return false;
+  const manifestCandidates = [
+    payload.evidenceManifest,
+    payload.evidence_manifest,
+    payload.freshEvidenceManifest,
+    payload.fresh_evidence_manifest,
+    payload.sourceManifest,
+    payload.source_manifest,
+    payload.manifestDigest,
+    payload.manifest_digest,
+    payload.evidenceDigest,
+    payload.evidence_digest,
+    payload.sourceDigest,
+    payload.source_digest,
+  ];
+  return manifestCandidates.some((item) => {
+    if (typeof item === "string") return item.trim().length >= 12;
+    if (item && typeof item === "object") return Object.keys(item).length > 0;
+    return Array.isArray(item) && item.length > 0;
+  });
+}
+
+function sourceFreeResponseHasEvidence(ledger = {}) {
+  if (!ledger || typeof ledger !== "object") return false;
+  if (Number(ledger.itemCount || 0) > 0) return true;
+  if (Array.isArray(ledger.items) && ledger.items.some((item) => item?.verified !== false)) return true;
+  if (Array.isArray(ledger.categories) && ledger.categories.length > 0) return true;
+  return false;
+}
+
+function sourceFreeClaimSegments(text = "") {
+  const protectedAbbreviations = String(text || "").replace(
+    /\b(?:e\.g|i\.e|et\s+al)\./giu,
+    (match) => match.replace(/\./g, "\uE000")
+  );
+  return protectedAbbreviations
+    .split(/(?:[\n\r]+|(?<=[.!?。！？;；]))/u)
+    .map((item) => item.replace(/\uE000/g, ".").trim())
+    .filter(Boolean);
+}
+
+function sourceFreeClaimSegmentHasExplicitUnverifiedFraming(text = "") {
+  const value = String(text || "");
+  const admitsNoEvidence =
+    /\b(?:unverified|not\s+verified|cannot\s+verify|can't\s+verify|could\s+not\s+verify|no\s+(?:fresh\s+)?(?:evidence|sources?|manifest)|without\s+(?:fresh\s+)?(?:evidence|sources?|manifest))\b/iu.test(
+      value
+    ) ||
+    /(?:没有|沒有|无|無|缺少|未获得|未取得|未取得到)(?:新鲜|新鮮|当前|當前|本次|新的)?(?:证据|證據|来源|來源|资料|資料|文献|文獻|检索|檢索|材料)/u.test(
+      value
+    ) ||
+    /(?:无法|無法|不能|未能|没法|沒法)(?:在本次|从本次|從本次)?(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明|支持)/u.test(
+      value
+    ) ||
+    /(?:未经|未經)(?:本机|本機|本轮|本輪|本次|当前|當前|外部)?(?:验证|驗證|核实|核實|证实|證實|确认|確認|检索|檢索)/u.test(
+      value
+    ) ||
+    /(?:証拠|出典|根拠|資料|ソース)(?:が)?(?:ない|ありません|不足)|(?:検証|確認|裏付け)(?:できない|されていない|できません)|未検証/u.test(
+      value
+    );
+  const framesAsHypothesis =
+    /\b(?:hypothesis|hypotheses|speculative|speculation|not\s+(?:a\s+)?(?:verified|evidence-backed|source-backed)\s+claim)\b/iu.test(
+      value
+    ) ||
+    /(?:假设|假說|推测|推測|猜测|猜測|臆测|臆測|未验证|未經驗證|未经验证|未核实|未核實)/u.test(
+      value
+    ) ||
+    /(?:仮説|推測|憶測|未検証|未確認)/u.test(value);
+  return admitsNoEvidence && framesAsHypothesis;
+}
+
+function sourceFreeClaimSegmentIsExplicitSpeculation(text = "") {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const attributedForecast =
+    /\b(?:the|this|a|an)\s+(?:report|paper|study|article|source|dataset|trial|company|government|analyst|author)s?\s+(?:forecast|forecasted|predict|predicts|predicted|project|projects|projected|expect|expects|expected|estimate|estimates|estimated|say|says|said|state|states|stated|claim|claims|claimed|indicate|indicates|indicated|suggest|suggests|suggested)\b/iu.test(
+      value
+    ) ||
+    /(?:报告|報告|论文|論文|研究|文章|来源|來源|数据集|資料集|公司|政府|分析师|分析師|作者)[^。！？；\n]{0,28}(?:预测|預測|预计|預計|推测|推測|估计|估計)/u.test(
+      value
+    ) ||
+    /(?:報告|論文|研究|記事|出典|データセット|企業|政府|アナリスト|著者)[^。！？；\n]{0,28}(?:予測|予想|推定|見込)/u.test(
+      value
+    );
+  if (attributedForecast) return false;
+  return (
+    /(?:^|[.!?;]\s*)(?:(?:this|the\s+following)\s+is\s+|(?:my|our|a)\s+)?(?:working\s+|high[-\s]?risk\s+|falsifiable\s+|speculative\s+)?(?:hypothesis|prediction|forecast|speculation|inference)\s*[:：-]/iu.test(
+      value
+    ) ||
+    /\b(?:i|we)\s+(?:hypothesi[sz]e|predict|speculate|infer|would\s+test\s+the\s+hypothesis)\b/iu.test(
+      value
+    ) ||
+    /(?:^|[。！？；]\s*)(?:(?:这是|這是|以下是|这里是|這裡是|我的|我们的|我們的|本回答的)\s*)?(?:(?:工作|高风险|高風險|可证伪|可證偽|推断|推斷)\s*)?(?:假设|假說|预测|預測|推测|推測|猜测|猜測)\s*[:：]/u.test(
+      value
+    ) ||
+    /(?:一个|一個|一种|一種|一项|一項)\s*(?:(?:未经|未經)(?:本机|本機|本轮|本輪|本次|当前|當前|外部)?(?:验证|驗證|核实|核實|证实|證實|确认|確認)的?\s*)?(?:(?:原创|原創|工作|高风险|高風險|可证伪|可證偽|灵感|靈感|推断|推斷)\s*)?(?:假设|假說|预测|預測|推测|推測|猜测|猜測)\s*[:：，,]/u.test(
+      value
+    ) ||
+    /(?:我|我们|我們)(?:的)?(?:假设|假說|预测|預測|推测|推測|猜测|猜測|认为|認為)[：:]?/u.test(
+      value
+    ) ||
+    /(?:^|[。！？；]\s*)(?:(?:これは|以下は|私の|私たちの)\s*)?(?:(?:作業|高リスク|反証可能な|推論)\s*)?(?:仮説|予測|予想|推測|憶測)\s*[:：]/u.test(
+      value
+    ) ||
+    /(?:私|私たち)(?:は|の)?(?:仮説|予測|予想|推測|と考える)/u.test(value)
+  );
+}
+
+function sourceFreeClaimSegmentOnlyProposesExperiment(text = "") {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const proposesExperiment =
+    /\b(?:next\s+step|proposed?\s+(?:test|experiment|protocol)|experiment(?:al)?\s+(?:plan|design|protocol)|could|can|would|should|plan\s+to)\b[^.!?;\n]{0,180}\b(?:test|experiment|control|protocol|measure|record|compare|collect|sample|validate|falsif)/iu.test(
+      value
+    ) ||
+    /(?:具体做法|下一步|建议|建議|可以|可先|可将|可將|计划|計劃|拟|擬|设计|設計|方案|实验计划|實驗計劃)[^。！？；\n]{0,180}(?:实验|實驗|对照|對照|测试|測試|测量|測量|记录|記錄|比较|比較|采集|採集|验证|驗證|证伪|證偽|分组|分組)/u.test(
+      value
+    ) ||
+    /(?:次のステップ|提案|実験計画|実験設計|プロトコル|まず)[^。！？；\n]{0,180}(?:実験|対照|試験|測定|記録|比較|収集|検証|反証)/u.test(
+      value
+    );
+  if (!proposesExperiment) return false;
+  const claimsObservedResult =
+    /\b(?:we|researchers?|the\s+(?:study|experiment|results?|data))\s+(?:already\s+)?(?:found|showed|demonstrated|proved|confirmed|validated|achieved|improved|outperformed|observed|measured)\b/iu.test(
+      value
+    ) ||
+    /(?:研究|实验|實驗|结果|結果|数据|數據|我们|我們|团队|團隊)[^。！？；\n]{0,50}(?:已经|已經|已|发现|發現|显示|顯示|表明|证明|證明|证实|證實|确认|確認|验证了|驗證了|观察到|觀察到|达到|達到|提高了|提升了)/u.test(
+      value
+    ) ||
+    /(?:研究|実験|結果|データ|私たち|チーム)[^。！？；\n]{0,50}(?:すでに|発見|示した|証明|確認|検証済み|観察した|達成|改善した)/u.test(
+      value
+    );
+  return !claimsObservedResult;
+}
+
+function sourceFreeRequestExplicitlyAsksForSpeculation(goal = "") {
+  const value = String(goal || "");
+  return (
+    /\b(?:ask|asks|asked|include|provide|write|give|create|make|state|add|need|needs|require|requires|request|requests|requested)\b[^.!?;\n]{0,100}\b(?:falsifiable\s+|high[-\s]?risk\s+|working\s+)?(?:hypothesis|prediction|forecast|speculation)\b/iu.test(
+      value
+    ) ||
+    /(?:请|請|要求|需要|加入|包括|包含|提供|给出|給出|写出|寫出|生成|提出)[^。！？；\n]{0,80}(?:可证伪|可證偽|高风险|高風險|工作)?(?:假设|假說|预测|預測|推测|推測)/u.test(
+      value
+    ) ||
+    /(?:求める|必要|含める|追加|提供|作成|提示|予測して)[^。！？；\n]{0,80}(?:反証可能な|高リスク|作業)?(?:仮説|予測|予想|推測)/u.test(
+      value
+    )
+  );
+}
+
+function sourceFreeRequestRequiresNamedEvidenceGrounding(goal = "") {
+  const payload = parseAgintiEvidenceScope(goal);
+  const request = String(payload?.request || "").trim();
+  if (!request) return false;
+  return (
+    /\b(?:research|evidence|source-grounded|literature|paper|publication|study|inspiration|state\s+of\s+the\s+art|new\s+advances?|frontier)\b/iu.test(
+      request
+    ) ||
+    /(?:研究|调研|調研|证据|證據|来源|來源|文献|文獻|论文|論文|灵感|靈感|新进展|新進展|前沿|同行)/u.test(
+      request
+    ) ||
+    /(?:研究|調査|証拠|出典|文献|論文|着想|ひらめき|新展開|最前線)/u.test(request)
+  );
+}
+
+function sourceFreeClaimSegmentDeniesVerification(text = "") {
+  const value = String(text || "");
+  return (
+    /\b(?:cannot|can't|could\s+not|do\s+not|don't|unable\s+to|not\s+able\s+to|no\s+(?:fresh\s+)?(?:evidence|source|manifest)\s+to|without\s+(?:fresh\s+)?(?:evidence|sources?|manifest),?\s+(?:i\s+)?(?:cannot|can't|could\s+not)?)\b[^.!?;。！？；\n]{0,140}\b(?:verify|confirm|substantiate|support|validate|prove|claim)\b/iu.test(
+      value
+    ) ||
+    /(?:无法|無法|不能|未能|没法|沒法|不应|不應|不能够|不能夠|没有证据|沒有證據|无证据|無證據)[^。！？；\n]{0,80}(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明|支持|声称|聲稱|断言|斷言)/u.test(
+      value
+    ) ||
+    /(?:検証|確認|裏付け|断言|主張)(?:できない|できません|されていない)|(?:証拠|出典|根拠)(?:が)?(?:ない|ありません)[^。！？；\n]{0,60}(?:検証|確認|主張|断言)/u.test(
+      value
+    )
+  );
+}
+
+function sourceFreeClaimSegmentOnlyMentionsCandidateForecast(text = "") {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  const reportsCandidateContent =
+    /\b(?:candidate|submitted|provided)\s+(?:result|response|answer|output|text|content)\b[^.!?;\n]{0,120}\b(?:contains?|includes?|covers?|mentions?|discusses?|describes?|labels?|frames?)\b[^.!?;\n]{0,100}\b(?:prediction|forecast|projection|hypothesis|speculation)\b/iu.test(
+      value
+    ) ||
+    /(?:候选|候選|提交的|所给|所給|该|該)(?:结果|結果|回答|响应|響應|输出|輸出|文本|内容|內容)[^。！？；\n]{0,120}(?:包含|包括|覆盖|覆蓋|提到|提及|讨论|討論|描述|列出|标注|標註)[^。！？；\n]{0,100}(?:预测|預測|预期|預期|推测|推測|假设|假說)/u.test(
+      value
+    ) ||
+    /(?:候補|提出された|与えられた)(?:結果|回答|応答|出力|文章|内容)[^。！？；\n]{0,120}(?:(?:含む|含んで|取り上げ|言及|説明|記載)[^。！？；\n]{0,100}(?:予測|予想|見込み|仮説|推測)|(?:予測|予想|見込み|仮説|推測)[^。！？；\n]{0,100}(?:を)?(?:含む|含んで|取り上げ|言及|説明|記載))/u.test(
+      value
+    );
+  if (!reportsCandidateContent) return false;
+  const assertsForecastDetails =
+    /\b(?:19|20)\d{2}\b|\b(?:next|coming)\s+(?:year|years|decade)\b|\b(?:will|would|shall|projected\s+to|expected\s+to)\b|\b\d+(?:\.\d+)?\s*%/iu.test(
+      value
+    ) ||
+    /(?<!\d)(?:19|20)\d{2}(?!\d)\s*年|(?:未来|今后|今後|年内|年內|年前|年底|年末)[^。！？；\n]{0,50}(?:将|將|会|會|达到|達到|增长|增長|下降|上线|上線|成为|成為)|(?:将|將|会|會)[^。！？；\n]{0,50}(?:达到|達到|增长|增長|下降|上线|上線|成为|成為)/u.test(
+      value
+    ) ||
+    /(?<!\d)(?:19|20)\d{2}(?!\d)\s*年|(?:将来|今後|年内|年末|までに)[^。！？；\n]{0,50}(?:なる|増加|減少|達する|実現|公開|発売)|(?:なる|増加|減少|達する|実現|公開|発売)(?:見込み|予測|予想)/u.test(
+      value
+    );
+  return !assertsForecastDetails;
+}
+
+function sourceFreeClaimSegmentOnlyClarifiesAmbiguousInput(text = "") {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  const namesInput =
+    /\b(?:bare\s+)?(?:input|message|number|digits?|string|code|identifier|meaning|context)\b/iu.test(value) ||
+    /(?:这串|這串|这个|這個|该|該)?(?:输入|輸入|消息|訊息|信息|数字|數字|编号|編號|验证码|驗證碼|字符串|字串|代码|代碼|含义|含義|意思|上下文|误发|誤發)/u.test(value) ||
+    /(?:入力|メッセージ|数字|番号|コード|識別子|意味|文脈|誤送信)/u.test(value);
+  const framesInterpretations =
+    /\b(?:may|might|could|possibly)\s+(?:mean|refer\s+to|be)|\b(?:cannot|can't|could\s+not|unable\s+to)\s+(?:safely\s+)?(?:infer|interpret|determine)|\bambiguous\b/iu.test(
+      value
+    ) ||
+    /\b(?:(?:without|lacks?|missing|insufficient)\s+(?:enough\s+)?context|not\s+enough\s+(?:context\s+)?to\s+(?:infer|interpret|determine|predict)|insufficient\s+(?:context\s+)?to\s+(?:infer|interpret|determine|predict))\b/iu.test(
+      value
+    ) ||
+    /(?:可能(?:是|指|表示)|也可能|或许|或許|无法|無法|不能|不确定|不確定|不清楚|不知道)[^。！？；\n]{0,60}(?:含义|含義|意思|指什么|指什麼|上下文|编号|編號|日期|金额|金額|误发|誤發)/u.test(
+      value
+    ) ||
+    /(?:缺少|没有|沒有|上下文不足|信息不足|資訊不足)[^。！？；\n]{0,50}(?:上下文|语境|語境|信息|資訊|含义|含義|意思|意图|意圖|任务|任務|请求|請求|预测|預測|推断|推斷|判断|判斷)/u.test(
+      value
+    ) ||
+    /(?:かもしれない|可能性|判断できない|特定できない|曖昧)[^。！？；\n]{0,60}(?:意味|文脈|番号|日付|金額|誤送信)/u.test(
+      value
+    ) ||
+    /(?:文脈|情報)(?:が)?(?:ない|不足|欠けている)[^。！？；\n]{0,50}(?:意味|意図|依頼|タスク|予測|推測|判断)/u.test(
+      value
+    );
+  if (!namesInput || !framesInterpretations) return false;
+  const assertsExternalOutcome =
+    /\b(?:paper|study|article|report|dataset|trial|company|market|demand|revenue|sales)\b[^.!?;。！？；\n]{0,100}\b(?:published|released|validated|verified|forecast|predict|project|will|expected\s+to)\b/iu.test(
+      value
+    ) ||
+    /(?:论文|論文|研究|报告|報告|数据集|資料集|公司|市场|市場|需求|营收|營收|销售|銷售)[^。！？；\n]{0,80}(?:发表|發表|发布|發布|验证|驗證|预测|預測|预计|預計|将|將|会|會)/u.test(
+      value
+    ) ||
+    /(?:論文|研究|報告|データセット|企業|市場|需要|売上)[^。！？；\n]{0,80}(?:発表|公開|検証|予測|予想|見込み)/u.test(
+      value
+    );
+  return !assertsExternalOutcome;
+}
+
+function sourceFreeClaimSegmentOnlyNegatesForecast(text = "") {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  const withoutNegation = value
+    .replace(
+      /\b(?:no|not\s+(?:a|an|the)?|without|does\s+not|doesn't|is\s+not|isn't)\s+(?:external\s+)?(?:forecast|prediction|projection|predictive\s+claim)s?\b/giu,
+      " "
+    )
+    .replace(
+      /(?:不是|並非|并非|没有|沒有|无|無|不作|不做|无需|無需|不需要)(?:任何)?(?:预测|預測|预计|預計|推测|推測|预言|預言)/gu,
+      " "
+    )
+    .replace(
+      /(?:予測|予想|推測|見込み)(?:ではない|ではありません|しない|不要|なし)/gu,
+      " "
+    );
+  if (withoutNegation === value) return false;
+  return !sourceFreeExternalClaimCategoriesForSegment(withoutNegation).includes("forecast");
+}
+
+function sourceFreeClaimSegmentOnlyDescribesTaskIntent(text = "") {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  const taskContext =
+    /\b(?:user|request|task|worker|agent|router?|workflow|routine|instruction)\b/iu.test(value) ||
+    /(?:用户|用戶|请求|請求|任务|任務|工作流|流程|代理|路由|指令)/u.test(value) ||
+    /(?:ユーザー|依頼|要求|タスク|ワーカー|エージェント|ルート|手順|指示)/u.test(value);
+  const describesAssignment =
+    /\b(?:asks?|requested?|requires?|needs?|routes?|classif(?:y|ies|ied)|should|must|is\s+expected\s+to)\b/iu.test(value) ||
+    /(?:要求|请求|請求|需要|应当|應當|应该|應該|路由|分类|分類|交给|交給|由[^。！？；\n]{0,30}(?:处理|處理|执行|執行)|预计由|預計由)/u.test(value) ||
+    /(?:依頼|要求|必要|ルーティング|分類|処理すべき|実行すべき|担当する見込み)/u.test(value);
+  if (!taskContext || !describesAssignment) return false;
+  const assertsExternalOutcome =
+    /\b(?:19|20)\d{2}\b|\b(?:next|coming|future)\s+(?:year|years|decade)\b|\b(?:market|demand|revenue|sales|accuracy|latency|throughput)\b[^.!?;\n]{0,80}\b(?:will|would|expected\s+to|forecast|predict|project|grow|increase|decrease|reach|decline)\b|\b\d+(?:\.\d+)?\s*%/iu.test(value) ||
+    /(?<!\d)(?:19|20)\d{2}(?!\d)\s*年|(?:未来|今后|今後|年内|年內|年前|年底|年末)[^。！？；\n]{0,50}(?:将|將|会|會|达到|達到|增长|增長|下降|上线|上線|成为|成為)|(?:市场|市場|需求|营收|營收|销售|銷售|准确率|準確率|延迟|延遲)[^。！？；\n]{0,80}(?:预计|預計|预测|預測|增长|增長|下降|达到|達到)/u.test(value) ||
+    /(?<!\d)(?:19|20)\d{2}(?!\d)\s*年|(?:将来|今後|年内|年末|までに)[^。！？；\n]{0,50}(?:なる|増加|減少|達する|実現|公開|発売)|(?:市場|需要|売上|精度|遅延)[^。！？；\n]{0,80}(?:予測|予想|増加|減少|達する)/u.test(value);
+  return !assertsExternalOutcome;
+}
+
+function sourceFreeExternalClaimCategoriesForSegment(
+  text = "",
+  { requireNamedEvidenceGrounding = false } = {}
+) {
+  const value = String(text || "");
+  if (!value.trim()) return [];
+  const categories = [];
+  const add = (category, pattern) => {
+    pattern.lastIndex = 0;
+    if (pattern.test(value)) categories.push(category);
+  };
+  add(
+    "publication",
+    /\b(?:paper|study|article|preprint|publication|manuscript|dataset|trial|journal|conference|arxiv|doi|nature|science|cell)\b[^.!?;。！？；\n]{0,140}\b(?:published|appeared|released|accepted|reported|found|showed|demonstrated|validated)\b|\b(?:published|accepted|released)\b[^.!?;。！？；\n]{0,80}\b(?:paper|study|article|preprint|publication|manuscript|dataset|trial|journal|conference|arxiv|doi|nature|science|cell)\b|(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|数据集|資料集|データセット|論文|研究|プレプリント|ジャーナル)[^.!?;。！？；\n]{0,80}(?:发表|發表|刊登|出版|公开|公開|收录|收録|发布|發布|掲載|発表|公開|出版)|(?:发表|發表|刊登|出版|公开|公開|收录|收録|发布|發布|掲載|発表|公開|出版)[^.!?;。！？；\n]{0,80}(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|数据集|資料集|データセット|論文|研究|プレプリント|ジャーナル)/iu
+  );
+  add(
+    "year",
+    /\b(?:published|released|announced|accepted|reported|validated|verified|evaluated|benchmarked|forecast(?:ed)?|projected|predicted)\b[^.!?;。！？；\n]{0,100}\b(?:19|20)\d{2}\b|\b(?:19|20)\d{2}\b[^.!?;。！？；\n]{0,100}\b(?:publication|paper|study|article|benchmark|forecast|projection|dataset|trial|validation|release)\b|(?<!\d)(?:19|20)\d{2}(?!\d)\s*年?[^.!?;。！？；\n]{0,80}(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|发表|發表|发布|發布|预测|預測|预计|預計|验证|驗證|基准|基準|指标|指標|論文|研究|発表|公開|掲載|予測|検証|ベンチマーク)|(?:Nature|Science|Cell|子刊|期刊|论文|論文|预印本|預印本|文章|研究|发表|發表|发布|發布|预测|預測|预计|預計|验证|驗證|基准|基準|指标|指標|論文|研究|発表|公開|掲載|予測|検証|ベンチマーク)[^.!?;。！？；\n]{0,80}(?<!\d)(?:19|20)\d{2}(?!\d)\s*年?/iu
+  );
+  add(
+    "validation",
+    /\b(?:validated|verified|proven|confirmed|replicated|peer-reviewed|source-backed|evidence-backed|grounded\s+in\s+(?:sources?|evidence)|the\s+evidence\s+(?:shows|confirms|validates|proves))\b|(?:已有|已经|已經|已经有|已經有|已|初步|经过|經過|得到|获得|獲得)[^。！？；\n]{0,20}(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明)|(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明)(?:通过|通過|完成|成功|结果|結果)|(?:検証済み|確認済み|実証済み|裏付けられた|査読済み)/iu
+  );
+  add(
+    "forecast",
+    /\b(?:forecast|forecasted|predict(?:s|ed|ion)?|projected|projection|expected\s+to|will\s+(?:reach|increase|decrease|grow|decline|outperform|underperform)|cagr)\b|\b(?:report|study|source|model|forecast|analysis|analyst)\s+projects\b|(?:预测|預測|预计|預計|估计|估計|推算|推測|到\s*(?:19|20)\d{2}(?!\d)\s*(?:年(?:底|末)?(?:前|之前)?|底|末|前|之前)|(?<!\d)(?:19|20)\d{2}(?!\d)\s*(?:年(?:底|末)?(?:前|之前)?|底|末|前|之前)[^。！？；\n]{0,40}(?:将|將|会|會|预计|預計|预测|預測))|(?:予測|予想|見込み|推定|年末まで|までに)/iu
+  );
+  add(
+    "benchmark_or_metric",
+    /\b(?:benchmark(?:ed|s)?|metric|score|accuracy|precision|recall|f1|auc|bleu|rouge|latency|throughput|validated\s+on|evaluated\s+on)\b[^.!?;。！？；\n]{0,100}\b\d[\d,.]*(?:\s*(?:%|percent|cases?|subjects?|participants?|patients?|samples?|records?|tokens?\/s|requests?\/s|ms|seconds?|x))?\b|\b\d[\d,.]*(?:\.\d+)?\s*(?:%|percent|cases?|subjects?|participants?|patients?|samples?|records?|benchmarks?|tokens?\/s|requests?\/s|ms|seconds?)\b[^.!?;。！？；\n]{0,100}\b(?:accuracy|validated|verified|benchmark|forecast|prediction|projection|reliable|better|improved|increase|decrease)\b|(?:响应延迟|響應延遲|响应时间|響應時間|延迟|延遲|准确率|準確率|精度|召回|吞吐|基准|基準|指标|指標|分数|分數|反応遅延|レイテンシ|精度|ベンチマーク|指標|スコア)[^。！？；\n]{0,60}\d[\d,.]*(?:\s*(?:%|％|ms|毫秒|秒|例|个|個|件|倍|x))?|\d[\d,.]*(?:\.\d+)?\s*(?:%|％|ms|毫秒|秒|例|个|個|件|倍|x)[^。！？；\n]{0,60}(?:响应延迟|響應延遲|响应时间|響應時間|延迟|延遲|准确率|準確率|精度|召回|吞吐|基准|基準|指标|指標|分数|分數|反応遅延|レイテンシ|精度|ベンチマーク|指標|スコア)/iu
+  );
+  add(
+    "external_evidence",
+    /\b(?:according\s+to|as\s+reported\s+by|sources?\s+(?:show|say|indicate|confirm|report)|cit(?:e|ation|ed)|doi\s*[:/]|arxiv\s*[:/]|the\s+(?:paper|study|source|evidence)\s+(?:shows|states|reports|confirms|validates))\b|(?:根据|根據|据|據|来源|來源|资料|資料|证据|證據|文献|文獻|论文|論文|引用)[^。！？；\n]{0,50}(?:显示|顯示|表明|指出|报道|報道|证明|證明|验证|驗證|确认|確認)|(?:によると|出典|証拠|根拠|引用|論文|研究)[^。！？；\n]{0,50}(?:示す|示した|報告|確認|検証)/iu
+  );
+  if (requireNamedEvidenceGrounding) {
+    add(
+      "named_source_evidence",
+      /(?:\b(?:Nature(?:\s+[A-Z][A-Za-z-]+){0,4}|Science(?:\s+[A-Z][A-Za-z-]+){0,4}|Cell(?:\s+[A-Z][A-Za-z-]+){0,4}|[A-Z][A-Za-z&-]+(?:\s+[A-Z][A-Za-z&-]+){0,5}\s+(?:Journal|Review|Proceedings))\b[^.!?;。！？；\n]{0,180}\b(?:provid(?:e|es|ed)\s+(?:(?:the|first|indirect|direct|initial|supporting)\s+){0,4}evidence|show(?:s|ed)?|demonstrat(?:e|es|ed)|support(?:s|ed)?|report(?:s|ed)?|find(?:s|ings)?|establish(?:es|ed)?)\b)|(?:\b[A-Z][A-Za-z'’-]{1,40}(?:\s+(?:et\s+al\.?|and\s+[A-Z][A-Za-z'’-]{1,40}))?\s*\((?:19|20)\d{2}[a-z]?\)[^.!?;。！？；\n]{0,120}\b(?:report(?:s|ed)?|find(?:s|ings)?|found|show(?:s|ed)?|demonstrat(?:e|es|ed)|prov(?:e|es|ed)|validat(?:e|es|ed)|confirm(?:s|ed)?|observ(?:e|es|ed)|identif(?:y|ies|ied)|conclud(?:e|es|ed)|suggest(?:s|ed)?|establish(?:es|ed)?|propos(?:e|es|ed))\b)|(?:[\p{Script=Han}]{1,12}(?:等(?:人)?|团队|團隊)(?:\s*[（(](?:19|20)\d{2}[a-z]?[）)])?[^。！？；\n]{0,100}(?:报道|報道|指出|显示|顯示|表明|发现|發現|证明|證明|验证|驗證|证实|證實|确认|確認|观察|觀察|提出|建立))|(?:[\p{Script=Han}\p{Script=Katakana}\p{Script=Hiragana}]{1,20}ら(?:\s*[（(](?:19|20)\d{2}[a-z]?年?[）)])?[^。！？；\n]{0,100}(?:報告|示す|示した|発見|証明|実証|検証|確認|観察|提案|確立))|(?:《[^》\n]{2,100}》[^。！？；\n]{0,90}(?:提及|报道|報道|指出|显示|顯示|表明|发现|發現|验证|驗證|证实|證實|介绍|介紹))|(?:「[^」\n]{2,100}」[^。！？；\n]{0,90}(?:報告|示す|示した|指摘|発見|検証|確認|紹介))/iu
+    );
+    add(
+      "named_external_resource",
+      /\b(?:open[-\s]?source|publicly\s+available|released|available)\s+(?:["'“‘「『][^"'”’」』\n]{2,80}["'”’」』]|[A-Z][A-Za-z0-9._-]{2,})(?:\s+(?:Python|JavaScript|R))?\s+(?:toolkit|tool|library|package|repository|repo|dataset|platform|framework|model)\b|(?:开源|開源|公开可用|公開可用|已经发布|已經發布)[的\s]*(?:《[^》\n]{2,80}》|["'“‘「『][^"'”’」』\n]{2,80}["'”’」』]|[A-Z][A-Za-z0-9._-]{2,})(?:\s*(?:Python|JavaScript|R))?\s*(?:工具包|工具|库|庫|软件包|軟件包|项目|項目|仓库|倉庫|数据集|資料集|平台|框架|模型)|(?:オープンソース|公開済み|利用可能な)[の\s]*(?:「[^」\n]{2,80}」|[A-Z][A-Za-z0-9._-]{2,})(?:\s*(?:Python|JavaScript|R))?\s*(?:ツールキット|ツール|ライブラリ|パッケージ|リポジトリ|データセット|プラットフォーム|フレームワーク|モデル)/iu
+    );
+  }
+  return unique(categories);
+}
+
+function sourceFreeExternalClaimAssessment(
+  text = "",
+  { allowExplicitSpeculation = false, requireNamedEvidenceGrounding = false } = {}
+) {
+  const segments = sourceFreeClaimSegments(text);
+  const categories = [];
+  const unsupported = [];
+  for (const segment of segments) {
+    const segmentCategories = sourceFreeExternalClaimCategoriesForSegment(segment, {
+      requireNamedEvidenceGrounding,
+    });
+    if (!segmentCategories.length) continue;
+    const forecastOnly =
+      segmentCategories.length === 1 && segmentCategories[0] === "forecast";
+    const inputInterpretationOnly =
+      segmentCategories.every((category) => ["year", "forecast"].includes(category)) &&
+      sourceFreeClaimSegmentOnlyClarifiesAmbiguousInput(segment);
+    const proposedExperimentOnly =
+      segmentCategories.every((category) =>
+        ["benchmark_or_metric", "external_evidence", "validation"].includes(category)
+      ) &&
+      sourceFreeClaimSegmentOnlyProposesExperiment(segment);
+    if (
+      inputInterpretationOnly ||
+      proposedExperimentOnly ||
+      (forecastOnly &&
+        (
+          sourceFreeClaimSegmentOnlyMentionsCandidateForecast(segment) ||
+          sourceFreeClaimSegmentOnlyDescribesTaskIntent(segment) ||
+          sourceFreeClaimSegmentOnlyNegatesForecast(segment)
+        ))
+    ) {
+      continue;
+    }
+    categories.push(...segmentCategories);
+    const deniesVerification = sourceFreeClaimSegmentDeniesVerification(segment);
+    const explicitlyUnverified = sourceFreeClaimSegmentHasExplicitUnverifiedFraming(segment);
+    const explicitlySpeculative =
+      allowExplicitSpeculation && sourceFreeClaimSegmentIsExplicitSpeculation(segment);
+    const assertsEvidence = segmentCategories.some((category) =>
+      [
+        "validation",
+        "external_evidence",
+        "named_source_evidence",
+        "named_external_resource",
+      ].includes(category)
+    );
+    if (
+      !deniesVerification &&
+      (assertsEvidence || (!explicitlyUnverified && !explicitlySpeculative))
+    ) {
+      unsupported.push({
+        categories: segmentCategories,
+        preview: compact(segment, 240),
+      });
+    }
+  }
+  return {
+    categories: unique(categories),
+    unsupported,
+    explicitlyUnverified:
+      categories.length > 0 &&
+      unsupported.length === 0 &&
+      segments.some((segment) => sourceFreeClaimSegmentHasExplicitUnverifiedFraming(segment)),
+    explicitlySpeculative:
+      allowExplicitSpeculation &&
+      categories.length > 0 &&
+      unsupported.length === 0 &&
+      segments.some((segment) => sourceFreeClaimSegmentIsExplicitSpeculation(segment)),
+  };
+}
+
+function sourceFreeCompletionAuditClaimText(goal = "", candidateResult = "") {
+  const contract = String(goal || "");
+  const isCompletionAudit =
+    /(?:^|\n)\s*Role\s*:\s*completion[_ -]?audit\s*(?:\n|$)/iu.test(contract) ||
+    /\bcompletion[ -]+auditor\b/iu.test(contract);
+  const hasAuditSchema =
+    /\bcovered_item_ids\b/iu.test(contract) &&
+    /\bmissing\b/iu.test(contract) &&
+    /\blegitimate_blocker\b/iu.test(contract);
+  if (!isCompletionAudit || !hasAuditSchema) return String(candidateResult || "");
+  const raw = String(candidateResult || "").trim();
+  const jsonText = raw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu)?.[1] || raw;
+  try {
+    const value = JSON.parse(jsonText);
+    if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.missing)) {
+      return raw;
+    }
+    const missing = value.missing.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+      const { requirement: _diagnosticRequirement, ...diagnosticMetadata } = item;
+      return diagnosticMetadata;
+    });
+    return JSON.stringify({ ...value, missing });
+  } catch {
+    return raw;
+  }
+}
+
+export function evaluateReaderFacingResearchEvidenceClaims({ candidateText = "" } = {}) {
+  const assessment = sourceFreeExternalClaimAssessment(candidateText, {
+    allowExplicitSpeculation: true,
+    requireNamedEvidenceGrounding: true,
+  });
+  return {
+    categories: assessment.categories,
+    unsupportedClaims: assessment.unsupported,
+    explicitlyUnverified: assessment.explicitlyUnverified,
+    explicitlySpeculative: assessment.explicitlySpeculative,
+  };
+}
+
+export function evaluateSourceFreeResponseClaims({
+  goal = "",
+  candidateResult = "",
+  evidenceLedger = {},
+} = {}) {
+  if (!isResponseOnlyEvidenceScope(goal)) {
+    return {
+      checked: false,
+      ok: true,
+      reason: "Not a response-only evidence scope.",
+      categories: [],
+      hasEvidence: false,
+      explicitlyUnverified: false,
+      explicitlySpeculative: false,
+    };
+  }
+  const hasEvidence =
+    responseOnlyScopeHasFreshEvidenceManifest(goal) ||
+    sourceFreeResponseHasEvidence(evidenceLedger);
+  const allowExplicitSpeculation = sourceFreeRequestExplicitlyAsksForSpeculation(goal);
+  const requireNamedEvidenceGrounding = sourceFreeRequestRequiresNamedEvidenceGrounding(goal);
+  const claimAssessment = sourceFreeExternalClaimAssessment(
+    sourceFreeCompletionAuditClaimText(goal, candidateResult),
+    {
+      allowExplicitSpeculation,
+      requireNamedEvidenceGrounding,
+    }
+  );
+  const categories = claimAssessment.categories;
+  const unsupportedClaims = claimAssessment.unsupported;
+  const explicitlyUnverified = claimAssessment.explicitlyUnverified;
+  const explicitlySpeculative = claimAssessment.explicitlySpeculative;
+  const ok = hasEvidence || categories.length === 0 || unsupportedClaims.length === 0;
+  return {
+    checked: true,
+    ok,
+    reason: ok
+      ? hasEvidence
+        ? "Current scoped evidence is available for response-only factual claims."
+        : explicitlyUnverified
+          ? "Every source-free external claim is locally framed as unverified hypothesis or unverifiable."
+          : explicitlySpeculative
+            ? "Source-free projections are locally framed as the assistant's own falsifiable speculation."
+          : "No source-grounded external claim was detected."
+      : `Source-free response-only output claimed external facts without current evidence: ${categories.join(", ")}.`,
+    categories,
+    unsupportedClaims,
+    hasEvidence,
+    explicitlyUnverified,
+    explicitlySpeculative,
+  };
 }
 
 export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
@@ -1807,7 +2472,13 @@ export function scopedChatopsEvidenceGoal(goal = "", taskProfile = "") {
     return "Answer the current chat turn directly without external execution.";
   }
   const request = String(payload.request || "").trim();
-  return request || String(goal || "");
+  const packetContract = scopedTaskPacketContract(goal);
+  const repairOutputInstructions = packetContract.exactOutputPaths.map(
+    (item) => `Rebuild and replace the exact output at \`${item}\`.`
+  );
+  return [request || String(goal || ""), ...repairOutputInstructions]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function scopedArtifactRoot(goal = "") {
@@ -2152,6 +2823,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   const positiveEvidenceGoal = stripForbiddenLanguage(evidenceGoal);
   const authoritativeRoutine = inferAuthoritativeReadOnlyRoutine(goal);
   const artifactRoot = scopedArtifactRoot(goal);
+  const packetContract = scopedTaskPacketContract(goal);
   const requirementCategories = inferRequirementCategories(evidenceGoal, taskProfile, acceptanceCriteria);
   const requiredToolCalls = inferRequiredToolCalls(evidenceGoal);
   const requiredGitActions = inferRequiredGitActions(evidenceGoal);
@@ -2170,19 +2842,46 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     inferExactOutputPaths(positiveEvidenceGoal),
     excludedOutputPaths
   );
+  // Host compilation ownership is a runtime execution contract, not source
+  // evidence. Keep it visible even when AGINTI_EVIDENCE_SCOPE_JSON narrows the
+  // factual task text to an earlier user request.
+  const hostManagedDocumentCompilation = hostManagedDocumentCompilationRequested(goal);
   const exactOutputPaths = filterExplicitlyExcludedOutputPaths(
     applyScopedArtifactRoot(inferredOutputPaths, artifactRoot),
     excludedOutputPaths
+  ).filter(
+    (item) =>
+      !hostManagedDocumentCompilation ||
+      path.extname(String(item || "")).toLocaleLowerCase("en-US") !== ".pdf"
   );
   const exactInputPaths = filterExplicitlyExcludedOutputPaths(
     inferExactInputPaths(positiveEvidenceGoal),
     excludedOutputPaths
   ).filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
-  const requiredArtifactKinds = inferRequestedArtifactRequirements(
+  let requiredArtifactKinds = inferRequestedArtifactRequirements(
     positiveEvidenceGoal,
     taskProfile
   );
+  if (hostManagedDocumentCompilation) {
+    requiredArtifactKinds = requiredArtifactKinds.filter(
+      (item) =>
+        String(item?.extension || "").toLocaleLowerCase("en-US") !== ".pdf" &&
+        String(item?.kind || "") !== "printable-document"
+    );
+    const hasEditableDocumentSource = requiredArtifactKinds.some((item) => {
+      const extension = String(item?.extension || "").toLocaleLowerCase("en-US");
+      return extension === ".md" || extension === ".tex";
+    });
+    if (!hasEditableDocumentSource) {
+      requiredArtifactKinds.push({
+        id: "host-document-source",
+        kind: "host-document-source",
+        extensions: [".md", ".tex"],
+        description: "editable Markdown or LaTeX source for host compilation",
+      });
+    }
+  }
   const scopedArtifactDeliverable = Boolean(
     artifactRoot && goalRequestsScopedArtifactDeliverable(evidenceGoal)
   );
@@ -2198,6 +2897,9 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
     requiredArtifactKinds,
+    artifactRepairRequirements: packetContract.repairRequirements,
+    artifactQualityIssues: packetContract.qualityIssues,
+    hostManagedDocumentCompilation,
     scopedArtifactDeliverable,
     scopedArtifactOperation,
     excludedOutputPaths,
@@ -2678,11 +3380,10 @@ function collectRequestedArtifactCandidates(
     scanRoots.push(absolutePath);
   };
   // A host-declared task artifact root is authoritative and usually sits deep
-  // inside a large application workspace. Inspect it before the bounded broad
-  // workspace scan so unrelated files cannot exhaust the candidate limit and
-  // hide a valid task deliverable.
-  appendScanRoot(artifactRoot);
-  appendScanRoot();
+  // inside a large application workspace. Do not let an unrelated workspace
+  // file satisfy a task-scoped deliverable when that boundary is present.
+  if (artifactRoot) appendScanRoot(artifactRoot);
+  else appendScanRoot();
   let visited = 0;
   for (const scanRoot of scanRoots) {
     const queue = [{ absolutePath: scanRoot, depth: 0 }];
@@ -2745,12 +3446,23 @@ function requestedArtifactRequirementMatches(requirement = {}, candidate = {}) {
   if (requirement.kind === "format") {
     return extension === String(requirement.extension || "").toLocaleLowerCase("en-US");
   }
-  if (["editable-presentation", "printable-document", "visual-preview"].includes(requirement.kind)) {
+  if (["editable-presentation", "printable-document", "visual-preview", "host-document-source"].includes(requirement.kind)) {
     const extensions = new Set(
       (Array.isArray(requirement.extensions) ? requirement.extensions : [])
         .map((item) => String(item || "").toLocaleLowerCase("en-US"))
     );
     if (!extensions.has(extension)) return false;
+    if (
+      requirement.kind === "host-document-source" &&
+      (
+        /^(?:agent[-_]?routine[-_]?cheat[-_]?sheet|routine[-_]?contract)\.(?:md|tex)$/i.test(
+          basename
+        ) ||
+        /(?:^|\/)delivery(?:\/|$)/i.test(String(candidate.path || ""))
+      )
+    ) {
+      return false;
+    }
     if (requirement.kind === "visual-preview") {
       return /(?:preview|contact[-_ ]?sheet|overview|thumbnail|render)/i.test(basename);
     }
@@ -4710,6 +5422,8 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       forbiddenActions: contract.forbiddenActions || [],
       exactOutputPaths: contract.exactOutputPaths || [],
       requiredArtifactKinds: contract.requiredArtifactKinds || [],
+      artifactRepairRequirements: contract.artifactRepairRequirements || [],
+      artifactQualityIssues: contract.artifactQualityIssues || [],
       exactInputPaths: contract.exactInputPaths || [],
       requiredToolCalls: contract.requiredToolCalls || [],
       requiredGitActions: contract.requiredGitActions || [],
@@ -4773,7 +5487,9 @@ export function finishResultClaimsBlocker(result = "") {
       /\b(?:no|not|without)\s+(?:external\s+)?(?:service|login|credential|approval|permission|api key|blocker)s?\s+(?:is|are\s+)?required\b/gi,
       ""
     )
-    .replace(/\b(?:does not|doesn't|do not|don't)\s+require\b[^.\n;]*/gi, "");
+    .replace(/\b(?:does not|doesn't|do not|don't)\s+require\b[^.\n;]*/gi, "")
+    .replace(/(?:没有|沒有|无|無|不存在|无需|無需|不需要)(?:任何)?(?:阻塞|障碍|障礙|登录|登入|认证|認證|授权|授權|批准|审批|審批|权限|權限)/gu, "")
+    .replace(/(?:ブロッカー|障害|ログイン|認証|承認|権限)(?:は|が)?(?:ありません|ない|不要です)/gu, "");
   const explicitTaskBlocker =
     /\b(?:the\s+)?(?:task|request|operation|execution|run|workflow|work)\s+(?:is|remains|was)\s+(?:currently\s+)?(?:blocked|denied|forbidden)\b/i.test(
       text
@@ -4790,11 +5506,15 @@ export function finishResultClaimsBlocker(result = "") {
     /\b(?:quota exhausted|usage limit|rate limit|missing (?:credential|api key)|external blocker)\b|\b(?:access|permission)\s+(?:is\s+)?(?:denied|forbidden)\b|\b(?:login|authentication|credentials?)\s+(?:is|are)\s+required\b|\b(?:requires?|needs?|waiting for|blocked by|encountered)\s+(?:a\s+)?(?:human\s+)?(?:approval|permission|login|credentials?|an? api key|captcha)\b/i.test(
       text
     );
+  const nonEnglishBlocker =
+    /(?:任务|任務|请求|請求|操作|执行|執行|流程|工作)(?:目前|当前|當前|现在|現在)?(?:被)?(?:阻塞|卡住|受阻|禁止)|(?:我|我们|我們)?(?:目前|当前|當前|现在|現在)?(?:无法|無法|不能|没法|沒法)(?:继续|繼續|完成|执行|執行|访问|訪問|提交|发布|發佈|上传|上傳|下载|下載|登录|登入|认证|認證)|(?:额度|額度|余额|餘額|配额|配額)(?:不足|已用完|耗尽|耗盡)|(?:需要|等待)(?:人工)?(?:登录|登入|认证|認證|授权|授權|批准|审批|審批|权限|權限|验证码|驗證碼)/u.test(text) ||
+    /(?:タスク|依頼|操作|実行|ワークフロー|作業)(?:は|が)?(?:ブロック|停止|拒否|禁止)(?:されています|中です)?|(?:続行|完了|実行|アクセス|送信|公開|アップロード|ダウンロード|ログイン|認証)(?:が)?(?:できません|不可能です)|(?:ログイン|認証|承認|権限|認証コード)(?:が)?必要(?:です)?|(?:クォータ|残高|利用枠)(?:が)?(?:不足|枯渇|上限)/u.test(text);
   return (
     explicitTaskBlocker ||
     firstPersonInability ||
     sentenceInitialInability ||
-    explicitExternalCondition
+    explicitExternalCondition ||
+    nonEnglishBlocker
   );
 }
 

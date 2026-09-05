@@ -156,6 +156,121 @@ assert(
   ).length === 0,
   "generic file work selected unrelated domain skills"
 );
+const focusedReplacementPdfSkills = selectedIds(
+  "Resolve the rejected PDF quality issues, materially revise the source, rebuild and inspect the replacement PDF, and return the verified replacement PDF."
+);
+assert(
+  focusedReplacementPdfSkills.includes("latex-manuscript") &&
+    !focusedReplacementPdfSkills.includes("video-face-image-replacement"),
+  `a replacement PDF repair selected unrelated video-face guidance: ${focusedReplacementPdfSkills.join(", ")}`
+);
+assert(
+  selectedIds("Replace the face in this video with the supplied image.").includes(
+    "video-face-image-replacement"
+  ),
+  "the focused video-face replacement request lost its relevant skill"
+);
+const directChatSkills = selectedIds(
+  "Answer the current chat turn directly without external execution.",
+  "chatops"
+);
+assert(
+  !directChatSkills.includes("doubao-external-audio-video"),
+  `response-only chat selected unrelated Doubao guidance: ${directChatSkills.join(", ")}`
+);
+assert(
+  selectedIds("Use Doubao to generate a video from this external audio track.").includes(
+    "doubao-external-audio-video"
+  ),
+  "an explicit Doubao external-audio video request lost its relevant skill"
+);
+const genericResearchSkills = selectedIds("research");
+assert(genericResearchSkills.includes("deep-research"), "generic research omitted deep-research guidance");
+for (const unrelated of ["market-research-reports", "research-grants", "research-lookup"]) {
+  assert(!genericResearchSkills.includes(unrelated), `generic research selected unrelated ${unrelated} guidance`);
+}
+const dailyResearchSkills = selectedIds("Prepare a daily research briefing about organoids and biomedical imaging");
+assert(dailyResearchSkills.includes("deep-research"), "daily biomedical research omitted deep-research guidance");
+for (const unrelated of ["market-research-reports", "research-grants", "research-lookup"]) {
+  assert(!dailyResearchSkills.includes(unrelated), `daily biomedical research selected unrelated ${unrelated} guidance`);
+}
+const grantResearchSkills = selectedIds("Write an NIH grant proposal for organoid imaging");
+assert(grantResearchSkills.includes("research-grants"), "natural singular grant request omitted research-grants guidance");
+const marketResearchSkills = selectedIds("Create a market research report and TAM forecast");
+assert(marketResearchSkills.includes("market-research-reports"), "market research request omitted market-research-reports guidance");
+assert(!marketResearchSkills.includes("research-grants"), "market research request selected unrelated grant guidance");
+assert(!marketResearchSkills.includes("research-lookup"), "market research request selected unrelated literature lookup guidance");
+assert(!marketResearchSkills.includes("clinical-reports"), "market research request selected unrelated clinical-report guidance");
+assert(
+  selectedIds("Gather literature references and competing evidence for this manuscript").includes("research-lookup"),
+  "literature evidence request lost research-lookup guidance"
+);
+const machineRepairCodeSkills = selectedIds(
+  "Revise the exact existing report source report.md; resolve missing_source_level_methods_results_limits, " +
+    "missing_actionable_experiments_or_decisions, missing_complete_reference_section; write a clean reader-facing " +
+    "source, compile or enable host compilation of its PDF, inspect the result, and return the verified replacement PDF."
+);
+assert(machineRepairCodeSkills.includes("latex-manuscript"), "PDF source repair omitted LaTeX guidance");
+assert(machineRepairCodeSkills.includes("pdf"), "PDF source repair omitted PDF guidance");
+for (const unrelated of ["analytical-method-validation", "clinical-decision-support", "transcript-video-section-splitter"]) {
+  assert(!machineRepairCodeSkills.includes(unrelated), `machine repair codes selected unrelated ${unrelated} guidance`);
+}
+assert(
+  selectedIds("Validate this LC-MS analytical method").includes("analytical-method-validation"),
+  "natural analytical-method request lost its focused guidance"
+);
+assert(
+  selectedIds("Split this transcript video into sections").includes("transcript-video-section-splitter"),
+  "natural transcript-section request lost its focused guidance"
+);
+assert(
+  selectedIds("Build a clinical decision support rule").includes("clinical-decision-support"),
+  "natural clinical decision-support request lost its focused guidance"
+);
+const hostOwnedResponseSkills = selectedIds(
+  "Return only the requested content; the LabCanvas host owns persistence, compilation, validation, and delivery."
+);
+assert(
+  !hostOwnedResponseSkills.includes("analytical-method-validation"),
+  `response-only host validation selected analytical-method guidance: ${hostOwnedResponseSkills.join(", ")}`
+);
+assert(
+  !hostOwnedResponseSkills.includes("wechat-labcanvas-chatops"),
+  `response-only LabCanvas ownership selected WeChat guidance: ${hostOwnedResponseSkills.join(", ")}`
+);
+assert(
+  selectedIds("Automate WeChat chatops for LabCanvas").includes("wechat-labcanvas-chatops"),
+  "explicit WeChat chatops request lost its focused guidance"
+);
+const genericFollowupSkills = selectedIds(
+  "Complete only the still-missing reply requirements for the exact current task. The checker did not confirm that " +
+    "this numbered message was covered. Return a complete natural replacement response that retains useful prior " +
+    "conclusions. Do not create a file or attachment unless a missing requirement explicitly requests one."
+);
+assert(
+  !genericFollowupSkills.includes("protocolsio-integration"),
+  `generic completion follow-up selected protocols.io guidance: ${genericFollowupSkills.join(", ")}`
+);
+const explicitProtocolsIoSkills = selectedIds("Use the protocolsio integration for protocol version 12");
+assert(explicitProtocolsIoSkills.includes("protocolsio-integration"), "explicit protocolsio request lost its focused guidance");
+for (const unrelated of ["benchling-integration", "dnanexus-integration", "labarchive-integration", "latchbio-integration"]) {
+  assert(!explicitProtocolsIoSkills.includes(unrelated), `explicit protocolsio request selected unrelated ${unrelated}`);
+}
+const dottedProtocolsIoSkills = selectedIds("Read and export this exact protocols.io protocol version");
+assert(dottedProtocolsIoSkills.includes("protocolsio-integration"), "natural protocols.io request lost its focused guidance");
+const protocolsIoUrlSkills = selectedIds("Read https://www.protocols.io/view/example and summarize the protocol");
+assert(protocolsIoUrlSkills.includes("protocolsio-integration"), "protocols.io URL lost its focused guidance");
+for (const unrelated of ["benchling-integration", "dnanexus-integration", "labarchive-integration", "latchbio-integration"]) {
+  assert(!dottedProtocolsIoSkills.includes(unrelated), `natural protocols.io request selected unrelated ${unrelated}`);
+  assert(!protocolsIoUrlSkills.includes(unrelated), `protocols.io URL selected unrelated ${unrelated}`);
+}
+for (const fileGoal of [
+  "Read docs/protocols.io.md and summarize it",
+  "Read /tmp/protocols.io and summarize the file",
+  "Open protocols.io.txt and inspect its contents",
+]) {
+  assert(!selectedIds(fileGoal).includes("protocolsio-integration"), `dotted filename selected protocols.io guidance: ${fileGoal}`);
+}
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");

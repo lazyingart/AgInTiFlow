@@ -10,6 +10,7 @@ import {
   dockerWritableGitMounts,
   dockerWorkspaceAliasMounts,
   ensureDockerGitIdentity,
+  normalizeDockerSandboxCommandError,
 } from "../src/docker-sandbox.js";
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +18,29 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-docker-command-"));
 
 try {
+  const emptyStderrFailure = new Error(
+    "Command failed: docker run --rm -e SECRET_FILE=/home/user/.config/private /bin/bash -lc false"
+  );
+  emptyStderrFailure.code = 7;
+  emptyStderrFailure.stdout = "compiler diagnostic on stdout\n";
+  emptyStderrFailure.stderr = "";
+  const normalizedEmptyStderrFailure = normalizeDockerSandboxCommandError(emptyStderrFailure);
+  assert.equal(normalizedEmptyStderrFailure.exitCode, 7);
+  assert.equal(normalizedEmptyStderrFailure.stdout, "compiler diagnostic on stdout");
+  assert.match(normalizedEmptyStderrFailure.stderr, /exited with code 7 without stderr output/i);
+  assert.doesNotMatch(normalizedEmptyStderrFailure.message, /docker run|SECRET_FILE|\.config\/private/i);
+
+  const compilerFailure = new Error("Command failed: docker run --rm internal-wrapper");
+  compilerFailure.code = 2;
+  compilerFailure.stderr = "report.tex:12: Undefined control sequence\n";
+  const normalizedCompilerFailure = normalizeDockerSandboxCommandError(compilerFailure);
+  assert.equal(normalizedCompilerFailure.exitCode, 2);
+  assert.equal(
+    normalizedCompilerFailure.stderr,
+    "report.tex:12: Undefined control sequence"
+  );
+  assert.doesNotMatch(normalizedCompilerFailure.message, /docker run|internal-wrapper/i);
+
   const identityRepo = path.join(tempRoot, "identity-repo");
   const dockerState = path.join(tempRoot, "docker-state");
   await fs.mkdir(identityRepo, { recursive: true });

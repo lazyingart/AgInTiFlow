@@ -346,6 +346,8 @@ function formatRoutinePlanningContext(context = {}) {
 function fallbackHardContractPlan(goal = "", contract = {}, studentReason = "", routineContext = {}) {
   const exactOutputPaths = normalizeStringList(contract.exactOutputPaths, []);
   const exactInputPaths = normalizeStringList(contract.exactInputPaths, []);
+  const artifactRepairRequirements = normalizeStringList(contract.artifactRepairRequirements, []);
+  const artifactQualityIssues = normalizeStringList(contract.artifactQualityIssues, []);
   const requiredTextTerms = normalizeStringList(contract.requiredTextTerms, []);
   const requiredExecutableTerms = normalizeStringList(contract.requiredExecutableTerms, []);
   const forbiddenTextTerms = normalizeStringList(contract.forbiddenTextTerms, []);
@@ -360,6 +362,12 @@ function fallbackHardContractPlan(goal = "", contract = {}, studentReason = "", 
       ? `2. Write the requested output exactly at: ${exactOutputPaths.join(", ")}. If an output file already exists and the user allowed overwrite/update, overwrite it intentionally.`
       : "2. Create or update the requested output artifact at the user-specified location.",
     exactInputPaths.length ? `3. Use these exact user-specified input/reference path(s): ${exactInputPaths.join(", ")}.` : "",
+    artifactRepairRequirements.length
+      ? `3a. Satisfy these remaining exact-task repair requirement(s): ${artifactRepairRequirements.join("; ")}.`
+      : "",
+    artifactQualityIssues.length
+      ? `3b. Resolve these retained artifact quality defect(s), not merely rename or return the old file: ${artifactQualityIssues.join(", ")}.`
+      : "",
     requiredTextTerms.length ? `4. Ensure the output contains these required term(s): ${requiredTextTerms.join(", ")}.` : "",
     requiredExecutableTerms.length
       ? `4a. Implement these expression(s) in executable production source; comments, strings, help text, and tests do not count: ${requiredExecutableTerms.join(", ")}.`
@@ -513,6 +521,8 @@ function formatHardContractForPrompt(contract = {}) {
   const lines = [];
   const exactOutputPaths = normalizeStringList(contract.exactOutputPaths, []);
   const exactInputPaths = normalizeStringList(contract.exactInputPaths, []);
+  const artifactRepairRequirements = normalizeStringList(contract.artifactRepairRequirements, []);
+  const artifactQualityIssues = normalizeStringList(contract.artifactQualityIssues, []);
   const requiredTextTerms = normalizeStringList(contract.requiredTextTerms, []);
   const requiredExecutableTerms = normalizeStringList(contract.requiredExecutableTerms, []);
   const forbiddenTextTerms = normalizeStringList(contract.forbiddenTextTerms, []);
@@ -524,6 +534,12 @@ function formatHardContractForPrompt(contract = {}) {
     .filter(Boolean);
   if (exactOutputPaths.length) lines.push(`Exact output path(s): ${exactOutputPaths.join(", ")}`);
   if (exactInputPaths.length) lines.push(`Exact input/reference path(s) to use: ${exactInputPaths.join(", ")}`);
+  if (artifactRepairRequirements.length) {
+    lines.push(`Remaining exact-task artifact repair requirement(s): ${artifactRepairRequirements.join("; ")}`);
+  }
+  if (artifactQualityIssues.length) {
+    lines.push(`Artifact quality defect(s) that must be resolved: ${artifactQualityIssues.join(", ")}`);
+  }
   if (requiredTextTerms.length) lines.push(`Required text term(s) in the output: ${requiredTextTerms.join(", ")}`);
   if (requiredExecutableTerms.length) {
     lines.push(`Required executable production-source expression(s): ${requiredExecutableTerms.join(", ")}`);
@@ -545,6 +561,14 @@ function deterministicPlanContractIssue(committee = {}, contract = {}) {
   const planText = `${committee.phaseGoal || ""}\n${committee.plan || ""}\n${(committee.acceptanceCriteria || []).join("\n")}`;
   const missingPath = normalizeStringList(contract.exactOutputPaths, []).filter((item) => !planText.includes(item));
   const missingInputPath = normalizeStringList(contract.exactInputPaths, []).filter((item) => !planText.includes(item));
+  const missingArtifactRepairRequirements = normalizeStringList(
+    contract.artifactRepairRequirements,
+    []
+  ).filter((item) => !planText.includes(item));
+  const missingArtifactQualityIssues = normalizeStringList(
+    contract.artifactQualityIssues,
+    []
+  ).filter((item) => !planText.includes(item));
   const missingRequiredTerms = normalizeStringList(contract.requiredTextTerms, []).filter((item) => !planText.includes(item));
   const missingExecutableTerms = normalizeStringList(contract.requiredExecutableTerms, []).filter((item) => !planText.includes(item));
   const forbiddenTermsInPlan = normalizeStringList(contract.forbiddenTextTerms, []).filter((item) => planText.includes(item));
@@ -560,13 +584,19 @@ function deterministicPlanContractIssue(committee = {}, contract = {}) {
       return terms.length > 0 && !terms.some((term) => normalizedPlan.includes(term));
     });
   const actionContradiction = deterministicPlanActionContradiction(planText, contract);
-  if (missingPath.length || missingInputPath.length || missingRequiredTerms.length || missingExecutableTerms.length || forbiddenTermsInPlan.length || missingArtifactKinds.length || actionContradiction) {
+  if (missingPath.length || missingInputPath.length || missingArtifactRepairRequirements.length || missingArtifactQualityIssues.length || missingRequiredTerms.length || missingExecutableTerms.length || forbiddenTermsInPlan.length || missingArtifactKinds.length || actionContradiction) {
     return {
       decision: "veto_plan",
       confidence: 0.94,
       evidence: [
         missingPath.length ? `Plan omitted exact output path(s): ${missingPath.join(", ")}` : "",
         missingInputPath.length ? `Plan omitted exact input/reference path(s): ${missingInputPath.join(", ")}` : "",
+        missingArtifactRepairRequirements.length
+          ? `Plan omitted remaining artifact repair requirement(s): ${missingArtifactRepairRequirements.join("; ")}`
+          : "",
+        missingArtifactQualityIssues.length
+          ? `Plan omitted retained artifact quality defect(s): ${missingArtifactQualityIssues.join(", ")}`
+          : "",
         missingRequiredTerms.length ? `Plan omitted required text term(s): ${missingRequiredTerms.join(", ")}` : "",
         missingExecutableTerms.length ? `Plan omitted required executable source expression(s): ${missingExecutableTerms.join(", ")}` : "",
         forbiddenTermsInPlan.length ? `Plan includes forbidden text term(s): ${forbiddenTermsInPlan.join(", ")}` : "",
@@ -1095,6 +1125,12 @@ async function createScsPhase(client, config, state, context = {}, options = {})
     const hardContractCriteria = [
       ...normalizeStringList(taskContract.exactOutputPaths, []).map((item) => `Exact output path is used: ${item}`),
       ...normalizeStringList(taskContract.exactInputPaths, []).map((item) => `Exact input/reference path is used: ${item}`),
+      ...normalizeStringList(taskContract.artifactRepairRequirements, []).map(
+        (item) => `Remaining artifact repair requirement is satisfied: ${item}`
+      ),
+      ...normalizeStringList(taskContract.artifactQualityIssues, []).map(
+        (item) => `Retained artifact quality defect is resolved: ${item}`
+      ),
       ...normalizeStringList(taskContract.requiredTextTerms, []).map((item) => `Output contains required text: ${item}`),
       ...normalizeStringList(taskContract.requiredExecutableTerms, []).map((item) => `Executable production source contains: ${item}`),
       ...normalizeStringList(taskContract.forbiddenTextTerms, []).map((item) => `Output omits forbidden text: ${item}`),

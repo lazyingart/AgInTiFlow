@@ -69,9 +69,16 @@ import {
   surgicalEvidenceCardTemplate,
 } from "./engineering-guidance.js";
 import { refreshCodebaseMap } from "./codebase-map.js";
-import { readImage, researchWrapper, webResearch } from "./perception-tools.js";
+import { firstJsonObject, readImage, researchWrapper, webResearch } from "./perception-tools.js";
 import { readWebPage, searchWeb } from "./web-search.js";
 import { deepResearch, RESEARCH_VERSION } from "./deep-research.js";
+import {
+  assessBoundedTranscriptResponse,
+  assessResponseOnlyContextEcho,
+  boundedTranscriptRepairInstruction,
+  responseOnlyContextEchoRepairInstruction,
+  responseOnlyContextEchoStopMessage,
+} from "./response-only-source-quality.js";
 import {
   formatDurableResearchEvidence,
   recordDurableResearchEvidence,
@@ -139,7 +146,9 @@ import {
   evaluateScsEvidence,
   evaluateScsSemanticContract,
   evaluateRequestedArtifactRequirements,
+  evaluateReaderFacingResearchEvidenceClaims,
   augmentScsTaskContractWithProjectVerification,
+  evaluateSourceFreeResponseClaims,
   agintiEvidenceScopeLine,
   filterExplicitlyExcludedOutputPaths,
   extractMarkdownCommandEvidence,
@@ -147,6 +156,7 @@ import {
   finishResultClaimsBlocker,
   finishResultClaimsIncompleteWork,
   hasScsBlockerEvidence,
+  hostManagedDocumentCompilationRequested,
   buildTmuxGitIntent,
   inferAuthoritativeReadOnlyRoutine,
   inferGitActionsFromCommand,
@@ -1414,6 +1424,22 @@ export function successfulReadFileEvidencePaths(messages = []) {
     .map(({ path: sourcePath, complete }) => ({ path: sourcePath, complete }));
 }
 
+export function authoritativeDocumentInputPaths(state = {}, contract = {}) {
+  const normalize = (value = "") =>
+    String(value || "").replace(/\\/gu, "/").replace(/^\.\//u, "").trim();
+  const declared = [
+    ...(Array.isArray(contract?.exactInputPaths) ? contract.exactInputPaths : []),
+    ...exactInputPathsForState(state),
+  ]
+    .map(normalize)
+    .filter(Boolean);
+  if (declared.length > 0) return [...new Set(declared)].slice(0, 32);
+  return successfulReadFileEvidencePaths(state.messages || [])
+    .map((item) => normalize(item.path))
+    .filter(Boolean)
+    .slice(-32);
+}
+
 function writingRequestNeedsSourceGrounding(args = {}) {
   const context = [args.writingBrief, args.canon, args.constraints, args.priorDraft]
     .filter((value) => typeof value === "string")
@@ -1521,6 +1547,620 @@ function isRuntimeRecoveryRequest(content = "") {
   return /^(?:Highest-priority retained state:|Bounded failed-test evidence packet(?: v\d+)?\.|Verification is still failing,|The previous tool-call batch was rejected before dispatch\.)/i.test(
     String(content || "").trim()
   );
+}
+
+function runtimeScaffoldSourceKind(content = "") {
+  const text = String(content || "").trim();
+  if (!text) return "";
+  if (isRuntimeCompactionRequest(text)) return "context-compaction";
+  if (/^The runtime narrowed this turn because concrete evidence leaves only one bounded recovery phase\./i.test(text)) {
+    return "constrained-recovery";
+  }
+  if (isRuntimeRecoveryRequest(text)) return "runtime-recovery";
+  return "";
+}
+
+function explicitlyRequestsRuntimeScaffoldDiscussion(goal = "") {
+  const text = compactSingleLine(goal, 4000);
+  if (!text) return false;
+  const discussion =
+    /\b(?:explain|describe|analy[sz]e|debug|document|inspect|review|test|audit|why|how)\b|(?:解释|说明|分析|调试|记录|文档|检查|测试|审计|为什么|如何)|(?:説明|分析|デバッグ|文書化|確認|テスト|監査|なぜ|どのように)/iu;
+  const subject =
+    /\b(?:runtime|context|history|prompt|recovery)\b.{0,80}\b(?:compact(?:ion|ed)?|scaffold|instruction|truncat(?:e|ed|ion))\b|\b(?:compact(?:ion|ed)?|scaffold|truncat(?:e|ed|ion))\b.{0,80}\b(?:runtime|context|history|prompt|recovery)\b|(?:运行时|上下文|历史|提示词|恢复).{0,80}(?:压缩|脚手架|指令|截断)|(?:ランタイム|コンテキスト|履歴|プロンプト|復旧).{0,80}(?:圧縮|指示|切り詰め)/iu;
+  return discussion.test(text) && subject.test(text);
+}
+
+function responseOnlyScopeRequestText(goal = "") {
+  const line = agintiEvidenceScopeLine(goal);
+  if (!line) return "";
+  try {
+    const payload = JSON.parse(line.replace(/^AGINTI_EVIDENCE_SCOPE_JSON:\s*/u, ""));
+    return String(payload?.request || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function explicitlyRequestsHostRoutingDiscussion(goal = "") {
+  const request = responseOnlyScopeRequestText(goal);
+  if (!request) return false;
+  const asksForStatus =
+    /\b(?:check|verify|confirm|explain|debug|inspect|status|whether|did|was|is|tell\s+me)\b/iu.test(
+      request
+    ) ||
+    /(?:检查|檢查|确认|確認|解释|解釋|调试|調試|状态|狀態|是否|有没有|有沒有|告诉我|告訴我)/u.test(
+      request
+    ) ||
+    /(?:確認|説明|デバッグ|状態|かどうか|教えて)/u.test(request);
+  const namesHostControl =
+    /\b(?:LabCanvas|runtime|backend|router?|routing|forward(?:ing|ed)?|message\s+delivery|response\s+(?:format|schema|contract))\b/iu.test(
+      request
+    ) ||
+    /(?:运行时|運行時|后端|後端|路由|转发|轉發|消息传递|消息傳遞|响应格式|回覆格式|回复格式)/u.test(
+      request
+    ) ||
+    /(?:ランタイム|バックエンド|ルーティング|転送|メッセージ配信|応答形式)/u.test(
+      request
+    );
+  return asksForStatus && namesHostControl;
+}
+
+function responseOnlyHostAcknowledgementMarkers(text = "") {
+  const value = String(text || "");
+  const markers = [];
+  if (
+    /\b(?:(?:WeChat|WeCom|chat|user)\s+)?(?:message|request|task)\b[^.!?;。！？；\n]{0,160}\b(?:rout(?:e|ed)|forward(?:ed)?|pass(?:ed)?|sent)\b[^.!?;。！？；\n]{0,140}\b(?:LabCanvas|agent\s+runtime|runtime|backend)\b|\b(?:rout(?:e|ed)|forward(?:ed)?|pass(?:ed)?|sent)\b[^.!?;。！？；\n]{0,100}\b(?:message|request|task)\b[^.!?;。！？；\n]{0,120}\b(?:LabCanvas|agent\s+runtime|runtime|backend)\b/iu.test(
+      value
+    ) ||
+    /(?:消息|请求|請求|任务|任務)[^。！？；\n]{0,100}(?:已(?:经|經)?(?:成功)?|成功)?(?:路由|转发|轉發|传递|傳遞|发送|發送)[^。！？；\n]{0,100}(?:LabCanvas|运行时|運行時|后端|後端|代理)/u.test(
+      value
+    ) ||
+    /(?:メッセージ|依頼|タスク)[^。！？；\n]{0,100}(?:ルーティング|転送|送信)[^。！？；\n]{0,100}(?:LabCanvas|ランタイム|バックエンド|エージェント)/u.test(
+      value
+    )
+  ) {
+    markers.push("host-routing-acknowledgement");
+  }
+  if (
+    /AGINTI_EVIDENCE_SCOPE_JSON/u.test(value) ||
+    /\b(?:response|output)\b[^.!?;。！？；\n]{0,100}\b(?:adheres?|conforms?|complies?|formatted)\b[^.!?;。！？；\n]{0,100}\b(?:requested|required|specified)?\s*(?:format|schema|contract|requirements?)\b/iu.test(
+      value
+    ) ||
+    /(?:响应|響應|回复|回覆|输出|輸出)[^。！？；\n]{0,80}(?:符合|遵循|按照)[^。！？；\n]{0,80}(?:格式|模式|契约|契約|要求)/u.test(
+      value
+    ) ||
+    /(?:応答|出力)[^。！？；\n]{0,80}(?:準拠|従って|形式化)[^。！？；\n]{0,80}(?:形式|スキーマ|契約|要件)/u.test(value)
+  ) {
+    markers.push("host-contract-acknowledgement");
+  }
+  return markers;
+}
+
+function responseOnlyTaskPacket(goal = "") {
+  const source = String(goal || "");
+  const matches = [
+    ...source.matchAll(/(?:^|\n)\s*(?:Exact task packet|Task packet):\s*/giu),
+  ];
+  for (const match of matches.reverse()) {
+    const packet = firstJsonObject(source.slice((match.index || 0) + match[0].length));
+    if (
+      packet &&
+      typeof packet === "object" &&
+      (typeof packet.current_request === "string" || Array.isArray(packet.request_items))
+    ) {
+      return packet;
+    }
+  }
+  return null;
+}
+
+function responseOnlyHumanRequestFromPacket(packet = {}) {
+  const requestItems = Array.isArray(packet?.request_items)
+    ? packet.request_items.map((item) => String(item?.text || "").trim()).filter(Boolean)
+    : [];
+  return [String(packet?.current_request || "").trim(), ...requestItems]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function responseOnlyPrivatePacketIdentifiers(packet = {}) {
+  const identifiers = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    for (const [key, nested] of Object.entries(value)) {
+      if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/iu.test(key)) identifiers.add(key);
+      visit(nested);
+    }
+  };
+  visit(packet);
+  return [...identifiers];
+}
+
+function responseOnlyHumanFacingText(result = "") {
+  const parsed = parseStrictResponseOnlyJson(result);
+  if (!parsed) return String(result || "");
+  const values = ["message", "confirmation", "response", "chat_reply", "ack"]
+    .map((key) => parsed[key])
+    .filter((value) => typeof value === "string" && value.trim());
+  return values.join("\n");
+}
+
+function hasMeaningfulResponseOnlyValue(value) {
+  if (typeof value === "string") return Boolean(value.trim());
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.some(hasMeaningfulResponseOnlyValue);
+  if (value && typeof value === "object") {
+    return Object.values(value).some(hasMeaningfulResponseOnlyValue);
+  }
+  return false;
+}
+
+const RESPONSE_ONLY_ARTIFACT_EXTENSIONS = new Set([
+  ".3mf",
+  ".7z",
+  ".csv",
+  ".docx",
+  ".flac",
+  ".gz",
+  ".jpeg",
+  ".jpg",
+  ".json",
+  ".md",
+  ".mkv",
+  ".mov",
+  ".mp3",
+  ".mp4",
+  ".odp",
+  ".pdf",
+  ".png",
+  ".pptx",
+  ".rar",
+  ".step",
+  ".stl",
+  ".stp",
+  ".svg",
+  ".tar",
+  ".tex",
+  ".txt",
+  ".wav",
+  ".webm",
+  ".webp",
+  ".xlsx",
+  ".zip",
+]);
+
+function responseOnlyCanonicalArtifactKind(value = "") {
+  const kind = String(value || "").trim().toLocaleLowerCase("en-US");
+  if (!kind) return "";
+  if (kind === ".stp") return ".step";
+  return kind;
+}
+
+function responseOnlyArtifactCategory(kind = "") {
+  const value = responseOnlyCanonicalArtifactKind(kind);
+  if ([".png", ".jpg", ".jpeg", ".webp", ".svg"].includes(value)) return "image";
+  if ([".mp4", ".mov", ".mkv", ".webm"].includes(value)) return "video";
+  if ([".mp3", ".wav", ".flac"].includes(value)) return "audio";
+  if ([".zip", ".rar", ".7z", ".tar", ".gz"].includes(value)) return "archive";
+  if ([".step", ".stl", ".3mf"].includes(value)) return "cad";
+  return "";
+}
+
+function responseOnlyArtifactKindsFromText(value = "") {
+  const text = String(value || "");
+  const kinds = new Set();
+  for (const match of text.matchAll(/\.(?:3mf|7z|csv|docx|flac|gz|jpe?g|json|md|mkv|mov|mp3|mp4|odp|pdf|png|pptx|rar|step|stl|stp|svg|tar|tex|txt|wav|webm|webp|xlsx|zip)(?=$|[\s?#&'"`),;:}\]])/giu)) {
+    const kind = responseOnlyCanonicalArtifactKind(match[0]);
+    if (!RESPONSE_ONLY_ARTIFACT_EXTENSIONS.has(match[0].toLocaleLowerCase("en-US"))) continue;
+    kinds.add(kind);
+    const category = responseOnlyArtifactCategory(kind);
+    if (category) kinds.add(category);
+  }
+  if (/\bimage\/(?:png|jpe?g|webp|svg\+xml)\b/iu.test(text)) kinds.add("image");
+  if (/\bvideo\/(?:mp4|quicktime|x-matroska|webm)\b/iu.test(text)) kinds.add("video");
+  if (/\baudio\/(?:mpeg|wav|x-wav|flac)\b/iu.test(text)) kinds.add("audio");
+  if (/\bapplication\/pdf\b/iu.test(text)) kinds.add(".pdf");
+  return kinds;
+}
+
+function responseOnlyArtifactClauseHasOutputIntent(clause = "") {
+  const text = String(clause || "");
+  const artifact = String.raw`(?:\.(?:3mf|7z|csv|docx|flac|gz|jpe?g|json|md|mkv|mov|mp3|mp4|odp|pdf|png|pptx|rar|step|stl|stp|svg|tar|tex|txt|wav|webm|webp|xlsx|zip)\b|\b(?:PDF|DOCX|Word\s+document|PPTX|PowerPoint|Excel\s+workbook|XLSX|Markdown\s+(?:file|document)|LaTeX\s+source|TeX\s+source|STEP|STL|3MF|image|figure|screenshot|video|audio|archive|attachment|artifact|file)\b)`;
+  const actionBefore = new RegExp(
+    String.raw`\b(?:attach|send|provide|deliver|return|create|generate|make|produce|compile|export|save|download|copy|upload)\b([^.!?;。！？；\n]{0,100}?)${artifact}`,
+    "giu"
+  );
+  for (const match of text.matchAll(actionBefore)) {
+    if (
+      !/\b(?:analysis|answer|caption|contents?|description|explanation|information|report|review|summary|text|transcript|translation)\s+(?:about|of|from)\s+(?:an?\s+|the\s+)?$/iu.test(
+        String(match[1] || "")
+      )
+    ) {
+      return true;
+    }
+  }
+  const wantsArtifact = new RegExp(
+    String.raw`\b(?:i|we)\s+(?:also\s+)?(?:need|want|request|would\s+like)\b([^.!?;。！？；\n]{0,100}?)${artifact}`,
+    "giu"
+  );
+  for (const match of text.matchAll(wantsArtifact)) {
+    if (
+      !/\b(?:analysis|answer|caption|contents?|description|explanation|information|report|review|summary|text|transcript|translation)\s+(?:about|of|from)\s+(?:an?\s+|the\s+)?$/iu.test(
+        String(match[1] || "")
+      )
+    ) {
+      return true;
+    }
+  }
+  if (
+    new RegExp(
+      String.raw`${artifact}[^.!?;。！？；\n]{0,80}\b(?:must|should|needs?\s+to|has\s+to)\s+be\s+(?:attached|sent|provided|delivered|returned|created|generated|produced|compiled|exported|saved|downloaded|copied|uploaded)\b`,
+      "iu"
+    ).test(text)
+  ) {
+    return true;
+  }
+  return (
+    /(?:附上|附加|发送|發送|发回|發回|提供|交付|生成|制作|製作|创建|建立|输出|輸出|导出|導出|保存|下载|下載|上传|上傳|提交|复制|複製|拷贝|拷貝|给我|給我|需要)[^。！？；\n]{0,30}(?:PDF|Word|PPT|Excel|LaTeX|STEP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件)(?![^。！？；\n]{0,12}(?:摘要|分析|说明|說明|描述|内容|內容|文字|转录|轉錄|翻译|翻譯))/u.test(text) ||
+    /(?:PDF|Word|PPT|Excel|LaTeX|STEP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件)(?:文件)?\s*(?:请|請)?(?:直接)?(?:附上|发给我|發給我|发送给我|發送給我|发回|發回|提供|交付|输出|輸出|导出|導出|保存|下载|下載|上传|上傳|提交)/u.test(text) ||
+    /(?:添付|送信|返送|提供|作成|生成|出力|書き出し|保存|ダウンロード|アップロード|提出)[^。！？；\n]{0,30}(?:PDF|Word|PowerPoint|Excel|LaTeX|STEP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル)(?![^。！？；\n]{0,12}(?:要約|分析|説明|内容|テキスト|文字起こし|翻訳))/u.test(text) ||
+    /(?:PDF|Word|PowerPoint|Excel|LaTeX|STEP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル)(?:\s*(?:レポート|文書|ファイル))?(?:を)?\s*(?:添付|送信|返送|提供|作成|生成|出力|保存|提出)(?:して|する|してください|願います|します)?/u.test(text)
+  );
+}
+
+function responseOnlyRequestedArtifactKinds(request = "") {
+  const kinds = new Set();
+  const clauses = String(request || "")
+    .split(/[.!?;。！？；\n]+/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const clause of clauses) {
+    const explicitArtifact = /\.(?:3mf|7z|csv|docx|flac|gz|jpe?g|json|md|mkv|mov|mp3|mp4|odp|pdf|png|pptx|rar|step|stl|stp|svg|tar|tex|txt|wav|webm|webp|xlsx|zip)\b|\b(?:PDF|DOCX|Word\s+document|PPTX|PowerPoint|Excel\s+workbook|XLSX|Markdown\s+(?:file|document)|LaTeX\s+source|TeX\s+source|STEP|STL|3MF|image|figure|screenshot|video|audio|archive|attachment|artifact|file)\b|(?:PDF|Word|PPT|Excel|LaTeX|STEP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件)|(?:PDF|Word|PowerPoint|Excel|LaTeX|STEP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル)/iu.test(clause);
+    const outputIntent = responseOnlyArtifactClauseHasOutputIntent(clause);
+    const negatedArtifact = /\b(?:do\s+not|don't|without|no\s+need\s+to)\b[^.!?;]{0,80}\b(?:attach|send|provide|create|generate|produce|pdf|file|artifact)\b|\bno\s+(?:pdf|file|attachment|artifact)\b[^.!?;]{0,40}\b(?:needed|required|necessary)\b|(?:不要|无需|無需|不必)\s*(?:附上|发送|發送|提供|生成|制作|製作|创建|建立|文件|附件|PDF)|(?:添付|送信|作成|生成)(?:しない|不要|は不要)/iu.test(clause) ||
+      responseOnlyForbiddenArtifactKinds(clause).length > 0;
+    if (!explicitArtifact || !outputIntent || negatedArtifact) continue;
+
+    for (const kind of responseOnlyArtifactKindsFromText(clause)) kinds.add(kind);
+    if (/\bPDF\b/iu.test(clause)) kinds.add(".pdf");
+    if (/\b(?:DOCX|Word\s+document)\b/iu.test(clause)) kinds.add(".docx");
+    if (/\b(?:PPTX|PowerPoint)\b/iu.test(clause)) kinds.add(".pptx");
+    if (/\b(?:XLSX|Excel\s+workbook)\b/iu.test(clause)) kinds.add(".xlsx");
+    if (/\bMarkdown\s+(?:file|document)\b/iu.test(clause)) kinds.add(".md");
+    if (/\b(?:LaTeX|TeX)\s+source\b/iu.test(clause)) kinds.add(".tex");
+    if (/\b(?:STEP|STP)\b/iu.test(clause)) kinds.add(".step");
+    if (/\bSTL\b/iu.test(clause)) kinds.add(".stl");
+    if (/\b3MF\b/iu.test(clause)) kinds.add(".3mf");
+    if (/\b(?:image|figure|screenshot)\b|(?:图片|圖像|图像|截图|截圖)|(?:画像|図|スクリーンショット)/iu.test(clause)) kinds.add("image");
+    if (/\bvideo\b|(?:视频|影片)|(?:動画)/iu.test(clause)) kinds.add("video");
+    if (/\baudio\b|(?:音频|音訊)|(?:音声)/iu.test(clause)) kinds.add("audio");
+    if (/\barchive\b|(?:压缩包|壓縮包)|(?:アーカイブ)/iu.test(clause)) kinds.add("archive");
+    if (!kinds.size || /\b(?:attachment|artifact|file)\b|(?:附件|文件)|(?:添付ファイル|ファイル)/iu.test(clause)) {
+      kinds.add("file");
+    }
+  }
+  return [...kinds];
+}
+
+function responseOnlyArtifactKindsNamedInClause(clause = "") {
+  const text = String(clause || "");
+  const kinds = responseOnlyArtifactKindsFromText(text);
+  if (/\bPDF\b/iu.test(text)) kinds.add(".pdf");
+  if (/\b(?:DOCX|Word\s+document)\b/iu.test(text)) kinds.add(".docx");
+  if (/\b(?:PPTX|PowerPoint)\b/iu.test(text)) kinds.add(".pptx");
+  if (/\b(?:XLSX|Excel\s+workbook)\b/iu.test(text)) kinds.add(".xlsx");
+  if (/\bMarkdown(?:\s+(?:file|document))?\b/iu.test(text)) kinds.add(".md");
+  if (/\b(?:LaTeX|TeX)(?:\s+source)?\b/iu.test(text)) kinds.add(".tex");
+  if (/\b(?:STEP|STP)\b/iu.test(text)) kinds.add(".step");
+  if (/\bSTL\b/iu.test(text)) kinds.add(".stl");
+  if (/\b3MF\b/iu.test(text)) kinds.add(".3mf");
+  if (/\b(?:image|figure|screenshot)\b|(?:图片|圖像|图像|截图|截圖)|(?:画像|図|スクリーンショット)/iu.test(text)) kinds.add("image");
+  if (/\bvideo\b|(?:视频|影片)|(?:動画)/iu.test(text)) kinds.add("video");
+  if (/\baudio\b|(?:音频|音訊)|(?:音声)/iu.test(text)) kinds.add("audio");
+  if (/\barchive\b|(?:压缩包|壓縮包)|(?:アーカイブ)/iu.test(text)) kinds.add("archive");
+  if (/\b(?:attachments?|artifacts?|files?)\b|(?:附件|文件|产物|產物)|(?:添付ファイル|ファイル|成果物)/iu.test(text)) {
+    kinds.add("file");
+  }
+  if (kinds.size > 1) kinds.delete("file");
+  return [...kinds];
+}
+
+function responseOnlyForbiddenArtifactKinds(request = "") {
+  const kinds = new Set();
+  const clauses = String(request || "")
+    .split(/[.!?;。！？；\n]+/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const clause of clauses) {
+    if (/\b(?:do\s+not|don't|never)\s+(?:only|just)\b/iu.test(clause)) continue;
+    const englishForbidden =
+      /\b(?:do\s+not|don't|never)\b[^.!?;]{0,50}\b(?:attach|send|provide|deliver|return|create|generate|make|produce|compile|export|save|download|copy|upload)\b[^.!?;]{0,80}\b(?:PDF|DOCX|Word|PPTX|PowerPoint|XLSX|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|image|figure|screenshot|video|audio|archive|attachments?|artifacts?|files?)\b/iu.test(clause) ||
+      /\b(?:attach|send|provide|deliver|return|create|generate|make|produce|compile|export|save|download|copy|upload)\b[^.!?;]{0,30}\bno\s+(?:PDFs?|documents?|images?|figures?|screenshots?|videos?|audio|archives?|attachments?|artifacts?|files?)\b/iu.test(clause) ||
+      /\bwithout\b[^.!?;]{0,30}\b(?:attaching|sending|providing|delivering|returning|creating|generating|making|producing|compiling|exporting|saving|downloading|copying|uploading)\b[^.!?;]{0,80}\b(?:PDF|DOCX|Word|PPTX|PowerPoint|XLSX|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|image|figure|screenshot|video|audio|archive|attachments?|artifacts?|files?)\b/iu.test(clause) ||
+      /^(?:no|without)\s+(?:outbound\s+)?(?:PDFs?|documents?|images?|figures?|screenshots?|videos?|audio|archives?|attachments?|artifacts?|files?)(?:\s+(?:or|and)\s+(?:PDFs?|documents?|images?|figures?|screenshots?|videos?|audio|archives?|attachments?|artifacts?|files?))*\s*(?:needed|required|necessary)?$/iu.test(clause) ||
+      /\b(?:PDFs?|documents?|images?|figures?|screenshots?|videos?|audio|archives?|attachments?|artifacts?|files?)\b[^.!?;]{0,30}\b(?:must|should|need)\s+not\s+be\s+(?:attached|sent|provided|delivered|returned|created|generated|produced|compiled|exported|saved|downloaded|copied|uploaded)\b/iu.test(clause);
+    const chineseForbidden =
+      /(?:不要|无需|無需|不必|请勿|請勿|禁止)[^。！？；\n]{0,35}(?:附上|附加|发送|發送|发回|發回|提供|交付|返回|生成|制作|製作|创建|建立|输出|輸出|导出|導出|保存|下载|下載|上传|上傳|提交|复制|複製|拷贝|拷貝)?[^。！？；\n]{0,25}(?:PDF|Word|PPT|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件|产物|產物)/u.test(clause) ||
+      /(?:PDF|Word|PPT|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件|产物|產物)[^。！？；\n]{0,20}(?:不要|无需|無需|不必|禁止)(?:附上|发送|發送|提供|生成|制作|製作|输出|輸出|导出|導出|保存|提交)?/u.test(clause);
+    const japaneseForbidden =
+      /(?:PDF|Word|PowerPoint|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル|成果物)[^。！？；\n]{0,35}(?:添付|送信|返送|提供|作成|生成|出力|書き出し|保存|ダウンロード|アップロード|提出)?(?:しない|しなくてよい|不要|なし)/u.test(clause) ||
+      /(?:添付|送信|返送|提供|作成|生成|出力|書き出し|保存|ダウンロード|アップロード|提出)[^。！？；\n]{0,30}(?:しない|しなくてよい|不要)[^。！？；\n]{0,25}(?:PDF|Word|PowerPoint|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル|成果物)/u.test(clause);
+    if (!englishForbidden && !chineseForbidden && !japaneseForbidden) continue;
+    for (const kind of responseOnlyArtifactKindsNamedInClause(clause)) kinds.add(kind);
+  }
+  return [...kinds];
+}
+
+function responseOnlyCandidateArtifactKinds(candidate) {
+  const kinds = new Set();
+  const addKinds = (value) => {
+    for (const kind of responseOnlyArtifactKindsFromText(value)) kinds.add(kind);
+  };
+  const visitMaterial = (value) => {
+    if (!hasMeaningfulResponseOnlyValue(value)) return;
+    kinds.add("file");
+    if (typeof value === "string") {
+      addKinds(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visitMaterial);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [key, nested] of Object.entries(value)) {
+      if (/^(?:path|file_path|filepath|name|filename|suffix|extension|format|mime|mime_type|mimetype|type)$/iu.test(key)) {
+        addKinds(nested);
+        const label = String(nested || "").trim().toLocaleLowerCase("en-US");
+        if (["image", "video", "audio", "archive", "cad"].includes(label)) kinds.add(label);
+      }
+      if (nested && typeof nested === "object") visitMaterial(nested);
+    }
+  };
+
+  if (typeof candidate === "string") {
+    addKinds(candidate);
+    if (kinds.size) kinds.add("file");
+    return [...kinds];
+  }
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+  for (const key of ["files", "artifacts", "attachments", "deliverables", "output_files"]) {
+    if (hasMeaningfulResponseOnlyValue(candidate[key])) visitMaterial(candidate[key]);
+  }
+  for (const key of ["generated_text_content", "generated_document_content"]) {
+    if (hasMeaningfulResponseOnlyValue(candidate[key])) visitMaterial(candidate[key]);
+  }
+  for (const key of ["path", "file_path", "filepath", "output_path", "artifact_path"]) {
+    if (!hasMeaningfulResponseOnlyValue(candidate[key])) continue;
+    visitMaterial(candidate[key]);
+  }
+  if (hasMeaningfulResponseOnlyValue(candidate.generated_pdf_content)) {
+    kinds.add("file");
+    kinds.add(".pdf");
+  }
+  if (hasMeaningfulResponseOnlyValue(candidate.generated_image_content)) {
+    kinds.add("file");
+    kinds.add("image");
+  }
+  if (hasMeaningfulResponseOnlyValue(candidate.generated_video_content)) {
+    kinds.add("file");
+    kinds.add("video");
+  }
+  if (hasMeaningfulResponseOnlyValue(candidate.generated_audio_content)) {
+    kinds.add("file");
+    kinds.add("audio");
+  }
+  return [...kinds];
+}
+
+function responseOnlyCandidateSatisfiesArtifactKind(candidateKinds = [], requiredKind = "") {
+  const observed = new Set(candidateKinds);
+  const required = responseOnlyCanonicalArtifactKind(requiredKind);
+  if (required === "file") return observed.has("file");
+  return observed.has(required);
+}
+
+function responseOnlyRequestExplicitlyAllowsEmpty(request = "") {
+  return /(?:return|leave|keep)\s+(?:the\s+)?(?:message|reply|response)\s+(?:field\s+)?(?:empty|blank)|(?:do not|don't)\s+(?:send\s+)?(?:a\s+)?(?:message|reply|response)|(?:无需|無需|不必|不要)(?:回复|回覆|响应|響應)|(?:返信|応答)(?:不要|なし)/iu.test(
+    String(request || "")
+  );
+}
+
+function responseOnlyRequestExplicitlyAllowsStatusOnly(request = "") {
+  const text = String(request || "").trim();
+  if (!text) return false;
+  if (responseOnlyRequestExplicitlyAllowsEmpty(text)) return true;
+  if (/\bnot\s+(?:only|just)\b|不(?:只|仅|僅)(?:是|要|需|需要)?/iu.test(text)) return false;
+  if (
+    /\b(?:only|just)\s+(?:acknowledge|confirm)\s+(?:that\s+)?(?:you\s+)?(?:received|saw|understood)(?:\s+(?:it|this|the\s+(?:message|request|file)))?|\b(?:only|just)\s+(?:reply|respond|say)\s+(?:with\s+)?["']?(?:received|acknowledged|got it|understood)["']?/iu.test(text) ||
+    /(?:^|[\s，,。；;：:])(?:请|請)?(?:只|仅|僅)(?:需要|需|要)?(?:回复|回覆|回答|确认|確認)(?:一句|我)?[“"']?(?:收到|已收到|明白|了解|知道了)[”"']?|(?:^|[\s，,。；;：:])(?:仅|僅)(?:作|做)?(?:收悉|收到)(?:确认|確認)/u.test(text) ||
+    /(?:受領|受信)(?:したこと)?(?:だけ|のみ)(?:を)?(?:確認|返信)|[「『]?(?:承知しました|受け取りました|確認しました)[」』]?と(?:だけ|のみ)(?:返信|回答)/u.test(text)
+  ) {
+    return true;
+  }
+  if (
+    /^(?:hi|hello|hey|thanks?|thank\s+you|good\s+(?:morning|afternoon|evening)|ok(?:ay)?|got\s+it)[.!?\s]*$/iu.test(text) ||
+    /^(?:你好|您好|嗨|谢谢|謝謝|多谢|多謝|早上好|下午好|晚上好|好的?|收到|明白了?)[。！？!?.\s]*$/u.test(text) ||
+    /^(?:こんにちは|こんばんは|おはよう(?:ございます)?|ありがとう(?:ございます)?|承知しました|了解しました|はい)[。！？!?.\s]*$/u.test(text)
+  ) {
+    return true;
+  }
+  return (
+    /^(?:please\s+)?(?:(?:check|tell|report|show|give)\s+(?:me\s+)?(?:the\s+)?)?(?:current\s+)?(?:status|progress)(?:\s+(?:of|on)\s+[^\n.!?]+)?[.!?\s]*$|^(?:is|has|did)\s+[^\n.!?]+\s+(?:done|finished|completed|finish|complete)(?:\s+yet)?[?\s]*$/iu.test(text) ||
+    /^(?:请|請)?(?:查|检查|檢查|告诉|告訴|汇报|匯報|说|說|给我|給我)?(?:一下)?(?:当前|目前)?(?:状态|狀態|进度|進度)(?:如何|怎么样|怎麼樣)?[。！？?\s]*$|^[^\n。！？]+(?:完成了吗|完成了嗎|做完了吗|做完了嗎|好了吗|好了嗎|结束了吗|結束了嗎)[。！？?\s]*$/u.test(text) ||
+    /^(?:現在の)?(?:状態|状況|進捗)(?:を)?(?:確認|教えて|報告)?(?:してください)?[。！？?\s]*$|^[^\n。！？]+(?:完了|終了)(?:しましたか|した)[。！？?\s]*$/u.test(text)
+  );
+}
+
+function responseOnlyCandidateHumanFacingText(candidate) {
+  if (typeof candidate === "string") return candidate.trim();
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return "";
+  return ["message", "response", "chat_reply", "ack"]
+    .map((key) => candidate[key])
+    .filter((value) => typeof value === "string" && value.trim())
+    .join("\n")
+    .trim();
+}
+
+function responseOnlyCandidateHasMaterialPayload(candidate) {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+  return [
+    "files",
+    "artifacts",
+    "attachments",
+    "confirmation",
+    "publish_stage",
+    "generated_pdf_content",
+    "generated_text_content",
+    "knowledge_items",
+    "upstream_feedback",
+  ].some((key) => hasMeaningfulResponseOnlyValue(candidate[key]));
+}
+
+function responseOnlyStatusOnlyCandidate(candidate) {
+  if (responseOnlyCandidateHasMaterialPayload(candidate)) return false;
+  const text = responseOnlyCandidateHumanFacingText(candidate);
+  if (!text || finishResultClaimsBlocker(text)) return false;
+  if (
+    /https?:\/\/|\b(?:doi|pmid|isbn)\s*[:：]|(?:answer|result|conclusion|reason|summary|transcript|path|file|link)\s*[:：]|(?:答案|结果|結果|结论|結論|原因|摘要|转录|轉錄|路径|路徑|文件|链接|連結)\s*[:：]|(?:答え|結果|結論|理由|要約|文字起こし|パス|ファイル|リンク)\s*[:：]|```|(?:^|\n)\s*(?:[-*]|\d+[.)、])/iu.test(text)
+  ) {
+    return false;
+  }
+  const clauses = text
+    .split(/[.!?;。！？；\n]+/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!clauses.length) return false;
+  return clauses.every((clause) => (
+    /^(?:(?:ok(?:ay)?|got\s+it|understood|received|acknowledged|sure|all\s+right|thanks?|thank\s+you)(?:\s+(?:it|this|that|the\s+(?:message|request|file|task)))?|(?:好(?:的)?|收到|已收到|明白(?:了)?|了解(?:了)?|知道了|没问题|謝謝|谢谢|多谢|多謝)|(?:承知しました|了解しました|受け取りました|確認しました|わかりました|ありがとうございます|はい))[,，\s]*$/iu.test(clause) ||
+    /\b(?:working|processing|checking|reviewing|preparing|generating|downloading|researching|investigating|looking\s+into|in\s+progress|queued|on\s+the\s+way|please\s+wait)\b|\b(?:I(?:'m|\s+am|'ll|\s+will)|we(?:'re|\s+are|'ll|\s+will))\b[^.!?;\n]{0,180}\b(?:work|handle|process|check|review|prepare|generate|download|research|investigate|send|reply|return|get\s+back|follow\s+up|update)\b/iu.test(clause) ||
+    /(?:正在|处理中|處理中|分析中|整理中|检查中|檢查中|搜索中|搜尋中|检索中|檢索中|研究中|生成中|下载中|下載中|准备中|準備中|排队中|排隊中|请稍候|請稍候|请稍等|請稍等|稍后|稍後|随后|隨後|完成后|完成後|马上|馬上|待会|待會|等会|等會|会自动补充|會自動補充|不会把.+标记为已处理|不會把.+標記為已處理|我先发送已完成的部分|我先發送已完成的部分)|(?:我|我们|我們|系统|系統)?(?:会|會|将|將|马上|馬上)[^。！？；]{0,120}(?:处理|處理|检查|檢查|分析|整理|搜索|搜尋|研究|生成|下载|下載|回复|回覆|发送|發送|返回|更新|补充|補充)/u.test(clause) ||
+    /(?:対応中|処理中|確認中|作業中|準備中|調査中|生成中|ダウンロード中|少々お待ち|しばらくお待ち|後ほど|完了後|これから.+(?:対応|処理|確認|送信|返信|報告)|(?:対応|処理|確認|送信|返信|報告)します)/u.test(clause) ||
+    /^(?:(?:the\s+)?(?:task|request|work|job|report|file|video)\s+)?(?:is|has\s+been\s+)?(?:done|complete|completed|finished|queued|started)[,，\s]*$/iu.test(clause) ||
+    /^(?:(?:任务|任務|请求|請求|工作|报告|報告|文件|视频|影片)(?:已经|已經|已))?(?:完成|处理完成|處理完成|排队|排隊|开始|開始)[,，\s]*$/u.test(clause) ||
+    /^(?:(?:タスク|依頼|作業|レポート|ファイル|動画)(?:は|が)?)?(?:完了|終了|開始|待機中)(?:しました|です)?[,，\s]*$/u.test(clause)
+  ));
+}
+
+export function assessResponseOnlyEmptyEnvelope({ goal = "", result = "" } = {}) {
+  const packet = responseOnlyTaskPacket(goal);
+  const parsed = parseStrictResponseOnlyJson(result);
+  if (!packet || !parsed) return { ok: true, reason: "not-a-host-task-envelope" };
+  const responseKeys = [
+    "message",
+    "response",
+    "chat_reply",
+    "ack",
+    "confirmation",
+    "files",
+    "knowledge_items",
+    "upstream_feedback",
+    "publish_stage",
+    "generated_pdf_content",
+    "generated_text_content",
+  ].filter((key) => Object.hasOwn(parsed, key));
+  if (!responseKeys.some((key) => ["message", "response", "chat_reply"].includes(key))) {
+    return { ok: true, reason: "not-a-human-facing-envelope" };
+  }
+  const humanRequest = responseOnlyHumanRequestFromPacket(packet);
+  const explicitlyAllowsEmpty = responseOnlyRequestExplicitlyAllowsEmpty(humanRequest);
+  if (explicitlyAllowsEmpty) return { ok: true, reason: "explicit-empty-response-contract" };
+  const meaningfulKeys = responseKeys.filter((key) => hasMeaningfulResponseOnlyValue(parsed[key]));
+  return {
+    ok: meaningfulKeys.length > 0,
+    reason: meaningfulKeys.length > 0 ? "human-facing-payload-present" : "empty-human-facing-envelope",
+    responseKeys,
+    meaningfulKeys,
+  };
+}
+
+function responseOnlyPrivatePacketIdentifierMarkers({ goal = "", result = "" } = {}) {
+  const packet = responseOnlyTaskPacket(goal);
+  const visibleText = responseOnlyHumanFacingText(result);
+  if (!packet || !visibleText.trim()) return [];
+  const humanRequest = responseOnlyHumanRequestFromPacket(packet);
+  const leaked = responseOnlyPrivatePacketIdentifiers(packet).some((identifier) => {
+    const pattern = new RegExp(`(?:^|[^A-Za-z0-9_])${identifier}(?:$|[^A-Za-z0-9_])`, "iu");
+    return pattern.test(visibleText) && !pattern.test(humanRequest);
+  });
+  return leaked ? ["private-task-packet-identifier"] : [];
+}
+
+export function assessInternalRuntimeScaffoldLeak({ result = "", messages = [], goal = "" } = {}) {
+  const text = String(result || "").trim();
+  const sourceKinds = [
+    ...new Set(
+      (Array.isArray(messages) ? messages : [])
+        .filter((message) => message?.role === "user")
+        .map((message) => runtimeScaffoldSourceKind(message.content))
+        .filter(Boolean)
+    ),
+  ];
+  const hostAcknowledgementMarkers = isResponseOnlyEvidenceScope(goal)
+    ? responseOnlyHostAcknowledgementMarkers(text)
+    : [];
+  const privatePacketIdentifierMarkers = isResponseOnlyEvidenceScope(goal)
+    ? responseOnlyPrivatePacketIdentifierMarkers({ goal, result: text })
+    : [];
+  if (
+    !text ||
+    explicitlyRequestsRuntimeScaffoldDiscussion(goal) ||
+    (hostAcknowledgementMarkers.length > 0 && explicitlyRequestsHostRoutingDiscussion(goal)) ||
+    (sourceKinds.length === 0 &&
+      hostAcknowledgementMarkers.length === 0 &&
+      privatePacketIdentifierMarkers.length === 0)
+  ) {
+    return { leaks: false, markers: [], sourceKinds };
+  }
+
+  const markerPatterns = [
+    [
+      "runtime-compaction-narrative",
+      /(?:\b(?:the\s+)?runtime\b[\s\S]{0,180}\b(?:compact(?:ed|ion)|context window|agent history)\b)|(?:(?:运行时|上下文).{0,100}(?:压缩|截断|历史))|(?:(?:ランタイム|コンテキスト).{0,100}(?:圧縮|切り詰め|履歴))/iu,
+    ],
+    [
+      "agent-identity-instruction",
+      /(?:\byou are AgInTi(?:Flow)?\b|你是\s*AgInTi(?:Flow)?|あなたは\s*AgInTi(?:Flow)?)/iu,
+    ],
+    [
+      "prompt-visibility-narrative",
+      /(?:\b(?:original|latest|genuine)\s+(?:user\s+)?(?:prompt|request|message)[\s\S]{0,140}\b(?:truncat(?:ed|ion)|not (?:fully )?visible|missing from (?:the )?context)\b)|(?:(?:原始|最新|真实).{0,40}(?:提示词|请求|消息).{0,80}(?:截断|不可见|看不到|缺失))|(?:(?:元の|最新の).{0,40}(?:プロンプト|依頼|メッセージ).{0,80}(?:切り詰め|見えない|欠落))/iu,
+    ],
+    [
+      "authoritative-state-narrative",
+      /(?:\b(?:authoritative\s+)?(?:goals?|plans?|retained evidence)[\s\S]{0,140}\bpreserv(?:ed|ation)\b)|(?:(?:权威|保留).{0,80}(?:目标|计划|证据).{0,80}(?:保留|保存))|(?:(?:権威|保持).{0,80}(?:目標|計画|証拠).{0,80}(?:保持|保存))/iu,
+    ],
+    ["authoritative-goal-heading", /^\s*Authoritative current goal\s*:/imu],
+    ["verification-checkpoint-heading", /^\s*Authoritative verification and artifact checkpoint\s*:/imu],
+    ["reconciled-request-heading", /^\s*Original and latest genuine user request\(s\), reconciled/imu],
+    ["runtime-snapshot-heading", /^\s*Latest runtime snapshot\s*:/imu],
+    ["recovery-instruction-heading", /^\s*Recovery instruction\s*:/imu],
+  ];
+  const markers = markerPatterns
+    .filter(([, pattern]) => pattern.test(text))
+    .map(([id]) => id)
+    .concat(hostAcknowledgementMarkers, privatePacketIdentifierMarkers);
+  const narrativeMarkers = markers.filter((id) =>
+    [
+      "runtime-compaction-narrative",
+      "agent-identity-instruction",
+      "prompt-visibility-narrative",
+      "authoritative-state-narrative",
+    ].includes(id)
+  );
+  const headingMarkers = markers.filter((id) => id.endsWith("-heading"));
+  const leaks =
+    hostAcknowledgementMarkers.length > 0 ||
+    privatePacketIdentifierMarkers.length > 0 ||
+    narrativeMarkers.length >= 2 ||
+    (narrativeMarkers.length >= 1 && headingMarkers.length >= 1) ||
+    headingMarkers.length >= 3;
+  return { leaks, markers, sourceKinds };
 }
 
 function summarizeOriginalRequests(messages = [], limit = 6) {
@@ -3238,7 +3878,9 @@ async function createInitialState(config, sessionId) {
           isRetainedWorkspaceProfile(config)
             ? "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files and run bounded checks when useful."
             : "For website/app/code/LaTeX/Python/C/shell tasks, create or edit real workspace files, run available build/compile/test commands, and surface artifacts through the canvas when useful.",
-          "For LaTeX/PDF tasks, check existing latexmk/pdflatex first and compile with the available host or Docker TeX toolchain before installing packages or rebuilding the sandbox.",
+          hostManagedDocumentCompilationRequested(config.goal)
+            ? "For this host-managed document task, create and verify the requested editable sources only. Do not invoke LaTeX, make, package managers, or document compilers; the host stage owns compilation and derived-PDF validation."
+            : "For LaTeX/PDF tasks, check the existing compiler first and compile a .tex source with the available host or Docker TeX toolchain before installing packages or rebuilding the sandbox. Never pass Markdown, text, HTML, DOCX, or PDF directly to a LaTeX compiler; use an existing declared converter or create a complete .tex source.",
           "For research or web-search tasks, use browser tools or safe shell network tools when the current policy allows; cite or save useful sources in workspace notes when the task needs traceability.",
           completionRequirementCoverageInstruction(),
           repositorySourcePrecedenceInstruction(),
@@ -4080,7 +4722,1074 @@ async function finishWithDirectAnswer({ config, state, store, observers, session
   };
 }
 
+function responseOnlyResultFromMessage(message = {}) {
+  if (!message) {
+    throw new Error("Response-only model request returned no assistant message.");
+  }
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+    throw new Error("Response-only model request returned an unexpected tool call.");
+  }
+  const result = redactSensitiveText(message.content || "").trim();
+  if (!result) {
+    throw new Error("Response-only model request returned empty content.");
+  }
+  return result;
+}
+
+function responseOnlyContractSource(config = {}, state = {}) {
+  const goalContract = state.meta?.goalContract && typeof state.meta.goalContract === "object"
+    ? state.meta.goalContract
+    : {};
+  return [
+    goalContract.activeGoal,
+    goalContract.currentRequest,
+    config.goal,
+    state.goal,
+  ].map((value) => String(value || "").trim()).find(Boolean) || "";
+}
+
+function responseOnlyJsonContract(config = {}, state = {}) {
+  const source = responseOnlyContractSource(config, state);
+  const authoritativeStart = source.search(/(?:^|\n)(?:Original prompt|Exact current request):\s*/i);
+  const contractSource = authoritativeStart >= 0 ? source.slice(authoritativeStart) : source;
+  const markers = [
+    /\breturn\s+(?:exactly\s+)?(?:one\s+)?(?:strict\s+)?JSON(?:\s+object)?(?:\s+and\s+no\s+prose|\s+only)?\s*:/gi,
+    /(?:^|\n)\s*(?:required|expected)\s+JSON\s+(?:schema|shape|format|object)\s*:\s*/gi,
+    /(?:^|\n)\s*JSON\s+(?:schema|shape|format)\s*:\s*/gi,
+  ];
+  const matches = markers
+    .map((marker, markerIndex) => {
+      const match = marker.exec(contractSource);
+      return match
+        ? {
+            index: match.index,
+            end: match.index + match[0].length,
+            closedTopLevelShape:
+              markerIndex > 0 || /\b(?:exactly|strict|only)\b|\bno\s+prose\b/iu.test(match[0]),
+          }
+        : null;
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.index - right.index);
+  if (!matches.length) return null;
+  const contractMatch = matches
+    .map((match) => ({
+      ...match,
+      sample: firstJsonObject(contractSource.slice(match.end)),
+    }))
+    .find(({ sample }) => sample && typeof sample === "object" && !Array.isArray(sample));
+  const sample = contractMatch?.sample;
+  if (!sample || Array.isArray(sample)) return null;
+  const requiredKeys = Object.keys(sample).slice(0, 64);
+  if (!requiredKeys.length) return null;
+  const keyTypes = Object.fromEntries(requiredKeys.map((key) => {
+    const value = sample[key];
+    const type = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
+    return [key, type];
+  }));
+  const enumValues = {};
+  for (const key of requiredKeys) {
+    if (typeof sample[key] !== "string" || !sample[key].includes("|")) continue;
+    const values = sample[key]
+      .split("|")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (values.length > 1) enumValues[key] = [...new Set(values)];
+  }
+  const explicitEnumPattern = /(?:^|\n)\s*Allowed\s+([A-Za-z_][\w.-]*)\s+values\s*:\s*\n((?:\s*-\s*[^\n]+(?:\n|$))+)/gi;
+  for (const match of contractSource.matchAll(explicitEnumPattern)) {
+    const key = match[1];
+    if (!requiredKeys.includes(key)) continue;
+    const values = match[2]
+      .split("\n")
+      .map((line) => line.replace(/^\s*-\s*/, "").trim())
+      .map((value) => value.replace(/^([`'"])(.*)\1$/, "$2").trim())
+      .filter(Boolean);
+    if (values.length) enumValues[key] = [...new Set(values)];
+  }
+  return {
+    requiredKeys,
+    keyTypes,
+    enumValues,
+    closedTopLevelShape: Boolean(contractMatch.closedTopLevelShape),
+    completionAudit: responseOnlyCompletionAuditIdentityContract(source, requiredKeys, sample),
+  };
+}
+
+function parseStrictResponseOnlyJson(result = "") {
+  const text = String(result || "").trim();
+  const fenced = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1];
+  try {
+    const value = JSON.parse(String(fenced ?? text).trim());
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys = [], sample = {}) {
+  const text = String(source || "");
+  const explicitRole = /(?:^|\n)\s*Role\s*:\s*completion[_ -]?audit\s*(?:\n|$)/iu.test(text);
+  const auditShape = ["covered_item_ids", "missing", "legitimate_blocker"]
+    .every((key) => requiredKeys.includes(key));
+  if (!explicitRole || !auditShape) return null;
+  const packet = responseOnlyTaskPacket(text);
+  const allowedItemIds = [
+    ...new Set(
+      (Array.isArray(packet?.request_items) ? packet.request_items : [])
+        .map((item) => String(item?.item_id || "").trim())
+        .filter(Boolean)
+    ),
+  ];
+  if (!allowedItemIds.length) return null;
+  const requestTextByItemId = Object.fromEntries(
+    (Array.isArray(packet?.request_items) ? packet.request_items : [])
+      .map((item) => [
+        String(item?.item_id || "").trim(),
+        String(item?.text || "").trim(),
+      ])
+      .filter(([itemId, requestText]) => itemId && requestText)
+  );
+  const requestedArtifactKindsByItemId = Object.fromEntries(
+    (Array.isArray(packet?.request_items) ? packet.request_items : [])
+      .map((item) => [
+        String(item?.item_id || "").trim(),
+        responseOnlyRequestedArtifactKinds(item?.text),
+      ])
+      .filter(([itemId, kinds]) => itemId && kinds.length)
+  );
+  const forbiddenArtifactKindsByItemId = Object.fromEntries(
+    (Array.isArray(packet?.request_items) ? packet.request_items : [])
+      .map((item) => [
+        String(item?.item_id || "").trim(),
+        responseOnlyForbiddenArtifactKinds(item?.text),
+      ])
+      .filter(([itemId, kinds]) => itemId && kinds.length)
+  );
+  const missingItemSample = (Array.isArray(sample?.missing) ? sample.missing : [])
+    .find((item) => item && typeof item === "object" && !Array.isArray(item));
+  const missingItemRequiredKeys = Object.keys(missingItemSample || {}).slice(0, 16);
+  const missingItemKeyTypes = Object.fromEntries(missingItemRequiredKeys.map((key) => {
+    const value = missingItemSample[key];
+    return [key, Array.isArray(value) ? "array" : value === null ? "null" : typeof value];
+  }));
+  const missingItemEnumValues = {};
+  for (const key of missingItemRequiredKeys) {
+    const value = missingItemSample[key];
+    if (typeof value !== "string" || !value.includes("|")) continue;
+    const values = value.split("|").map((item) => item.trim()).filter(Boolean);
+    if (values.length > 1) missingItemEnumValues[key] = [...new Set(values)];
+  }
+  return {
+    allowedItemIds,
+    requestTextByItemId,
+    missingItemRequiredKeys,
+    missingItemKeyTypes,
+    missingItemEnumValues,
+    candidateObserved: Object.hasOwn(packet, "candidate_result"),
+    candidateHasMeaningfulOutput: hasMeaningfulResponseOnlyValue(packet?.candidate_result),
+    candidateExplicitlyAllowsEmpty: responseOnlyRequestExplicitlyAllowsEmpty(
+      responseOnlyHumanRequestFromPacket(packet)
+    ),
+    candidateOnlyStatusUpdate: responseOnlyStatusOnlyCandidate(packet?.candidate_result),
+    candidateExplicitlyAllowsStatusOnly: responseOnlyRequestExplicitlyAllowsStatusOnly(
+      responseOnlyHumanRequestFromPacket(packet)
+    ),
+    requestedArtifactKindsByItemId,
+    forbiddenArtifactKindsByItemId,
+    candidateArtifactKinds: responseOnlyCandidateArtifactKinds(packet?.candidate_result),
+    candidateClaimsBlocker: finishResultClaimsBlocker(
+      JSON.stringify(packet?.candidate_result ?? "")
+    ),
+  };
+}
+
+function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) {
+  const allowedItemIds = Array.isArray(contract?.allowedItemIds)
+    ? contract.allowedItemIds
+    : [];
+  if (!allowedItemIds.length) {
+    return {
+      ok: true,
+      invalidItemIds: [],
+      omittedItemIds: [],
+      duplicateItemIds: [],
+      malformedItemReferences: [],
+      invalidMissingItemFields: [],
+      invalidAuditSemantics: [],
+    };
+  }
+
+  const references = [];
+  const malformedItemReferences = [];
+  const invalidMissingItemFields = [];
+  for (const [index, itemId] of (Array.isArray(value.covered_item_ids)
+    ? value.covered_item_ids
+    : []).entries()) {
+    const normalized = typeof itemId === "string" ? itemId.trim() : "";
+    if (!normalized) malformedItemReferences.push(`covered_item_ids[${index}]`);
+    else references.push(normalized);
+  }
+  for (const [index, item] of (Array.isArray(value.missing) ? value.missing : []).entries()) {
+    const objectItem = item && typeof item === "object" && !Array.isArray(item)
+      ? item
+      : null;
+    const normalized = objectItem
+      ? String(item.item_id || "").trim()
+      : "";
+    if (!normalized) malformedItemReferences.push(`missing[${index}].item_id`);
+    else references.push(normalized);
+    if (!objectItem) {
+      invalidMissingItemFields.push(`missing[${index}]:expected-object`);
+      continue;
+    }
+    for (const key of contract.missingItemRequiredKeys || []) {
+      const field = `missing[${index}].${key}`;
+      if (!Object.hasOwn(objectItem, key)) {
+        invalidMissingItemFields.push(`${field}:missing`);
+        continue;
+      }
+      const valueType = Array.isArray(objectItem[key])
+        ? "array"
+        : objectItem[key] === null
+          ? "null"
+          : typeof objectItem[key];
+      if (valueType !== contract.missingItemKeyTypes?.[key]) {
+        invalidMissingItemFields.push(`${field}:expected-${contract.missingItemKeyTypes?.[key]}`);
+        continue;
+      }
+      if (key === "requirement" && typeof objectItem[key] === "string" && !objectItem[key].trim()) {
+        invalidMissingItemFields.push(`${field}:empty`);
+      }
+      const allowedValues = contract.missingItemEnumValues?.[key];
+      if (Array.isArray(allowedValues) && allowedValues.length && !allowedValues.includes(objectItem[key])) {
+        invalidMissingItemFields.push(`${field}:outside-enum`);
+      }
+    }
+  }
+
+  const allowed = new Set(allowedItemIds);
+  const counts = new Map();
+  for (const itemId of references) counts.set(itemId, (counts.get(itemId) || 0) + 1);
+  const invalidItemIds = [...new Set(references.filter((itemId) => !allowed.has(itemId)))];
+  const omittedItemIds = allowedItemIds.filter((itemId) => !counts.has(itemId));
+  const duplicateItemIds = [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([itemId]) => itemId);
+  const invalidAuditSemantics = [];
+  if (value.legitimate_blocker === true) {
+    if (!contract.candidateClaimsBlocker) {
+      invalidAuditSemantics.push("legitimate_blocker:true-without-candidate-blocker");
+    }
+    if (!Array.isArray(value.covered_item_ids) || value.covered_item_ids.length === 0) {
+      invalidAuditSemantics.push("legitimate_blocker:true-without-covered-item");
+    }
+  }
+  if (
+    contract.candidateObserved &&
+    !contract.candidateHasMeaningfulOutput &&
+    !contract.candidateExplicitlyAllowsEmpty &&
+    Array.isArray(value.covered_item_ids) &&
+    value.covered_item_ids.length > 0
+  ) {
+    invalidAuditSemantics.push("covered_item_ids:nonempty-for-empty-candidate");
+  }
+  if (
+    contract.candidateObserved &&
+    contract.candidateOnlyStatusUpdate &&
+    !contract.candidateExplicitlyAllowsStatusOnly &&
+    Array.isArray(value.covered_item_ids) &&
+    value.covered_item_ids.length > 0
+  ) {
+    invalidAuditSemantics.push("covered_item_ids:nonempty-for-status-only-candidate");
+  }
+  if (contract.candidateHasMeaningfulOutput && !contract.candidateOnlyStatusUpdate) {
+    const requestedKindsAcrossPacket = [
+      ...new Set(Object.values(contract.requestedArtifactKindsByItemId || {}).flat()),
+    ];
+    for (const itemId of Array.isArray(value.covered_item_ids) ? value.covered_item_ids : []) {
+      const normalizedItemId = typeof itemId === "string" ? itemId.trim() : "";
+      const requiredKinds = contract.requestedArtifactKindsByItemId?.[normalizedItemId] || [];
+      for (const requiredKind of requiredKinds) {
+        if (
+          !responseOnlyCandidateSatisfiesArtifactKind(
+            contract.candidateArtifactKinds,
+            requiredKind
+          )
+        ) {
+          invalidAuditSemantics.push(
+            `covered_item_ids:${normalizedItemId}-without-required-artifact:${requiredKind}`
+          );
+        }
+      }
+      const forbiddenKinds = contract.forbiddenArtifactKindsByItemId?.[normalizedItemId] || [];
+      for (const forbiddenKind of forbiddenKinds) {
+        const conflictsWithAnotherRequiredArtifact = forbiddenKind === "file"
+          ? requestedKindsAcrossPacket.length > 0
+          : requestedKindsAcrossPacket.includes(forbiddenKind);
+        if (
+          !conflictsWithAnotherRequiredArtifact &&
+          responseOnlyCandidateSatisfiesArtifactKind(
+            contract.candidateArtifactKinds,
+            forbiddenKind
+          )
+        ) {
+          invalidAuditSemantics.push(
+            `covered_item_ids:${normalizedItemId}-with-forbidden-artifact:${forbiddenKind}`
+          );
+        }
+      }
+    }
+  }
+  return {
+    ok:
+      invalidItemIds.length === 0 &&
+      omittedItemIds.length === 0 &&
+      duplicateItemIds.length === 0 &&
+      malformedItemReferences.length === 0 &&
+      invalidMissingItemFields.length === 0 &&
+      invalidAuditSemantics.length === 0,
+    invalidItemIds,
+    omittedItemIds,
+    duplicateItemIds,
+    malformedItemReferences,
+    invalidMissingItemFields,
+    invalidAuditSemantics,
+  };
+}
+
+function responseOnlyAuditScoreRange(goal = "") {
+  const text = String(goal || "");
+  const patterns = [
+    /\b(?:score|rate|grade)\b[^\n]{0,120}\bfrom\s+(-?\d+(?:\.\d+)?)\s+to\s+(-?\d+(?:\.\d+)?)/iu,
+    /(?:评分|評分|打分|分数|分數)[^\n]{0,80}(?:从|從)\s*(-?\d+(?:\.\d+)?)\s*(?:到|至)\s*(-?\d+(?:\.\d+)?)/u,
+    /(?:採点|評価)[^\n]{0,80}(-?\d+(?:\.\d+)?)\s*(?:から|〜|～)\s*(-?\d+(?:\.\d+)?)/u,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const lower = Number(match[1]);
+    const upper = Number(match[2]);
+    if (Number.isFinite(lower) && Number.isFinite(upper) && upper > lower) {
+      return { lower, upper };
+    }
+  }
+  return null;
+}
+
+export function assessResponseOnlyPerfectAudit({ goal = "", result = "" } = {}) {
+  const text = String(goal || "");
+  const auditRequest =
+    /\b(?:audit|review|evaluate|assess|critique|grade)\b|(?:审核|審核|审查|審查|评估|評估|校对|校對)|(?:監査|レビュー|評価|査読)/iu.test(
+      text
+    );
+  const value = parseStrictResponseOnlyJson(result);
+  const range = responseOnlyAuditScoreRange(text);
+  if (!auditRequest || !value || !range) {
+    return { requiresConfirmation: false, reason: "not-a-scored-audit" };
+  }
+
+  const acceptanceKey = ["accepted", "approved", "passed", "publish_ready"]
+    .find((key) => value[key] === true);
+  const scoreEntry = Object.entries(value).find(([, candidate]) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const scores = Object.values(candidate);
+    return scores.length >= 4 && scores.every((score) => Number.isFinite(Number(score)));
+  });
+  if (!acceptanceKey || !scoreEntry) {
+    return { requiresConfirmation: false, reason: "not-an-accepted-multidimensional-audit" };
+  }
+
+  const [scoreKey, scoreObject] = scoreEntry;
+  const scores = Object.values(scoreObject).map(Number);
+  const issueArrays = Object.entries(value).filter(
+    ([key, candidate]) =>
+      Array.isArray(candidate) &&
+      /(?:issues?|errors?|problems?|defects?|revisions?|corrections?|fixes?)/iu.test(key)
+  );
+  const allMaximum = scores.every((score) => score === range.upper);
+  const noReportedIssues = issueArrays.length > 0 && issueArrays.every(([, items]) => items.length === 0);
+  return {
+    requiresConfirmation: allMaximum && noReportedIssues,
+    reason: allMaximum && noReportedIssues ? "blanket-perfect-audit" : "non-perfect-or-qualified-audit",
+    acceptanceKey,
+    scoreKey,
+    scoreCount: scores.length,
+    maximumScore: range.upper,
+    issueKeys: issueArrays.map(([key]) => key),
+  };
+}
+
+function responseOnlyPerfectAuditInstruction(assessment = {}, contract = null) {
+  return [
+    `Your audit accepted the candidate with all ${assessment.scoreCount || "declared"} dimensions at the maximum score and reported no issues.`,
+    "Perform one independent skeptical verification against the actual candidate and every material requirement in the authoritative request.",
+    "Look for the smallest concrete contradiction, malformed language or data, unsupported claim, omitted requirement, internal inconsistency, or repeated padding before preserving a perfect result.",
+    "Do not invent a defect or lower a score merely to appear critical. If the candidate truly passes, return the same acceptance after checking it; otherwise identify the shortest decisive issue and revise the affected scores and acceptance consistently.",
+    contract
+      ? `Preserve the explicit output contract exactly. Return one JSON object with these required top-level key types and no prose: ${responseOnlyJsonKeyContractText(contract)}.`
+      : "Preserve the authoritative output shape exactly.",
+  ].join(" ");
+}
+
+function assessResponseOnlyJsonContract(result, contract) {
+  if (!contract) {
+    return {
+      ok: true,
+      missingKeys: [],
+      unexpectedKeys: [],
+      typeMismatches: [],
+      enumMismatches: [],
+      invalidItemIds: [],
+      omittedItemIds: [],
+      duplicateItemIds: [],
+      malformedItemReferences: [],
+      invalidMissingItemFields: [],
+      invalidAuditSemantics: [],
+    };
+  }
+  const value = parseStrictResponseOnlyJson(result);
+  if (!value) {
+    return {
+      ok: false,
+      missingKeys: [...contract.requiredKeys],
+      unexpectedKeys: [],
+      typeMismatches: [],
+      enumMismatches: [],
+      invalidItemIds: [],
+      omittedItemIds: contract.completionAudit?.allowedItemIds || [],
+      duplicateItemIds: [],
+      malformedItemReferences: [],
+      invalidMissingItemFields: [],
+      invalidAuditSemantics: [],
+      reason: "The response was not exactly one valid JSON object.",
+    };
+  }
+  const missingKeys = contract.requiredKeys.filter((key) => !Object.hasOwn(value, key));
+  const unexpectedKeys = contract.closedTopLevelShape
+    ? Object.keys(value).filter((key) => !contract.requiredKeys.includes(key))
+    : [];
+  const typeMismatches = contract.requiredKeys.filter((key) => {
+    if (!Object.hasOwn(value, key)) return false;
+    const actual = Array.isArray(value[key]) ? "array" : value[key] === null ? "null" : typeof value[key];
+    return actual !== contract.keyTypes[key];
+  });
+  const enumMismatches = contract.requiredKeys.filter((key) => {
+    const allowed = contract.enumValues?.[key];
+    return Array.isArray(allowed) && allowed.length && Object.hasOwn(value, key) && !allowed.includes(value[key]);
+  });
+  const completionAuditIdentity = assessResponseOnlyCompletionAuditIdentity(
+    value,
+    contract.completionAudit
+  );
+  const structurallyValid =
+    missingKeys.length === 0 &&
+    unexpectedKeys.length === 0 &&
+    typeMismatches.length === 0 &&
+    enumMismatches.length === 0;
+  return {
+    ...completionAuditIdentity,
+    ok: structurallyValid && completionAuditIdentity.ok,
+    missingKeys,
+    unexpectedKeys,
+    typeMismatches,
+    enumMismatches,
+    reason: !structurallyValid
+      ? "The response did not match the explicit top-level JSON contract."
+      : !completionAuditIdentity.ok
+        ? "The completion audit did not classify the exact task-packet item IDs once each."
+        : "The explicit JSON contract is satisfied.",
+  };
+}
+
+function responseOnlyJsonKeyContractText(contract) {
+  if (!contract) return "";
+  const keyContract = contract.requiredKeys
+    .map((key) => {
+      const allowed = contract.enumValues?.[key];
+      const enumText = Array.isArray(allowed) && allowed.length
+        ? ` enum=${allowed.map((value) => JSON.stringify(value)).join("|")}`
+        : "";
+      return `${JSON.stringify(key)}:${contract.keyTypes[key]}${enumText}`;
+    })
+    .join(", ");
+  const allowedItemIds = contract.completionAudit?.allowedItemIds || [];
+  const missingItemContract = (contract.completionAudit?.missingItemRequiredKeys || [])
+    .map((key) => {
+      const allowed = contract.completionAudit?.missingItemEnumValues?.[key];
+      const enumText = Array.isArray(allowed) && allowed.length
+        ? ` enum=${allowed.map((value) => JSON.stringify(value)).join("|")}`
+        : "";
+      return `${JSON.stringify(key)}:${contract.completionAudit?.missingItemKeyTypes?.[key]}${enumText}`;
+    })
+    .join(", ");
+  return allowedItemIds.length
+    ? `${keyContract}; each missing[] entry requires: ${missingItemContract}; completion-audit item IDs must each appear exactly once across covered_item_ids or missing[].item_id and must come from: ${allowedItemIds.map((value) => JSON.stringify(value)).join(", ")}`
+    : keyContract;
+}
+
+function responseOnlyJsonRepairInstruction(contract, assessment = {}) {
+  const keyContract = responseOnlyJsonKeyContractText(contract);
+  const diagnostics = [
+    assessment.missingKeys?.length ? `missing keys: ${assessment.missingKeys.join(", ")}` : "",
+    assessment.unexpectedKeys?.length ? `undeclared top-level keys: ${assessment.unexpectedKeys.join(", ")}` : "",
+    assessment.typeMismatches?.length ? `wrong value types: ${assessment.typeMismatches.join(", ")}` : "",
+    assessment.enumMismatches?.length ? `values outside their declared enums: ${assessment.enumMismatches.join(", ")}` : "",
+    assessment.invalidItemIds?.length ? `item IDs absent from the exact task packet: ${assessment.invalidItemIds.join(", ")}` : "",
+    assessment.omittedItemIds?.length ? `unclassified task item IDs: ${assessment.omittedItemIds.join(", ")}` : "",
+    assessment.duplicateItemIds?.length ? `item IDs classified more than once: ${assessment.duplicateItemIds.join(", ")}` : "",
+    assessment.malformedItemReferences?.length ? `malformed item references: ${assessment.malformedItemReferences.join(", ")}` : "",
+    assessment.invalidMissingItemFields?.length ? `invalid missing-item fields: ${assessment.invalidMissingItemFields.join(", ")}` : "",
+    assessment.invalidAuditSemantics?.length ? `invalid completion-audit semantics: ${assessment.invalidAuditSemantics.join(", ")}` : "",
+  ].filter(Boolean).join("; ");
+  return [
+    "Your previous response violated the current explicit JSON output contract.",
+    diagnostics ? `Contract diagnostics: ${diagnostics}.` : "Return exactly one parseable JSON object with no prose or markdown fence.",
+    `Required top-level key types: ${keyContract}.`,
+    "Answer the authoritative current request; do not copy a nested example or candidate object from its input.",
+  ].join(" ");
+}
+
+function responseOnlyJsonStopResult(goal = "") {
+  const source = String(goal || "");
+  if (/[\u3040-\u30ff]/u.test(source)) {
+    return "このメッセージには、指定形式を満たす信頼できる回答を作成できませんでした。";
+  }
+  if (/\p{Script=Han}/u.test(source)) {
+    return "这条消息暂时没有生成符合指定格式且可靠的答复。";
+  }
+  return "I could not produce a reliable response in the required format for this message.";
+}
+
+function naturalUnusableResponseStopResult(goal = "") {
+  const source = String(goal || "");
+  if (/[\u3040-\u30ff]/u.test(source)) {
+    return "このメッセージには、信頼できる回答を作成できませんでした。";
+  }
+  if (/\p{Script=Han}/u.test(source)) {
+    return "这条消息暂时没有生成可靠的答复。";
+  }
+  return "I could not produce a reliable response for this message.";
+}
+
+function responseOnlyContractFallbackResult(contract, message) {
+  if (!contract) return message;
+  const value = {};
+  for (const key of contract.requiredKeys) {
+    const allowed = contract.enumValues?.[key];
+    if (Array.isArray(allowed) && allowed.length) {
+      value[key] = allowed[0];
+      continue;
+    }
+    if (contract.keyTypes[key] === "array") value[key] = [];
+    else if (contract.keyTypes[key] === "boolean") value[key] = false;
+    else if (contract.keyTypes[key] === "number") value[key] = 0;
+    else if (contract.keyTypes[key] === "object") value[key] = {};
+    else value[key] = "";
+  }
+  const preferredMessageKeys = [
+    "message",
+    "summary",
+    "reason",
+    "error",
+    "diagnostic",
+    "detail",
+    "chat_reply",
+    "ack",
+    "confirmation",
+  ];
+  const messageKey = preferredMessageKeys.find(
+    (key) =>
+      Object.hasOwn(value, key) &&
+      contract.keyTypes[key] === "string" &&
+      !contract.enumValues?.[key]?.length
+  ) || contract.requiredKeys.find(
+    (key) => contract.keyTypes[key] === "string" && !contract.enumValues?.[key]?.length
+  );
+  if (messageKey) value[messageKey] = message;
+  const completionAuditItemIds = contract.completionAudit?.allowedItemIds || [];
+  if (completionAuditItemIds.length) {
+    value.covered_item_ids = [];
+    value.missing = completionAuditItemIds.map((itemId) => ({
+      item_id: itemId,
+      requirement: contract.completionAudit?.requestTextByItemId?.[itemId] || message,
+      kind: contract.completionAudit?.requestedArtifactKindsByItemId?.[itemId]?.length ||
+        contract.completionAudit?.forbiddenArtifactKindsByItemId?.[itemId]?.length
+        ? "artifact"
+        : "reply",
+    }));
+  }
+  return JSON.stringify(value);
+}
+
+function boundedTranscriptStopMessage(goal = "") {
+  const text = String(goal || "");
+  if (/[\u3040-\u30ff]/u.test(text)) {
+    return "文字起こしが反復または不足しているため、実際の発話内容を信頼できる形で要約できません。タイトル由来の情報を発話内容として補完していません。";
+  }
+  if (/\p{Script=Han}/u.test(text)) {
+    return "转写内容重复或不足，无法可靠概括实际语音；我没有把标题或描述推断成讲话内容。";
+  }
+  return "The transcript is repetitive or insufficient, so the actual speech cannot be summarized reliably; title or description text was not presented as spoken content.";
+}
+
+async function assessResponseOnlySourceFreeClaims({ config, state, store, result }) {
+  const scoped = currentContinuationEvidence(state, await store.loadEvents());
+  const ledger = buildScsEvidenceLedger({
+    state: scoped.state,
+    context: {
+      events: scoped.events,
+      taskProfile: config.taskProfile,
+      goal: config.goal,
+    },
+  });
+  return evaluateSourceFreeResponseClaims({
+    goal: completionContractGoal(config, state),
+    candidateResult: result,
+    evidenceLedger: ledger,
+  });
+}
+
+function responseOnlySourceFreeRepairInstruction(assessment = {}, outputContract = null) {
+  const categories = Array.isArray(assessment.categories) && assessment.categories.length
+    ? assessment.categories.join(", ")
+    : "external factual claims";
+  return [
+    "No fresh AgInTi evidence manifest or scoped tool evidence is available for this response-only turn.",
+    `Your previous answer asserted unsupported external facts (${categories}).`,
+    "Do not claim publications, named journals or sources, years, validation, benchmarks, quantitative metrics, citations, attributed forecasts, named research resources or tool availability, or source-backed conclusions.",
+    "If the current request explicitly asks for a forecast, you may provide only your own clearly labeled, falsifiable hypothesis or prediction; do not attribute it to a report, paper, study, source, company, or authority.",
+    "This rule applies equally to multilingual wording such as 已有验证, 高风险预测, 検証済み, or 反証可能な予測.",
+    "Return a concise locally framed hypothesis, or state naturally that the external claim cannot be verified from the information available here.",
+    "Keep the outward answer human-facing: do not mention AgInTi, evidence manifests, tool scopes, providers, runtime state, or resume mechanics.",
+    outputContract
+      ? `Preserve the explicit output contract exactly. Return one JSON object with these required top-level key types and no prose: ${responseOnlyJsonKeyContractText(outputContract)}.`
+      : "Preserve the authoritative request's output shape exactly.",
+  ].join(" ");
+}
+
+function responseOnlySourceFreeStopResult(goal = "") {
+  const source = String(goal || "");
+  const message = /[\u3040-\u30ff]/u.test(source)
+    ? "現在の情報だけではこの主張を確認できないため、事実として扱いません。"
+    : /\p{Script=Han}/u.test(source)
+      ? "现有信息不足以核实这项说法，我不会把它当作事实。"
+      : "I cannot verify that claim from the information currently available, so I will not present it as fact.";
+  const usesChatProtocol = /Choose\s+one\s+response\s+shape\s*:[\s\S]{0,500}\bCHAT\s*:/iu.test(
+    source
+  );
+  return `${usesChatProtocol ? "CHAT: " : ""}${message}`;
+}
+
+function applyLocalContextOutputAdaptation(config = {}, state = {}) {
+  const adaptation = state.meta?.localContextOutputAdaptation || {};
+  const adaptedOutputCap = Math.max(0, Number(adaptation.maxOutputTokens || 0));
+  const adaptedContextWindow = Math.max(0, Number(adaptation.contextWindowTokens || 0));
+  const runtimeContextWindow = Math.max(0, Number(config.contextWindowTokens || 0));
+  if (
+    normalizeProviderId(config.provider, "") !== "localllm" ||
+    config.maxOutputTokensExplicit === true ||
+    adaptedOutputCap <= 0 ||
+    (adaptedContextWindow && runtimeContextWindow && adaptedContextWindow !== runtimeContextWindow)
+  ) {
+    return config;
+  }
+  return {
+    ...config,
+    maxOutputTokens: Math.min(
+      Math.max(1, Number(config.maxOutputTokens || 8192)),
+      adaptedOutputCap
+    ),
+    localContextOutputAdapted: true,
+  };
+}
+
+function retainLocalContextOutputAdaptation(state, config, maxOutputTokens, step) {
+  if (config.maxOutputTokensExplicit === true || !Number(maxOutputTokens || 0)) return false;
+  state.meta = state.meta || {};
+  state.meta.localContextOutputAdaptation = {
+    provider: "localllm",
+    contextWindowTokens: Math.max(0, Number(config.contextWindowTokens || 0)),
+    maxOutputTokens: Number(maxOutputTokens),
+    learnedAtStep: step,
+    learnedAt: new Date().toISOString(),
+  };
+  return true;
+}
+
 async function finishWithResponseOnlyModelTurn({ client, config, state, store, observers, sessionId }) {
+  async function stopForOutputContract({ step, assessment, contract, mode }) {
+    const stoppedResult = responseOnlyContractFallbackResult(
+      contract,
+      responseOnlyJsonStopResult(completionContractGoal(config, state))
+    );
+    const fallback = {
+      step,
+      mode,
+      reason: assessment.reason,
+      requiredKeys: contract.requiredKeys,
+      missingKeys: assessment.missingKeys,
+      unexpectedKeys: assessment.unexpectedKeys,
+      typeMismatches: assessment.typeMismatches,
+      enumMismatches: assessment.enumMismatches,
+      invalidItemIds: assessment.invalidItemIds,
+      omittedItemIds: assessment.omittedItemIds,
+      duplicateItemIds: assessment.duplicateItemIds,
+      malformedItemReferences: assessment.malformedItemReferences,
+      invalidMissingItemFields: assessment.invalidMissingItemFields,
+      invalidAuditSemantics: assessment.invalidAuditSemantics,
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      outputContractBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "response_only_output_contract_required", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.output_contract_failed_closed", fallback);
+    await store.appendEvent("session.stopped", {
+      reason: "response_only_output_contract_required",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.output_contract_failed_closed", fallback);
+    observers.event("session.stopped", {
+      reason: "response_only_output_contract_required",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "response_only_output_contract_required",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
+  async function stopForEmptyResponseOnlyEnvelope({ step, assessment, contract }) {
+    const stoppedResult = responseOnlyContractFallbackResult(
+      contract,
+      naturalUnusableResponseStopResult(completionContractGoal(config, state))
+    );
+    const detail = {
+      step,
+      mode: "response-only-empty-payload-fail-closed",
+      reason: assessment.reason,
+      responseKeys: assessment.responseKeys || [],
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      emptyPayloadBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "empty_response_only_payload", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.empty_payload_failed_closed", detail);
+    await store.appendEvent("session.stopped", {
+      reason: "empty_response_only_payload",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.empty_payload_failed_closed", detail);
+    observers.event("session.stopped", {
+      reason: "empty_response_only_payload",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "empty_response_only_payload",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
+  async function requestWithResponseOnlyLocalContextRecovery({ step, mode }) {
+    const requestRuntimeConfig = applyLocalContextOutputAdaptation(config, state);
+    try {
+      return await requestDirectResponse(client, requestRuntimeConfig, state.messages);
+    } catch (error) {
+      if (!isLocalContextBudgetError(error)) throw error;
+      state.meta = state.meta || {};
+      const retried = state.meta.localContextBudgetRetries || {};
+      const retryKey = `response-only:${mode}`;
+      if (retried[retryKey]) throw error;
+
+      const requestMessages = Array.isArray(state.messages) ? state.messages : [];
+      const currentOutputTokens = Math.max(
+        0,
+        Number(requestRuntimeConfig.maxOutputTokens || 0)
+      );
+      const adaptImplicitOutputCap = requestRuntimeConfig.maxOutputTokensExplicit !== true;
+      const retryOutputTokens = adaptImplicitOutputCap
+        ? Math.min(Math.max(currentOutputTokens || 8192, 2048), 4096)
+        : currentOutputTokens || undefined;
+      const retryRuntimeConfig = {
+        ...requestRuntimeConfig,
+        ...(retryOutputTokens ? { maxOutputTokens: retryOutputTokens } : {}),
+      };
+      const compactMessages = buildContextBudgetCompactionMessages(
+        state,
+        retryRuntimeConfig,
+        null,
+        step,
+        {
+          heading: "A response-only LocalLLM request exceeded the local context window.",
+          detail: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+          recoveryInstruction:
+            "Answer the current response-only request directly from the compacted authoritative context above. Do not claim fresh external evidence unless the compacted context contains a current evidence manifest or scoped tool evidence.",
+        }
+      );
+      const detail = {
+        step,
+        mode,
+        provider: config.provider,
+        model: config.model,
+        messageCharsBefore: countMessageChars(requestMessages),
+        messageCharsAfter: countMessageChars(compactMessages),
+        messageTokensBefore: estimateMessageTokens(requestMessages),
+        messageTokensAfter: estimateMessageTokens(compactMessages),
+        maxOutputTokens: retryOutputTokens || 0,
+        outputCapAdapted: adaptImplicitOutputCap,
+        error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+      };
+      state.messages = compactMessages;
+      resetStaticDiscoveryAfterContextLoss(state, "response-only-local-context-budget-retry", {
+        preserveStaticEvidence: true,
+      });
+      state.meta.localContextBudgetRetries = {
+        ...retried,
+        [retryKey]: true,
+      };
+      state.meta.lastResponseOnlyContextBudgetRecovery = detail;
+      retainLocalContextOutputAdaptation(
+        state,
+        requestRuntimeConfig,
+        adaptImplicitOutputCap ? retryOutputTokens : 0,
+        step
+      );
+      await store.appendEvent("model.local_context_budget_exceeded", detail);
+      await store.appendEvent("history.compacted_for_local_context_retry", detail);
+      observers.event("model.local_context_budget_exceeded", detail);
+      observers.event("history.compacted_for_local_context_retry", detail);
+      emitConsole(
+        config,
+        "Local provider context exceeded its configured window for a response-only turn; compacted authoritative context and retrying once.",
+        { kind: "meta" }
+      );
+      await store.saveState(state);
+      return await requestDirectResponse(client, retryRuntimeConfig, state.messages);
+    }
+  }
+
+  async function stopForBoundedTranscriptQuality({ step, assessment, contract }) {
+    const stoppedResult = responseOnlyContractFallbackResult(
+      contract,
+      boundedTranscriptStopMessage(completionContractGoal(config, state))
+    );
+    const fallback = {
+      step,
+      mode: "response-only-transcript-quality-fail-closed",
+      reason: assessment.reason,
+      transcriptQuality: assessment.quality,
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      boundedTranscriptQualityBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "unreliable_bounded_transcript", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.transcript_quality_failed_closed", fallback);
+    await store.appendEvent("session.stopped", {
+      reason: "unreliable_bounded_transcript",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.transcript_quality_failed_closed", fallback);
+    observers.event("session.stopped", {
+      reason: "unreliable_bounded_transcript",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "unreliable_bounded_transcript",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
+  async function stopForResponseOnlyContextEcho({ step, assessment, contract, mode }) {
+    const stoppedResult = responseOnlyContractFallbackResult(
+      contract,
+      responseOnlyContextEchoStopMessage(completionContractGoal(config, state))
+    );
+    const fallback = {
+      step,
+      mode,
+      reason: assessment.reason,
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      staleContextReplayBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "stale_response_context_replay", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.context_echo_failed_closed", fallback);
+    await store.appendEvent("session.stopped", {
+      reason: "stale_response_context_replay",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.context_echo_failed_closed", fallback);
+    observers.event("session.stopped", {
+      reason: "stale_response_context_replay",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "stale_response_context_replay",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
+  async function stopForResponseOnlyInternalScaffold({ step, decision, contract }) {
+    const stoppedResult = responseOnlyContractFallbackResult(contract, decision.result);
+    const detail = {
+      step,
+      mode: "response-only-internal-runtime-scaffold-fail-closed",
+      reason: "model_did_not_execute",
+      markers: decision.detail?.markers || [],
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      internalRuntimeScaffoldBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "model_did_not_execute", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.internal_runtime_scaffold_failed_closed", detail);
+    await store.appendEvent("session.stopped", {
+      reason: "model_did_not_execute",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.internal_runtime_scaffold_failed_closed", detail);
+    observers.event("session.stopped", {
+      reason: "model_did_not_execute",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "model_did_not_execute",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
+  async function stopForResponseOnlySourceFreeClaims({
+    step,
+    assessment,
+    contract,
+    mode = "response-only-fail-closed",
+  }) {
+    const stoppedResult = responseOnlyContractFallbackResult(
+      contract,
+      responseOnlySourceFreeStopResult(completionContractGoal(config, state))
+    );
+    const fallback = {
+      step,
+      mode,
+      reason: assessment.reason,
+      categories: assessment.categories,
+      unsupportedClaims: assessment.unsupportedClaims || [],
+      result: publicCompletionText(stoppedResult, 500),
+    };
+    state.meta = state.meta || {};
+    state.meta.responseOnly = {
+      stoppedAt: new Date().toISOString(),
+      provider: config.provider,
+      model: config.model,
+      sourceFreeClaimBlocked: true,
+    };
+    state.updatedAt = state.meta.responseOnly.stoppedAt;
+    state.messages.push({ role: "assistant", content: stoppedResult });
+    appendChatEntry(state, "assistant", stoppedResult);
+    updateGoalStatus(state, "paused", "source_free_evidence_required", state.updatedAt);
+    await store.saveState(state);
+    await store.appendEvent("response_only.source_free_claim_failed_closed", fallback);
+    await store.appendEvent("session.stopped", {
+      reason: "source_free_evidence_required",
+      result: stoppedResult,
+      mode: "response-only",
+    });
+    observers.event("response_only.source_free_claim_failed_closed", fallback);
+    observers.event("session.stopped", {
+      reason: "source_free_evidence_required",
+      result: stoppedResult,
+      sessionId,
+      mode: "response-only",
+    });
+    emitConsole(config, stoppedResult, { kind: "assistant", markdown: true });
+    return {
+      sessionId,
+      stopped: true,
+      reason: "source_free_evidence_required",
+      result: stoppedResult,
+      ...goalRunMetadata(state),
+    };
+  }
+
   await store.appendEvent("model.requested", {
     step: 1,
     provider: config.provider,
@@ -4094,17 +5803,606 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     mode: "response-only",
   });
 
-  const response = await requestDirectResponse(client, config, state.messages);
+  const response = await requestWithResponseOnlyLocalContextRecovery({
+    step: 1,
+    mode: "response-only",
+  });
   const rawAssistantMessage = response.choices[0]?.message;
-  if (!rawAssistantMessage) {
-    throw new Error("Response-only model request returned no assistant message.");
+  let result = responseOnlyResultFromMessage(rawAssistantMessage);
+  let finalAssistantMessage = rawAssistantMessage;
+  let finalResponseStep = 1;
+  const outputContract = responseOnlyJsonContract(config, state);
+  let perfectAuditReviewedResult = "";
+  let outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+
+  async function confirmResponseOnlyPerfectAudit(assessment) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only-perfect-audit-confirmation",
+      acceptanceKey: assessment.acceptanceKey,
+      scoreKey: assessment.scoreKey,
+      scoreCount: assessment.scoreCount,
+      maximumScore: assessment.maximumScore,
+      issueKeys: assessment.issueKeys,
+    };
+    await store.appendEvent("response_only.perfect_audit_confirmation_requested", detail);
+    observers.event("response_only.perfect_audit_confirmation_requested", detail);
+    state.messages.push({
+      role: "user",
+      content: responseOnlyPerfectAuditInstruction(assessment, outputContract),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-perfect-audit-confirmation",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-perfect-audit-confirmation",
+    });
+    const confirmationResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-perfect-audit-confirmation",
+    });
+    finalAssistantMessage = confirmationResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return {
+        terminal: await stopForOutputContract({
+          step: finalResponseStep,
+          assessment: outputAssessment,
+          contract: outputContract,
+          mode: "response-only-perfect-audit-confirmation-contract-fail-closed",
+        }),
+      };
+    }
+    const confirmedAssessment = assessResponseOnlyPerfectAudit({
+      goal: completionContractGoal(config, state),
+      result,
+    });
+    perfectAuditReviewedResult = confirmedAssessment.requiresConfirmation ? result : "";
+    const reviewed = {
+      ...detail,
+      step: finalResponseStep,
+      outcome: confirmedAssessment.requiresConfirmation ? "confirmed-perfect" : "revised",
+    };
+    await store.appendEvent("response_only.perfect_audit_reviewed", reviewed);
+    observers.event("response_only.perfect_audit_reviewed", reviewed);
+    return { terminal: null, assessment: confirmedAssessment };
   }
-  if (Array.isArray(rawAssistantMessage.tool_calls) && rawAssistantMessage.tool_calls.length) {
-    throw new Error("Response-only model request returned an unexpected tool call.");
+
+  if (!outputAssessment.ok) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only",
+      reason: outputAssessment.reason,
+      requiredKeys: outputContract.requiredKeys,
+      missingKeys: outputAssessment.missingKeys,
+      unexpectedKeys: outputAssessment.unexpectedKeys,
+      typeMismatches: outputAssessment.typeMismatches,
+      enumMismatches: outputAssessment.enumMismatches,
+      invalidItemIds: outputAssessment.invalidItemIds,
+      omittedItemIds: outputAssessment.omittedItemIds,
+      duplicateItemIds: outputAssessment.duplicateItemIds,
+      malformedItemReferences: outputAssessment.malformedItemReferences,
+      invalidMissingItemFields: outputAssessment.invalidMissingItemFields,
+      invalidAuditSemantics: outputAssessment.invalidAuditSemantics,
+      preview: publicCompletionText(result, 300),
+    };
+    await store.appendEvent("response_only.output_contract_rejected", detail);
+    observers.event("response_only.output_contract_rejected", detail);
+    state.messages.push({
+      role: "user",
+      content: responseOnlyJsonRepairInstruction(outputContract, outputAssessment),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-contract-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-contract-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-contract-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (outputAssessment.ok) {
+      const repaired = {
+        step: finalResponseStep,
+        mode: "response-only-contract-repair",
+        requiredKeys: outputContract.requiredKeys,
+      };
+      await store.appendEvent("response_only.output_contract_repaired", repaired);
+      observers.event("response_only.output_contract_repaired", repaired);
+    } else {
+      return await stopForOutputContract({
+        step: finalResponseStep,
+        assessment: outputAssessment,
+        contract: outputContract,
+        mode: "response-only-contract-fail-closed",
+      });
+    }
   }
-  const result = redactSensitiveText(rawAssistantMessage.content || "").trim();
-  if (!result) {
-    throw new Error("Response-only model request returned empty content.");
+  let emptyEnvelopeAssessment = assessResponseOnlyEmptyEnvelope({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!emptyEnvelopeAssessment.ok) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only-empty-payload-repair",
+      reason: emptyEnvelopeAssessment.reason,
+      responseKeys: emptyEnvelopeAssessment.responseKeys || [],
+    };
+    await store.appendEvent("response_only.empty_payload_repair_requested", detail);
+    observers.event("response_only.empty_payload_repair_requested", detail);
+    state.messages.push({
+      role: "user",
+      content: [
+        "Your previous JSON matched the field types but contained no usable outward response.",
+        "Answer the authoritative current request with a concise human-facing message, a real task-scoped attachment, a concrete continuation question, or another substantive payload required by the task.",
+        "Do not invent work, repeat host metadata, or mark an unhandled task complete.",
+        outputContract
+          ? `Preserve the explicit JSON contract exactly: ${responseOnlyJsonKeyContractText(outputContract)}.`
+          : "Preserve the authoritative output shape exactly.",
+      ].join(" "),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-empty-payload-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-empty-payload-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-empty-payload-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return await stopForOutputContract({
+        step: finalResponseStep,
+        assessment: outputAssessment,
+        contract: outputContract,
+        mode: "response-only-empty-payload-repair-contract-fail-closed",
+      });
+    }
+    emptyEnvelopeAssessment = assessResponseOnlyEmptyEnvelope({
+      goal: completionContractGoal(config, state),
+      result,
+    });
+    if (!emptyEnvelopeAssessment.ok) {
+      return await stopForEmptyResponseOnlyEnvelope({
+        step: finalResponseStep,
+        assessment: emptyEnvelopeAssessment,
+        contract: outputContract,
+      });
+    }
+    const repaired = {
+      ...detail,
+      step: finalResponseStep,
+      meaningfulKeys: emptyEnvelopeAssessment.meaningfulKeys || [],
+    };
+    await store.appendEvent("response_only.empty_payload_repaired", repaired);
+    observers.event("response_only.empty_payload_repaired", repaired);
+  }
+  let perfectAuditAssessment = assessResponseOnlyPerfectAudit({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (perfectAuditAssessment.requiresConfirmation) {
+    const review = await confirmResponseOnlyPerfectAudit(perfectAuditAssessment);
+    if (review.terminal) return review.terminal;
+  }
+  let internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
+    goal: completionContractGoal(config, state),
+    messages: state.messages,
+    result,
+  });
+  if (internalScaffoldLeak.leaks) {
+    const firstDecision = await rejectInternalRuntimeScaffoldCompletion({
+      config,
+      state,
+      store,
+      observers,
+      step: finalResponseStep,
+      mode: "response-only",
+      candidateResult: result,
+      leak: internalScaffoldLeak,
+    });
+    if (firstDecision.action === "stop") {
+      return await stopForResponseOnlyInternalScaffold({
+        step: finalResponseStep,
+        decision: firstDecision,
+        contract: outputContract,
+      });
+    }
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-internal-runtime-scaffold-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-internal-runtime-scaffold-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-internal-runtime-scaffold-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return await stopForOutputContract({
+        step: finalResponseStep,
+        assessment: outputAssessment,
+        contract: outputContract,
+        mode: "response-only-internal-runtime-scaffold-repair-contract-fail-closed",
+      });
+    }
+    internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
+      goal: completionContractGoal(config, state),
+      messages: state.messages,
+      result,
+    });
+    if (internalScaffoldLeak.leaks) {
+      const repeatedDecision = await rejectInternalRuntimeScaffoldCompletion({
+        config,
+        state,
+        store,
+        observers,
+        step: finalResponseStep,
+        mode: "response-only",
+        candidateResult: result,
+        leak: internalScaffoldLeak,
+      });
+      return await stopForResponseOnlyInternalScaffold({
+        step: finalResponseStep,
+        decision: repeatedDecision,
+        contract: outputContract,
+      });
+    }
+    const repaired = {
+      step: finalResponseStep,
+      mode: "response-only-internal-runtime-scaffold-repair",
+      markers: firstDecision.detail?.markers || [],
+    };
+    await store.appendEvent("completion.internal_runtime_scaffold_repaired", repaired);
+    observers.event("completion.internal_runtime_scaffold_repaired", repaired);
+  }
+  let contextEchoAssessment = assessResponseOnlyContextEcho({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!contextEchoAssessment.ok) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only",
+      reason: contextEchoAssessment.reason,
+      preview: publicCompletionText(result, 300),
+    };
+    await store.appendEvent("response_only.context_echo_rejected", detail);
+    observers.event("response_only.context_echo_rejected", detail);
+    state.messages.push({
+      role: "user",
+      content: responseOnlyContextEchoRepairInstruction(
+        contextEchoAssessment,
+        responseOnlyJsonKeyContractText(outputContract)
+      ),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-context-echo-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-context-echo-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-context-echo-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return await stopForOutputContract({
+        step: finalResponseStep,
+        assessment: outputAssessment,
+        contract: outputContract,
+        mode: "response-only-context-echo-repair-contract-fail-closed",
+      });
+    }
+    contextEchoAssessment = assessResponseOnlyContextEcho({
+      goal: completionContractGoal(config, state),
+      result,
+    });
+    if (!contextEchoAssessment.ok) {
+      return await stopForResponseOnlyContextEcho({
+        step: finalResponseStep,
+        assessment: contextEchoAssessment,
+        contract: outputContract,
+        mode: "response-only-context-echo-fail-closed",
+      });
+    }
+    const repaired = {
+      step: finalResponseStep,
+      mode: "response-only-context-echo-repair",
+      reason: contextEchoAssessment.reason,
+    };
+    await store.appendEvent("response_only.context_echo_repaired", repaired);
+    observers.event("response_only.context_echo_repaired", repaired);
+  }
+  let transcriptAssessment = assessBoundedTranscriptResponse({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!transcriptAssessment.ok) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only",
+      reason: transcriptAssessment.reason,
+      transcriptQuality: transcriptAssessment.quality,
+      preview: publicCompletionText(result, 300),
+    };
+    await store.appendEvent("response_only.transcript_quality_rejected", detail);
+    observers.event("response_only.transcript_quality_rejected", detail);
+    state.messages.push({
+      role: "user",
+      content: boundedTranscriptRepairInstruction(
+        transcriptAssessment,
+        responseOnlyJsonKeyContractText(outputContract)
+      ),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-transcript-quality-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-transcript-quality-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-transcript-quality-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+    if (!outputAssessment.ok) {
+      return await stopForOutputContract({
+        step: finalResponseStep,
+        assessment: outputAssessment,
+        contract: outputContract,
+        mode: "response-only-transcript-quality-repair-contract-fail-closed",
+      });
+    }
+    transcriptAssessment = assessBoundedTranscriptResponse({
+      goal: completionContractGoal(config, state),
+      result,
+    });
+    if (!transcriptAssessment.ok) {
+      return await stopForBoundedTranscriptQuality({
+        step: finalResponseStep,
+        assessment: transcriptAssessment,
+        contract: outputContract,
+      });
+    }
+    const repaired = {
+      step: finalResponseStep,
+      mode: "response-only-transcript-quality-repair",
+      reason: transcriptAssessment.reason,
+      transcriptQuality: transcriptAssessment.quality,
+    };
+    await store.appendEvent("response_only.transcript_quality_repaired", repaired);
+    observers.event("response_only.transcript_quality_repaired", repaired);
+  }
+  let sourceFreeAssessment = await assessResponseOnlySourceFreeClaims({
+    config,
+    state,
+    store,
+    result,
+  });
+  if (!sourceFreeAssessment.ok) {
+    const detail = {
+      step: finalResponseStep,
+      mode: "response-only",
+      reason: sourceFreeAssessment.reason,
+      categories: sourceFreeAssessment.categories,
+      hasEvidence: sourceFreeAssessment.hasEvidence,
+      explicitlyUnverified: sourceFreeAssessment.explicitlyUnverified,
+      preview: publicCompletionText(result, 300),
+      unsupportedClaims: sourceFreeAssessment.unsupportedClaims || [],
+    };
+    await store.appendEvent("response_only.source_free_claim_rejected", detail);
+    observers.event("response_only.source_free_claim_rejected", detail);
+    state.messages.push({
+      role: "user",
+      content: responseOnlySourceFreeRepairInstruction(sourceFreeAssessment, outputContract),
+    });
+    await store.saveState(state);
+    finalResponseStep += 1;
+    await store.appendEvent("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-repair",
+    });
+    observers.event("model.requested", {
+      step: finalResponseStep,
+      provider: config.provider,
+      model: config.model,
+      mode: "response-only-repair",
+    });
+    const repairResponse = await requestWithResponseOnlyLocalContextRecovery({
+      step: finalResponseStep,
+      mode: "response-only-repair",
+    });
+    finalAssistantMessage = repairResponse.choices[0]?.message;
+    result = responseOnlyResultFromMessage(finalAssistantMessage);
+    sourceFreeAssessment = await assessResponseOnlySourceFreeClaims({
+      config,
+      state,
+      store,
+      result,
+    });
+    if (sourceFreeAssessment.ok) {
+      outputAssessment = assessResponseOnlyJsonContract(result, outputContract);
+      if (!outputAssessment.ok) {
+        return await stopForOutputContract({
+          step: finalResponseStep,
+          assessment: outputAssessment,
+          contract: outputContract,
+          mode: "response-only-source-free-repair-contract-fail-closed",
+        });
+      }
+      const repaired = {
+        step: finalResponseStep,
+        mode: "response-only-repair",
+        reason: sourceFreeAssessment.reason,
+        categories: sourceFreeAssessment.categories,
+        explicitlyUnverified: sourceFreeAssessment.explicitlyUnverified,
+        unsupportedClaims: sourceFreeAssessment.unsupportedClaims || [],
+      };
+      await store.appendEvent("response_only.source_free_claim_repaired", repaired);
+      observers.event("response_only.source_free_claim_repaired", repaired);
+    } else {
+      return await stopForResponseOnlySourceFreeClaims({
+        step: finalResponseStep,
+        assessment: sourceFreeAssessment,
+        contract: outputContract,
+      });
+    }
+  }
+
+  perfectAuditAssessment = assessResponseOnlyPerfectAudit({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (
+    perfectAuditAssessment.requiresConfirmation &&
+    perfectAuditReviewedResult !== result
+  ) {
+    const review = await confirmResponseOnlyPerfectAudit(perfectAuditAssessment);
+    if (review.terminal) return review.terminal;
+    sourceFreeAssessment = await assessResponseOnlySourceFreeClaims({
+      config,
+      state,
+      store,
+      result,
+    });
+    if (!sourceFreeAssessment.ok) {
+      return await stopForResponseOnlySourceFreeClaims({
+        step: finalResponseStep,
+        assessment: sourceFreeAssessment,
+        contract: outputContract,
+        mode: "response-only-post-audit-source-free-fail-closed",
+      });
+    }
+  }
+
+  emptyEnvelopeAssessment = assessResponseOnlyEmptyEnvelope({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!emptyEnvelopeAssessment.ok) {
+    return await stopForEmptyResponseOnlyEnvelope({
+      step: finalResponseStep,
+      assessment: emptyEnvelopeAssessment,
+      contract: outputContract,
+    });
+  }
+
+  contextEchoAssessment = assessResponseOnlyContextEcho({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!contextEchoAssessment.ok) {
+    return await stopForResponseOnlyContextEcho({
+      step: finalResponseStep,
+      assessment: contextEchoAssessment,
+      contract: outputContract,
+      mode: "response-only-context-echo-post-repair-fail-closed",
+    });
+  }
+
+  internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
+    goal: completionContractGoal(config, state),
+    messages: state.messages,
+    result,
+  });
+  if (internalScaffoldLeak.leaks) {
+    const finalDecision = await rejectInternalRuntimeScaffoldCompletion({
+      config,
+      state,
+      store,
+      observers,
+      step: finalResponseStep,
+      mode: "response-only-post-repair",
+      candidateResult: result,
+      leak: internalScaffoldLeak,
+      allowRepair: false,
+    });
+    return await stopForResponseOnlyInternalScaffold({
+      step: finalResponseStep,
+      decision: finalDecision,
+      contract: outputContract,
+    });
+  }
+
+  transcriptAssessment = assessBoundedTranscriptResponse({
+    goal: completionContractGoal(config, state),
+    result,
+  });
+  if (!transcriptAssessment.ok) {
+    return await stopForBoundedTranscriptQuality({
+      step: finalResponseStep,
+      assessment: transcriptAssessment,
+      contract: outputContract,
+    });
   }
 
   state.meta = state.meta || {};
@@ -4116,7 +6414,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   state.stepsCompleted = 1;
   state.updatedAt = state.meta.responseOnly.completedAt;
   state.messages.push(preserveAssistantMessage({
-    ...rawAssistantMessage,
+    ...finalAssistantMessage,
     role: "assistant",
     content: result,
     tool_calls: undefined,
@@ -4125,7 +6423,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
   updateGoalStatus(state, "completed", "response_only", state.updatedAt);
   await store.saveState(state);
   await store.appendEvent("model.responded", {
-    step: 1,
+    step: finalResponseStep,
     content: result,
     toolCalls: [],
     mode: "response-only",
@@ -4135,7 +6433,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     mode: "response-only",
   });
   observers.event("model.responded", {
-    step: 1,
+    step: finalResponseStep,
     content: result,
     mode: "response-only",
   });
@@ -4802,6 +7100,160 @@ export function shellDiagnosticHint(command = "", result = {}) {
   return "";
 }
 
+export function incompatibleDocumentCompilerSourceBlock(toolName, args = {}) {
+  if (toolName !== "run_command") return null;
+  const sequence = parseTopLevelShellSequence(String(args.command || "").trim());
+  if (
+    !sequence.commands.length ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return null;
+  }
+
+  for (const segment of sequence.commands) {
+    const tokens = tokenizeShellWords(segment).map((token) => String(token || ""));
+    let index = 0;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] || "")) index += 1;
+    const tokenBasename = (value) => path.posix.basename(String(value || "").replace(/\\/g, "/"));
+    if (tokenBasename(tokens[index]) === "env") {
+      index += 1;
+      while (/^-/.test(tokens[index] || "") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] || "")) {
+        index += 1;
+      }
+    }
+    while (["command", "exec", "nohup"].includes(tokenBasename(tokens[index]))) index += 1;
+    const compiler = tokenBasename(tokens[index]).toLocaleLowerCase("en-US");
+    if (!["latexmk", "lualatex", "pdflatex", "xelatex"].includes(compiler)) continue;
+    const valueOptions = new Set(["-aux-directory", "-include-directory", "-jobname", "-output-directory"]);
+    let skipOptionValue = false;
+    const incompatibleSource = tokens.slice(index + 1).find((token) => {
+      if (skipOptionValue) {
+        skipOptionValue = false;
+        return false;
+      }
+      if (token.startsWith("-")) {
+        skipOptionValue = valueOptions.has(token.toLocaleLowerCase("en-US"));
+        return false;
+      }
+      return /\.(?:docx?|html?|markdown|md|odt|pdf|rst|txt)$/iu.test(token);
+    });
+    if (!incompatibleSource) continue;
+    return {
+      blocked: true,
+      recoverable: true,
+      stopRun: false,
+      category: "document-compiler-source-type",
+      reason:
+        `${compiler} requires a LaTeX source, but the requested input is not a .tex file. ` +
+        "Do not run the compiler on Markdown or install a converter solely to repeat this command.",
+      error: "Document compiler input type is incompatible.",
+      diagnosticHint:
+        "Create or use the complete task-scoped .tex source, use an already available declared conversion routine, or return the editable source to a host-managed compilation stage when the task contract assigns compilation to the host.",
+    };
+  }
+  return null;
+}
+
+const HOST_MANAGED_DOCUMENT_COMPILERS = new Set([
+  "latex",
+  "latexmk",
+  "lualatex",
+  "make",
+  "pandoc",
+  "pdflatex",
+  "tectonic",
+  "xetex",
+  "xelatex",
+]);
+
+function hostManagedDocumentCompilerExecutable(command = "", depth = 0) {
+  if (depth > 2) return "";
+  const sequence = parseTopLevelShellSequence(String(command || "").trim());
+  if (
+    !sequence.commands.length ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return "";
+  }
+  const tokenBasename = (value) =>
+    path.posix.basename(String(value || "").replace(/\\/gu, "/"))
+      .toLocaleLowerCase("en-US");
+  for (const segment of sequence.commands) {
+    const tokens = tokenizeShellWords(segment).map((token) => String(token || ""));
+    let index = 0;
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] || "")) index += 1;
+    if (tokenBasename(tokens[index]) === "env") {
+      index += 1;
+      while (
+        /^-/.test(tokens[index] || "") ||
+        /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] || "")
+      ) {
+        index += 1;
+      }
+    }
+    while (["command", "exec", "nohup"].includes(tokenBasename(tokens[index]))) {
+      index += 1;
+    }
+    const executable = tokenBasename(tokens[index]);
+    if (HOST_MANAGED_DOCUMENT_COMPILERS.has(executable)) return executable;
+    if (executable === "typst" && tokens[index + 1] === "compile") return "typst";
+    if (["bash", "sh", "zsh"].includes(executable)) {
+      const shellFlagIndex = tokens
+        .slice(index + 1)
+        .findIndex((token) => /^-[a-z]*c[a-z]*$/iu.test(token));
+      if (shellFlagIndex >= 0) {
+        const nestedCommand = tokens[index + shellFlagIndex + 2] || "";
+        const nestedExecutable = hostManagedDocumentCompilerExecutable(
+          nestedCommand,
+          depth + 1
+        );
+        if (nestedExecutable) return nestedExecutable;
+      }
+    }
+  }
+  return "";
+}
+
+export function hostManagedDocumentCompilerInvocationBlock(
+  state = {},
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (toolName !== "run_command") return null;
+  if (!hostManagedDocumentCompilationRequested(completionContractGoal(config, state))) {
+    return null;
+  }
+  const compiler = hostManagedDocumentCompilerExecutable(args.command || "");
+  if (!compiler) return null;
+  return {
+    blocked: true,
+    recoverable: true,
+    stopRun: false,
+    needsApproval: false,
+    category: "host-managed-document-compiler-dispatch",
+    reason:
+      `The current task assigns document compilation to the host, so ${compiler} must not run in the agent session. ` +
+      "Complete and verify the requested editable source, then finish so the host stage can compile and inspect the derived document.",
+    error: "Document compilation is owned by the host stage.",
+    permissionAdvice: {
+      category: "host-managed-document-compiler-dispatch",
+      autoRecover: true,
+      summary: "The proposed compiler call belongs to the declared host stage.",
+      instruction:
+        "Do not retry a compiler or build wrapper. Continue only the bounded source repair and return the complete editable source for host compilation.",
+      options: [
+        "Finish the task-scoped editable source for the host compiler.",
+        "Report a concrete source-level blocker without invoking a document compiler.",
+      ],
+    },
+  };
+}
+
 export function normalizeNoMatchQueryResult(result = {}, policy = {}) {
   if (
     policy?.noMatchExitIsSuccess !== true ||
@@ -4816,6 +7268,58 @@ export function normalizeNoMatchQueryResult(result = {}, policy = {}) {
     ok: true,
     noMatch: true,
     semanticOutcome: "no-match",
+  };
+}
+
+function runtimeFlagDisabled(value) {
+  if (value === false || value === 0) return true;
+  return /^(false|off|no|0)$/i.test(String(value ?? "").trim());
+}
+
+function exactTmuxListSessionsShellAlias(command = "") {
+  const canonical = canonicalizeShellCommand(command);
+  if (!canonical || canonical.includes("\n")) return null;
+  const sequence = parseTopLevelShellSequence(canonical);
+  if (
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator ||
+    sequence.commands.length !== 1
+  ) {
+    return null;
+  }
+  const tokens = tokenizeShellWords(sequence.commands[0]).map((token) =>
+    String(token || "")
+  );
+  if (tokens.length === 1 && tokens[0] === "tmux_list_sessions") {
+    return { command: canonical, alias: "tool-name-as-shell-command" };
+  }
+  if (
+    tokens.length === 2 &&
+    tokens[0] === "tmux" &&
+    (tokens[1] === "list-sessions" || tokens[1] === "ls")
+  ) {
+    return { command: canonical, alias: "tmux-readonly-list-command" };
+  }
+  return null;
+}
+
+function recoverRunCommandTmuxListAlias(requestedToolName, args = {}, config = {}) {
+  if (requestedToolName !== "run_command") return null;
+  if (
+    runtimeFlagDisabled(config.allowShellTool) ||
+    runtimeFlagDisabled(config.allowTmuxTools) ||
+    runtimeFlagDisabled(config.allowCoordinationTools)
+  ) {
+    return null;
+  }
+  const alias = exactTmuxListSessionsShellAlias(args.command);
+  if (!alias) return null;
+  return {
+    requestedToolName,
+    toolName: "tmux_list_sessions",
+    reason: alias.alias,
+    originalCommand: alias.command,
   };
 }
 
@@ -4915,6 +7419,7 @@ export function shouldShortCircuitToolBatch(toolResult) {
   return Boolean(
     (toolResult?.blocked && toolResult?.permissionAdvice) ||
       toolResult?.category === "malformed-tool-arguments" ||
+      toolResult?.category === "document-compiler-source-type" ||
       toolResult?.category === "tool-contract-violation"
   );
 }
@@ -4930,6 +7435,9 @@ export function shouldPauseForPermissionAdvice(toolResult = {}) {
 export function skippedAfterBlockedToolResult(toolCall, blockedResult) {
   const toolName = toolCall?.function?.name || "unknown";
   const args = sanitizeToolArgs(toolName, safeParseToolArgs(toolCall));
+  const reason = blockedResult?.permissionAdvice
+    ? "Skipped because an earlier tool call in the same assistant message returned permission advice. The runtime stops the batch so the agent cannot retry variants before the user/model sees the blocker."
+    : "Skipped because an earlier tool call in the same assistant message failed a semantic pre-dispatch contract. The runtime stops the batch so later calls cannot act on that invalid premise before the model corrects it.";
   return {
     ok: false,
     blocked: true,
@@ -4937,8 +7445,7 @@ export function skippedAfterBlockedToolResult(toolCall, blockedResult) {
     toolName,
     args,
     category: "blocked-batch",
-    reason:
-      "Skipped because an earlier tool call in the same assistant message returned permissionAdvice. The runtime stops the batch so the agent cannot retry variants before the user/model sees the blocker.",
+    reason,
     priorBlockedTool: blockedResult?.toolName || "",
     priorBlockedCategory: blockedResult?.category || "",
   };
@@ -7283,6 +9790,18 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
           ),
         ].slice(0, 64)
       : [];
+    const generatedOutputMutationPaths = Array.isArray(
+      toolResult.verifiedGeneratedOutputPaths
+    )
+      ? toolResult.verifiedGeneratedOutputPaths
+          .map(safeTaskOwnedCommitPath)
+          .filter(Boolean)
+      : [];
+    const observedCommandMutationPaths = [
+      ...new Set([...commandMutationPaths, ...generatedOutputMutationPaths]),
+    ].slice(0, 64);
+    const mutationObservationComplete =
+      toolResult.mutationObservationComplete === true;
     const exactHeadRestoreCommand = Boolean(
       config.completionFreshMutationRestorePending === true &&
         projectCommandsEquivalent(
@@ -7330,10 +9849,12 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         !scopedTaskArtifactWrite &&
         !readOnlyArtifactValidation &&
         !nonMutatingTestOutputPipeline &&
-        (commandSucceeded || commandMutationPaths.length > 0) &&
+        (commandSucceeded || observedCommandMutationPaths.length > 0) &&
         (
-          commandCanMutateProjectContent(mutationCommand, commandPolicy) ||
-          generatedArtifactProducer
+          observedCommandMutationPaths.length > 0 ||
+          (!mutationObservationComplete &&
+            (commandCanMutateProjectContent(mutationCommand, commandPolicy) ||
+              generatedArtifactProducer))
         )
     );
     if (disposableGeneratedCleanup) {
@@ -7410,7 +9931,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         revision: verification.mutationRevision,
         at: now,
         toolName,
-        paths: commandMutationPaths,
+        paths: observedCommandMutationPaths,
         commandCategory: String(commandPolicy.category || "general-shell"),
       }, config);
       if (
@@ -7447,13 +9968,13 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
             generatedArtifactProducer,
           ]),
         ].slice(0, 12);
-        if (commandMutationPaths.length) {
+        if (observedCommandMutationPaths.length) {
           activeExecutionContract.materialMutationPaths = [
             ...new Set([
               ...(Array.isArray(activeExecutionContract.materialMutationPaths)
                 ? activeExecutionContract.materialMutationPaths
                 : []),
-              ...commandMutationPaths,
+              ...observedCommandMutationPaths,
             ]),
           ].slice(0, 24);
         }
@@ -10561,7 +13082,11 @@ export async function genericArtifactFilenameBlock(toolName, args = {}, config =
 
   const declared = declaredArtifactPaths(state);
   if (declared.some((item) => item === normalized || path.posix.basename(item) === parsed.base)) return null;
-  const requestText = [state.goal, config.goal, ...(state.messages || []).filter((item) => item?.role === "user").slice(-4).map((item) => item.content)]
+  const requestText = [
+    state.meta?.goalContract?.currentRequest,
+    state.goal,
+    config.goal,
+  ]
     .filter(Boolean)
     .join("\n")
     .toLowerCase();
@@ -10686,7 +13211,7 @@ export function toolResultForModel(result) {
 }
 
 export function repeatedStaticToolBlock(state, toolName, args = {}, config = {}) {
-  if (!isStaticDiscoveryToolCall(toolName, args)) return null;
+  if (!isStaticDiscoveryToolCall(toolName, args, config)) return null;
   const requiredPatchRefresh = activePatchContextRefresh(state);
   const boundedFailedTestReadPaths = [
     ...(Array.isArray(config.testFailureRepairContextPaths)
@@ -10717,7 +13242,14 @@ export function repeatedStaticToolBlock(state, toolName, args = {}, config = {})
   });
   const priorCalls = Number(toolLoop.staticCounts?.[signature] || 0);
   const staticTotal = Number(toolLoop.staticTotal || 0);
-  const repeatLimit = toolName === "read_file" ? 1 : 2;
+  // Successful structured reads are reusable evidence. Key the one-use rule by
+  // semantic signature so changing from list_files to an equivalent plain ls
+  // cannot reopen the same discovery. Image perception deliberately retains a
+  // second targeted pass; other read-only diagnostics keep their bounded retry.
+  const oneUseDiscovery = /^(?:browser-open|file-read|file-search|filesystem-list|project-inspect|web-read|web-search):/.test(
+    signature
+  );
+  const repeatLimit = oneUseDiscovery ? 1 : 2;
   if (priorCalls < repeatLimit && staticTotal < STATIC_DISCOVERY_CONVERGENCE_LIMIT) return null;
   const exactOutputs = state.meta?.scs?.taskContract?.exactOutputPaths || [];
   const phaseExhausted = staticTotal >= STATIC_DISCOVERY_CONVERGENCE_LIMIT;
@@ -10816,12 +13348,19 @@ export async function documentQualityCommitAssessment(
   const requestedArtifactKinds = Array.isArray(contract.requiredArtifactKinds)
     ? contract.requiredArtifactKinds
     : [];
+  const hostManagedCompilation = Boolean(
+    contract.hostManagedDocumentCompilation ||
+      hostManagedDocumentCompilationRequested(completionContractGoal(config, state))
+  );
   const documentRequested = Boolean(
-    exactOutputPaths.some((item) => /\.(?:docx|pdf)$/iu.test(String(item || ""))) ||
+    exactOutputPaths.some((item) =>
+      /\.docx$/iu.test(String(item || "")) ||
+      (!hostManagedCompilation && /\.pdf$/iu.test(String(item || "")))
+    ) ||
       requestedArtifactKinds.some((item) =>
-        [".docx", ".pdf"].includes(
-          String(item?.format || item?.extension || item || "").toLowerCase()
-        )
+        String(item?.format || item?.extension || item || "").toLowerCase() === ".docx" ||
+        (!hostManagedCompilation &&
+          String(item?.format || item?.extension || item || "").toLowerCase() === ".pdf")
       )
   );
   if (!documentRequested) return null;
@@ -10837,15 +13376,7 @@ export async function documentQualityCommitAssessment(
       candidateResult: "",
       goal: completionContractGoal(config, state),
       exactOutputPaths,
-      exactInputPaths: [
-        ...(Array.isArray(contract.exactInputPaths)
-          ? contract.exactInputPaths
-          : []),
-        ...exactInputPathsForState(state),
-        ...successfulReadFileEvidencePaths(state.messages || []).map(
-          (item) => item.path
-        ),
-      ],
+      exactInputPaths: authoritativeDocumentInputPaths(state, contract),
       requireVersioned: false,
     });
   } catch (error) {
@@ -10887,7 +13418,8 @@ export async function documentQualityCommitAssessment(
   );
   const documentArtifactProducerCommand = inferredLatexArtifactProducerCommand(
     state,
-    config
+    config,
+    contract
   );
   const repair = completionRepairMutationRequirement({
     contract,
@@ -11021,7 +13553,9 @@ export function recordFailedCommandAttempt(toolLoop = {}, entry = {}) {
 }
 
 function isStaticDiscoveryToolResult(toolResult = {}) {
-  if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {})) return true;
+  if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {}, {
+    commandPolicy: toolResult.commandPolicy,
+  })) return true;
   if (toolResult.toolName !== "run_command") return false;
   if (runCommandResultHasDurableProgress(toolResult)) return false;
   return !expectedRepeatedObservationCommand(toolResult.args?.command);
@@ -11029,7 +13563,9 @@ function isStaticDiscoveryToolResult(toolResult = {}) {
 
 function successfulToolStateProgress(toolResult = {}) {
   if (!toolResult || toolResult.done || toolResult.ok === false || toolResult.blocked || toolResult.skipped) return false;
-  if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {})) {
+  if (isStaticDiscoveryToolCall(toolResult.toolName, toolResult.args || {}, {
+    commandPolicy: toolResult.commandPolicy,
+  })) {
     return false;
   }
   if (toolResult.toolName === "run_command") {
@@ -11104,6 +13640,59 @@ function canvasTargetExists(args = {}, config = {}) {
       return false;
     }
   });
+}
+
+async function canvasDeliveryFingerprint(payload = {}, config = {}) {
+  const identity = {
+    kind: String(payload.kind || ""),
+    selected: payload.selected !== false,
+  };
+  if (payload.path) {
+    try {
+      const target = resolveWorkspacePath(config, payload.path);
+      const stat = await fs.stat(target.absolutePath);
+      if (!stat.isFile()) return "";
+      identity.path = target.relativePath;
+      identity.bytes = stat.size;
+      identity.sha256 = await hashExactOutputFile(target.absolutePath);
+    } catch {
+      return "";
+    }
+  }
+  if (payload.content) identity.contentSha256 = hashForLog(payload.content);
+  if (!payload.path && !payload.content) {
+    identity.noteSha256 = hashForLog(payload.note || "");
+    identity.title = String(payload.title || "");
+  }
+  return hashForLog(JSON.stringify(identity));
+}
+
+function priorCanvasDelivery(state = {}, fingerprint = "") {
+  if (!fingerprint) return null;
+  const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  return [...(Array.isArray(state.meta?.canvasDeliveries) ? state.meta.canvasDeliveries : [])]
+    .reverse()
+    .find(
+      (entry) =>
+        Number(entry?.goalRevision || 0) === goalRevision &&
+        String(entry?.fingerprint || "") === fingerprint
+    ) || null;
+}
+
+function recordCanvasDelivery(state = {}, fingerprint = "", canvasItem = {}) {
+  if (!fingerprint) return;
+  state.meta = state.meta || {};
+  const deliveries = Array.isArray(state.meta.canvasDeliveries)
+    ? state.meta.canvasDeliveries
+    : [];
+  deliveries.push({
+    fingerprint,
+    goalRevision: Math.max(0, Number(state.meta?.goalContract?.revision || 0)),
+    artifactId: String(canvasItem.artifactId || ""),
+    path: String(canvasItem.path || ""),
+    deliveredAt: new Date().toISOString(),
+  });
+  state.meta.canvasDeliveries = deliveries.slice(-40);
 }
 
 export function repeatedNoProgressToolBlock(state, toolName, args = {}, config = {}) {
@@ -13398,6 +15987,169 @@ function isScopedTaskArtifactEvidencePath(value = "", state = {}, config = {}) {
   );
 }
 
+function scopedTaskAbsolutePath(value = "", commandCwd = process.cwd()) {
+  const raw = String(value || "")
+    .trim()
+    .replace(/^(?:["'`])|(?:["'`])$/gu, "")
+    .replace(/\\/gu, "/");
+  if (!raw || raw.includes("\0") || /^https?:\/\//iu.test(raw)) return "";
+  const workspacePath = normalizeWorkspaceInputPath(raw);
+  return path.isAbsolute(workspacePath)
+    ? path.resolve(workspacePath)
+    : path.resolve(commandCwd, workspacePath);
+}
+
+function pathIsInsideOrEqual(root = "", candidate = "") {
+  if (!root || !candidate) return false;
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function scopedTaskArtifactNamespace(state = {}, config = {}) {
+  const artifactRoot =
+    scopedArtifactRoot(completionContractGoal(config, state)) ||
+    String(config.scopedArtifactRoot || "").trim();
+  if (!artifactRoot) return null;
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const absoluteRoot = scopedTaskAbsolutePath(artifactRoot, commandCwd);
+  if (!absoluteRoot || !pathIsInsideOrEqual(commandCwd, absoluteRoot)) return null;
+  const namespaceRoot = path.dirname(absoluteRoot);
+  if (namespaceRoot === commandCwd || !pathIsInsideOrEqual(commandCwd, namespaceRoot)) {
+    return null;
+  }
+  const relativeNamespace = path.relative(commandCwd, namespaceRoot).replace(/\\/gu, "/");
+  if (!relativeNamespace || relativeNamespace.startsWith("..")) return null;
+  return {
+    commandCwd,
+    absoluteRoot,
+    namespaceRoot,
+    relativeNamespace,
+  };
+}
+
+function scopedTaskNamespaceTextReferences(text = "", scope = null) {
+  if (!scope || !String(text || "").trim()) return [];
+  const source = String(text).replace(/\\/gu, "/");
+  const absoluteNamespace = scope.namespaceRoot.replace(/\\/gu, "/");
+  const variants = [...new Set([
+    absoluteNamespace,
+    scope.relativeNamespace,
+    `./${scope.relativeNamespace}`,
+    `/workspace/${scope.relativeNamespace}`,
+  ].filter(Boolean))].sort((left, right) => right.length - left.length);
+  const references = [];
+  for (const prefix of variants) {
+    let offset = 0;
+    while (offset < source.length) {
+      const index = source.indexOf(prefix, offset);
+      if (index < 0) break;
+      const before = index > 0 ? source[index - 1] : "";
+      const afterPrefix = source[index + prefix.length] || "";
+      const beforeBoundary = !before || /[\s="'`(;:[{]/u.test(before);
+      const afterBoundary = !afterPrefix || afterPrefix === "/" || /[\s"'`;&|<>)\]}},，。！？]/u.test(afterPrefix);
+      if (!beforeBoundary || !afterBoundary) {
+        offset = index + prefix.length;
+        continue;
+      }
+      let end = index + prefix.length;
+      while (
+        end < source.length &&
+        !/[\s"'`;&|<>()\[\]{},，。！？]/u.test(source[end])
+      ) {
+        end += 1;
+      }
+      const candidate = source.slice(index, end).replace(/[.:]+$/gu, "");
+      const absolutePath = scopedTaskAbsolutePath(candidate, scope.commandCwd);
+      if (
+        absolutePath &&
+        pathIsInsideOrEqual(scope.namespaceRoot, absolutePath) &&
+        !references.includes(absolutePath)
+      ) {
+        references.push(absolutePath);
+      }
+      offset = Math.max(end, index + prefix.length);
+    }
+  }
+  return references;
+}
+
+function scopedTaskAuthorizedArtifactRoots(state = {}, config = {}, scope = null) {
+  if (!scope) return [];
+  const contract = completionTaskContract(config, state);
+  const roots = [{ path: scope.absoluteRoot, descendants: true }];
+  for (const candidate of contract.declaredSourceRoots || []) {
+    const absolutePath = scopedTaskAbsolutePath(candidate, scope.commandCwd);
+    if (absolutePath) roots.push({ path: absolutePath, descendants: true });
+  }
+  for (const candidate of [
+    ...(contract.exactInputPaths || []),
+    ...(contract.exactOutputPaths || []),
+  ]) {
+    const absolutePath = scopedTaskAbsolutePath(candidate, scope.commandCwd);
+    if (absolutePath) roots.push({ path: absolutePath, descendants: false });
+  }
+  return roots;
+}
+
+function scopedTaskUnauthorizedArtifactReferences({
+  state = {},
+  config = {},
+  text = "",
+  directPaths = [],
+} = {}) {
+  const scope = scopedTaskArtifactNamespace(state, config);
+  if (!scope) return [];
+  const references = [
+    ...scopedTaskNamespaceTextReferences(text, scope),
+    ...directPaths
+      .map((candidate) => scopedTaskAbsolutePath(candidate, scope.commandCwd))
+      .filter((candidate) => pathIsInsideOrEqual(scope.namespaceRoot, candidate)),
+  ];
+  const allowed = scopedTaskAuthorizedArtifactRoots(state, config, scope);
+  return [...new Set(references)].filter((candidate) =>
+    !allowed.some((entry) =>
+      entry.descendants
+        ? pathIsInsideOrEqual(entry.path, candidate)
+        : entry.path === candidate
+    )
+  );
+}
+
+export function scopedTaskArtifactIsolationBlock(state, toolName, args = {}, config = {}) {
+  const directPaths = ["path", "root", "directory"]
+    .map((key) => args?.[key])
+    .filter((value) => typeof value === "string" && value.trim());
+  const text = toolName === "run_command" ? String(args.command || "") : "";
+  if (!text && !directPaths.length) return null;
+  const references = scopedTaskUnauthorizedArtifactReferences({
+    state,
+    config,
+    text,
+    directPaths,
+  });
+  if (!references.length) return null;
+  return {
+    reason: "The requested tool call references an undeclared sibling task artifact namespace.",
+    category: "cross-task-artifact-scope",
+    referencedPaths: references.map((candidate) =>
+      path.relative(config.commandCwd || state.commandCwd || process.cwd(), candidate).replace(/\\/gu, "/")
+    ),
+    permissionAdvice: {
+      category: "cross-task-artifact-scope",
+      autoRecover: true,
+      summary: "Keep evidence and artifacts isolated to the current task.",
+      instruction:
+        "Use the exact current artifact root or an input path explicitly declared by the current task. Do not discover, inspect, validate, copy, or return a sibling task directory.",
+      options: [
+        "Continue inside the current task artifact root.",
+        "Use an explicitly declared current-task input path.",
+      ],
+    },
+  };
+}
+
 function safePatchContextEvidencePath(value = "", state = {}, config = {}) {
   const sourcePath = safeRecoveryEvidencePath(value);
   if (sourcePath) return sourcePath;
@@ -14284,6 +17036,455 @@ export function documentSourceMaterialMutationBlock(
       options: [
         "Patch the derived document source.",
         "Read the authoritative source again without changing it.",
+      ],
+    },
+  };
+}
+
+const RESEARCH_EVIDENCE_MANIFEST_NAME_PATTERN =
+  /(?:research[-_ ]*)?(?:evidence|source|citation|reference)[-_ ]*manifest\.(?:json|jsonl|ya?ml|md|bib)$/iu;
+const RESEARCH_READER_SOURCE_EXTENSIONS = new Set([
+  ".html",
+  ".markdown",
+  ".md",
+  ".qmd",
+  ".rmd",
+  ".rst",
+  ".tex",
+  ".typ",
+]);
+
+function researchEvidenceContractText(state = {}, config = {}) {
+  const goalContract = state.meta?.goalContract || {};
+  const currentContract = [
+    goalContract.activeGoal,
+    goalContract.currentRequest,
+    goalContract.taskGoal,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return (currentContract.length
+    ? currentContract
+    : [state.goal, config.goal].map((item) => String(item || "").trim()).filter(Boolean)
+  )
+    .filter((item, index, items) => items.indexOf(item) === index)
+    .join("\n\n");
+}
+
+function researchEvidenceManifestContractRequired(text = "") {
+  const source = String(text || "");
+  if (!/(?:evidence|source|citation|reference)[-_ ]*manifest/iu.test(source)) {
+    return false;
+  }
+  return Boolean(
+    /["']?research_evidence_contract["']?\s*:\s*\{[\s\S]{0,320}?["']?required["']?\s*:\s*true/iu.test(source) ||
+    /\buse\s+only\b[\s\S]{0,240}\b(?:evidence|source|citation|reference)[-_ ]*manifest\b/iu.test(source) ||
+    /\b(?:authoritative|required|exact(?:-task)?)\b[\s\S]{0,120}\b(?:evidence|source|citation|reference)[-_ ]*manifest\b/iu.test(source) ||
+    /\b(?:evidence|source|citation|reference)[-_ ]*manifest\b[\s\S]{0,120}\b(?:authoritative|required|must|only)\b/iu.test(source) ||
+    /(?:仅|只)(?:能|可|使用|依据|根据)[^。！？；\n]{0,120}(?:证据|來源|来源|引用)(?:清单|清單|清冊|manifest)/u.test(source)
+  );
+}
+
+function researchEvidenceManifestTokens(text = "") {
+  const values = [];
+  const add = (value = "") => {
+    const candidate = String(value || "")
+      .trim()
+      .replace(/^[([{<]+|[\])}>.,;:]+$/gu, "");
+    if (
+      candidate &&
+      RESEARCH_EVIDENCE_MANIFEST_NAME_PATTERN.test(
+        path.posix.basename(candidate.replace(/\\/gu, "/"))
+      ) &&
+      !values.includes(candidate)
+    ) {
+      values.push(candidate);
+    }
+  };
+  const quoted = /["'`]([^"'`\r\n]+\.(?:json|jsonl|ya?ml|md|bib))["'`]/giu;
+  for (const match of String(text || "").matchAll(quoted)) add(match[1]);
+  const unquoted = /(?:^|[\s([{<,:])((?:\.{0,2}\/|\/)?[^\s"'`<>()[\]{},;:]*?(?:evidence|source|citation|reference)[-_A-Za-z0-9.]*manifest\.(?:json|jsonl|ya?ml|md|bib))(?=$|[\s)\]}>.,;:])/gimu;
+  for (const match of String(text || "").matchAll(unquoted)) add(match[1]);
+  return values;
+}
+
+function comparableResearchEvidencePath(value = "", commandCwd = process.cwd()) {
+  const raw = String(value || "").trim().replace(/^['"]|['"]$/gu, "");
+  if (!raw) return "";
+  const workspaceRelative = raw === "/workspace"
+    ? ""
+    : raw.startsWith("/workspace/")
+      ? raw.slice("/workspace/".length)
+      : raw;
+  const absolutePath = path.resolve(commandCwd, workspaceRelative);
+  return process.platform === "win32"
+    ? absolutePath.toLocaleLowerCase("en-US")
+    : absolutePath;
+}
+
+export function requiredResearchEvidenceManifestPaths(
+  state = {},
+  config = {}
+) {
+  const text = researchEvidenceContractText(state, config);
+  if (!researchEvidenceManifestContractRequired(text)) return [];
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const artifactRoot = scopedArtifactRoot(text);
+  return [...new Set(
+    researchEvidenceManifestTokens(text).map((candidate) => {
+      const resolved = path.isAbsolute(candidate)
+        ? path.normalize(candidate)
+        : path.resolve(
+            artifactRoot && !candidate.includes("/") && !candidate.includes("\\")
+              ? artifactRoot
+              : commandCwd,
+            candidate
+          );
+      const relative = path.relative(commandCwd, resolved);
+      return relative && !relative.startsWith("..") && !path.isAbsolute(relative)
+        ? relative.replace(/\\/gu, "/")
+        : resolved.replace(/\\/gu, "/");
+    })
+  )].slice(0, 8);
+}
+
+function researchReaderShellMutationPaths(command = "", depth = 0) {
+  if (depth > 2) return [];
+  const source = canonicalizeShellCommand(command);
+  if (!source) return [];
+  const candidates = [];
+  const append = (value = "") => {
+    const candidate = String(value || "")
+      .trim()
+      .replace(/^["']|["']$/gu, "")
+      .replace(/[),;]+$/gu, "");
+    if (
+      candidate &&
+      !candidate.startsWith("-") &&
+      !/^(?:&\d+|\/dev\/null)$/u.test(candidate) &&
+      RESEARCH_READER_SOURCE_EXTENSIONS.has(
+        path.extname(candidate).toLocaleLowerCase("en-US")
+      )
+    ) {
+      candidates.push(candidate);
+    }
+  };
+  const sequence = parseTopLevelShellSequence(source);
+  if (sequence.openQuote || sequence.trailingEscape) return [];
+  for (const segment of sequence.commands) {
+    for (const match of segment.matchAll(
+      /(?:^|\s)(?:\d*>>?|&>>?)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/gu
+    )) {
+      append(match[1]);
+    }
+    const tokens = tokenizeShellWords(segment);
+    let index = 0;
+    while (/^[A-Za-z_]\w*=/.test(String(tokens[index] || ""))) index += 1;
+    if (tokens[index] === "sudo") index += 1;
+    if (tokens[index] === "env") {
+      index += 1;
+      while (
+        String(tokens[index] || "").startsWith("-") ||
+        /^[A-Za-z_]\w*=/.test(String(tokens[index] || ""))
+      ) {
+        index += 1;
+      }
+    }
+    const executable = path.basename(String(tokens[index] || ""));
+    const operands = tokens.slice(index + 1);
+    if (["bash", "dash", "sh", "zsh"].includes(executable)) {
+      const shellCommandIndex = operands.findIndex((token) => /^-[^-]*c/u.test(token));
+      if (shellCommandIndex >= 0 && operands[shellCommandIndex + 1]) {
+        candidates.push(
+          ...researchReaderShellMutationPaths(
+            operands[shellCommandIndex + 1],
+            depth + 1
+          )
+        );
+      }
+      continue;
+    }
+    if (
+      (executable === "sed" && operands.some((token) => /^--in-place(?:=|$)|^-[^-]*i/u.test(token))) ||
+      (executable === "perl" && operands.some((token) => /^-[^-]*i/u.test(token))) ||
+      ["tee", "touch", "truncate", "rm", "unlink"].includes(executable)
+    ) {
+      for (const operand of operands) append(operand);
+      continue;
+    }
+    if (["cp", "install", "mv"].includes(executable)) {
+      append(operands.filter((token) => !String(token).startsWith("-")).at(-1));
+      continue;
+    }
+    if (
+      ["node", "python", "python3", "ruby"].includes(executable) &&
+      /(?:\bopen\s*\([^\n)]*,\s*["'][^"']*[wax+][^"']*["']|\.(?:append|rename|replace|touch|unlink|write|write_bytes|write_text)\s*\(|\b(?:writeFile|writeFileSync)\s*\()/iu.test(
+        segment
+      )
+    ) {
+      for (const match of segment.matchAll(
+        /\b(?:Path|open|writeFile|writeFileSync)\s*\(\s*["']([^"'\n]+)["']/gu
+      )) {
+        append(match[1]);
+      }
+      for (const match of segment.matchAll(/["']([^"'\n]+)["']/gu)) append(match[1]);
+    }
+  }
+  return [...new Set(candidates)];
+}
+
+function researchReaderMutationPaths(toolName = "", args = {}) {
+  const candidates = [];
+  if (["write_file", "apply_patch"].includes(toolName)) {
+    candidates.push(args.path || args.file || "");
+  }
+  if (toolName === "apply_patch" && typeof args.patch === "string") {
+    try {
+      for (const operation of parsePatchDocument(args.patch)) {
+        candidates.push(operation.path || "", operation.newPath || "");
+      }
+    } catch {
+      // The workspace executor reports malformed patches separately.
+    }
+  }
+  if (toolName === "run_command") {
+    candidates.push(...researchReaderShellMutationPaths(args.command || ""));
+  }
+  return [...new Set(candidates.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function researchEvidenceIdentifiers(value = "") {
+  const text = String(value || "");
+  const identifiers = new Set();
+  const add = (candidate = "") => {
+    const normalized = String(candidate || "")
+      .trim()
+      .replace(/^[{[(]+|[}\])},.;:]+$/gu, "")
+      .toLocaleLowerCase("en-US");
+    if (normalized) identifiers.add(normalized);
+  };
+  for (const match of text.matchAll(/\\cite[a-z*]*\s*(?:\[[^\]]*\]\s*)*\{([^}]+)\}/giu)) {
+    for (const item of String(match[1] || "").split(/[,;]/gu)) add(item);
+  }
+  for (const match of text.matchAll(/\bS\d+(?:-C\d+)?\b/gu)) add(match[0]);
+  for (const match of text.matchAll(/\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+/giu)) add(match[0]);
+  for (const match of text.matchAll(/\barXiv:\s*\d{4}\.\d{4,5}(?:v\d+)?\b/giu)) add(match[0]);
+  for (const match of text.matchAll(/https?:\/\/[^\s<>"'`}\]]+/giu)) add(match[0]);
+  return identifiers;
+}
+
+function researchMutationText(args = {}) {
+  let proposed = String(args.content || args.replace || "");
+  let prior = String(args.search || "");
+  if (typeof args.patch === "string" && args.patch.trim()) {
+    const added = [];
+    const removed = [];
+    for (const line of args.patch.split(/\r?\n/gu)) {
+      if (line.startsWith("+++") || line.startsWith("---")) continue;
+      if (line.startsWith("+")) added.push(line.slice(1));
+      if (line.startsWith("-")) removed.push(line.slice(1));
+    }
+    proposed = added.join("\n");
+    prior = removed.join("\n");
+  }
+  return { proposed, prior };
+}
+
+function newlyIntroducedResearchEvidenceIdentifiers(args = {}) {
+  const { proposed, prior } = researchMutationText(args);
+  const priorIdentifiers = researchEvidenceIdentifiers(prior);
+  return [...researchEvidenceIdentifiers(proposed)].filter(
+    (item) => !priorIdentifiers.has(item)
+  );
+}
+
+function readResearchEvidenceManifestText(requiredPaths = [], commandCwd = process.cwd()) {
+  const contents = [];
+  for (const candidate of requiredPaths) {
+    const absolutePath = path.isAbsolute(candidate)
+      ? candidate
+      : path.resolve(commandCwd, candidate);
+    try {
+      const stat = fsSync.statSync(absolutePath);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > 2 * 1024 * 1024) return "";
+      contents.push(fsSync.readFileSync(absolutePath, "utf8"));
+    } catch {
+      return "";
+    }
+  }
+  return contents.join("\n").toLocaleLowerCase("en-US");
+}
+
+function researchEvidenceManifestSupportsIdentifier(manifestText = "", identifier = "") {
+  const source = String(manifestText || "").toLocaleLowerCase("en-US");
+  const candidate = String(identifier || "").trim().toLocaleLowerCase("en-US");
+  if (!source || !candidate) return false;
+  if (researchEvidenceIdentifiers(source).has(candidate)) return true;
+  if (/^https?:\/\//u.test(candidate)) return source.includes(candidate);
+  const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(
+    `(?:^|[^a-z0-9_.:-])${escaped}(?=$|[^a-z0-9_.:-])`,
+    "u"
+  ).test(source);
+}
+
+export function researchEvidenceManifestMutationBlock(
+  state = {},
+  toolName = "",
+  args = {},
+  config = {}
+) {
+  if (!["write_file", "apply_patch", "run_command"].includes(toolName)) return null;
+  const requiredPaths = requiredResearchEvidenceManifestPaths(state, config);
+  if (!requiredPaths.length) return null;
+  const commandCwd = path.resolve(
+    config.commandCwd || state.commandCwd || process.cwd()
+  );
+  const requiredKeys = new Set(
+    requiredPaths.map((item) => comparableResearchEvidencePath(item, commandCwd))
+  );
+  const mutationPaths = researchReaderMutationPaths(toolName, args);
+  const readerFacingTargets = mutationPaths.filter((candidate) => {
+    const key = comparableResearchEvidencePath(candidate, commandCwd);
+    return (
+      key &&
+      !requiredKeys.has(key) &&
+      RESEARCH_READER_SOURCE_EXTENSIONS.has(
+        path.extname(candidate).toLocaleLowerCase("en-US")
+      )
+    );
+  });
+  if (!readerFacingTargets.length) return null;
+  const readKeys = new Set(
+    successfulReadFileEvidencePaths(state.messages || [])
+      .filter((item) => item.complete === true)
+      .map((item) => comparableResearchEvidencePath(item.path, commandCwd))
+      .filter(Boolean)
+  );
+  const unreadPaths = requiredPaths.filter(
+    (item) => !readKeys.has(comparableResearchEvidencePath(item, commandCwd))
+  );
+  if (unreadPaths.length) {
+    return {
+      reason:
+        `The current research contract makes ${unreadPaths.join(", ")} authoritative, but it has not been completely read in this task state. ` +
+        "Read the exact evidence manifest before changing reader-facing research prose or citations.",
+      category: "research-evidence-manifest-unread",
+      requiredPaths,
+      unreadPaths,
+      targetPaths: readerFacingTargets,
+      permissionAdvice: {
+        category: "research-evidence-manifest-unread",
+        autoRecover: true,
+        summary:
+          "The proposed report mutation is not yet grounded in its explicitly required evidence manifest.",
+        instruction:
+          `Read ${unreadPaths[0]} completely, then revise the requested report using only claims and citations supported there.`,
+        options: [
+          "Read the exact authoritative evidence manifest.",
+          "After that read, apply a bounded report repair with traceable claims.",
+        ],
+      },
+    };
+  }
+  if (toolName === "run_command") {
+    return {
+      reason:
+        "The shell command directly mutates reader-facing research source while an authoritative evidence manifest is active. " +
+        "Use apply_patch or write_file so the proposed prose and evidence identifiers can be checked before mutation.",
+      category: "research-evidence-shell-mutation-unreviewable",
+      requiredPaths,
+      targetPaths: readerFacingTargets,
+      permissionAdvice: {
+        category: "research-evidence-shell-mutation-unreviewable",
+        autoRecover: true,
+        summary: "Direct shell editing would bypass claim-level evidence review.",
+        instruction:
+          "Apply the bounded reader-facing source change with apply_patch or write_file, then run read-only validation or the required compiler separately.",
+        options: [
+          "Use apply_patch for an in-place source correction.",
+          "Use write_file for a new task-scoped source file.",
+          "Keep run_command for read-only checks and required build or compiler commands.",
+        ],
+      },
+    };
+  }
+  const { proposed } = researchMutationText(args);
+  const introducedIdentifiers = newlyIntroducedResearchEvidenceIdentifiers(args);
+  const researchClaimAssessment = evaluateReaderFacingResearchEvidenceClaims({
+    candidateText: proposed,
+  });
+  const unsupportedClaims = researchClaimAssessment.unsupportedClaims || [];
+  if (!introducedIdentifiers.length && !unsupportedClaims.length) return null;
+  const manifestText = readResearchEvidenceManifestText(requiredPaths, commandCwd);
+  if (!manifestText) {
+    return {
+      reason:
+        "The authoritative research evidence manifest is no longer readable, so reader-facing evidence identifiers and attributed claims cannot be checked before mutation.",
+      category: "research-evidence-manifest-unavailable",
+      requiredPaths,
+      targetPaths: readerFacingTargets,
+      permissionAdvice: {
+        category: "research-evidence-manifest-unavailable",
+        autoRecover: true,
+        summary: "The evidence source changed or disappeared after it was read.",
+        instruction:
+          `Restore and reread ${requiredPaths[0]} before adding citations, evidence identifiers, or attributed findings.`,
+        options: ["Restore the exact task evidence manifest and read it again."],
+      },
+    };
+  }
+  const unsupportedIdentifiers = introducedIdentifiers.filter(
+    (item) => !researchEvidenceManifestSupportsIdentifier(manifestText, item)
+  );
+  if (unsupportedIdentifiers.length) {
+    return {
+      reason:
+        `The proposed research edit introduces identifiers absent from the authoritative evidence manifest: ${unsupportedIdentifiers.join(", ")}. ` +
+        "Use only traceable identifiers present in that manifest, or clearly label uncited analysis without fabricating attribution.",
+      category: "research-evidence-identifier-unsupported",
+      requiredPaths,
+      unsupportedIdentifiers,
+      targetPaths: readerFacingTargets,
+      permissionAdvice: {
+        category: "research-evidence-identifier-unsupported",
+        autoRecover: true,
+        summary: "The proposed report edit adds ungrounded citation or source identifiers.",
+        instruction:
+          "Revise the bounded passage using only citation keys, DOI values, URLs, arXiv IDs, and evidence IDs present in the authoritative manifest.",
+        options: [
+          "Use a supported manifest identifier.",
+          "Remove the unsupported attribution and state the claim as a bounded hypothesis when appropriate.",
+        ],
+      },
+    };
+  }
+  const untraceableClaims = unsupportedClaims.filter((claim) => {
+    const identifiers = [...researchEvidenceIdentifiers(claim.preview || "")];
+    return !identifiers.some((identifier) =>
+      researchEvidenceManifestSupportsIdentifier(manifestText, identifier)
+    );
+  });
+  if (!untraceableClaims.length) return null;
+  return {
+    reason:
+      "The proposed research edit attributes an external finding without a traceable identifier from the authoritative evidence manifest. " +
+      "Cite a supported manifest source in the same claim, or rewrite it as clearly labeled analysis or hypothesis.",
+    category: "research-evidence-attribution-untraceable",
+    requiredPaths,
+    untraceableClaims,
+    targetPaths: readerFacingTargets,
+    permissionAdvice: {
+      category: "research-evidence-attribution-untraceable",
+      autoRecover: true,
+      summary: "The proposed report edit contains an untraceable attributed research claim.",
+      instruction:
+        "Revise the bounded claim so it cites an identifier present in the authoritative manifest, or remove the attribution and label any inference explicitly.",
+      options: [
+        "Cite a supported manifest identifier in the attributed claim.",
+        "Rewrite the statement as clearly labeled analysis or a falsifiable hypothesis.",
       ],
     },
   };
@@ -16083,13 +19284,16 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     (staticOrder.some((item) => String(item).startsWith("project-inspect:")) &&
       staticOrder.some((item) => /file-read:.*(?:README|AGENTS?|AGINTI|TASK)/i.test(String(item))) &&
       staticOrder.some((item) => /file-read:.*(?:tests?|specs?|config|analysis|pipeline|src|scripts?)[\\/]/i.test(String(item))));
-  const runtimeConfig = {
-    ...applyLocalFailureRecovery(config, state),
-    ...(retainedDataDiscoveryReady ? { dataProjectDiscoveryReady: true } : {}),
-    ...(currentWorkHasCompletedDeepResearch(state, config)
-      ? { deepResearchCompletedForCurrentWork: true }
-      : {}),
-  };
+  const runtimeConfig = applyLocalContextOutputAdaptation(
+    {
+      ...applyLocalFailureRecovery(config, state),
+      ...(retainedDataDiscoveryReady ? { dataProjectDiscoveryReady: true } : {}),
+      ...(currentWorkHasCompletedDeepResearch(state, config)
+        ? { deepResearchCompletedForCurrentWork: true }
+        : {}),
+    },
+    state
+  );
   const suppressedToolNames = convergenceSuppressedToolNames(state, config);
   if (suppressedToolNames.length) {
     runtimeConfig.convergenceSuppressedToolNames = suppressedToolNames;
@@ -16495,7 +19699,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         (item) => String(item?.id || "").toLowerCase() === "format:.tex"
       )
   )
-    ? inferredLatexArtifactProducerCommand(state, config)
+    ? inferredLatexArtifactProducerCommand(state, config, groundingExecutionContract)
     : "";
   const retainedRepairPacket = state.meta?.failedTestRecoveryPacket;
   const repairedRetainedFailure = Boolean(
@@ -20097,7 +23301,7 @@ async function captureSyntheticSnapshot(store, step, config) {
           ? `Visual previews are disabled. read_image accepts only an owned opaque retained PNG reference through ${INTEGRATION_RETAINED_VISION_MODEL_ID}; paths, URLs, base64, overrides, hosted fallback, and artifact persistence are forbidden.`
           : "Image perception and visual preview tools are disabled."
         : "For draw/plot/graph/chart/diagram/figure requests, publish a canvas artifact proactively.",
-      "For LaTeX/PDF requests, check latexmk/pdflatex first, publish the source and compiled PDF artifacts when available, and avoid reinstalling TeX when an existing toolchain works.",
+      "For LaTeX/PDF requests, check the existing compiler first, pass it a .tex source rather than Markdown or another document type, publish the source and compiled PDF artifacts when available, and avoid installing a converter or rebuilding TeX solely to recover from a source-type mismatch.",
       isRetainedWorkspaceProfile(config)
         ? "Browser and web navigation are disabled."
         : "Use open_url only if the task actually needs the web.",
@@ -20266,6 +23470,14 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           path: imagePath,
           prompt: "Inspect this exact generated image as verification evidence. Describe the visible content, readability, clipping, labels, scale, and any defects that require repair.",
         };
+  }
+  const tmuxListAliasCorrection = !autoCorrection
+    ? recoverRunCommandTmuxListAlias(requestedToolName, args, config)
+    : null;
+  if (tmuxListAliasCorrection) {
+    toolName = tmuxListAliasCorrection.toolName;
+    args = { includePanes: true };
+    autoCorrection = tmuxListAliasCorrection;
   }
   const repositoryCommitPaths = [
     ...(Array.isArray(config.repositoryStateRepairCommitPaths)
@@ -20505,6 +23717,24 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       return result;
     }
   }
+  const hostDocumentCompilerBlock = hostManagedDocumentCompilerInvocationBlock(
+    state,
+    toolName,
+    args,
+    config
+  );
+  if (hostDocumentCompilerBlock) {
+    const result = {
+      ok: false,
+      toolName,
+      args: safeArgs,
+      ...hostDocumentCompilerBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
   const guard = isRetainedVisionWorkspaceProfile(config) && toolName === "read_image"
     ? Object.freeze({ allowed: true, reason: "", category: "integration-retained-vision-reference" })
     : checkToolUse({
@@ -20548,6 +23778,22 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       toolName,
       args: safeArgs,
     };
+  }
+
+  const documentCompilerSourceBlock = incompatibleDocumentCompilerSourceBlock(
+    toolName,
+    args
+  );
+  if (documentCompilerSourceBlock) {
+    const result = {
+      ok: false,
+      toolName,
+      args: safeArgs,
+      ...documentCompilerSourceBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
   }
 
   const prematureArtifactCommit = prematureRequestedArtifactCommitBlock(
@@ -20633,6 +23879,27 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     return result;
   }
 
+  const researchManifestMutationBlock = researchEvidenceManifestMutationBlock(
+    state,
+    toolName,
+    args,
+    config
+  );
+  if (researchManifestMutationBlock) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      ...researchManifestMutationBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
   const documentSourceMutationBlock = documentSourceMaterialMutationBlock(
     state,
     toolName,
@@ -20648,6 +23915,27 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       toolName,
       args: safeArgs,
       ...documentSourceMutationBlock,
+    };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
+  const crossTaskArtifactBlock = scopedTaskArtifactIsolationBlock(
+    state,
+    toolName,
+    args,
+    config
+  );
+  if (crossTaskArtifactBlock) {
+    const result = {
+      ok: false,
+      blocked: true,
+      recoverable: true,
+      needsApproval: false,
+      toolName,
+      args: safeArgs,
+      ...crossTaskArtifactBlock,
     };
     await store.appendEvent("tool.blocked", result);
     observers.event("tool.blocked", result);
@@ -21304,6 +24592,11 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           gitWorktreeBefore,
           gitWorktreeAfter
         );
+        const mutationObservationComplete = Boolean(
+          gitWorktreeBefore &&
+            gitWorktreeAfter &&
+            !["git-workflow", "git-remote"].includes(String(policy.category || ""))
+        );
         const generatedOutputPaths = commandResult.ok !== false
           ? await verifiedGeneratedOutputPaths(state, exactOutputSnapshotsBefore, config)
           : [];
@@ -21340,6 +24633,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
             : {}),
           ...(projectMutationPaths.length
             ? { projectMutationPaths }
+            : {}),
+          ...(mutationObservationComplete
+            ? { mutationObservationComplete: true }
             : {}),
           ...(repositoryStateInspectionSnapshot
             ? {
@@ -21582,6 +24878,41 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           };
         }
 
+        const deliveryFingerprint = await canvasDeliveryFingerprint(
+          normalized.payload,
+          config
+        );
+        const priorDelivery = priorCanvasDelivery(state, deliveryFingerprint);
+        if (priorDelivery) {
+          const reason =
+            "This unchanged artifact was already sent to canvas during the current request. Do not send it again; finish now if no other deliverable remains.";
+          const result = {
+            ok: true,
+            skipped: true,
+            duplicate: true,
+            reason,
+            toolName: "send_to_canvas",
+            args: safeArgs,
+            artifactId: priorDelivery.artifactId,
+            path: normalized.payload.path,
+            category: "duplicate-canvas-delivery",
+          };
+          await store.appendEvent("canvas.duplicate_suppressed", {
+            artifactId: priorDelivery.artifactId,
+            path: normalized.payload.path,
+            goalRevision: priorDelivery.goalRevision,
+            fingerprint: deliveryFingerprint,
+          });
+          observers.event("canvas.duplicate_suppressed", {
+            artifactId: priorDelivery.artifactId,
+            path: normalized.payload.path,
+            goalRevision: priorDelivery.goalRevision,
+          });
+          await store.appendEvent("tool.completed", result);
+          observers.event("tool.completed", result);
+          return result;
+        }
+
         const persisted = await persistCanvasPayloadFile(normalized.payload, { config, store });
         if (!persisted.ok) {
           await store.appendEvent("tool.blocked", {
@@ -21612,6 +24943,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           commandCwd: config.commandCwd,
         };
         await store.appendEvent("canvas.item", canvasItem);
+        recordCanvasDelivery(state, deliveryFingerprint, canvasItem);
         observers.event("canvas.item", canvasItem);
         if (canvasItem.selected) {
           await store.appendEvent("canvas.selected", {
@@ -22450,7 +25782,13 @@ export function completionRepairMutationRequirement({
   };
 }
 
-function inferredLatexArtifactProducerCommand(state = {}, config = {}) {
+function inferredLatexArtifactProducerCommand(state = {}, config = {}, contract = {}) {
+  if (
+    contract?.hostManagedDocumentCompilation === true ||
+    hostManagedDocumentCompilationRequested(completionContractGoal(config, state))
+  ) {
+    return "";
+  }
   const verification = state.meta?.projectVerification || {};
   const sourcePath = [...(verification.mutationHistory || [])]
     .reverse()
@@ -22472,6 +25810,174 @@ function inferredLatexArtifactProducerCommand(state = {}, config = {}) {
   return quotedPath
     ? `${engine} -interaction=nonstopmode -halt-on-error ${quotedPath}`
     : "";
+}
+
+async function rejectCrossTaskArtifactCompletion({
+  config,
+  state,
+  store,
+  observers,
+  step,
+  mode,
+  candidateResult,
+  references,
+}) {
+  state.meta = state.meta || {};
+  const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const artifactRoot = scopedArtifactRoot(completionContractGoal(config, state));
+  const key = `${completionContractKey(config)}:${goalRevision}:cross-task-artifact`;
+  const prior = state.meta.crossTaskArtifactRepair || {};
+  const attempts = prior.key === key ? Math.max(0, Number(prior.attempts || 0)) : 0;
+  const detail = {
+    step,
+    mode,
+    key,
+    repairAttempt: attempts + 1,
+    maxRepairAttempts: 1,
+    referencedPaths: references.map((candidate) =>
+      path.relative(config.commandCwd || state.commandCwd || process.cwd(), candidate).replace(/\\/gu, "/")
+    ),
+  };
+  await store.appendEvent("completion.cross_task_artifact_rejected", detail);
+  observers.event("completion.cross_task_artifact_rejected", detail);
+
+  const last = state.messages?.at(-1);
+  if (
+    mode === "assistant-content" &&
+    last?.role === "assistant" &&
+    String(last.content || "").trim() === String(candidateResult || "").trim() &&
+    !(last.tool_calls || []).length
+  ) {
+    state.messages.pop();
+  }
+
+  if (attempts < 1) {
+    state.meta.crossTaskArtifactRepair = {
+      key,
+      attempts: attempts + 1,
+      step,
+      goalRevision,
+      at: new Date().toISOString(),
+    };
+    const instruction = [
+      "Your proposed completion referenced an undeclared sibling task artifact.",
+      "Do not inspect, reuse, validate, copy, or return artifacts from another task namespace.",
+      artifactRoot
+        ? `Continue only with artifacts inside the exact current root ${artifactRoot}, unless the current request explicitly declares another input path.`
+        : "Continue only with artifacts belonging to the exact current task.",
+      "Create or verify the current task's own result, then return only that result.",
+    ].join(" ");
+    state.messages.push({ role: "user", content: instruction });
+    await store.appendEvent("completion.cross_task_artifact_repair_requested", {
+      ...detail,
+      instruction,
+    });
+    observers.event("completion.cross_task_artifact_repair_requested", detail);
+    return { action: "retry", detail };
+  }
+
+  return {
+    action: "stop",
+    detail,
+    result: naturalUnusableResponseStopResult(completionContractGoal(config, state)),
+  };
+}
+
+async function enforceToolCapableOutputContract({
+  config,
+  state,
+  store,
+  observers,
+  step,
+  mode,
+  candidateResult,
+}) {
+  const contract = responseOnlyJsonContract(config, state);
+  if (!contract) return null;
+  const assessment = assessResponseOnlyJsonContract(candidateResult, contract);
+  state.meta = state.meta || {};
+  if (assessment.ok) {
+    const prior = state.meta.completionOutputContractRepair;
+    if (prior) {
+      const detail = {
+        step,
+        mode,
+        priorRepairStep: prior.step,
+        requiredKeys: contract.requiredKeys,
+      };
+      delete state.meta.completionOutputContractRepair;
+      await store.appendEvent("completion.output_contract_repaired", detail);
+      observers.event("completion.output_contract_repaired", detail);
+    }
+    return null;
+  }
+
+  const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const key = `${completionContractKey(config)}:${goalRevision}:json-output-contract`;
+  const prior = state.meta.completionOutputContractRepair || {};
+  const attempts = prior.key === key ? Math.max(0, Number(prior.attempts || 0)) : 0;
+  const detail = {
+    step,
+    mode,
+    key,
+    repairAttempt: attempts + 1,
+    maxRepairAttempts: 1,
+    reason: assessment.reason,
+    requiredKeys: contract.requiredKeys,
+    missingKeys: assessment.missingKeys,
+    unexpectedKeys: assessment.unexpectedKeys,
+    typeMismatches: assessment.typeMismatches,
+    enumMismatches: assessment.enumMismatches,
+    invalidItemIds: assessment.invalidItemIds,
+    omittedItemIds: assessment.omittedItemIds,
+    duplicateItemIds: assessment.duplicateItemIds,
+    malformedItemReferences: assessment.malformedItemReferences,
+    invalidMissingItemFields: assessment.invalidMissingItemFields,
+    invalidAuditSemantics: assessment.invalidAuditSemantics,
+    preview: publicCompletionText(candidateResult, 300),
+  };
+  await store.appendEvent("completion.output_contract_rejected", detail);
+  observers.event("completion.output_contract_rejected", detail);
+
+  const last = state.messages?.at(-1);
+  if (
+    mode === "assistant-content" &&
+    last?.role === "assistant" &&
+    String(last.content || "").trim() === String(candidateResult || "").trim() &&
+    !(last.tool_calls || []).length
+  ) {
+    state.messages.pop();
+  }
+
+  if (attempts < 1) {
+    state.meta.completionOutputContractRepair = {
+      key,
+      attempts: attempts + 1,
+      step,
+      goalRevision,
+      at: new Date().toISOString(),
+    };
+    const instruction = responseOnlyJsonRepairInstruction(contract, assessment);
+    state.messages.push({ role: "user", content: instruction });
+    await store.appendEvent("completion.output_contract_repair_requested", {
+      ...detail,
+      instruction,
+    });
+    observers.event("completion.output_contract_repair_requested", detail);
+    return { action: "retry", detail };
+  }
+
+  const result = responseOnlyContractFallbackResult(
+    contract,
+    responseOnlyJsonStopResult(completionContractGoal(config, state))
+  );
+  delete state.meta.completionOutputContractRepair;
+  await store.appendEvent("completion.output_contract_failed_closed", {
+    ...detail,
+    result,
+  });
+  observers.event("completion.output_contract_failed_closed", detail);
+  return { action: "stop", detail, result };
 }
 
 async function completionEvidenceDecision({ config, state, store, observers, step, mode, candidateResult = "" }) {
@@ -22504,15 +26010,76 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     return { action: "retry", detail, artifactBlock };
   }
   const claimsIncompleteWork = finishResultClaimsIncompleteWork(candidateResult);
+  const claimsBlocker = finishResultClaimsBlocker(candidateResult);
+  const crossTaskArtifactReferences = scopedTaskUnauthorizedArtifactReferences({
+    state,
+    config,
+    text: candidateResult,
+  });
+  if (crossTaskArtifactReferences.length) {
+    return await rejectCrossTaskArtifactCompletion({
+      config,
+      state,
+      store,
+      observers,
+      step,
+      mode,
+      candidateResult,
+      references: crossTaskArtifactReferences,
+    });
+  }
+  if (state.meta?.crossTaskArtifactRepair) {
+    const repaired = {
+      step,
+      mode,
+      priorRepairStep: state.meta.crossTaskArtifactRepair.step,
+    };
+    delete state.meta.crossTaskArtifactRepair;
+    await store.appendEvent("completion.cross_task_artifact_repaired", repaired);
+    observers.event("completion.cross_task_artifact_repaired", repaired);
+  }
+  const outputContractDecision = await enforceToolCapableOutputContract({
+    config,
+    state,
+    store,
+    observers,
+    step,
+    mode,
+    candidateResult,
+  });
+  if (outputContractDecision) return outputContractDecision;
+  const internalScaffoldLeak = assessInternalRuntimeScaffoldLeak({
+    result: candidateResult,
+    messages: state.messages,
+    goal: completionContractGoal(config, state),
+  });
   const candidateAssessment = {
     step,
     mode,
     scsActive: Boolean(config.scsActive),
     claimsIncompleteWork,
+    claimsBlocker,
+    internalRuntimeScaffoldLeak: internalScaffoldLeak.leaks,
+    internalRuntimeScaffoldMarkers: internalScaffoldLeak.markers,
     resultChars: String(candidateResult || "").length,
   };
   await store.appendEvent("completion.candidate_assessed", candidateAssessment);
   observers.event("completion.candidate_assessed", candidateAssessment);
+  if (internalScaffoldLeak.leaks) {
+    return await rejectInternalRuntimeScaffoldCompletion({
+      config,
+      state,
+      store,
+      observers,
+      step,
+      mode,
+      candidateResult,
+      leak: internalScaffoldLeak,
+    });
+  }
+  if (state.meta?.internalRuntimeScaffoldRepair) {
+    delete state.meta.internalRuntimeScaffoldRepair;
+  }
   // SCS is an additional semantic reviewer, never a substitute for the
   // deterministic execution, project-test, and artifact gates below. A model
   // narrative must not become successful merely because SCS is active.
@@ -22539,13 +26106,21 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     ...currentGoalDocumentArtifactPathsForState(state, config),
   ];
   const documentContractText = `${completionContractGoal(config, state)}\n${candidateResult}`;
+  const hostManagedCompilation = Boolean(
+    assessment.contract?.hostManagedDocumentCompilation ||
+      hostManagedDocumentCompilationRequested(completionContractGoal(config, state))
+  );
   const documentDeliverableRequested =
     documentProfile === "word" ||
-    documentExactOutputPaths.some((item) => /\.(?:docx|pdf)$/iu.test(String(item || ""))) ||
+    documentExactOutputPaths.some((item) =>
+      /\.docx$/iu.test(String(item || "")) ||
+      (!hostManagedCompilation && /\.pdf$/iu.test(String(item || "")))
+    ) ||
     (["book", "latex", "paper", "writing"].includes(documentProfile) &&
-      /(?:\b(?:docx|pdf|word document)\b|可编辑.*(?:文档|文件)|(?:文档|文件).*可编辑)/iu.test(
+      (/(?:\b(?:docx|word document)\b|可编辑.*(?:文档|文件)|(?:文档|文件).*可编辑)/iu.test(
         documentContractText
-      ));
+      ) ||
+        (!hostManagedCompilation && /\bpdf\b/iu.test(documentContractText))));
   if (documentDeliverableRequested) {
     try {
       documentQuality = await validateWordDocumentArtifacts({
@@ -22553,11 +26128,7 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
         candidateResult,
         goal: completionContractGoal(config, state),
         exactOutputPaths: documentExactOutputPaths,
-        exactInputPaths: [
-          ...(assessment.contract?.exactInputPaths || []),
-          ...exactInputPathsForState(state),
-          ...successfulReadFileEvidencePaths(state.messages || []).map((item) => item.path),
-        ],
+        exactInputPaths: authoritativeDocumentInputPaths(state, assessment.contract),
         requireVersioned: (assessment.contract?.requiredGitActions || []).includes("commit"),
       });
     } catch (error) {
@@ -22808,7 +26379,9 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     documentQuality,
     spreadsheetQuality,
   });
-  if (assessment.ok && !claimsIncompleteWork) return { action: "accept", assessment };
+  if (assessment.ok && !claimsIncompleteWork && !claimsBlocker) {
+    return { action: "accept", assessment };
+  }
   if (claimsIncompleteWork) {
     assessment = {
       ...assessment,
@@ -22821,6 +26394,17 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     };
   } else if (hasRealBlocker) {
     return { action: "accept", assessment, acceptedBlocker: true };
+  } else if (claimsBlocker) {
+    assessment = {
+      ...assessment,
+      ok: false,
+      evaluation: {
+        ...assessment.evaluation,
+        ok: false,
+        reason:
+          "The proposed final result claims the task is blocked, but no matching runtime blocker evidence exists.",
+      },
+    };
   }
 
   const blocker = deterministicFinishBlocker(assessment.contract, assessment.ledger, assessment.evaluation);
@@ -22838,7 +26422,8 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
     : "";
   const documentArtifactProducerCommand = inferredLatexArtifactProducerCommand(
     state,
-    config
+    config,
+    assessment.contract
   );
   const freshMutationRequirement = completionRepairMutationRequirement({
     contract: assessment.contract,
@@ -23391,6 +26976,75 @@ function verifiedCompletionFallback(assessment = {}, state = {}) {
     .join(" ");
 }
 
+async function rejectInternalRuntimeScaffoldCompletion({
+  config,
+  state,
+  store,
+  observers,
+  step,
+  mode,
+  candidateResult,
+  leak,
+  allowRepair = true,
+}) {
+  state.meta = state.meta || {};
+  const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const key = `${completionContractKey(config)}:${goalRevision}:internal-runtime-scaffold`;
+  const prior = state.meta.internalRuntimeScaffoldRepair || {};
+  const attempts = prior.key === key ? Math.max(0, Number(prior.attempts || 0)) : 0;
+  const detail = {
+    step,
+    mode,
+    key,
+    repairAttempt: attempts + 1,
+    maxRepairAttempts: allowRepair ? 1 : 0,
+    markers: leak.markers,
+    sourceKinds: leak.sourceKinds,
+    resultChars: String(candidateResult || "").length,
+  };
+  await store.appendEvent("completion.internal_runtime_scaffold_rejected", detail);
+  observers.event("completion.internal_runtime_scaffold_rejected", detail);
+
+  const last = state.messages?.at(-1);
+  if (
+    mode === "assistant-content" &&
+    last?.role === "assistant" &&
+    String(last.content || "").trim() === String(candidateResult || "").trim() &&
+    !(last.tool_calls || []).length
+  ) {
+    state.messages.pop();
+  }
+
+  if (allowRepair && attempts < 1) {
+    state.meta.internalRuntimeScaffoldRepair = {
+      key,
+      attempts: attempts + 1,
+      step,
+      goalRevision,
+      at: new Date().toISOString(),
+    };
+    const instruction = [
+      "Your proposed answer repeated private recovery or compaction scaffolding, a task-packet identifier, a routing acknowledgement, or host-contract language instead of answering the authoritative task.",
+      "Do not mention runtime prompts, context compaction, hidden instructions, request visibility, private task or schedule identifiers, host routing acknowledgements, or output-contract compliance unless the human request explicitly asks about that exact subject.",
+      "Continue the actual current task from the retained goal and evidence: use the smallest enabled tool when action is still required, or return the concrete user-facing result when the task is already complete.",
+      "If the task is genuinely blocked, state only the task-specific external blocker and preserve the session for resume.",
+    ].join(" ");
+    state.messages.push({ role: "user", content: instruction });
+    await store.appendEvent("completion.internal_runtime_scaffold_repair_requested", {
+      ...detail,
+      instruction,
+    });
+    observers.event("completion.internal_runtime_scaffold_repair_requested", detail);
+    return { action: "retry", detail };
+  }
+
+  return {
+    action: "stop",
+    detail,
+    result: naturalUnusableResponseStopResult(completionContractGoal(config, state)),
+  };
+}
+
 async function repairEmptyCompletion({ config, state, store, observers, step, assessment }) {
   state.meta = state.meta || {};
   const key = completionContractKey(config);
@@ -23425,7 +27079,7 @@ async function repairEmptyCompletion({ config, state, store, observers, step, as
   }
   return {
     action: "stop",
-    result: "The model returned no usable answer after one repair attempt. The session is saved and can be resumed with another provider.",
+    result: naturalUnusableResponseStopResult(completionContractGoal(config, state)),
   };
 }
 
@@ -27446,12 +31100,24 @@ async function runAgentOnceUnlocked(config) {
             requestMessages = timeoutRecovery.requestMessages;
           }
         } else if (isLocalContextBudgetError(error) && !contextRetriedSteps[retryKey]) {
+          const currentOutputTokens = Math.max(
+            0,
+            Number(stepRuntimeConfig.maxOutputTokens || 0)
+          );
+          const adaptImplicitOutputCap = stepRuntimeConfig.maxOutputTokensExplicit !== true;
+          const retryOutputTokens = adaptImplicitOutputCap
+            ? Math.min(Math.max(currentOutputTokens || 8192, 2048), 4096)
+            : currentOutputTokens || undefined;
+          const retryRuntimeConfig = {
+            ...stepRuntimeConfig,
+            ...(retryOutputTokens ? { maxOutputTokens: retryOutputTokens } : {}),
+          };
           const requestState = requestMessages === state.messages
             ? state
             : { ...state, messages: requestMessages };
           const compactMessages = buildContextBudgetCompactionMessages(
             requestState,
-            stepRuntimeConfig,
+            retryRuntimeConfig,
             snapshot,
             step,
             {
@@ -27468,6 +31134,8 @@ async function runAgentOnceUnlocked(config) {
             messageCharsAfter: countMessageChars(compactMessages),
             messageTokensBefore: estimateMessageTokens(requestMessages),
             messageTokensAfter: estimateMessageTokens(compactMessages),
+            maxOutputTokens: retryOutputTokens || 0,
+            outputCapAdapted: adaptImplicitOutputCap,
             error: redactSensitiveText(
               error instanceof Error ? error.message : String(error)
             ),
@@ -27482,6 +31150,12 @@ async function runAgentOnceUnlocked(config) {
             [retryKey]: true,
           };
           state.meta.lastLocalContextBudgetRecovery = detail;
+          retainLocalContextOutputAdaptation(
+            state,
+            stepRuntimeConfig,
+            adaptImplicitOutputCap ? retryOutputTokens : 0,
+            step
+          );
           await store.appendEvent("model.local_context_budget_exceeded", detail);
           await store.appendEvent("history.compacted_for_local_context_retry", detail);
           observers.event("model.local_context_budget_exceeded", detail);
@@ -27493,7 +31167,7 @@ async function runAgentOnceUnlocked(config) {
           );
           await store.saveState(state);
           try {
-            response = await requestNextStep(client, stepRuntimeConfig, requestMessages);
+            response = await requestNextStep(client, retryRuntimeConfig, requestMessages);
           } catch (retryError) {
             const timeoutRecovery = await recoverInterruptedModelStep({
               error: retryError,
@@ -27504,7 +31178,7 @@ async function runAgentOnceUnlocked(config) {
               observers,
               snapshot,
               step,
-              stepRuntimeConfig,
+              stepRuntimeConfig: retryRuntimeConfig,
               requestMessages,
             });
             response = timeoutRecovery.response;

@@ -97,6 +97,93 @@ assert.equal(
   "a requested note under the host-owned artifact root is a scoped deliverable"
 );
 
+const rejectedPdfPath = `/workspace/${artifactRoot}/daily-research-brief.pdf`;
+const siblingPdfPath = "/workspace/output/wechat_worker/sibling-task/private-report.pdf";
+const repairPacketGoal = [
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "task",
+    request:
+      "Resolve the rejected PDF quality issue. Materially revise its source, rebuild and inspect the replacement PDF, and return the verified new PDF instead of the unchanged artifact.",
+    artifact_root: `/workspace/${artifactRoot}`,
+  })}`,
+  "Exact task packet:",
+  JSON.stringify({
+    schema: "labcanvas-agent-task-v2",
+    id: "private-host-task-id-must-not-become-a-contract-term",
+    current_request: "Private retained history must not broaden the active task.",
+    artifact_dir: `/workspace/${artifactRoot}`,
+    coverage_followup: {
+      missing: [
+        {
+          kind: "artifact",
+          requirement: "Create and return the explicitly requested PDF artifact.",
+        },
+      ],
+      instruction: "Process only the still-missing requirements for this exact task.",
+    },
+    worker_retry_context: {
+      artifact_dir: `/workspace/${artifactRoot}`,
+      instruction: "Reuse exact-task evidence and do not repeat completed side effects.",
+    },
+    pdf_quality_rejections: [
+      {
+        path: rejectedPdfPath,
+        issues: ["missing_source_level_methods_results_limits"],
+      },
+      {
+        path: siblingPdfPath,
+        issues: ["sibling_task_must_remain_isolated"],
+      },
+    ],
+    repair_packet_focused: true,
+  }),
+].join("\n");
+const repairPacketContract = deriveScsTaskContract({
+  goal: repairPacketGoal,
+  taskProfile: "auto",
+});
+assert.deepEqual(
+  repairPacketContract.exactOutputPaths,
+  [rejectedPdfPath],
+  "a focused host repair packet did not preserve the rejected exact-task PDF as the replacement output"
+);
+assert(
+  !repairPacketContract.exactOutputPaths.includes(siblingPdfPath),
+  "a focused host repair packet imported a sibling task artifact into the active contract"
+);
+assert.deepEqual(
+  repairPacketContract.artifactRepairRequirements,
+  ["Create and return the explicitly requested PDF artifact."],
+  "the focused packet lost its bounded remaining artifact requirement"
+);
+assert.deepEqual(
+  repairPacketContract.artifactQualityIssues,
+  ["missing_source_level_methods_results_limits"],
+  "the focused packet lost the accepted exact-task artifact quality defect"
+);
+assert.doesNotMatch(
+  repairPacketContract.outcome,
+  /private-host-task-id|sibling_task_must_remain_isolated/u,
+  "private or sibling packet data leaked into the active contract outcome"
+);
+const mismatchedRepairPacketContract = deriveScsTaskContract({
+  goal: repairPacketGoal.replace(
+    `"artifact_dir":"/workspace/${artifactRoot}"`,
+    '"artifact_dir":"/workspace/output/wechat_worker/different-task"'
+  ),
+  taskProfile: "auto",
+});
+assert.deepEqual(
+  mismatchedRepairPacketContract.exactOutputPaths,
+  [],
+  "a focused packet whose task root disagreed with the active scope was trusted"
+);
+assert.deepEqual(
+  mismatchedRepairPacketContract.artifactQualityIssues,
+  [],
+  "quality state from a root-mismatched focused packet entered the active contract"
+);
+
 function currentTurnState(currentRequest, activeContract = {}) {
   return {
     goal: currentRequest,
@@ -125,6 +212,81 @@ function currentTurnState(currentRequest, activeContract = {}) {
   };
 }
 
+const longRepairPacketGoal = repairPacketGoal.replace(
+  "Exact task packet:",
+  `${"Retained same-task discussion that must not broaden the contract. ".repeat(240)}\nExact task packet:`
+);
+const compactedRepairPacketContract = completionTaskContract(
+  {
+    goal: longRepairPacketGoal,
+    taskProfile: "auto",
+    commandCwd: "/workspace",
+  },
+  currentTurnState(longRepairPacketGoal, {
+    requiresWorkspaceMutation: true,
+    requiresFileMutation: true,
+  })
+);
+assert.deepEqual(
+  compactedRepairPacketContract.exactOutputPaths,
+  [rejectedPdfPath],
+  "completion-context compaction lost the exact rejected PDF from the retained repair packet"
+);
+assert.deepEqual(
+  compactedRepairPacketContract.artifactQualityIssues,
+  ["missing_source_level_methods_results_limits"],
+  "completion-context compaction lost the retained PDF quality defect"
+);
+
+const productionRevisionRequest =
+  "numbered_message_not_covered Materially revise a source file inside the exact task artifact directory, rebuild and inspect the replacement PDF, and return that verified new PDF with a concise direct answer; do not return the unchanged artifact.";
+const productionRevisionGoal = `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+  mode: "task",
+  request: productionRevisionRequest,
+  artifact_root: `/workspace/${artifactRoot}`,
+})}`;
+const productionRevisionContract = deriveScsTaskContract({
+  goal: productionRevisionGoal,
+  taskProfile: "auto",
+});
+assert.equal(
+  productionRevisionContract.requiresWorkspaceMutation,
+  true,
+  "an explicit scoped source revision was mistaken for read-only artifact delivery"
+);
+assert.equal(
+  productionRevisionContract.requiresFileMutation,
+  true,
+  "the production PDF-repair wording did not require a fresh source-file mutation"
+);
+assert.equal(
+  productionRevisionContract.scopedArtifactOperation,
+  true,
+  "the production PDF repair lost its scoped artifact operation"
+);
+assert(
+  productionRevisionContract.requiredArtifactKinds.some(
+    (item) => item.extension === ".pdf"
+  ),
+  "the production PDF repair lost its replacement PDF deliverable"
+);
+const guardedProductionRevisionContract = completionTaskContract(
+  { goal: productionRevisionGoal, taskProfile: "auto", commandCwd: "/workspace" },
+  currentTurnState(productionRevisionGoal, productionRevisionContract)
+);
+assert.equal(
+  guardedProductionRevisionContract.requiredFreshMutationRevision,
+  1,
+  "a pre-existing scoped PDF could satisfy an explicit material revision request"
+);
+assert.equal(
+  guardedProductionRevisionContract.requiredEvidence.find(
+    (item) => item.category === "file"
+  )?.minimumMutationRevision,
+  1,
+  "the scoped PDF repair did not bind file evidence to a post-request mutation"
+);
+
 const completedResearchContract = completionTaskContract(
   { goal: researchGoal, taskProfile: "auto", commandCwd: "/workspace" },
   currentTurnState(researchGoal, { scopedArtifactDeliverable: true })
@@ -138,6 +300,44 @@ assert.equal(
   "scoped deliverables must not require an unrelated project-source mutation"
 );
 assert.equal(completedResearchContract.requiredFreshMutationRevision, 0);
+
+const messageOnlyRepairRequest =
+  "Create one concise, genuinely useful inspiration point after a quiet period. Replace the prior invalid inspiration. Return exactly one concise natural Chinese group message with one useful connection, a clear evidence boundary, and one actionable experiment. Use only a source actually opened in this turn; if source verification is unavailable, omit literature claims and label the idea as a hypothesis. Create no files or attachments. Return only the corrected natural chat response. Do not create, attach, or return any file or artifact.";
+const messageOnlyRepairGoal = `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+  mode: "task",
+  request: messageOnlyRepairRequest,
+  artifact_root: `/workspace/${artifactRoot}`,
+})}`;
+const messageOnlyRepairContract = deriveScsTaskContract({
+  goal: messageOnlyRepairGoal,
+  taskProfile: "auto",
+});
+assert.equal(
+  messageOnlyRepairContract.requiresWorkspaceMutation,
+  false,
+  "correcting a prior chat reply must not become a workspace mutation"
+);
+assert.equal(
+  messageOnlyRepairContract.requiresFileMutation,
+  false,
+  "correcting a prior chat reply must not become a source-file mutation"
+);
+assert.deepEqual(
+  messageOnlyRepairContract.requiredEvidence.map((item) => item.category),
+  [],
+  "a message-only repair with an explicit no-file contract must not demand file, artifact, or browser evidence"
+);
+const completedMessageOnlyRepairContract = completionTaskContract(
+  { goal: messageOnlyRepairGoal, taskProfile: "auto", commandCwd: "/workspace" },
+  currentTurnState(messageOnlyRepairGoal, {
+    requiresWorkspaceMutation: false,
+    requiresFileMutation: false,
+    requiresSourceGrounding: false,
+    scopedArtifactDeliverable: false,
+  })
+);
+assert.equal(completedMessageOnlyRepairContract.requiredFreshMutationRevision, 0);
+assert.equal(completedMessageOnlyRepairContract.requiresFileMutation, false);
 
 const codeRequest =
   "Fix the stale browser recovery logic in src/agent-runner.js and save a short report.";

@@ -10,6 +10,9 @@ import { resolveWorkspacePath } from "./workspace-tools.js";
 import { LOCALLLM_MODEL_TIERS, normalizeReasoningEffort } from "./model-routing.js";
 import { normalizeProviderBaseURL, normalizeProviderId, resolveProviderDefaults } from "./provider-contract.js";
 import { probeProviderRuntime } from "./provider-runtime.js";
+import { firstJsonObject } from "./json-extraction.js";
+
+export { firstJsonObject } from "./json-extraction.js";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_COUNT = 4;
@@ -150,69 +153,6 @@ function outputTextFromResponse(response) {
     }
   }
   return chunks.join("\n").trim();
-}
-
-function parseModelJsonObject(candidate = "") {
-  const text = String(candidate || "").replace(/^\uFEFF/, "").trim();
-  if (!text) return null;
-  const variants = [
-    text,
-    // Hosted model wrappers occasionally produce near-JSON with trailing
-    // commas. Keep the repair narrow so malformed structure still fails.
-    text.replace(/,\s*([}\]])/g, "$1"),
-  ];
-  for (const variant of uniqueList(variants)) {
-    try {
-      const parsed = JSON.parse(variant);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-    } catch {
-      // Try the next narrow repair variant.
-    }
-  }
-  return null;
-}
-
-export function firstJsonObject(text = "") {
-  const source = String(text || "").trim();
-  if (!source) return null;
-  const direct = parseModelJsonObject(source);
-  if (direct) return direct;
-
-  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-  if (fenced) {
-    const parsedFenced = parseModelJsonObject(fenced);
-    if (parsedFenced) return parsedFenced;
-  }
-
-  const start = source.indexOf("{");
-  if (start < 0) return null;
-  let depth = 0;
-  let quote = "";
-  let escaped = false;
-  for (let index = start; index < source.length; index += 1) {
-    const char = source[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (quote) {
-      if (char === "\\") escaped = true;
-      else if (char === quote) quote = "";
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (char === "{") depth += 1;
-    if (char === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        return parseModelJsonObject(source.slice(start, index + 1));
-      }
-    }
-  }
-  return null;
 }
 
 async function persistToolArtifact(store, subdir, stem, payload) {

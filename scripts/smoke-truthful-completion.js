@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  assessInternalRuntimeScaffoldLeak,
+  assessResponseOnlyEmptyEnvelope,
+  assessResponseOnlyPerfectAudit,
   completionRequirementCoverageInstruction,
   continuationExecutionContractDirective,
   evaluateAuthoritativeStructuredCompletionCoverage,
@@ -13,8 +16,17 @@ import {
   runAgent,
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
+import {
+  assessBoundedTranscriptResponse,
+  assessTranscriptUsability,
+} from "../src/response-only-source-quality.js";
 import { SessionStore } from "../src/session-store.js";
-import { deriveScsTaskContract, finishResultClaimsIncompleteWork } from "../src/scs-evidence.js";
+import {
+  deriveScsTaskContract,
+  evaluateSourceFreeResponseClaims,
+  finishResultClaimsIncompleteWork,
+} from "../src/scs-evidence.js";
+import { tmuxAvailable } from "../src/tmux-tools.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-truthful-completion-"));
@@ -78,6 +90,111 @@ assert.match(sourcePrecedenceInstruction, /closest project instructions/i);
 assert.match(sourcePrecedenceInstruction, /most specific current implementation and tests/i);
 assert.match(sourcePrecedenceInstruction, /stale guides/i);
 assert.match(sourcePrecedenceInstruction, /AGENTS\.md/i);
+
+const degenerateTranscript = [
+  "[00:00.00-00:02.00] 词曲 编曲 缩混 混音 母带 母带",
+  "[00:30.00-00:32.00] 缩混 混音 母带 母带",
+  "[00:32.00-00:34.00] 母带 母带 母带",
+  "[00:34.00-00:36.00] 母带 母带 母带",
+  "[00:36.00-00:38.00] 母带 母带 母带",
+  "[00:38.00-00:40.00] 母带 母带 母带",
+  "[00:40.00-00:42.00] 母带 母带 母带",
+  "[00:42.00-00:44.00] 母带 母带 母带",
+  "[00:44.00-00:46.00] 母带 母带 母带",
+  "[00:46.00-00:48.00] 母带 母带 母带",
+].join(" ");
+const reliableTranscript = [
+  "[00:00.00-00:04.00] 接下来看到的是印度南部的卡纳塔克邦",
+  "[00:04.00-00:08.00] 它西临阿拉伯海 东接德干高原",
+  "[00:08.00-00:12.00] 西高止山脉从高山延伸到海岸",
+  "[00:12.00-00:16.00] 首府班加罗尔也被称为印度硅谷",
+  "[00:16.00-00:20.00] 科技城市与古老寺庙在这里并肩而立",
+].join(" ");
+assert.equal(assessTranscriptUsability(degenerateTranscript, 47.17).usable, false);
+assert.equal(
+  assessTranscriptUsability(degenerateTranscript, 47.17).reason,
+  "strongly-repetitive-transcript"
+);
+assert.equal(assessTranscriptUsability(reliableTranscript, 20).usable, true);
+assert.equal(
+  assessTranscriptUsability(
+    "这是一段没有空格的完整中文转写内容，它清楚介绍实验方法、观察结果和下一步验证计划。",
+    45
+  ).usable,
+  true,
+  "a substantive unsegmented CJK transcript was mistaken for sparse audio"
+);
+
+const boundedTranscriptGoal = [
+  "Write one concise reply. Identify the video and summarize the actual speech.",
+  "Bounded exact-source packet:",
+  "```json",
+  JSON.stringify({
+    source: {
+      title: "翩若惊鸿，婉若游龙",
+      author: "洛水辞记",
+      duration_seconds: 47.17,
+      audio_status: "transcribed",
+    },
+    transcript: degenerateTranscript,
+    delivery: {
+      video_ready: true,
+      transcript_ready: true,
+      public_publish_allowed: false,
+    },
+  }),
+  "```",
+  'Return JSON only: {"message":"...","files":[],"confirmation":""}.',
+].join("\n");
+const inventedBoundedSpeechSummary = assessBoundedTranscriptResponse({
+  goal: boundedTranscriptGoal,
+  result: JSON.stringify({
+    message: "这段视频以《洛神赋》为灵感，讲述云端神女踏光而来的浪漫故事。",
+    files: [],
+    confirmation: "视频和时间戳文本已就绪",
+  }),
+});
+assert.equal(inventedBoundedSpeechSummary.checked, true);
+assert.equal(inventedBoundedSpeechSummary.ok, false);
+assert.equal(inventedBoundedSpeechSummary.quality.reason, "strongly-repetitive-transcript");
+assert.equal(
+  assessBoundedTranscriptResponse({
+    goal: boundedTranscriptGoal,
+    result: JSON.stringify({
+      message: "这是洛水辞记的《翩若惊鸿，婉若游龙》。转写内容高度重复，无法可靠概括实际语音；从标题只能判断主题与《洛神赋》有关。",
+      files: [],
+      confirmation: "视频和时间戳文本已就绪",
+    }),
+  }).ok,
+  true
+);
+assert.equal(
+  assessBoundedTranscriptResponse({
+    goal: boundedTranscriptGoal.replace(degenerateTranscript, reliableTranscript),
+    result: JSON.stringify({
+      message: "视频介绍卡纳塔克邦的自然地貌，以及班加罗尔古老文化和现代科技并存的特点。",
+      files: [],
+      confirmation: "",
+    }),
+  }).ok,
+  true
+);
+assert.equal(
+  assessBoundedTranscriptResponse({
+    goal: boundedTranscriptGoal.replace("summarize the actual speech", "identify the supplied title only"),
+    result: JSON.stringify({ message: "标题是《翩若惊鸿，婉若游龙》。", files: [], confirmation: "" }),
+  }).checked,
+  false,
+  "a title-only bounded packet was forced through the speech-summary contract"
+);
+assert.equal(
+  assessBoundedTranscriptResponse({
+    goal: boundedTranscriptGoal.replace(degenerateTranscript, ""),
+    result: JSON.stringify({ message: "视频中没有可辨识语音，无法做实际讲话摘要。", files: [], confirmation: "" }),
+  }).ok,
+  true,
+  "an honest silent-source response was rejected"
+);
 
 const readOnlyContractAuditGoal = `
 Audit the current source-intake contract and cover an ordinary video, a hypothetical
@@ -178,6 +295,1105 @@ assert.equal(
   ),
   true,
   "agent-owned pending validation was accepted as a completed result"
+);
+
+const internalCompactionMessages = [{
+  role: "user",
+  content: [
+    "The runtime proactively compacted a long agent history before the provider context became inefficient or unstable.",
+    "Authoritative current goal:",
+    "Prepare the requested briefing.",
+    "Authoritative verification and artifact checkpoint:",
+    "{}",
+    "Recovery instruction:",
+    "Continue the task.",
+  ].join("\n"),
+}];
+const productionScaffoldResult = [
+  "The runtime has compacted the agent history due to context window limits, but all authoritative goals, plans, and retained evidence are preserved.",
+  "You are AgInTiFlow and should continue from the recovery instruction.",
+  "The original prompt was truncated and the latest genuine user request is not fully visible.",
+  "All acceptance criteria are satisfied.",
+].join(" ");
+const productionScaffoldLeak = assessInternalRuntimeScaffoldLeak({
+  messages: internalCompactionMessages,
+  goal: "Prepare the requested briefing.",
+  result: productionScaffoldResult,
+});
+assert.equal(productionScaffoldLeak.leaks, true);
+assert(productionScaffoldLeak.markers.includes("runtime-compaction-narrative"));
+assert(productionScaffoldLeak.markers.includes("prompt-visibility-narrative"));
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: internalCompactionMessages,
+    goal: "Prepare the requested briefing.",
+    result: "The briefing is complete and the requested reader-facing PDF is attached.",
+  }).leaks,
+  false,
+  "a normal post-compaction task answer was rejected"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: "Explain this text.",
+    result: productionScaffoldResult,
+  }).leaks,
+  false,
+  "ordinary text was treated as copied runtime scaffolding without a runtime source packet"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: internalCompactionMessages,
+    goal: "Explain how the runtime context-compaction recovery instruction works.",
+    result:
+      "The runtime compacts agent history and preserves authoritative goals. You are AgInTiFlow is an identity instruction in that scaffold.",
+  }).leaks,
+  false,
+  "an explicit user request to explain runtime compaction was rejected"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: internalCompactionMessages,
+    goal: "完成用户请求。",
+    result: "运行时已经压缩了代理历史。你是 AgInTiFlow，应按照恢复指令继续。原始请求已被截断。",
+  }).leaks,
+  true,
+  "translated internal runtime scaffolding was accepted"
+);
+const responseOnlyHostAcknowledgementGoal = [
+  "Answer the current human message naturally.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "chat-response",
+    request: "Answer the current human message naturally.",
+  })}`,
+].join("\n");
+const retainedEnglishHostAcknowledgement =
+  "The WeCom message has been routed into the LabCanvas agent runtime as instructed. No external actions were taken, and the response adheres strictly to the requested format.";
+const retainedChineseHostAcknowledgement = "消息已成功路由至LabCanvas运行时环境，无需进一步操作。";
+for (const retainedHostAcknowledgement of [
+  retainedEnglishHostAcknowledgement,
+  retainedChineseHostAcknowledgement,
+]) {
+  const assessment = assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: responseOnlyHostAcknowledgementGoal,
+    result: JSON.stringify({ response: retainedHostAcknowledgement, handled: true }),
+  });
+  assert.equal(
+    assessment.leaks,
+    true,
+    "a retained host-routing acknowledgement was accepted as the human-facing answer"
+  );
+  assert(assessment.markers.includes("host-routing-acknowledgement"));
+}
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: [
+      "Report whether the current message reached LabCanvas.",
+      `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+        mode: "read-only-answer",
+        request: "Check whether the current message was routed into the LabCanvas runtime.",
+      })}`,
+    ].join("\n"),
+    result: "The message was routed into the LabCanvas runtime.",
+  }).leaks,
+  false,
+  "an explicit host-routing status question could not be answered"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: responseOnlyHostAcknowledgementGoal,
+    result: JSON.stringify({
+      response: "这个设计需要先核对接口尺寸，再决定公差。",
+      handled: true,
+    }),
+  }).leaks,
+  false,
+  "a normal response-only human answer was rejected"
+);
+
+const privatePacketIdentifierGoal = [
+  "You are the response-only reasoning backend for host-managed chat.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Return the requested natural chat message only.",
+  })}`,
+  "Return one strict JSON object and no prose:",
+  JSON.stringify({ message: "natural source-chat response", files: [], confirmation: "" }),
+  "Exact task packet:",
+  JSON.stringify({
+    id: "wecom-inspiration-202609040800-example",
+    current_request: "Create one concise, useful inspiration point for the group.",
+    route_decision: { route_kind: "research_or_summary" },
+    preflight: {
+      snapshot: {
+        schedules: {
+          memo_daily: { status: "waiting" },
+        },
+      },
+    },
+  }),
+].join("\n");
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: privatePacketIdentifierGoal,
+    result: JSON.stringify({
+      message: "Reflect on your achievements like the memo_daily task to stay motivated.",
+      files: [],
+      confirmation: "",
+    }),
+  }).leaks,
+  true,
+  "a private packet-only scheduler identifier leaked into a human-facing message"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: privatePacketIdentifierGoal.replace(
+      "Create one concise, useful inspiration point for the group.",
+      "Explain what the memo_daily task does."
+    ),
+    result: JSON.stringify({
+      message: "memo_daily is the schedule you asked about.",
+      files: [],
+      confirmation: "",
+    }),
+  }).leaks,
+  false,
+  "a machine identifier explicitly named by the human could not be discussed"
+);
+assert.equal(
+  assessInternalRuntimeScaffoldLeak({
+    messages: [],
+    goal: privatePacketIdentifierGoal,
+    result: JSON.stringify({
+      message: "Try a small measurement_first experiment and compare the result tomorrow.",
+      files: [],
+      confirmation: "",
+    }),
+  }).leaks,
+  false,
+  "ordinary underscore text absent from the private packet was rejected"
+);
+const emptyResponseOnlyEnvelope = {
+  message: "",
+  files: [],
+  confirmation: "",
+};
+assert.equal(
+  assessResponseOnlyEmptyEnvelope({
+    goal: privatePacketIdentifierGoal,
+    result: JSON.stringify(emptyResponseOnlyEnvelope),
+  }).ok,
+  false,
+  "a schema-valid empty host-task envelope was treated as a usable response"
+);
+for (const usefulPayload of [
+  { ...emptyResponseOnlyEnvelope, message: "A concise human-facing answer." },
+  { ...emptyResponseOnlyEnvelope, files: ["useful-report.pdf"] },
+  { ...emptyResponseOnlyEnvelope, confirmation: "Which sample should I use?" },
+  { ...emptyResponseOnlyEnvelope, knowledge_items: [{ subject: "retained preference" }] },
+  { ...emptyResponseOnlyEnvelope, publish_stage: { stage: "published_verified" } },
+]) {
+  assert.equal(
+    assessResponseOnlyEmptyEnvelope({
+      goal: privatePacketIdentifierGoal,
+      result: JSON.stringify(usefulPayload),
+    }).ok,
+    true,
+    "a substantive response-only payload was rejected as empty"
+  );
+}
+assert.equal(
+  assessResponseOnlyEmptyEnvelope({
+    goal: privatePacketIdentifierGoal.replace(
+      "Create one concise, useful inspiration point for the group.",
+      "Store the supplied preference and return the message field empty."
+    ),
+    result: JSON.stringify(emptyResponseOnlyEnvelope),
+  }).ok,
+  true,
+  "an explicit empty-message contract could not be honored"
+);
+
+const perfectAuditGoal = [
+  "You are the response-only independent reviewer.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Audit the supplied multilingual tutorial independently.",
+  })}`,
+  "Original prompt:",
+  "Audit the candidate carefully. Score each dimension from 1 to 5.",
+  "Set accepted=true only when every score is at least 4 and no correction remains.",
+  "Required JSON shape:",
+  JSON.stringify({
+    accepted: true,
+    scores: {
+      source_fidelity: 5,
+      chinese_naturalness: 5,
+      english_naturalness: 5,
+      japanese_naturalness: 5,
+    },
+    critical_issues: [],
+    revision_instructions: [],
+  }),
+  "Candidate tutorial:",
+  "The vocabulary row contains the malformed Japanese span サイズ交换 instead of サイズ交換.",
+].join("\n");
+const blanketPerfectAudit = {
+  accepted: true,
+  scores: {
+    source_fidelity: 5,
+    chinese_naturalness: 5,
+    english_naturalness: 5,
+    japanese_naturalness: 5,
+  },
+  critical_issues: [],
+  revision_instructions: [],
+};
+assert.equal(
+  assessResponseOnlyPerfectAudit({
+    goal: perfectAuditGoal,
+    result: JSON.stringify(blanketPerfectAudit),
+  }).requiresConfirmation,
+  true,
+  "a blanket-perfect multidimensional audit bypassed skeptical confirmation"
+);
+assert.equal(
+  assessResponseOnlyPerfectAudit({
+    goal: perfectAuditGoal,
+    result: JSON.stringify({
+      ...blanketPerfectAudit,
+      scores: { ...blanketPerfectAudit.scores, japanese_naturalness: 4 },
+    }),
+  }).requiresConfirmation,
+  false,
+  "a qualified non-perfect audit received an unnecessary confirmation turn"
+);
+assert.equal(
+  assessResponseOnlyPerfectAudit({
+    goal: perfectAuditGoal,
+    result: JSON.stringify({
+      ...blanketPerfectAudit,
+      accepted: false,
+      critical_issues: ["A concrete language defect remains."],
+    }),
+  }).requiresConfirmation,
+  false,
+  "an explicit audit rejection received an unnecessary confirmation turn"
+);
+assert.equal(
+  assessResponseOnlyPerfectAudit({
+    goal: "Return project metrics from 1 to 5 as JSON.",
+    result: JSON.stringify(blanketPerfectAudit),
+  }).requiresConfirmation,
+  false,
+  "a non-audit structured response was mistaken for blanket acceptance"
+);
+
+const sourceFreeResearchGoal = [
+  "Correct the research status from the host-managed response context.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Correct the research status from the host-managed response context.",
+  })}`,
+].join("\n");
+const completionAuditSourceFreeGoal = [
+  "You are a fast completion auditor for one exact task.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Return the completion audit JSON only.",
+  })}`,
+  "Role: completion_audit",
+  "Return JSON only:",
+  JSON.stringify({
+    covered_item_ids: ["source:123"],
+    missing: [{ item_id: "source:456", requirement: "specific omitted action", kind: "reply|artifact|action" }],
+    legitimate_blocker: false,
+    complexity: "low|medium|high",
+    summary: "one short private diagnostic",
+  }),
+].join("\n");
+const retainedCompletionAuditRequirementResult = {
+  covered_item_ids: [],
+  missing: [{
+    item_id: "task:1",
+    requirement: "Per reprocess instruction, put the validated PDF itself in candidate_result.",
+    kind: "artifact",
+  }],
+  legitimate_blocker: false,
+  complexity: "low",
+  summary: "The candidate omitted the requested artifact.",
+};
+const completionAuditItemIdentityGoal = [
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Return the completion audit JSON only.",
+  })}`,
+  "Role: completion_audit",
+  "Original prompt:",
+  "You are a fast completion auditor for one exact task.",
+  "Return JSON only:",
+  JSON.stringify({
+    covered_item_ids: ["source:123"],
+    missing: [{
+      item_id: "interruption:456",
+      requirement: "specific omitted action",
+      kind: "reply|artifact|action",
+    }],
+    legitimate_blocker: false,
+    complexity: "low|medium|high",
+    summary: "one short private diagnostic",
+  }),
+  "Task packet:",
+  JSON.stringify({
+    task_id: "retained-completion-audit",
+    request_items: [
+      { item_id: "task:actual-message", text: "Answer the current question." },
+      { item_id: "interruption:actual-pdf", text: "Also attach the requested PDF." },
+    ],
+  }),
+].join("\n");
+const retainedPhantomCompletionAuditResult = {
+  covered_item_ids: ["source:123"],
+  missing: [{
+    item_id: "interruption:456",
+    requirement: "specific omitted action",
+    kind: "artifact",
+  }],
+  legitimate_blocker: false,
+  complexity: "medium",
+  summary: "The candidate omitted one requested artifact.",
+};
+const validCompletionAuditIdentityResult = {
+  covered_item_ids: ["task:actual-message"],
+  missing: [{
+    item_id: "interruption:actual-pdf",
+    requirement: "Attach the requested PDF.",
+    kind: "artifact",
+  }],
+  legitimate_blocker: false,
+  complexity: "medium",
+  summary: "The answer is present, but its requested PDF is missing.",
+};
+const overlappingCompletionAuditIdentityResult = {
+  ...validCompletionAuditIdentityResult,
+  missing: [
+    {
+      item_id: "task:actual-message",
+      requirement: "Answer the current question.",
+      kind: "reply",
+    },
+    ...validCompletionAuditIdentityResult.missing,
+  ],
+};
+const malformedCompletionAuditIdentityResult = {
+  ...validCompletionAuditIdentityResult,
+  missing: [{
+    requirement: "Attach the requested PDF.",
+    kind: "artifact",
+  }],
+};
+const invalidCompletionAuditMissingEntryResult = {
+  ...validCompletionAuditIdentityResult,
+  missing: [{
+    item_id: "interruption:actual-pdf",
+    kind: "later",
+  }],
+};
+const completionAuditFalseBlockerGoal = [
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Return the completion audit JSON only.",
+  })}`,
+  "Role: completion_audit",
+  "Original prompt:",
+  "Audit the candidate against the exact task packet.",
+  "Return JSON only:",
+  JSON.stringify({
+    covered_item_ids: ["source:123"],
+    missing: [{
+      item_id: "interruption:456",
+      requirement: "specific omitted action",
+      kind: "reply|artifact|action",
+    }],
+    legitimate_blocker: false,
+    complexity: "low|medium|high",
+    summary: "one short private diagnostic",
+  }),
+  "Task packet:",
+  JSON.stringify({
+    task_id: "retained-false-blocker-audit",
+    request_items: [
+      { item_id: "task:current-message", text: "Answer the current question." },
+    ],
+    candidate_result: {
+      message: "",
+      confirmation: "",
+      files: [],
+    },
+  }),
+].join("\n");
+const retainedFalseCompletionAuditBlockerResult = {
+  covered_item_ids: [],
+  missing: [{
+    item_id: "task:current-message",
+    requirement: "Answer the current question.",
+    kind: "reply",
+  }],
+  legitimate_blocker: true,
+  complexity: "low",
+  summary: "The candidate did not answer the request.",
+};
+const correctedFalseCompletionAuditBlockerResult = {
+  ...retainedFalseCompletionAuditBlockerResult,
+  legitimate_blocker: false,
+};
+const retainedEmptyCandidateCoveredResult = {
+  covered_item_ids: ["task:current-message"],
+  missing: [],
+  legitimate_blocker: false,
+  complexity: "low",
+  summary: "The candidate did not answer the request.",
+};
+const completionAuditExplicitSilenceGoal = completionAuditFalseBlockerGoal.replace(
+  '"text":"Answer the current question."',
+  '"text":"Do not send a reply; leave the response empty."'
+);
+const explicitSilenceCoveredResult = {
+  ...retainedEmptyCandidateCoveredResult,
+  summary: "The explicit no-reply request is covered by the empty candidate.",
+};
+const completionAuditGenuineBlockerGoal = completionAuditFalseBlockerGoal.replace(
+  '"message":"","confirmation":"","files":[]',
+  '"message":"I cannot access the requested account because authentication is required.","confirmation":"","files":[]'
+);
+const genuineCompletionAuditBlockerResult = {
+  covered_item_ids: ["task:current-message"],
+  missing: [],
+  legitimate_blocker: true,
+  complexity: "low",
+  summary: "The candidate directly reports the authentication blocker.",
+};
+const completionAuditChineseBlockerGoal = completionAuditFalseBlockerGoal.replace(
+  '"message":"","confirmation":"","files":[]',
+  '"message":"当前无法继续，因为需要登录认证。","confirmation":"","files":[]'
+);
+function completionAuditGoalForCandidate(request, candidateResult) {
+  return [
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "host-managed-response",
+      request: "Return the completion audit JSON only.",
+    })}`,
+    "Role: completion_audit",
+    "Original prompt:",
+    "Audit the candidate against the exact task packet.",
+    "Return JSON only:",
+    JSON.stringify({
+      covered_item_ids: ["task:current-message"],
+      missing: [{
+        item_id: "task:current-message",
+        requirement: "specific omitted action",
+        kind: "reply|artifact|action",
+      }],
+      legitimate_blocker: false,
+      complexity: "low|medium|high",
+      summary: "one short private diagnostic",
+    }),
+    "Task packet:",
+    JSON.stringify({
+      task_id: "retained-status-only-audit",
+      request_items: [
+        { item_id: "task:current-message", text: request },
+      ],
+      candidate_result: candidateResult,
+    }),
+  ].join("\n");
+}
+const retainedStatusOnlyCandidate = {
+  message: "我先发送已完成的部分；系统已保留未覆盖的消息并会自动补充，不会把它标记为已处理。",
+  confirmation: "",
+  files: [],
+  publish_stage: {},
+  generated_pdf_content: [],
+  generated_text_content: [],
+};
+const completionAuditStatusOnlyGoal = completionAuditGoalForCandidate(
+  "研究这个问题，给出有证据的结论，并附上完成的 PDF。",
+  retainedStatusOnlyCandidate
+);
+const retainedStatusOnlyCoveredResult = {
+  covered_item_ids: ["task:current-message"],
+  missing: [],
+  legitimate_blocker: false,
+  complexity: "medium",
+  summary: "The candidate says work will continue later.",
+};
+const completionAuditTextWithoutPdfGoal = completionAuditGoalForCandidate(
+  "Answer the question with evidence and attach the completed PDF report.",
+  {
+    message: "The evidence supports the stated conclusion.",
+    confirmation: "",
+    files: [],
+  }
+);
+const correctedMissingPdfAuditResult = {
+  covered_item_ids: [],
+  missing: [{
+    item_id: "task:current-message",
+    requirement: "Attach the completed PDF report.",
+    kind: "artifact",
+  }],
+  legitimate_blocker: false,
+  complexity: "medium",
+  summary: "The answer text is present, but the requested PDF is missing.",
+};
+const correctedStatusOnlyAuditResult = {
+  covered_item_ids: [],
+  missing: [{
+    item_id: "task:current-message",
+    requirement: "Provide the evidence-backed conclusion and completed PDF.",
+    kind: "artifact",
+  }],
+  legitimate_blocker: false,
+  complexity: "medium",
+  summary: "A progress acknowledgement is not the requested result.",
+};
+assert.equal(
+  evaluateSourceFreeResponseClaims({
+    goal: completionAuditSourceFreeGoal,
+    candidateResult: JSON.stringify(retainedCompletionAuditRequirementResult),
+    evidenceLedger: { itemCount: 0, categories: [], items: [] },
+  }).ok,
+  true,
+  "a completion auditor's diagnostic missing requirement was treated as an external validation claim"
+);
+assert.equal(
+  evaluateSourceFreeResponseClaims({
+    goal: sourceFreeResearchGoal,
+    candidateResult: JSON.stringify(retainedCompletionAuditRequirementResult),
+    evidenceLedger: { itemCount: 0, categories: [], items: [] },
+  }).ok,
+  false,
+  "ordinary response-only output bypassed validation grounding through an audit-shaped object"
+);
+assert.equal(
+  evaluateSourceFreeResponseClaims({
+    goal: completionAuditSourceFreeGoal,
+    candidateResult: JSON.stringify({
+      ...retainedCompletionAuditRequirementResult,
+      summary: "The paper was validated in 2025 on 12,000 patients.",
+    }),
+    evidenceLedger: { itemCount: 0, categories: [], items: [] },
+  }).ok,
+  false,
+  "a completion auditor's own unsupported factual summary bypassed source-free grounding"
+);
+const unsafeSourceFreeClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "The publication appeared in 2025 and was validated on a 12,000-case benchmark with 94.2% accuracy.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  unsafeSourceFreeClaim.ok,
+  false,
+  "source-free response-only output accepted unsupported external factual claims"
+);
+assert(unsafeSourceFreeClaim.categories.includes("publication"));
+assert(unsafeSourceFreeClaim.categories.includes("benchmark_or_metric"));
+const unsafeChineseSourceFreeClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "这是未验证的背景说明。2025年Nature子刊预印本未公开，已有初步验证，响应延迟低于100ms，并预测2026年底前上线。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  unsafeChineseSourceFreeClaim.ok,
+  false,
+  "Chinese source-free response-only output accepted publication, validation, metric, or forecast claims"
+);
+assert(unsafeChineseSourceFreeClaim.categories.includes("publication"));
+assert(unsafeChineseSourceFreeClaim.categories.includes("validation"));
+assert(unsafeChineseSourceFreeClaim.categories.includes("benchmark_or_metric"));
+assert(unsafeChineseSourceFreeClaim.categories.includes("forecast"));
+const unsafeJapaneseSourceFreeClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "2026年末までに公開される見込みで、査読済み研究によりレイテンシ80ms未満が検証済みです。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  unsafeJapaneseSourceFreeClaim.ok,
+  false,
+  "Japanese source-free response-only output accepted publication, validation, metric, or forecast claims"
+);
+assert(unsafeJapaneseSourceFreeClaim.categories.includes("forecast"));
+assert(unsafeJapaneseSourceFreeClaim.categories.includes("validation"));
+assert(unsafeJapaneseSourceFreeClaim.categories.includes("benchmark_or_metric"));
+const framedHypothesisClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "Without fresh evidence, this is an unverified hypothesis only: the result may need a new literature check before any publication or benchmark claim is trusted.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  framedHypothesisClaim.ok,
+  true,
+  "explicit unverified hypothesis framing was rejected for source-free response-only output"
+);
+const sourceFreePredictionGoal = [
+  "Provide one clearly labeled, falsifiable 3/5/10-year prediction as your own hypothesis.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Provide one clearly labeled, falsifiable 3/5/10-year prediction as your own hypothesis.",
+  })}`,
+].join("\n");
+const explicitFalsifiablePrediction = evaluateSourceFreeResponseClaims({
+  goal: sourceFreePredictionGoal,
+  candidateResult:
+    "高风险预测：3年内可能出现无损年龄评分；5年内可能成为质控候选；10年内若仍不能跨实验室迁移，这一假设应被否定。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  explicitFalsifiablePrediction.ok,
+  true,
+  "an explicitly labeled falsifiable prediction was rejected as an external fact"
+);
+assert.equal(explicitFalsifiablePrediction.explicitlySpeculative, true);
+const explicitJapanesePrediction = evaluateSourceFreeResponseClaims({
+  goal: sourceFreePredictionGoal,
+  candidateResult:
+    "反証可能な予測：2030年までにこの仮説を再現できなければ、採用しない。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  explicitJapanesePrediction.ok,
+  true,
+  "an explicitly labeled Japanese falsifiable prediction was rejected"
+);
+const sourceFreeInspirationGoal = [
+  "Create one concise, useful inspiration point with a falsifiable prediction and experiment.",
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request:
+      "Create one concise research inspiration point with a falsifiable prediction and experiment.",
+  })}`,
+].join("\n");
+const retainedNamedJournalEvidence = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "Recent advances in 3D bioprinting (e.g., Nature Biomedical Engineering) provide the first indirect evidence that organoids can exhibit self-organizing states.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedNamedJournalEvidence.ok,
+  false,
+  "a named journal was accepted as evidence after the model omitted the publication year"
+);
+assert(retainedNamedJournalEvidence.categories.includes("named_source_evidence"));
+const retainedNamedToolkitClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "Actionable next step: monitor synchronization using the open-source 'NeuroSync' Python toolkit.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedNamedToolkitClaim.ok,
+  false,
+  "a claimed named open-source research toolkit bypassed source-free grounding"
+);
+assert(retainedNamedToolkitClaim.categories.includes("named_external_resource"));
+const retainedQuotedChineseSource = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "高风险预测：工程化细菌与类器官可能形成异构计算网络。《环球科学》提及细菌晶体管；下一步做盲法对照。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedQuotedChineseSource.ok,
+  false,
+  "a quoted Chinese publication claim was laundered by a requested prediction"
+);
+assert(retainedQuotedChineseSource.categories.includes("named_source_evidence"));
+const sourceFreeExperimentWithoutAttribution = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "这是一个尚未验证的假设：工程化细菌与类器官可能形成异构计算网络。下一步做盲法对照实验，并预先写明失败条件。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  sourceFreeExperimentWithoutAttribution.ok,
+  true,
+  "a source-free assistant-owned hypothesis and experiment was incorrectly rejected"
+);
+const retainedUnverifiedInspirationExperiment = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult: JSON.stringify({
+    message: [
+      "一个未经本机验证的灵感假设：培养液的间接光学信号或许能比终点染色更早预告类器官批次的衰退。",
+      "具体做法可以不用新设备：把同一批类器官分成三组，换液时间分别延迟0/2/4小时，连续2-3周记录可测信号，再比较异常变化与最终结局的先后关系。",
+      "反例是信号变化主要来自培养箱漂移；下一步先做配对数据验证。",
+    ].join(""),
+    files: [],
+    confirmation: "",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedUnverifiedInspirationExperiment.ok,
+  true,
+  "a retained unverified inspiration and numeric experiment plan was mistaken for sourced facts"
+);
+const completedResultInsideExperimentProposal = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "具体做法可以沿用某研究已经验证的方法；该研究在100个样本上达到94%准确率。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  completedResultInsideExperimentProposal.ok,
+  false,
+  "proposal wording laundered an unsupported completed validation and benchmark result"
+);
+const namedToolInsideExperimentProposal = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "下一步可以用开源 NeuroSync Python 工具包记录100个样本，再比较两组结果。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  namedToolInsideExperimentProposal.ok,
+  false,
+  "an experiment proposal laundered an unsupported named external research tool"
+);
+const groundedNamedResearchResource = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "The current evidence manifest identifies the open-source 'NeuroSync' Python toolkit.",
+  evidenceLedger: {
+    itemCount: 1,
+    categories: ["source"],
+    items: [{ category: "source", verified: true }],
+  },
+});
+assert.equal(
+  groundedNamedResearchResource.ok,
+  true,
+  "a named research resource backed by current scoped evidence was rejected"
+);
+const attributedPrediction = evaluateSourceFreeResponseClaims({
+  goal: sourceFreePredictionGoal,
+  candidateResult: "该报告预测2030年底前产品将上线。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  attributedPrediction.ok,
+  false,
+  "an attributed source-free forecast was mistaken for the assistant's own speculation"
+);
+const attributedEnglishPrediction = evaluateSourceFreeResponseClaims({
+  goal: sourceFreePredictionGoal,
+  candidateResult: "High-risk prediction: the report says demand will reach a new peak next year.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  attributedEnglishPrediction.ok,
+  false,
+  "an English report attribution was mistaken for assistant-owned speculation"
+);
+const speculativeEvidenceClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreePredictionGoal,
+  candidateResult: "高风险预测：某研究已验证该方法，并预测2030年达到94.2%准确率。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  speculativeEvidenceClaim.ok,
+  false,
+  "a speculation label laundered an unsupported validation or source claim"
+);
+const unsolicitedPrediction = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "高风险预测：2030年前该路线将成为主流。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  unsolicitedPrediction.ok,
+  false,
+  "a model-added prediction bypassed the source-free guard without a matching request"
+);
+const locallyDeniedChineseClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "没有本次新证据，这只是未验证假设：无法验证Nature子刊、2025年发表、已有验证或100ms延迟等说法。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  locallyDeniedChineseClaim.ok,
+  true,
+  "local Chinese unverifiable/hypothesis framing was rejected"
+);
+const separatedUnverifiedClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "This paragraph is unverified. The Nature publication appeared in 2025 and validation reached 94.2% accuracy.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  separatedUnverifiedClaim.ok,
+  false,
+  "a generic unverified phrase in one sentence governed a separate unsupported factual claim"
+);
+const ordinaryPureChat = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "A recursive function needs a base case so it can stop.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  ordinaryPureChat.ok,
+  true,
+  "ordinary source-free pure chat was incorrectly rejected"
+);
+const retainedBareNumberClarification = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "CHAT: 「199793」单独一个数字我这边没有可验证的上下文，不想乱猜。它可能指日期 1997-09-03，也可能是某个编号或误发。补一句它关联什么，我马上接着处理。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedBareNumberClarification.ok,
+  true,
+  "a bare numeric message clarification was mistaken for a year or forecast claim"
+);
+const retainedBareNumberRouter = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    route_kind: "chat_only",
+    project: "unknown",
+    worker_needed: false,
+    reason: "A bare number '199793' cannot be safely inferred as a task without context.",
+    ack: "",
+    chat_reply: "收到 199793。请问这串数字指什么？",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedBareNumberRouter.ok,
+  true,
+  "a routing clarification for a bare numeric message triggered source-free evidence repair"
+);
+const retainedBareNumberPredictionClarification = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    route_kind: "chat_only",
+    project: "unknown",
+    worker_needed: false,
+    needs_recent_media: false,
+    public_publish_intent: false,
+    public_publish_allowed: false,
+    external_action_allowed: false,
+    delivery_mode: "agent_decide",
+    source_policy: "current_request_only",
+    reason: "A bare six-digit number lacks enough context to predict intent or choose a worker task.",
+    ack: "",
+    chat_reply: "收到 199793。这个数字是指什么？",
+    confidence: 0.32,
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedBareNumberPredictionClarification.ok,
+  true,
+  "metalinguistic prediction wording in an ambiguous-input route was mistaken for an external forecast"
+);
+for (const candidateResult of [
+  "No forecast is requested; please clarify what this number means.",
+  "这不是预测；这串数字缺少上下文，无法判断它的含义。",
+  "これは予測ではありません。この数字だけでは文脈が不足しており、意味を判断できません。",
+]) {
+  const negatedForecastClarification = evaluateSourceFreeResponseClaims({
+    goal: sourceFreeResearchGoal,
+    candidateResult,
+    evidenceLedger: { itemCount: 0, categories: [], items: [] },
+  });
+  assert.equal(
+    negatedForecastClarification.ok,
+    true,
+    `an explicit forecast negation was treated as a forecast: ${candidateResult}`
+  );
+}
+for (const candidateResult of [
+  "The input is ambiguous, but the market analysis predicts demand will grow next year.",
+  "No forecast was requested, but demand will grow next year.",
+  "这串数字缺少上下文，但报告预测市场需求明年会增长。",
+  "予測ではありませんが、市場需要は来年増加する見込みです。",
+]) {
+  const disguisedForecast = evaluateSourceFreeResponseClaims({
+    goal: sourceFreeResearchGoal,
+    candidateResult,
+    evidenceLedger: { itemCount: 0, categories: [], items: [] },
+  });
+  assert.equal(
+    disguisedForecast.ok,
+    false,
+    `ambiguous-input or negation wording hid a real external forecast: ${candidateResult}`
+  );
+}
+const ambiguousInputExternalClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "这条消息可能是指某研究在2025年发表并已验证。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  ambiguousInputExternalClaim.ok,
+  false,
+  "ambiguous-input framing laundered an unsupported publication claim"
+);
+const projectIdeaInvitation = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "Let's spark creativity together! Share your latest project ideas and collaborate on pushing boundaries.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  projectIdeaInvitation.ok,
+  true,
+  "the noun 'project' in a source-free invitation was misclassified as a forecast"
+);
+const attributedProjectsForecast = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "The market analysis projects that demand will grow next year.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  attributedProjectsForecast.ok,
+  false,
+  "an attributed projects-verb forecast bypassed the source-free guard"
+);
+const responseOnlyRouterJson = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    route_kind: "research_or_summary",
+    project: "labcanvas",
+    worker_needed: true,
+    public_publish_intent: false,
+    reason: "The shared links need source reading before a concise summary.",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  responseOnlyRouterJson.ok,
+  true,
+  "a response-only routing JSON project label was misclassified as an unsupported forecast"
+);
+const responseOnlyPublishRouterJson = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    route_kind: "publish_video",
+    project: "lazyedit",
+    worker_needed: true,
+    needs_recent_media: true,
+    public_publish_intent: true,
+    public_publish_allowed: true,
+    reason:
+      "The user explicitly requested publishing the referenced video, so the worker is expected to use the established LazyEdit routine.",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  responseOnlyPublishRouterJson.ok,
+  true,
+  "an operational publish-route assignment was misclassified as an external forecast"
+);
+const responseOnlyRouterWithForecast = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    route_kind: "research_or_summary",
+    project: "generic",
+    worker_needed: true,
+    reason:
+      "The user requests routing, but the report predicts market demand will grow by 20% next year.",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  responseOnlyRouterWithForecast.ok,
+  false,
+  "a routing explanation laundered an unsupported external forecast"
+);
+const actualSourceFreeProjection = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "The report projects that demand will grow by 20% next year.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  actualSourceFreeProjection.ok,
+  false,
+  "a genuine source-free projection bypassed the forecast guard"
+);
+assert(actualSourceFreeProjection.categories.includes("forecast"));
+const retainedCandidateForecastMention = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    summary:
+      "候选结果覆盖了类器官检测分诊系统的结构性矛盾与可证伪预测，但缺少PDF附件及关联分析。",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedCandidateForecastMention.ok,
+  true,
+  "a retained auditor mention of candidate forecast content was treated as the auditor's own forecast"
+);
+const englishCandidateForecastMention = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "The candidate response includes a falsifiable prediction but omits supporting evidence.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  englishCandidateForecastMention.ok,
+  true,
+  "an English auditor mention of candidate forecast content was rejected"
+);
+const japaneseCandidateForecastMention = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: "候補回答は反証可能な予測を含んでいますが、根拠を欠きます。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  japaneseCandidateForecastMention.ok,
+  true,
+  "a Japanese auditor mention of candidate forecast content was rejected"
+);
+const candidateForecastAssertion = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "The candidate response includes a prediction that demand will grow by 20% next year.",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  candidateForecastAssertion.ok,
+  false,
+  "a future outcome embedded in a candidate-content summary bypassed the source-free guard"
+);
+const sourcedResponseOnlyClaim = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult:
+    "The retained manifest says the benchmark accuracy is 94.2%.",
+  evidenceLedger: {
+    itemCount: 1,
+    categories: ["command"],
+    items: [{ category: "command", verified: true }],
+  },
+});
+assert.equal(
+  sourcedResponseOnlyClaim.ok,
+  true,
+  "response-only output with current scoped evidence was rejected"
 );
 
 const staleCompletionRepair =
@@ -292,6 +1508,8 @@ async function runCase({
   allowDestructive = false,
   executionTier = "",
   maxOutputTokens = undefined,
+  contextBudgetChars = undefined,
+  contextBudgetTargetChars = undefined,
   resume = false,
   runtimePatch = undefined,
   expectedRuntimeRevision = undefined,
@@ -332,6 +1550,8 @@ async function runCase({
       allowParallelScouts: false,
       enableScs: scsActive ? "auto" : "off",
       commandCwd: workspace,
+      ...(contextBudgetChars ? { contextBudgetChars } : {}),
+      ...(contextBudgetTargetChars ? { contextBudgetTargetChars } : {}),
     },
     {
       baseDir: workspace,
@@ -368,6 +1588,8 @@ async function runCase({
     sandboxMode: "host",
     packageInstallPolicy: "block",
     ...(maxOutputTokens ? { maxOutputTokens } : {}),
+    ...(contextBudgetChars ? { contextBudgetChars } : {}),
+    ...(contextBudgetTargetChars ? { contextBudgetTargetChars } : {}),
     allowDestructive,
     allowShellTool,
     allowFileTools,
@@ -428,7 +1650,758 @@ function scopedTaskGoal(request, artifactRoot) {
   ].join("\n");
 }
 
+const longStructuredPathSegment = `production-task-${"x".repeat(140)}`;
+const longStructuredInput = `references/${longStructuredPathSegment}/source.md`;
+const longStructuredOutput = `output/wechat_worker/${longStructuredPathSegment}/report.md`;
+const longStructuredExclusion = `output/wechat_worker/${longStructuredPathSegment}/draft.md`;
+const longDeclaredSourceRoot = `/home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/${longStructuredPathSegment}`;
+const longStructuredPathContract = deriveScsTaskContract({
+  goal: [
+    `Read ${longStructuredInput}.`,
+    `Create ${longStructuredOutput}.`,
+    `Do not create ${longStructuredExclusion}.`,
+    `Use source root \`${longDeclaredSourceRoot}\`.`,
+  ].join("\n"),
+  taskProfile: "chatops",
+});
+assert(longStructuredPathContract.exactInputPaths.includes(longStructuredInput));
+assert(longStructuredPathContract.exactOutputPaths.includes(longStructuredOutput));
+assert(longStructuredPathContract.excludedOutputPaths.includes(longStructuredExclusion));
+assert(longStructuredPathContract.declaredSourceRoots.includes(longDeclaredSourceRoot));
+
 try {
+  const repairedCompletionAuditIdentity = await runCase({
+    id: "response-only-completion-audit-item-identity-repair",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [
+      assistant(JSON.stringify(retainedPhantomCompletionAuditResult)),
+      assistant(JSON.stringify(validCompletionAuditIdentityResult)),
+    ],
+  });
+  assert.equal(repairedCompletionAuditIdentity.calls.length, 2);
+  assert.deepEqual(
+    JSON.parse(repairedCompletionAuditIdentity.result.result),
+    validCompletionAuditIdentityResult
+  );
+  const phantomIdentityRejection = repairedCompletionAuditIdentity.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  );
+  assert(phantomIdentityRejection, "phantom completion-audit item IDs were accepted without repair");
+  assert.deepEqual(
+    phantomIdentityRejection.data.invalidItemIds.sort(),
+    ["interruption:456", "source:123"]
+  );
+  assert.deepEqual(
+    phantomIdentityRejection.data.omittedItemIds.sort(),
+    ["interruption:actual-pdf", "task:actual-message"]
+  );
+  assert.match(
+    repairedCompletionAuditIdentity.calls[1].messages.map((message) => message.content).join("\n"),
+    /must each appear exactly once[\s\S]*task:actual-message[\s\S]*interruption:actual-pdf/iu
+  );
+  assert(
+    repairedCompletionAuditIdentity.events.some(
+      (event) => event.type === "response_only.output_contract_repaired"
+    ),
+    "valid task-scoped completion-audit IDs did not complete the bounded repair"
+  );
+
+  const repairedOverlappingCompletionAudit = await runCase({
+    id: "response-only-completion-audit-item-identity-overlap",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [
+      assistant(JSON.stringify(overlappingCompletionAuditIdentityResult)),
+      assistant(JSON.stringify(validCompletionAuditIdentityResult)),
+    ],
+  });
+  assert.equal(repairedOverlappingCompletionAudit.calls.length, 2);
+  assert.deepEqual(
+    repairedOverlappingCompletionAudit.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.duplicateItemIds,
+    ["task:actual-message"]
+  );
+
+  const repairedMalformedCompletionAudit = await runCase({
+    id: "response-only-completion-audit-item-identity-malformed",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [
+      assistant(JSON.stringify(malformedCompletionAuditIdentityResult)),
+      assistant(JSON.stringify(validCompletionAuditIdentityResult)),
+    ],
+  });
+  assert.equal(repairedMalformedCompletionAudit.calls.length, 2);
+  assert.deepEqual(
+    repairedMalformedCompletionAudit.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.malformedItemReferences,
+    ["missing[0].item_id"]
+  );
+
+  const repairedInvalidCompletionAuditMissingEntry = await runCase({
+    id: "response-only-completion-audit-missing-entry-shape",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [
+      assistant(JSON.stringify(invalidCompletionAuditMissingEntryResult)),
+      assistant(JSON.stringify(validCompletionAuditIdentityResult)),
+    ],
+  });
+  assert.equal(
+    repairedInvalidCompletionAuditMissingEntry.calls.length,
+    2,
+    "a completion-audit missing entry without a requirement and with an invalid kind was accepted"
+  );
+  const invalidMissingEntryRejection = repairedInvalidCompletionAuditMissingEntry.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  );
+  assert.deepEqual(invalidMissingEntryRejection?.data?.invalidMissingItemFields, [
+    "missing[0].requirement:missing",
+    "missing[0].kind:outside-enum",
+  ]);
+  assert.match(
+    repairedInvalidCompletionAuditMissingEntry.calls[1].messages
+      .map((message) => message.content)
+      .join("\n"),
+    /invalid missing-item fields:[^\n]*requirement:missing[^\n]*kind:outside-enum/iu
+  );
+  assert.match(
+    repairedInvalidCompletionAuditMissingEntry.calls[1].messages
+      .map((message) => message.content)
+      .join("\n"),
+    /each missing\[\] entry requires:[^\n]*"requirement":string[^\n]*"kind":string enum="reply"\|"artifact"\|"action"/iu
+  );
+
+  const repairedFalseCompletionAuditBlocker = await runCase({
+    id: "response-only-completion-audit-false-blocker",
+    taskProfile: "chatops",
+    goal: completionAuditFalseBlockerGoal,
+    responses: [
+      assistant(JSON.stringify(retainedFalseCompletionAuditBlockerResult)),
+      assistant(JSON.stringify(correctedFalseCompletionAuditBlockerResult)),
+    ],
+  });
+  assert.equal(
+    repairedFalseCompletionAuditBlocker.calls.length,
+    2,
+    "a completion audit accepted legitimate_blocker=true without a candidate blocker or covered item"
+  );
+  const falseBlockerRejection = repairedFalseCompletionAuditBlocker.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  );
+  assert.deepEqual(falseBlockerRejection?.data?.invalidAuditSemantics, [
+    "legitimate_blocker:true-without-candidate-blocker",
+    "legitimate_blocker:true-without-covered-item",
+  ]);
+  assert.match(
+    repairedFalseCompletionAuditBlocker.calls[1].messages
+      .map((message) => message.content)
+      .join("\n"),
+    /invalid completion-audit semantics:[^\n]*true-without-candidate-blocker[^\n]*true-without-covered-item/iu
+  );
+
+  const genuineCompletionAuditBlocker = await runCase({
+    id: "response-only-completion-audit-genuine-blocker",
+    taskProfile: "chatops",
+    goal: completionAuditGenuineBlockerGoal,
+    responses: [assistant(JSON.stringify(genuineCompletionAuditBlockerResult))],
+  });
+  assert.equal(
+    genuineCompletionAuditBlocker.calls.length,
+    1,
+    "a candidate's explicit authentication blocker was rejected"
+  );
+  assert.deepEqual(
+    JSON.parse(genuineCompletionAuditBlocker.result.result),
+    genuineCompletionAuditBlockerResult
+  );
+
+  const chineseCompletionAuditBlocker = await runCase({
+    id: "response-only-completion-audit-chinese-blocker",
+    taskProfile: "chatops",
+    goal: completionAuditChineseBlockerGoal,
+    responses: [assistant(JSON.stringify(genuineCompletionAuditBlockerResult))],
+  });
+  assert.equal(
+    chineseCompletionAuditBlocker.calls.length,
+    1,
+    "a candidate's explicit Chinese authentication blocker was rejected"
+  );
+
+  const repairedEmptyCandidateCoverage = await runCase({
+    id: "response-only-completion-audit-empty-candidate-covered",
+    taskProfile: "chatops",
+    goal: completionAuditFalseBlockerGoal,
+    responses: [
+      assistant(JSON.stringify(retainedEmptyCandidateCoveredResult)),
+      assistant(JSON.stringify(correctedFalseCompletionAuditBlockerResult)),
+    ],
+  });
+  assert.equal(
+    repairedEmptyCandidateCoverage.calls.length,
+    2,
+    "an empty candidate was accepted as covering an exact task item"
+  );
+  assert.deepEqual(
+    repairedEmptyCandidateCoverage.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.invalidAuditSemantics,
+    ["covered_item_ids:nonempty-for-empty-candidate"]
+  );
+
+  const repeatedEmptyCandidateCoverage = await runCase({
+    id: "response-only-completion-audit-empty-candidate-covered-stop",
+    taskProfile: "chatops",
+    goal: completionAuditFalseBlockerGoal,
+    responses: [
+      assistant(JSON.stringify(retainedEmptyCandidateCoveredResult)),
+      assistant(JSON.stringify(retainedEmptyCandidateCoveredResult)),
+    ],
+  });
+  assert.equal(repeatedEmptyCandidateCoverage.calls.length, 2);
+  assert.equal(repeatedEmptyCandidateCoverage.result.stopped, true);
+  assert.deepEqual(
+    JSON.parse(repeatedEmptyCandidateCoverage.result.result).missing.map(
+      (item) => item.item_id
+    ),
+    ["task:current-message"]
+  );
+  assert(
+    !repeatedEmptyCandidateCoverage.events.some(
+      (event) => event.type === "session.finished"
+    ),
+    "repeated empty-candidate coverage reached terminal success"
+  );
+
+  const explicitSilenceCoverage = await runCase({
+    id: "response-only-completion-audit-explicit-silence-covered",
+    taskProfile: "chatops",
+    goal: completionAuditExplicitSilenceGoal,
+    responses: [assistant(JSON.stringify(explicitSilenceCoveredResult))],
+  });
+  assert.equal(
+    explicitSilenceCoverage.calls.length,
+    1,
+    "an explicit no-reply request could not be covered by an empty candidate"
+  );
+
+  const repairedStatusOnlyCandidateCoverage = await runCase({
+    id: "response-only-completion-audit-status-only-candidate-covered",
+    taskProfile: "chatops",
+    goal: completionAuditStatusOnlyGoal,
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(correctedStatusOnlyAuditResult)),
+    ],
+  });
+  assert.equal(
+    repairedStatusOnlyCandidateCoverage.calls.length,
+    2,
+    "a progress acknowledgement was accepted as completed substantive work"
+  );
+  assert.deepEqual(
+    repairedStatusOnlyCandidateCoverage.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.invalidAuditSemantics,
+    ["covered_item_ids:nonempty-for-status-only-candidate"]
+  );
+  assert.match(
+    repairedStatusOnlyCandidateCoverage.calls[1].messages
+      .map((message) => message.content)
+      .join("\n"),
+    /nonempty-for-status-only-candidate/iu
+  );
+
+  for (const [id, request, message] of [
+    [
+      "english",
+      "Download the requested paper, analyze it, and attach the completed PDF.",
+      "Received. I am researching it now and will send the report shortly.",
+    ],
+    [
+      "japanese",
+      "指定された論文を調査し、完成した PDF を添付してください。",
+      "承知しました。現在調査中です。完了後に送信します。",
+    ],
+    [
+      "negated-acknowledgement",
+      "Do not only acknowledge receipt; answer the question with its evidence.",
+      "Received.",
+    ],
+    [
+      "chinese-future-work",
+      "请分析上传的文件并给出结论。",
+      "好的，我会处理并稍后回复。",
+    ],
+  ]) {
+    const repairedMultilingualStatusOnly = await runCase({
+      id: `response-only-completion-audit-status-only-${id}`,
+      taskProfile: "chatops",
+      goal: completionAuditGoalForCandidate(request, {
+        message,
+        confirmation: "",
+        files: [],
+      }),
+      responses: [
+        assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+        assistant(JSON.stringify(correctedStatusOnlyAuditResult)),
+      ],
+    });
+    assert.equal(
+      repairedMultilingualStatusOnly.calls.length,
+      2,
+      `${id} progress-only candidate bypassed completion repair`
+    );
+  }
+
+  for (const [id, request, candidate] of [
+    [
+      "explicit-acknowledgement",
+      "只回复收到，不需要执行其他操作。",
+      { message: "收到", confirmation: "", files: [] },
+    ],
+    [
+      "status-question",
+      "Is the report finished yet?",
+      { message: "The report is still processing.", confirmation: "", files: [] },
+    ],
+    [
+      "substantive-answer-after-ack",
+      "What is the nominal C-mount thread diameter?",
+      { message: "收到。答案：C-mount 的公称大径是 25.4 mm。", confirmation: "", files: [] },
+    ],
+    [
+      "material-attachment",
+      "Create and attach the requested PDF.",
+      {
+        message: "The report is complete.",
+        confirmation: "",
+        files: [{ name: "evidence-report.pdf", suffix: ".pdf" }],
+      },
+    ],
+  ]) {
+    const acceptedStatusCompatibleCandidate = await runCase({
+      id: `response-only-completion-audit-status-compatible-${id}`,
+      taskProfile: "chatops",
+      goal: completionAuditGoalForCandidate(request, candidate),
+      responses: [assistant(JSON.stringify(retainedStatusOnlyCoveredResult))],
+    });
+    assert.equal(
+      acceptedStatusCompatibleCandidate.calls.length,
+      1,
+      `${id} was mistaken for an unhandled progress acknowledgement`
+    );
+  }
+
+  const correctedForbiddenArtifactAuditResult = {
+    covered_item_ids: [],
+    missing: [{
+      item_id: "task:current-message",
+      requirement: "Return only the requested chat message and remove outbound files or attachments.",
+      kind: "artifact",
+    }],
+    legitimate_blocker: false,
+    complexity: "low",
+    summary: "The chat answer is present, but the candidate includes a forbidden outbound file.",
+  };
+  const repairedForbiddenArtifactCoverage = await runCase({
+    id: "response-only-completion-audit-forbidden-artifact-repair",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Return exactly one natural chat message. Create no files or attachments.",
+      {
+        message: "One concise and useful answer.",
+        confirmation: "",
+        files: [{ name: "worker_result.json", suffix: ".json" }],
+      }
+    ),
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(correctedForbiddenArtifactAuditResult)),
+    ],
+  });
+  assert.equal(
+    repairedForbiddenArtifactCoverage.calls.length,
+    2,
+    "an outbound file was accepted despite the exact no-files completion contract"
+  );
+  assert.deepEqual(
+    repairedForbiddenArtifactCoverage.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.invalidAuditSemantics,
+    ["covered_item_ids:task:current-message-with-forbidden-artifact:file"]
+  );
+  assert.deepEqual(
+    JSON.parse(repairedForbiddenArtifactCoverage.result.result),
+    correctedForbiddenArtifactAuditResult
+  );
+
+  const acceptedNoFilesMessageOnly = await runCase({
+    id: "response-only-completion-audit-no-files-message-only",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Return exactly one natural chat message. Create no files or attachments.",
+      { message: "One concise and useful answer.", confirmation: "", files: [] }
+    ),
+    responses: [assistant(JSON.stringify(retainedStatusOnlyCoveredResult))],
+  });
+  assert.equal(
+    acceptedNoFilesMessageOnly.calls.length,
+    1,
+    "a message-only candidate was rejected by its matching no-files contract"
+  );
+
+  for (const [id, request] of [
+    ["chinese", "只回复一条自然聊天消息，不要创建或发送任何文件或附件。"],
+    ["japanese", "チャットメッセージだけを返し、ファイルや添付を作成・送信しないでください。"],
+  ]) {
+    const repairedMultilingualForbiddenArtifact = await runCase({
+      id: `response-only-completion-audit-forbidden-artifact-${id}`,
+      taskProfile: "chatops",
+      goal: completionAuditGoalForCandidate(request, {
+        message: "One concise and useful answer.",
+        confirmation: "",
+        files: [],
+        generated_text_content: [{ name: "unrequested-note.md", content: "extra" }],
+      }),
+      responses: [
+        assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+        assistant(JSON.stringify(correctedForbiddenArtifactAuditResult)),
+      ],
+    });
+    assert.equal(
+      repairedMultilingualForbiddenArtifact.calls.length,
+      2,
+      `${id} no-files contract accepted generated document content`
+    );
+  }
+
+  const acceptedSpecificArtifactExclusion = await runCase({
+    id: "response-only-completion-audit-specific-artifact-exclusion-valid",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Attach the final PDF only. Do not attach Markdown files.",
+      {
+        message: "The report is complete.",
+        confirmation: "",
+        files: [{ name: "final-report.pdf", suffix: ".pdf" }],
+      }
+    ),
+    responses: [assistant(JSON.stringify(retainedStatusOnlyCoveredResult))],
+  });
+  assert.equal(
+    acceptedSpecificArtifactExclusion.calls.length,
+    1,
+    "an allowed PDF was mistaken for the specifically forbidden Markdown source"
+  );
+
+  const repairedSpecificArtifactExclusion = await runCase({
+    id: "response-only-completion-audit-specific-artifact-exclusion-repair",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Attach the final PDF only. Do not attach Markdown files.",
+      {
+        message: "The report is complete.",
+        confirmation: "",
+        files: [
+          { name: "final-report.pdf", suffix: ".pdf" },
+          { name: "unrequested-source.md", suffix: ".md" },
+        ],
+      }
+    ),
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(correctedForbiddenArtifactAuditResult)),
+    ],
+  });
+  assert.equal(repairedSpecificArtifactExclusion.calls.length, 2);
+  assert.deepEqual(
+    repairedSpecificArtifactExclusion.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.invalidAuditSemantics,
+    ["covered_item_ids:task:current-message-with-forbidden-artifact:.md"]
+  );
+
+  const mixedArtifactContractGoal = completionAuditItemIdentityGoal.replace(
+    '"text":"Answer the current question."',
+    '"text":"Answer this item in chat and create no files or attachments."'
+  ).replace(
+    '"text":"Also attach the requested PDF."',
+    '"text":"For this separate item, attach the requested PDF."'
+  ).replace(
+    '"request_items":[',
+    '"candidate_result":{"message":"Both answers are complete.","files":[{"name":"requested-report.pdf","suffix":".pdf"}]},"request_items":['
+  );
+  const acceptedMixedArtifactContract = await runCase({
+    id: "response-only-completion-audit-mixed-artifact-contract",
+    taskProfile: "chatops",
+    goal: mixedArtifactContractGoal,
+    responses: [assistant(JSON.stringify({
+      covered_item_ids: ["task:actual-message", "interruption:actual-pdf"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "medium",
+      summary: "The shared candidate answers both items and includes the separately requested PDF.",
+    }))],
+  });
+  assert.equal(
+    acceptedMixedArtifactContract.calls.length,
+    1,
+    "one item's no-file preference blocked another exact item's requested PDF"
+  );
+
+  const repairedMissingRequestedPdf = await runCase({
+    id: "response-only-completion-audit-artifact-coverage-repair",
+    taskProfile: "chatops",
+    goal: completionAuditTextWithoutPdfGoal,
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(correctedMissingPdfAuditResult)),
+    ],
+  });
+  assert.equal(
+    repairedMissingRequestedPdf.calls.length,
+    2,
+    "substantive answer text was accepted as the explicitly requested PDF artifact"
+  );
+  assert.deepEqual(
+    repairedMissingRequestedPdf.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.invalidAuditSemantics,
+    ["covered_item_ids:task:current-message-without-required-artifact:.pdf"]
+  );
+  assert.deepEqual(
+    JSON.parse(repairedMissingRequestedPdf.result.result),
+    correctedMissingPdfAuditResult
+  );
+
+  const acceptedRequestedPdf = await runCase({
+    id: "response-only-completion-audit-artifact-coverage-valid",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Answer the question with evidence and attach the completed PDF report.",
+      {
+        message: "The report is complete.",
+        confirmation: "",
+        files: [{ name: "evidence-report.pdf", suffix: ".pdf" }],
+      }
+    ),
+    responses: [assistant(JSON.stringify(retainedStatusOnlyCoveredResult))],
+  });
+  assert.equal(
+    acceptedRequestedPdf.calls.length,
+    1,
+    "a structured requested PDF attachment was rejected"
+  );
+
+  for (const [id, request] of [
+    ["chinese", "请回答问题并附上完成的 PDF 报告。"],
+    ["japanese", "質問に答え、完成した PDF レポートを添付してください。"],
+  ]) {
+    const repairedMultilingualMissingPdf = await runCase({
+      id: `response-only-completion-audit-artifact-coverage-${id}`,
+      taskProfile: "chatops",
+      goal: completionAuditGoalForCandidate(request, {
+        message: "The evidence-backed answer is present.",
+        confirmation: "",
+        files: [],
+      }),
+      responses: [
+        assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+        assistant(JSON.stringify(correctedMissingPdfAuditResult)),
+      ],
+    });
+    assert.equal(
+      repairedMultilingualMissingPdf.calls.length,
+      2,
+      `${id} requested PDF was satisfied by answer text alone`
+    );
+  }
+
+  const repairedProseOnlyPdfClaim = await runCase({
+    id: "response-only-completion-audit-artifact-prose-claim",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Answer the question and attach the completed PDF report.",
+      {
+        message: "The answer is complete and the PDF was sent.",
+        confirmation: "",
+        files: [],
+      }
+    ),
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(correctedMissingPdfAuditResult)),
+    ],
+  });
+  assert.equal(
+    repairedProseOnlyPdfClaim.calls.length,
+    2,
+    "prose claiming that a PDF was sent counted as a material attachment"
+  );
+
+  const repeatedMissingRequestedPdf = await runCase({
+    id: "response-only-completion-audit-artifact-coverage-stop",
+    taskProfile: "chatops",
+    goal: completionAuditTextWithoutPdfGoal,
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+    ],
+  });
+  assert.equal(repeatedMissingRequestedPdf.result.stopped, true);
+  assert.deepEqual(JSON.parse(repeatedMissingRequestedPdf.result.result).missing, [{
+    item_id: "task:current-message",
+    requirement: "Answer the question with evidence and attach the completed PDF report.",
+    kind: "artifact",
+  }]);
+
+  for (const [id, request, candidate] of [
+    [
+      "negated-pdf",
+      "Answer in chat; do not attach or create a PDF.",
+      { message: "The direct answer is here.", confirmation: "", files: [] },
+    ],
+    [
+      "pdf-definition",
+      "What is a PDF? Answer in one sentence.",
+      { message: "PDF is a portable document format.", confirmation: "", files: [] },
+    ],
+    [
+      "video-source-summary",
+      "Analyze the attached video and return a concise summary.",
+      { message: "The video shows the documented experiment.", confirmation: "", files: [] },
+    ],
+    [
+      "video-source-summary-chinese",
+      "分析这个视频并给我一段简短摘要。",
+      { message: "视频展示了实验过程。", confirmation: "", files: [] },
+    ],
+    [
+      "pdf-source-explanation",
+      "Read report.pdf and explain its conclusion in chat.",
+      { message: "The report concludes that the intervention helped.", confirmation: "", files: [] },
+    ],
+    [
+      "host-generated-pdf",
+      "Answer the question and attach the completed PDF report.",
+      {
+        message: "The report is complete.",
+        confirmation: "",
+        files: [],
+        generated_pdf_content: ["\\documentclass{article}\\begin{document}Done\\end{document}"],
+      },
+    ],
+    [
+      "video-attachment",
+      "Send the completed video file.",
+      {
+        message: "The video is ready.",
+        confirmation: "",
+        files: [{ path: "artifacts/final-video.mp4", mime_type: "video/mp4" }],
+      },
+    ],
+  ]) {
+    const acceptedArtifactBoundary = await runCase({
+      id: `response-only-completion-audit-artifact-compatible-${id}`,
+      taskProfile: "chatops",
+      goal: completionAuditGoalForCandidate(request, candidate),
+      responses: [assistant(JSON.stringify(retainedStatusOnlyCoveredResult))],
+    });
+    assert.equal(
+      acceptedArtifactBoundary.calls.length,
+      1,
+      `${id} crossed the explicit artifact completion boundary incorrectly`
+    );
+  }
+
+  const repeatedStatusOnlyCoverage = await runCase({
+    id: "response-only-completion-audit-status-only-stop",
+    taskProfile: "chatops",
+    goal: completionAuditStatusOnlyGoal,
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+    ],
+  });
+  assert.equal(repeatedStatusOnlyCoverage.calls.length, 2);
+  assert.equal(repeatedStatusOnlyCoverage.result.stopped, true);
+  assert.deepEqual(
+    JSON.parse(repeatedStatusOnlyCoverage.result.result).missing.map((item) => item.item_id),
+    ["task:current-message"]
+  );
+  assert(
+    !repeatedStatusOnlyCoverage.events.some((event) => event.type === "session.finished"),
+    "repeated progress-only coverage reached terminal success"
+  );
+
+  const repeatedPhantomCompletionAudit = await runCase({
+    id: "response-only-completion-audit-item-identity-stop",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [
+      assistant(JSON.stringify(retainedPhantomCompletionAuditResult)),
+      assistant(JSON.stringify(retainedPhantomCompletionAuditResult)),
+    ],
+  });
+  assert.equal(repeatedPhantomCompletionAudit.calls.length, 2);
+  assert.equal(repeatedPhantomCompletionAudit.result.stopped, true);
+  assert.equal(
+    repeatedPhantomCompletionAudit.result.reason,
+    "response_only_output_contract_required"
+  );
+  const safeAuditStop = JSON.parse(repeatedPhantomCompletionAudit.result.result);
+  assert.deepEqual(safeAuditStop.covered_item_ids, []);
+  assert.deepEqual(
+    safeAuditStop.missing.map((item) => item.item_id).sort(),
+    ["interruption:actual-pdf", "task:actual-message"]
+  );
+  assert(
+    !repeatedPhantomCompletionAudit.events.some((event) => event.type === "session.finished"),
+    "repeated phantom completion-audit IDs reached terminal success"
+  );
+
+  const validCompletionAuditIdentity = await runCase({
+    id: "response-only-completion-audit-item-identity-valid",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [assistant(JSON.stringify(validCompletionAuditIdentityResult))],
+  });
+  assert.equal(validCompletionAuditIdentity.calls.length, 1);
+  assert.deepEqual(
+    JSON.parse(validCompletionAuditIdentity.result.result),
+    validCompletionAuditIdentityResult
+  );
+
+  const retainedCompletionAuditRequirement = await runCase({
+    id: "response-only-completion-audit-requirement",
+    taskProfile: "chatops",
+    goal: completionAuditSourceFreeGoal,
+    responses: [assistant(JSON.stringify(retainedCompletionAuditRequirementResult))],
+  });
+  assert.equal(
+    retainedCompletionAuditRequirement.calls.length,
+    1,
+    "a valid completion-audit requirement consumed an unnecessary repair turn"
+  );
+  assert.deepEqual(
+    JSON.parse(retainedCompletionAuditRequirement.result.result),
+    retainedCompletionAuditRequirementResult
+  );
+  assert(
+    !retainedCompletionAuditRequirement.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the retained completion-audit requirement still triggered source-free rejection"
+  );
+  assert(
+    retainedCompletionAuditRequirement.events.some((event) => event.type === "session.finished"),
+    "the valid completion audit did not finish normally"
+  );
+
   const explanation = await runCase({
     id: "ordinary-explanation",
     goal: "Explain why recursion needs a base case.",
@@ -456,6 +2429,253 @@ try {
     ) < 2_000,
     "focused runtime snapshot repeated the full capability manual"
   );
+
+  const crossTaskIsolationId = "scoped-artifact-cross-task-completion";
+  const crossTaskWorkspace = path.join(tempRoot, "workspaces", crossTaskIsolationId);
+  const currentTaskRoot = path.join(crossTaskWorkspace, "output", "tasks", "current-task");
+  const siblingTaskRoot = path.join(crossTaskWorkspace, "output", "tasks", "sibling-task");
+  const currentTaskReport = path.join(currentTaskRoot, "current-report.md");
+  const siblingTaskReport = path.join(siblingTaskRoot, "sibling-report.md");
+  const crossTaskCompletion = await runCase({
+    id: crossTaskIsolationId,
+    taskProfile: "chatops",
+    goal: scopedTaskGoal(
+      "Create a daily research briefing under the exact task artifact root and return its verified reader-facing artifact.",
+      currentTaskRoot
+    ),
+    allowFileTools: true,
+    setup: async () => {
+      await fs.mkdir(siblingTaskRoot, { recursive: true });
+      await fs.writeFile(siblingTaskReport, "SIBLING TASK\n", "utf8");
+    },
+    responses: [
+      assistant("", [toolCall("write-current-task", "write_file", {
+        path: currentTaskReport,
+        content: "CURRENT TASK\n",
+      })]),
+      assistant("", [toolCall("finish-sibling-task", "finish", {
+        result: `Created and verified ${siblingTaskReport}`,
+      })]),
+      assistant("", [toolCall("finish-current-task", "finish", {
+        result: `Created and verified ${currentTaskReport}`,
+      })]),
+    ],
+  });
+  assert.equal(
+    crossTaskCompletion.calls.length,
+    3,
+    "a sibling task artifact path was accepted as the current task completion"
+  );
+  assert.equal(crossTaskCompletion.result.stopped, undefined);
+  assert.match(crossTaskCompletion.result.result, /current-report\.md/u);
+  assert.doesNotMatch(crossTaskCompletion.result.result, /sibling-report\.md/u);
+  assert(
+    crossTaskCompletion.events.some(
+      (event) => event.type === "completion.cross_task_artifact_rejected"
+    ),
+    "the cross-task completion did not leave private rejection evidence"
+  );
+
+  const crossTaskReadId = "scoped-artifact-cross-task-read";
+  const crossTaskReadWorkspace = path.join(tempRoot, "workspaces", crossTaskReadId);
+  const crossTaskReadCurrentRoot = path.join(crossTaskReadWorkspace, "output", "tasks", "current-task");
+  const crossTaskReadSiblingRoot = path.join(crossTaskReadWorkspace, "output", "tasks", "sibling-task");
+  const crossTaskReadCurrentFile = path.join(crossTaskReadCurrentRoot, "source.md");
+  const crossTaskReadSiblingFile = path.join(crossTaskReadSiblingRoot, "source.md");
+  const crossTaskRead = await runCase({
+    id: crossTaskReadId,
+    taskProfile: "chatops",
+    goal: scopedTaskGoal(
+      `Read ${crossTaskReadCurrentFile} and summarize it without creating a file.`,
+      crossTaskReadCurrentRoot
+    ),
+    allowFileTools: true,
+    setup: async () => {
+      await fs.mkdir(crossTaskReadCurrentRoot, { recursive: true });
+      await fs.mkdir(crossTaskReadSiblingRoot, { recursive: true });
+      await fs.writeFile(crossTaskReadCurrentFile, "CURRENT SOURCE\n", "utf8");
+      await fs.writeFile(crossTaskReadSiblingFile, "SIBLING SOURCE\n", "utf8");
+    },
+    responses: [
+      assistant("", [toolCall("read-sibling-task", "read_file", {
+        path: crossTaskReadSiblingFile,
+      })]),
+      assistant("", [toolCall("read-current-task", "read_file", {
+        path: crossTaskReadCurrentFile,
+      })]),
+      assistant("The current source says CURRENT SOURCE."),
+    ],
+  });
+  assert.equal(crossTaskRead.calls.length, 3);
+  assert.match(crossTaskRead.result.result, /CURRENT SOURCE/u);
+  assert(
+    crossTaskRead.events.some(
+      (event) =>
+        event.type === "tool.blocked" &&
+        event.data?.category === "cross-task-artifact-scope"
+    ),
+    "read_file could inspect an undeclared sibling task root"
+  );
+
+  const crossTaskShellId = "scoped-artifact-cross-task-shell-read";
+  const crossTaskShellWorkspace = path.join(tempRoot, "workspaces", crossTaskShellId);
+  const crossTaskShellCurrentRoot = path.join(crossTaskShellWorkspace, "output", "tasks", "current-task");
+  const crossTaskShellSiblingRoot = path.join(crossTaskShellWorkspace, "output", "tasks", "sibling-task");
+  const crossTaskShellCurrentFile = path.join(crossTaskShellCurrentRoot, "source.md");
+  const crossTaskShellSiblingFile = path.join(crossTaskShellSiblingRoot, "source.md");
+  const crossTaskShellRead = await runCase({
+    id: crossTaskShellId,
+    taskProfile: "chatops",
+    goal: scopedTaskGoal(
+      `Read ${crossTaskShellCurrentFile} with a shell command and report its text.`,
+      crossTaskShellCurrentRoot
+    ),
+    allowShellTool: true,
+    allowFileTools: true,
+    setup: async () => {
+      await fs.mkdir(crossTaskShellCurrentRoot, { recursive: true });
+      await fs.mkdir(crossTaskShellSiblingRoot, { recursive: true });
+      await fs.writeFile(crossTaskShellCurrentFile, "CURRENT SHELL SOURCE\n", "utf8");
+      await fs.writeFile(crossTaskShellSiblingFile, "SIBLING SHELL SOURCE\n", "utf8");
+    },
+    responses: [
+      assistant("", [toolCall("shell-read-sibling-task", "run_command", {
+        command: `cat ${crossTaskShellSiblingFile}`,
+      })]),
+      assistant("", [toolCall("shell-read-current-task", "run_command", {
+        command: `cat ${crossTaskShellCurrentFile}`,
+      })]),
+      assistant("", [toolCall("file-read-current-shell-source", "read_file", {
+        path: crossTaskShellCurrentFile,
+      })]),
+      assistant("The current shell source says CURRENT SHELL SOURCE."),
+    ],
+  });
+  assert.equal(crossTaskShellRead.calls.length, 4);
+  assert.match(crossTaskShellRead.result.result, /CURRENT SHELL SOURCE/u);
+  assert(
+    crossTaskShellRead.events.some(
+      (event) =>
+        event.type === "tool.blocked" &&
+        event.data?.category === "cross-task-artifact-scope"
+    ),
+    "run_command could inspect an undeclared sibling task root"
+  );
+
+  const declaredSiblingInputId = "scoped-artifact-declared-sibling-input";
+  const declaredSiblingInputWorkspace = path.join(tempRoot, "workspaces", declaredSiblingInputId);
+  const declaredSiblingCurrentRoot = path.join(declaredSiblingInputWorkspace, "output", "tasks", "current-task");
+  const declaredSiblingSourceRoot = path.join(declaredSiblingInputWorkspace, "output", "tasks", "declared-source");
+  const declaredSiblingSourceFile = path.join(declaredSiblingSourceRoot, "source.md");
+  const declaredSiblingInput = await runCase({
+    id: declaredSiblingInputId,
+    taskProfile: "chatops",
+    goal: scopedTaskGoal(
+      `Use the declared read-only source root \`${declaredSiblingSourceRoot}\`. Read its supplied source and summarize it in chat without creating artifacts.`,
+      declaredSiblingCurrentRoot
+    ),
+    allowFileTools: true,
+    setup: async () => {
+      await fs.mkdir(declaredSiblingCurrentRoot, { recursive: true });
+      await fs.mkdir(declaredSiblingSourceRoot, { recursive: true });
+      await fs.writeFile(declaredSiblingSourceFile, "DECLARED SOURCE\n", "utf8");
+    },
+    responses: [
+      assistant("", [toolCall("read-declared-sibling-source", "read_file", {
+        path: declaredSiblingSourceFile,
+      })]),
+      assistant("The explicitly supplied file says DECLARED SOURCE."),
+    ],
+  });
+  assert.equal(declaredSiblingInput.calls.length, 2);
+  assert.match(declaredSiblingInput.result.result, /DECLARED SOURCE/u);
+  assert(
+    !declaredSiblingInput.events.some(
+      (event) =>
+        event.type === "tool.blocked" &&
+        event.data?.category === "cross-task-artifact-scope"
+    ),
+    "an explicitly declared sibling input was blocked"
+  );
+
+  const compactionRecoveryGoal = [
+    "Return exactly READY. Do not use any external tool or claim external facts.",
+    `Retained background notes: ${"context-only background. ".repeat(1600)}`,
+  ].join("\n");
+  const recoveredFromInternalScaffold = await runCase({
+    id: "internal-runtime-scaffold-recovery",
+    goal: compactionRecoveryGoal,
+    contextBudgetChars: 8_000,
+    contextBudgetTargetChars: 5_000,
+    responses: [
+      assistant(productionScaffoldResult),
+      assistant("READY"),
+    ],
+  });
+  assert.equal(recoveredFromInternalScaffold.calls.length, 2);
+  assert.equal(recoveredFromInternalScaffold.result.result, "READY");
+  assert(
+    recoveredFromInternalScaffold.events.some(
+      (event) => event.type === "history.compacted_for_context_budget"
+    ),
+    "production-shaped fixture did not enter runtime context compaction"
+  );
+  assert.equal(
+    recoveredFromInternalScaffold.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    1,
+    "copied internal compaction scaffolding was not rejected exactly once"
+  );
+  assert.equal(
+    recoveredFromInternalScaffold.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_repair_requested"
+    ).length,
+    1,
+    "copied internal compaction scaffolding did not receive one bounded repair"
+  );
+  assert(
+    recoveredFromInternalScaffold.calls[1].messages.some(
+      (message) => /repeated private recovery or compaction scaffolding/i.test(String(message.content || ""))
+    ),
+    "the repaired model turn did not receive a task-facing recovery instruction"
+  );
+  assert(
+    !recoveredFromInternalScaffold.state.messages.some(
+      (message) => message.role === "assistant" && String(message.content || "").includes("original prompt was truncated")
+    ),
+    "rejected internal scaffolding remained in the resumed conversation"
+  );
+
+  const repeatedInternalScaffold = await runCase({
+    id: "internal-runtime-scaffold-repeated",
+    goal: compactionRecoveryGoal,
+    contextBudgetChars: 8_000,
+    contextBudgetTargetChars: 5_000,
+    responses: [
+      assistant(productionScaffoldResult),
+      assistant(productionScaffoldResult),
+    ],
+  });
+  assert.equal(repeatedInternalScaffold.calls.length, 2);
+  assert.equal(repeatedInternalScaffold.result.stopped, true);
+  assert.equal(repeatedInternalScaffold.result.reason, "model_did_not_execute");
+  assert.equal(
+    repeatedInternalScaffold.result.result,
+    "I could not produce a reliable response for this message."
+  );
+  assert.doesNotMatch(
+    repeatedInternalScaffold.result.result,
+    /model|session|provider|runtime|resume|repair attempt/iu,
+    "internal-scaffold stop exposed private runtime diagnostics"
+  );
+  assert.equal(
+    repeatedInternalScaffold.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    2
+  );
+  assert(!repeatedInternalScaffold.events.some((event) => event.type === "session.finished"));
 
   // Recreate a state written by the older continuation classifier: the
   // expanded continuation was incorrectly persisted as the durable task.
@@ -543,6 +2763,1128 @@ try {
   assert.equal(quotedChatClassification.result.stopped, undefined);
   assert.equal(quotedChatClassification.result.result, '{"intent":"generation_only","publish":false}');
   assert(!quotedChatClassification.events.some((event) => event.type === "completion.evidence_rejected"));
+
+  const repairedUnexpectedStrictJsonField = await runCase({
+    id: "tool-capable-strict-json-unexpected-field",
+    taskProfile: "chatops",
+    goal: [
+      "Answer the current chat message.",
+      'Return exactly one strict JSON object and no prose: {"response":"","handled":true}.',
+    ].join("\n"),
+    responses: [
+      assistant(JSON.stringify({
+        response: "Handled the current message.",
+        handled: true,
+        provider: "localllm",
+      })),
+      assistant(JSON.stringify({
+        response: "Handled the current message.",
+        handled: true,
+      })),
+    ],
+  });
+  assert.equal(
+    repairedUnexpectedStrictJsonField.calls.length,
+    2,
+    "an undeclared field was accepted in an explicitly closed JSON envelope"
+  );
+  const unexpectedFieldRejection = repairedUnexpectedStrictJsonField.events.find(
+    (event) =>
+      event.type === "completion.output_contract_rejected" &&
+      event.data?.unexpectedKeys?.length
+  );
+  assert(
+    unexpectedFieldRejection,
+    `missing unexpected-key rejection: ${JSON.stringify(
+      repairedUnexpectedStrictJsonField.events.filter(
+        (event) => event.type === "completion.output_contract_rejected"
+      )
+    )}`
+  );
+  assert.deepEqual(unexpectedFieldRejection?.data?.unexpectedKeys, ["provider"]);
+  assert.match(
+    repairedUnexpectedStrictJsonField.calls[1].messages
+      .map((message) => message.content)
+      .join("\n"),
+    /undeclared top-level keys: provider/iu
+  );
+
+  const extensibleJsonField = await runCase({
+    id: "tool-capable-extensible-json-field",
+    taskProfile: "chatops",
+    goal: [
+      "Answer the current chat message.",
+      'Return JSON: {"response":""}.',
+    ].join("\n"),
+    responses: [assistant(JSON.stringify({
+      response: "Handled the current message.",
+      detail: "Useful optional detail.",
+    }))],
+  });
+  assert.equal(extensibleJsonField.calls.length, 1);
+  assert.equal(extensibleJsonField.result.stopped, undefined);
+  assert(
+    !extensibleJsonField.events.some(
+      (event) => event.type === "completion.output_contract_rejected"
+    ),
+    "a plain extensible JSON example rejected an optional top-level field"
+  );
+
+  const toolCapableJsonGoal = [
+    "Run pwd and report the verified working directory.",
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({
+      message: "direct user-facing answer",
+      files: [],
+      confirmation: "",
+      knowledge_items: [],
+      upstream_feedback: [],
+    }),
+  ].join("\n");
+  const validToolCapableJson = JSON.stringify({
+    message: "Verified the working directory with pwd.",
+    files: [],
+    confirmation: "",
+    knowledge_items: [],
+    upstream_feedback: [],
+  });
+  const repairedToolCapableJsonFinish = await runCase({
+    id: "tool-capable-json-finish-repair",
+    taskProfile: "shell",
+    goal: toolCapableJsonGoal,
+    allowShellTool: true,
+    responses: [
+      assistant("", [toolCall("json-pwd-finish", "run_command", { command: "pwd" })]),
+      assistant("", [toolCall("json-invalid-finish", "finish", {
+        result: "Verified the working directory with pwd.",
+      })]),
+      assistant("", [toolCall("json-repaired-finish", "finish", {
+        result: validToolCapableJson,
+      })]),
+    ],
+  });
+  assert.equal(
+    repairedToolCapableJsonFinish.calls.length,
+    3,
+    "a tool-capable finish bypassed the explicit JSON output contract"
+  );
+  assert.deepEqual(JSON.parse(repairedToolCapableJsonFinish.result.result), JSON.parse(validToolCapableJson));
+  assert.equal(
+    repairedToolCapableJsonFinish.events.filter(
+      (event) => event.type === "completion.output_contract_rejected"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedToolCapableJsonFinish.events.filter(
+      (event) => event.type === "completion.output_contract_repaired"
+    ).length,
+    1
+  );
+
+  const repairedToolCapableJsonContent = await runCase({
+    id: "tool-capable-json-assistant-repair",
+    taskProfile: "shell",
+    goal: toolCapableJsonGoal,
+    allowShellTool: true,
+    responses: [
+      assistant("", [toolCall("json-pwd-content", "run_command", { command: "pwd" })]),
+      assistant("Verified the working directory with pwd."),
+      assistant(validToolCapableJson),
+    ],
+  });
+  assert.equal(
+    repairedToolCapableJsonContent.calls.length,
+    3,
+    "tool-capable assistant content bypassed the explicit JSON output contract"
+  );
+  assert.deepEqual(JSON.parse(repairedToolCapableJsonContent.result.result), JSON.parse(validToolCapableJson));
+
+  const repeatedInvalidToolCapableJson = await runCase({
+    id: "tool-capable-json-repeated-invalid",
+    taskProfile: "shell",
+    goal: toolCapableJsonGoal,
+    allowShellTool: true,
+    responses: [
+      assistant("", [toolCall("json-pwd-repeated", "run_command", { command: "pwd" })]),
+      assistant("", [toolCall("json-invalid-repeated-1", "finish", {
+        result: "Verified the working directory with pwd.",
+      })]),
+      assistant("", [toolCall("json-invalid-repeated-2", "finish", {
+        result: "Done.",
+      })]),
+    ],
+  });
+  assert.equal(repeatedInvalidToolCapableJson.calls.length, 3);
+  assert.equal(repeatedInvalidToolCapableJson.result.stopped, true);
+  assert.equal(repeatedInvalidToolCapableJson.result.reason, "model_did_not_execute");
+  assert.deepEqual(Object.keys(JSON.parse(repeatedInvalidToolCapableJson.result.result)), [
+    "message",
+    "files",
+    "confirmation",
+    "knowledge_items",
+    "upstream_feedback",
+  ]);
+  assert(
+    repeatedInvalidToolCapableJson.events.some(
+      (event) => event.type === "completion.output_contract_failed_closed"
+    )
+  );
+  assert(!repeatedInvalidToolCapableJson.events.some((event) => event.type === "session.finished"));
+
+  const responseOnlyScope = {
+    mode: "chat-response",
+    request: "Return the requested text only; no external action is requested.",
+  };
+  const responseOnlyControlEchoGoal = [
+    "You are the response-only reasoning backend for a chat host.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify(responseOnlyScope)}`,
+    "Current message:",
+    "Can you answer the new question instead of repeating runtime metadata?",
+    "Return the finished chat response only.",
+  ].join("\n");
+  const repairedResponseOnlyControlEcho = await runCase({
+    id: "response-only-control-envelope-echo-repair",
+    taskProfile: "chatops",
+    goal: responseOnlyControlEchoGoal,
+    responses: [
+      assistant(JSON.stringify(responseOnlyScope)),
+      assistant("I will answer the new question directly rather than repeat runtime metadata."),
+    ],
+  });
+  assert.equal(
+    repairedResponseOnlyControlEcho.calls.length,
+    2,
+    "a response-only control-envelope echo was accepted without repair"
+  );
+  assert.equal(
+    repairedResponseOnlyControlEcho.result.result,
+    "I will answer the new question directly rather than repeat runtime metadata."
+  );
+  assert.equal(
+    repairedResponseOnlyControlEcho.events.filter(
+      (event) => event.type === "response_only.context_echo_rejected"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedResponseOnlyControlEcho.events.filter(
+      (event) => event.type === "response_only.context_echo_repaired"
+    ).length,
+    1
+  );
+
+  const staleBotMessage = "哈哈，这是马老师能量传输的副作用，能把知识讲得有趣些。";
+  const currentChatMessage = "不会最后科研做不成，被训练成段子手了吧？";
+  const staleBotContextGoal = [
+    "You are the response-only reasoning backend for a chat host.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify(responseOnlyScope)}`,
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({ response: "natural reply to the current message", handled: true }),
+    "Current message:",
+    currentChatMessage,
+    "Recent same-chat context:",
+    JSON.stringify([
+      { local_id: 481, sender_display: "LabAgent", content: staleBotMessage, is_self: true },
+      { local_id: 482, sender_display: "sunnyyty", content: currentChatMessage, is_self: false },
+    ]),
+  ].join("\n");
+  const repairedStaleBotContextEcho = await runCase({
+    id: "response-only-prior-self-message-echo-repair",
+    taskProfile: "chatops",
+    goal: staleBotContextGoal,
+    responses: [
+      assistant(JSON.stringify({ response: staleBotMessage, handled: true })),
+      assistant(JSON.stringify({
+        response: "不会。幽默只是表达方式，科研判断仍要靠证据和实验。",
+        handled: true,
+      })),
+    ],
+  });
+  assert.equal(
+    repairedStaleBotContextEcho.calls.length,
+    2,
+    "a prior bot-authored chat message was accepted as the answer to a different current message"
+  );
+  assert.equal(
+    JSON.parse(repairedStaleBotContextEcho.result.result).response,
+    "不会。幽默只是表达方式，科研判断仍要靠证据和实验。"
+  );
+  assert(
+    repairedStaleBotContextEcho.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /prior bot-authored chat message/i.test(String(message.content || "")) &&
+        /"response":string, "handled":boolean/i.test(String(message.content || ""))
+    ),
+    "the context-echo repair omitted the current-turn boundary or JSON contract"
+  );
+
+  const hostAcknowledgementContextGoal = [
+    "You are the response-only reasoning backend for a chat host.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "chat-response",
+      request: currentChatMessage,
+    })}`,
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({ response: "natural reply to the current message", handled: true }),
+    "Current message:",
+    currentChatMessage,
+  ].join("\n");
+  const repairedHostAcknowledgement = await runCase({
+    id: "response-only-host-acknowledgement-repair",
+    taskProfile: "chatops",
+    goal: hostAcknowledgementContextGoal,
+    responses: [
+      assistant(JSON.stringify({
+        response: retainedEnglishHostAcknowledgement,
+        handled: true,
+      })),
+      assistant(JSON.stringify({
+        response: "不会。幽默只是表达方式，科研判断仍要靠证据和实验。",
+        handled: true,
+      })),
+    ],
+  });
+  assert.equal(repairedHostAcknowledgement.calls.length, 2);
+  assert.deepEqual(
+    Object.keys(JSON.parse(repairedHostAcknowledgement.result.result)),
+    ["response", "handled"],
+    "host acknowledgement repair changed the explicit JSON envelope"
+  );
+  assert.equal(
+    JSON.parse(repairedHostAcknowledgement.result.result).response,
+    "不会。幽默只是表达方式，科研判断仍要靠证据和实验。"
+  );
+  assert.equal(
+    repairedHostAcknowledgement.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedHostAcknowledgement.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_repaired"
+    ).length,
+    1
+  );
+  assert(
+    repairedHostAcknowledgement.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /routing acknowledgement/i.test(String(message.content || ""))
+    ),
+    "the host acknowledgement repair did not explain the task-facing defect"
+  );
+
+  const repeatedHostAcknowledgement = await runCase({
+    id: "response-only-host-acknowledgement-repeated",
+    taskProfile: "chatops",
+    goal: hostAcknowledgementContextGoal,
+    responses: [
+      assistant(JSON.stringify({
+        response: retainedEnglishHostAcknowledgement,
+        handled: true,
+      })),
+      assistant(JSON.stringify({
+        response: retainedChineseHostAcknowledgement,
+        handled: true,
+      })),
+    ],
+  });
+  assert.equal(repeatedHostAcknowledgement.calls.length, 2);
+  assert.equal(repeatedHostAcknowledgement.result.stopped, true);
+  assert.equal(repeatedHostAcknowledgement.result.reason, "model_did_not_execute");
+  assert.deepEqual(
+    Object.keys(JSON.parse(repeatedHostAcknowledgement.result.result)),
+    ["response", "handled"],
+    "host acknowledgement fail-closed result broke the explicit JSON envelope"
+  );
+  assert.equal(
+    JSON.parse(repeatedHostAcknowledgement.result.result).handled,
+    false,
+    "host acknowledgement fail-closed result claimed the current message was handled"
+  );
+  assert.equal(
+    JSON.parse(repeatedHostAcknowledgement.result.result).response,
+    "这条消息暂时没有生成可靠的答复。"
+  );
+  assert.doesNotMatch(
+    JSON.parse(repeatedHostAcknowledgement.result.result).response,
+    /response-only|模型|会话|提供商|运行时|恢复|重试/iu,
+    "response-only scaffold stop exposed private runtime diagnostics"
+  );
+  assert.equal(
+    repeatedHostAcknowledgement.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    2
+  );
+  assert(
+    repeatedHostAcknowledgement.events.some(
+      (event) => event.type === "response_only.internal_runtime_scaffold_failed_closed"
+    )
+  );
+  assert(!repeatedHostAcknowledgement.events.some((event) => event.type === "session.finished"));
+
+  const packetIdentifierLeak = {
+    message: "Reflect on your achievements like the memo_daily task to stay motivated.",
+    files: [],
+    confirmation: "",
+  };
+  const repairedPacketIdentifierLeak = await runCase({
+    id: "response-only-private-packet-identifier-repair",
+    taskProfile: "chatops",
+    goal: privatePacketIdentifierGoal,
+    responses: [
+      assistant(JSON.stringify(packetIdentifierLeak)),
+      assistant(JSON.stringify({
+        message: "Choose one small result from today and write down what made it possible.",
+        files: [],
+        confirmation: "",
+      })),
+    ],
+  });
+  assert.equal(repairedPacketIdentifierLeak.calls.length, 2);
+  assert.deepEqual(
+    Object.keys(JSON.parse(repairedPacketIdentifierLeak.result.result)),
+    ["message", "files", "confirmation"],
+    "private-identifier repair changed the explicit JSON envelope"
+  );
+  assert.doesNotMatch(
+    JSON.parse(repairedPacketIdentifierLeak.result.result).message,
+    /memo_daily/
+  );
+  assert.equal(
+    repairedPacketIdentifierLeak.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    1
+  );
+  assert(
+    repairedPacketIdentifierLeak.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /private task or schedule identifiers/i.test(String(message.content || ""))
+    ),
+    "the repair did not explain the private packet-identifier boundary"
+  );
+
+  const repeatedPacketIdentifierLeak = await runCase({
+    id: "response-only-private-packet-identifier-repeated",
+    taskProfile: "chatops",
+    goal: privatePacketIdentifierGoal,
+    responses: [
+      assistant(JSON.stringify(packetIdentifierLeak)),
+      assistant(JSON.stringify({
+        ...packetIdentifierLeak,
+        confirmation: "The memo_daily schedule is ready.",
+      })),
+    ],
+  });
+  assert.equal(repeatedPacketIdentifierLeak.calls.length, 2);
+  assert.equal(repeatedPacketIdentifierLeak.result.stopped, true);
+  assert.deepEqual(
+    Object.keys(JSON.parse(repeatedPacketIdentifierLeak.result.result)),
+    ["message", "files", "confirmation"],
+    "private-identifier fail-closed result broke the explicit JSON envelope"
+  );
+  assert.equal(
+    repeatedPacketIdentifierLeak.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    2
+  );
+  assert(!repeatedPacketIdentifierLeak.events.some((event) => event.type === "session.finished"));
+
+  const emptyResponseOnlyEnvelope = {
+    message: "",
+    files: [],
+    confirmation: "",
+  };
+  const repairedEmptyResponseOnlyEnvelope = await runCase({
+    id: "response-only-empty-envelope-repair",
+    taskProfile: "chatops",
+    goal: privatePacketIdentifierGoal,
+    responses: [
+      assistant(JSON.stringify(emptyResponseOnlyEnvelope)),
+      assistant(JSON.stringify({
+        message: "Choose one useful result from today and note the decision that produced it.",
+        files: [],
+        confirmation: "",
+      })),
+    ],
+  });
+  assert.equal(
+    repairedEmptyResponseOnlyEnvelope.calls.length,
+    2,
+    "a schema-valid but semantically empty chat envelope was accepted as finished"
+  );
+  assert.match(
+    JSON.parse(repairedEmptyResponseOnlyEnvelope.result.result).message,
+    /Choose one useful result/
+  );
+  assert.equal(
+    repairedEmptyResponseOnlyEnvelope.events.filter(
+      (event) => event.type === "response_only.empty_payload_repair_requested"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedEmptyResponseOnlyEnvelope.events.filter(
+      (event) => event.type === "response_only.empty_payload_repaired"
+    ).length,
+    1
+  );
+
+  const repeatedEmptyResponseOnlyEnvelope = await runCase({
+    id: "response-only-empty-envelope-repeated",
+    taskProfile: "chatops",
+    goal: privatePacketIdentifierGoal,
+    responses: [
+      assistant(JSON.stringify(emptyResponseOnlyEnvelope)),
+      assistant(JSON.stringify(emptyResponseOnlyEnvelope)),
+    ],
+  });
+  assert.equal(repeatedEmptyResponseOnlyEnvelope.calls.length, 2);
+  assert.equal(repeatedEmptyResponseOnlyEnvelope.result.stopped, true);
+  assert.equal(repeatedEmptyResponseOnlyEnvelope.result.reason, "empty_response_only_payload");
+  assert.deepEqual(
+    Object.keys(JSON.parse(repeatedEmptyResponseOnlyEnvelope.result.result)),
+    ["message", "files", "confirmation"],
+    "empty-envelope fail-closed result broke the explicit JSON contract"
+  );
+  assert.match(
+    JSON.parse(repeatedEmptyResponseOnlyEnvelope.result.result).message,
+    /could not produce a reliable response for this message/i
+  );
+  assert.doesNotMatch(
+    JSON.parse(repeatedEmptyResponseOnlyEnvelope.result.result).message,
+    /response-only|model|session|provider|runtime|resume|repair attempt/iu,
+    "empty-envelope stop exposed private runtime diagnostics"
+  );
+  assert(
+    repeatedEmptyResponseOnlyEnvelope.events.some(
+      (event) => event.type === "response_only.empty_payload_failed_closed"
+    )
+  );
+  assert(!repeatedEmptyResponseOnlyEnvelope.events.some((event) => event.type === "session.finished"));
+
+  const chineseEmptyResponseOnlyGoal = [
+    "You are the response-only reasoning backend for a chat host.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "host-managed-response",
+      request: "用户希望得到一个简短可靠的答复。",
+    })}`,
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({ message: "", files: [], confirmation: "" }),
+    "Exact task packet:",
+    JSON.stringify({
+      id: "wecom-chat-20260905-example",
+      current_request: "用户希望得到一个简短可靠的答复。",
+    }),
+  ].join("\n");
+  const chineseRepeatedEmptyResponseOnlyEnvelope = await runCase({
+    id: "response-only-empty-envelope-repeated-chinese",
+    taskProfile: "chatops",
+    goal: chineseEmptyResponseOnlyGoal,
+    responses: [
+      assistant(JSON.stringify(emptyResponseOnlyEnvelope)),
+      assistant(JSON.stringify(emptyResponseOnlyEnvelope)),
+    ],
+  });
+  assert.equal(chineseRepeatedEmptyResponseOnlyEnvelope.calls.length, 2);
+  assert.equal(chineseRepeatedEmptyResponseOnlyEnvelope.result.stopped, true);
+  const chineseEmptyStop = JSON.parse(chineseRepeatedEmptyResponseOnlyEnvelope.result.result);
+  assert.deepEqual(Object.keys(chineseEmptyStop), ["message", "files", "confirmation"]);
+  assert.equal(chineseEmptyStop.message, "这条消息暂时没有生成可靠的答复。");
+  assert.doesNotMatch(
+    chineseEmptyStop.message,
+    /response-only|模型|会话|提供商|运行时|恢复|重试/iu,
+    "Chinese empty-envelope stop exposed private runtime diagnostics"
+  );
+  assert(
+    !chineseRepeatedEmptyResponseOnlyEnvelope.events.some(
+      (event) => event.type === "session.finished"
+    )
+  );
+
+  const revisedAudit = {
+    ...blanketPerfectAudit,
+    accepted: false,
+    scores: {
+      ...blanketPerfectAudit.scores,
+      japanese_naturalness: 2,
+    },
+    critical_issues: ["「サイズ交换」must be corrected to 「サイズ交換」."],
+    revision_instructions: ["Correct the malformed Japanese vocabulary entry."],
+  };
+  const skepticallyRevisedAudit = await runCase({
+    id: "response-only-perfect-audit-revised",
+    taskProfile: "chatops",
+    goal: perfectAuditGoal,
+    responses: [
+      assistant(JSON.stringify(blanketPerfectAudit)),
+      assistant(JSON.stringify(revisedAudit)),
+    ],
+  });
+  assert.equal(
+    skepticallyRevisedAudit.calls.length,
+    2,
+    "a blanket-perfect audit reached the host without independent verification"
+  );
+  assert.equal(JSON.parse(skepticallyRevisedAudit.result.result).accepted, false);
+  assert.match(
+    JSON.parse(skepticallyRevisedAudit.result.result).critical_issues[0],
+    /サイズ交换/
+  );
+  assert(
+    skepticallyRevisedAudit.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /independent skeptical verification/i.test(String(message.content || "")) &&
+        /accepted.*boolean/i.test(String(message.content || ""))
+    ),
+    "the perfect-audit verification omitted the skeptical instruction or JSON contract"
+  );
+  assert.equal(
+    skepticallyRevisedAudit.events.filter(
+      (event) => event.type === "response_only.perfect_audit_confirmation_requested"
+    ).length,
+    1
+  );
+  assert.equal(
+    skepticallyRevisedAudit.events.find(
+      (event) => event.type === "response_only.perfect_audit_reviewed"
+    )?.data?.outcome,
+    "revised"
+  );
+
+  const skepticallyConfirmedAudit = await runCase({
+    id: "response-only-perfect-audit-confirmed",
+    taskProfile: "chatops",
+    goal: perfectAuditGoal.replace(
+      "The vocabulary row contains the malformed Japanese span サイズ交换 instead of サイズ交換.",
+      "The short candidate satisfies each declared requirement."
+    ),
+    responses: [
+      assistant(JSON.stringify(blanketPerfectAudit)),
+      assistant(JSON.stringify(blanketPerfectAudit)),
+    ],
+  });
+  assert.equal(skepticallyConfirmedAudit.calls.length, 2);
+  assert.equal(JSON.parse(skepticallyConfirmedAudit.result.result).accepted, true);
+  assert.equal(
+    skepticallyConfirmedAudit.events.find(
+      (event) => event.type === "response_only.perfect_audit_reviewed"
+    )?.data?.outcome,
+    "confirmed-perfect"
+  );
+  assert(skepticallyConfirmedAudit.events.some((event) => event.type === "session.finished"));
+
+  const rejectedAuditNeedsNoConfirmation = await runCase({
+    id: "response-only-rejected-audit-single-turn",
+    taskProfile: "chatops",
+    goal: perfectAuditGoal,
+    responses: [assistant(JSON.stringify(revisedAudit))],
+  });
+  assert.equal(rejectedAuditNeedsNoConfirmation.calls.length, 1);
+  assert.equal(JSON.parse(rejectedAuditNeedsNoConfirmation.result.result).accepted, false);
+  assert(
+    !rejectedAuditNeedsNoConfirmation.events.some(
+      (event) => event.type === "response_only.perfect_audit_confirmation_requested"
+    )
+  );
+
+  const explicitPriorMessageRepeat = await runCase({
+    id: "response-only-explicit-prior-message-repeat",
+    taskProfile: "chatops",
+    goal: [
+      "Return the finished chat response only.",
+      `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify(responseOnlyScope)}`,
+      "Current message:",
+      `Please repeat this exact prior sentence without changing it: ${staleBotMessage}`,
+      "Recent same-chat context:",
+      JSON.stringify([
+        { local_id: 481, sender_display: "LabAgent", content: staleBotMessage, is_self: true },
+      ]),
+    ].join("\n"),
+    responses: [assistant(staleBotMessage)],
+  });
+  assert.equal(
+    explicitPriorMessageRepeat.calls.length,
+    1,
+    "an explicit request to repeat prior text triggered an unnecessary context-echo repair"
+  );
+  assert.equal(explicitPriorMessageRepeat.result.result, staleBotMessage);
+
+  const quotedPriorMessageQuestion = await runCase({
+    id: "response-only-quoted-prior-message-is-not-repeat-permission",
+    taskProfile: "chatops",
+    goal: [
+      "Return the finished chat response only.",
+      `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify(responseOnlyScope)}`,
+      "Current message:",
+      `Why did you previously say this: ${staleBotMessage}`,
+      "Recent same-chat context:",
+      JSON.stringify([
+        { local_id: 481, sender_display: "LabAgent", content: staleBotMessage, is_self: true },
+      ]),
+    ].join("\n"),
+    responses: [
+      assistant(staleBotMessage),
+      assistant("That sentence continued the group's joke, but it did not answer the later question."),
+    ],
+  });
+  assert.equal(
+    quotedPriorMessageQuestion.calls.length,
+    2,
+    "quoting an old bot message was mistaken for an explicit request to repeat it"
+  );
+  assert.equal(
+    quotedPriorMessageQuestion.result.result,
+    "That sentence continued the group's joke, but it did not answer the later question."
+  );
+
+  const repeatedStaleBotContextEcho = await runCase({
+    id: "response-only-prior-self-message-echo-fail-closed",
+    taskProfile: "chatops",
+    goal: staleBotContextGoal,
+    responses: [
+      assistant(JSON.stringify({ response: staleBotMessage, handled: true })),
+      assistant(JSON.stringify({ response: staleBotMessage, handled: true })),
+    ],
+  });
+  assert.equal(repeatedStaleBotContextEcho.calls.length, 2);
+  assert.equal(repeatedStaleBotContextEcho.result.stopped, true);
+  assert.equal(repeatedStaleBotContextEcho.result.reason, "stale_response_context_replay");
+  assert.deepEqual(Object.keys(JSON.parse(repeatedStaleBotContextEcho.result.result)), [
+    "response",
+    "handled",
+  ]);
+  assert(
+    !repeatedStaleBotContextEcho.events.some((event) => event.type === "session.finished"),
+    "a repeated stale bot-message replay was persisted as a successful finish"
+  );
+
+  const sourceFreeInspirationJsonGoal = [
+    sourceFreeInspirationGoal,
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({
+      message: "natural source-chat response",
+      files: [],
+      confirmation: "",
+      knowledge_items: [],
+      upstream_feedback: [],
+    }),
+    "Exact task packet:",
+    JSON.stringify({
+      id: "wecom-inspiration-source-free-example",
+      current_request:
+        "Create one concise research inspiration point with a falsifiable prediction and experiment.",
+    }),
+  ].join("\n");
+  const repairedNamedInspirationEvidence = await runCase({
+    id: "response-only-named-inspiration-evidence-repair",
+    taskProfile: "chatops",
+    goal: sourceFreeInspirationJsonGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message:
+          "Recent advances in 3D bioprinting (e.g., Nature Biomedical Engineering) provide the first indirect evidence of self-organizing organoids. Use the open-source 'NeuroSync' Python toolkit.",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+      assistant(JSON.stringify({
+        message:
+          "这是一个尚未验证的假设：工程化细菌与类器官可能形成异构计算网络。下一步可做盲法对照实验，并预先写明失败条件。",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+    ],
+  });
+  assert.equal(repairedNamedInspirationEvidence.calls.length, 2);
+  assert.equal(repairedNamedInspirationEvidence.result.stopped, undefined);
+  assert.deepEqual(
+    Object.keys(JSON.parse(repairedNamedInspirationEvidence.result.result)),
+    ["message", "files", "confirmation", "knowledge_items", "upstream_feedback"]
+  );
+  assert.match(
+    JSON.parse(repairedNamedInspirationEvidence.result.result).message,
+    /尚未验证的假设/u
+  );
+  assert.equal(
+    repairedNamedInspirationEvidence.events.filter(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedNamedInspirationEvidence.events.filter(
+      (event) => event.type === "response_only.source_free_claim_repaired"
+    ).length,
+    1
+  );
+  assert(
+    repairedNamedInspirationEvidence.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /named journals or sources/i.test(String(message.content || "")) &&
+        /named research resources or tool availability/i.test(String(message.content || "")) &&
+        /"message":string, "files":array, "confirmation":string/i.test(
+          String(message.content || "")
+        )
+    ),
+    "named-evidence repair omitted either the grounding rule or caller JSON contract"
+  );
+
+  const failedClosedNamedInspirationEvidence = await runCase({
+    id: "response-only-named-inspiration-evidence-fail-closed",
+    taskProfile: "chatops",
+    goal: sourceFreeInspirationJsonGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message:
+          "Nature Biomedical Engineering provides evidence for this route; use the open-source 'NeuroSync' Python toolkit.",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+      assistant(JSON.stringify({
+        message:
+          "《环球科学》提及这一验证结果；继续使用开源 NeuroSync Python 工具包。",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+    ],
+  });
+  assert.equal(failedClosedNamedInspirationEvidence.calls.length, 2);
+  assert.equal(failedClosedNamedInspirationEvidence.result.stopped, true);
+  assert.equal(
+    failedClosedNamedInspirationEvidence.result.reason,
+    "source_free_evidence_required"
+  );
+  assert.deepEqual(
+    Object.keys(JSON.parse(failedClosedNamedInspirationEvidence.result.result)),
+    ["message", "files", "confirmation", "knowledge_items", "upstream_feedback"]
+  );
+  assert(
+    !failedClosedNamedInspirationEvidence.events.some(
+      (event) => event.type === "session.finished"
+    ),
+    "repeated unsupported named evidence was persisted as a successful finish"
+  );
+
+  const emptyAfterSourceFreeRepair = await runCase({
+    id: "response-only-empty-after-source-free-repair",
+    taskProfile: "chatops",
+    goal: sourceFreeInspirationJsonGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message:
+          "Nature Biomedical Engineering provides evidence for this route; use the open-source NeuroSync toolkit.",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+      assistant(JSON.stringify({
+        message: "",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+    ],
+  });
+  assert.equal(emptyAfterSourceFreeRepair.calls.length, 2);
+  assert.equal(
+    emptyAfterSourceFreeRepair.result.stopped,
+    true,
+    "an empty envelope introduced by source-free repair was accepted as finished"
+  );
+  assert.equal(emptyAfterSourceFreeRepair.result.reason, "empty_response_only_payload");
+  assert(
+    emptyAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the cross-validator fixture did not exercise source-free repair"
+  );
+  assert(!emptyAfterSourceFreeRepair.events.some((event) => event.type === "session.finished"));
+
+  const staleEchoAfterSourceFreeRepair = await runCase({
+    id: "response-only-stale-echo-after-source-free-repair",
+    taskProfile: "chatops",
+    goal: staleBotContextGoal,
+    responses: [
+      assistant(JSON.stringify({
+        response:
+          "The publication appeared in 2025 and was validated on 12,000 cases with 94.2% accuracy.",
+        handled: true,
+      })),
+      assistant(JSON.stringify({ response: staleBotMessage, handled: true })),
+    ],
+  });
+  assert.equal(staleEchoAfterSourceFreeRepair.calls.length, 2);
+  assert.equal(staleEchoAfterSourceFreeRepair.result.stopped, true);
+  assert.equal(
+    staleEchoAfterSourceFreeRepair.result.reason,
+    "stale_response_context_replay",
+    "a source-free evidence repair reintroduced a stale bot message and still finished"
+  );
+  assert(
+    staleEchoAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the production-shaped first answer did not exercise source-free repair"
+  );
+  assert(
+    !staleEchoAfterSourceFreeRepair.events.some((event) => event.type === "session.finished"),
+    "a stale bot message introduced by a later validator repair was persisted as successful"
+  );
+
+  const hostAcknowledgementAfterSourceFreeRepair = await runCase({
+    id: "response-only-host-acknowledgement-after-source-free-repair",
+    taskProfile: "chatops",
+    goal: sourceFreeInspirationJsonGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message:
+          "The publication appeared in 2025 and was validated on 12,000 cases with 94.2% accuracy.",
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+      assistant(JSON.stringify({
+        message: retainedEnglishHostAcknowledgement,
+        files: [],
+        confirmation: "",
+        knowledge_items: [],
+        upstream_feedback: [],
+      })),
+    ],
+  });
+  assert.equal(hostAcknowledgementAfterSourceFreeRepair.calls.length, 2);
+  assert.equal(
+    hostAcknowledgementAfterSourceFreeRepair.result.stopped,
+    true,
+    "a source-free evidence repair reintroduced a host acknowledgement and still finished"
+  );
+  assert.equal(hostAcknowledgementAfterSourceFreeRepair.result.reason, "model_did_not_execute");
+  assert(
+    hostAcknowledgementAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the cross-validator fixture did not exercise source-free repair"
+  );
+  assert.equal(
+    hostAcknowledgementAfterSourceFreeRepair.events.filter(
+      (event) => event.type === "completion.internal_runtime_scaffold_rejected"
+    ).length,
+    1
+  );
+  assert(
+    !hostAcknowledgementAfterSourceFreeRepair.events.some(
+      (event) => event.type === "completion.internal_runtime_scaffold_repair_requested"
+    ),
+    "the final-boundary guard spent another repair attempt after the bounded repair budget"
+  );
+  assert(
+    !hostAcknowledgementAfterSourceFreeRepair.events.some(
+      (event) => event.type === "session.finished"
+    ),
+    "host control language introduced by a later validator repair was persisted as successful"
+  );
+
+  const perfectAuditAfterSourceFreeRepair = await runCase({
+    id: "response-only-perfect-audit-after-source-free-repair",
+    taskProfile: "chatops",
+    goal: perfectAuditGoal,
+    responses: [
+      assistant(JSON.stringify({
+        ...revisedAudit,
+        critical_issues: [
+          "Nature Biomedical Engineering validated this in 2025 on 12,000 cases with 94.2% accuracy.",
+        ],
+        revision_instructions: ["Use the reported validated benchmark."],
+      })),
+      assistant(JSON.stringify(blanketPerfectAudit)),
+      assistant(JSON.stringify(revisedAudit)),
+    ],
+  });
+  assert.equal(
+    perfectAuditAfterSourceFreeRepair.calls.length,
+    3,
+    "a blanket-perfect audit introduced by source-free repair bypassed skeptical confirmation"
+  );
+  assert.equal(JSON.parse(perfectAuditAfterSourceFreeRepair.result.result).accepted, false);
+  assert.match(
+    JSON.parse(perfectAuditAfterSourceFreeRepair.result.result).critical_issues[0],
+    /サイズ交换/u
+  );
+  assert.equal(
+    perfectAuditAfterSourceFreeRepair.events.filter(
+      (event) => event.type === "response_only.perfect_audit_confirmation_requested"
+    ).length,
+    1
+  );
+  assert.equal(
+    perfectAuditAfterSourceFreeRepair.events.find(
+      (event) => event.type === "response_only.perfect_audit_reviewed"
+    )?.data?.outcome,
+    "revised"
+  );
+  assert(
+    perfectAuditAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the audit cross-validator fixture did not exercise source-free repair"
+  );
+  assert(
+    perfectAuditAfterSourceFreeRepair.events.some(
+      (event) => event.type === "session.finished"
+    ),
+    "the skeptically revised audit did not complete normally"
+  );
+
+  const boundedTranscriptResponseGoal = [
+    "You are the response-only reasoning backend for a chat host.",
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "chat-response",
+      request: "Return the requested text only; no external action is requested.",
+    })}`,
+    boundedTranscriptGoal,
+  ].join("\n");
+  const repairedDegenerateTranscriptSummary = await runCase({
+    id: "bounded-degenerate-transcript-repair",
+    taskProfile: "chatops",
+    goal: boundedTranscriptResponseGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message: "洛水辞记的视频以洛神赋为灵感，展现云端神女踏光而来的浪漫意境。",
+        files: [],
+        confirmation: "视频和时间戳文本已就绪",
+      })),
+      assistant(JSON.stringify({
+        message: "这是洛水辞记的《翩若惊鸿，婉若游龙》。转写内容高度重复，无法可靠概括实际语音；从标题只能判断主题与《洛神赋》有关。",
+        files: [],
+        confirmation: "视频和时间戳文本已就绪",
+      })),
+    ],
+  });
+  assert.equal(repairedDegenerateTranscriptSummary.calls.length, 2);
+  assert.equal(repairedDegenerateTranscriptSummary.result.stopped, undefined);
+  assert.match(repairedDegenerateTranscriptSummary.result.result, /无法可靠概括实际语音/u);
+  assert.equal(
+    repairedDegenerateTranscriptSummary.events.filter(
+      (event) => event.type === "response_only.transcript_quality_rejected"
+    ).length,
+    1
+  );
+  assert.equal(
+    repairedDegenerateTranscriptSummary.events.filter(
+      (event) => event.type === "response_only.transcript_quality_repaired"
+    ).length,
+    1
+  );
+  assert(
+    repairedDegenerateTranscriptSummary.calls[1].messages.some(
+      (message) =>
+        message.role === "user" &&
+        /Do not infer spoken content, visuals, or events from the title/i.test(String(message.content || "")) &&
+        /"message":string, "files":array, "confirmation":string/i.test(String(message.content || ""))
+    ),
+    "the transcript-quality repair did not retain source boundaries and the caller's JSON contract"
+  );
+
+  const failedClosedDegenerateTranscriptSummary = await runCase({
+    id: "bounded-degenerate-transcript-fail-closed",
+    taskProfile: "chatops",
+    goal: boundedTranscriptResponseGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message: "视频讲述一位神女从云端走来的故事。",
+        files: [],
+        confirmation: "",
+      })),
+      assistant(JSON.stringify({
+        message: "画面表现古典诗词的浪漫想象。",
+        files: [],
+        confirmation: "",
+      })),
+    ],
+  });
+  assert.equal(failedClosedDegenerateTranscriptSummary.calls.length, 2);
+  assert.equal(failedClosedDegenerateTranscriptSummary.result.stopped, true);
+  assert.equal(failedClosedDegenerateTranscriptSummary.result.reason, "unreliable_bounded_transcript");
+  assert.doesNotThrow(() => JSON.parse(failedClosedDegenerateTranscriptSummary.result.result));
+  assert.match(
+    JSON.parse(failedClosedDegenerateTranscriptSummary.result.result).message,
+    /无法可靠概括实际语音/u
+  );
+  assert(
+    !failedClosedDegenerateTranscriptSummary.events.some((event) => event.type === "session.finished"),
+    "a repeated invented speech summary was recorded as a successful finish"
+  );
+
+  const inventedTranscriptAfterSourceFreeRepair = await runCase({
+    id: "bounded-transcript-invention-after-source-free-repair",
+    taskProfile: "chatops",
+    goal: boundedTranscriptResponseGoal,
+    responses: [
+      assistant(JSON.stringify({
+        message:
+          "转写内容高度重复，无法可靠概括实际语音。Nature Biomedical Engineering 在 2025 年的研究已验证该视频所示机制。",
+        files: [],
+        confirmation: "",
+      })),
+      assistant(JSON.stringify({
+        message: "视频实际讲述一位神女从云端踏光而来，并与诗人相遇的浪漫故事。",
+        files: [],
+        confirmation: "",
+      })),
+    ],
+  });
+  assert.equal(inventedTranscriptAfterSourceFreeRepair.calls.length, 2);
+  assert.equal(
+    inventedTranscriptAfterSourceFreeRepair.result.stopped,
+    true,
+    "a source-free repair replaced a truthful transcript limitation with invented speech and still finished"
+  );
+  assert.equal(
+    inventedTranscriptAfterSourceFreeRepair.result.reason,
+    "unreliable_bounded_transcript"
+  );
+  assert.match(
+    JSON.parse(inventedTranscriptAfterSourceFreeRepair.result.result).message,
+    /无法可靠概括实际语音/u
+  );
+  assert(
+    inventedTranscriptAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.source_free_claim_rejected"
+    ),
+    "the cross-validator fixture did not exercise source-free repair"
+  );
+  assert(
+    inventedTranscriptAfterSourceFreeRepair.events.some(
+      (event) => event.type === "response_only.transcript_quality_failed_closed"
+    ),
+    "the final transcript invariant did not record its fail-closed decision"
+  );
+  assert(
+    !inventedTranscriptAfterSourceFreeRepair.events.some(
+      (event) => event.type === "session.finished"
+    ),
+    "invented speech introduced by a later validator repair was persisted as successful"
+  );
 
   const providerSwitchSessionId = "provider-switch-resume-contract";
   const providerSwitchFirstTurn = await runCase({
@@ -748,6 +4090,253 @@ try {
     "permission blocker triggered an SCS replan instead of waiting for approval"
   );
 
+  const secretWriteRedactionRecovery = await runCase({
+    id: "secret-write-redaction-recovery",
+    goal: [
+      "Create notes/shipinhao-source-summary.md as a safe reader-facing summary.",
+      "Do not copy private signed media URLs or credentials into the derived note.",
+      "Verify the created file before finishing.",
+    ].join(" "),
+    allowFileTools: true,
+    responses: [
+      assistant("", [toolCall("unsafe-derived-note", "write_file", {
+        path: "notes/shipinhao-source-summary.md",
+        content: [
+          "# Shipinhao source summary",
+          "",
+          "Private source credential: DEMO_SECRET_TOKEN=aginti_fake_do_not_use",
+          "",
+        ].join("\n"),
+        mode: "create",
+      })]),
+      assistant("", [toolCall("redacted-derived-note", "write_file", {
+        path: "notes/shipinhao-source-summary.md",
+        content: [
+          "# Shipinhao source summary",
+          "",
+          "The source card identifies a short music video. Private source URL: [REDACTED]",
+          "",
+        ].join("\n"),
+        mode: "create",
+      })]),
+      assistant("", [toolCall("finish-redacted-note", "finish", {
+        result: "Created and verified the safe Shipinhao source summary with its private URL redacted.",
+      })]),
+    ],
+  });
+  assert.equal(
+    secretWriteRedactionRecovery.calls.length,
+    3,
+    "a recoverable secret-write mistake paused instead of requesting one redacted retry"
+  );
+  assert.equal(secretWriteRedactionRecovery.result.stopped, undefined);
+  const secretWriteBlock = secretWriteRedactionRecovery.events.find(
+    (event) => event.type === "tool.blocked" && event.data?.category === "workspace-content"
+  );
+  assert(secretWriteBlock, "the unsafe derived note was not blocked");
+  assert.equal(
+    secretWriteBlock.data?.permissionAdvice?.autoRecover,
+    true,
+    "secret-write guidance still asks for ineffective stronger permission"
+  );
+  assert(
+    !secretWriteRedactionRecovery.events.some(
+      (event) => event.type === "session.stopped" && event.data?.reason === "permission_required"
+    ),
+    "secret-write redaction recovery still persisted a permission pause"
+  );
+  assert(
+    secretWriteRedactionRecovery.calls[1]?.messages.some(
+      (message) =>
+        message.role === "tool" &&
+        /redact the sensitive value/i.test(String(message.content || ""))
+    ),
+    "the retry turn did not receive an explicit bounded redaction instruction"
+  );
+  const safeDerivedNote = await fs.readFile(
+    path.join(
+      tempRoot,
+      "workspaces",
+      "secret-write-redaction-recovery",
+      "notes",
+      "shipinhao-source-summary.md"
+    ),
+    "utf8"
+  );
+  assert.match(safeDerivedNote, /\[REDACTED\]/);
+  assert(!safeDerivedNote.includes("aginti_fake_do_not_use"));
+
+  const localPreviewWorkspace = path.join(
+    tempRoot,
+    "workspaces",
+    "local-file-url-preview-recovery"
+  );
+  const localFileUrlPreviewRecovery = await runCase({
+    id: "local-file-url-preview-recovery",
+    goal: "Read notes/local-preview.txt and report its exact local preview status.",
+    allowFileTools: true,
+    setup: async (workspace) => {
+      await fs.mkdir(path.join(workspace, "notes"), { recursive: true });
+      await fs.writeFile(
+        path.join(workspace, "notes", "local-preview.txt"),
+        "LOCAL_PREVIEW_READY\n",
+        "utf8"
+      );
+    },
+    responses: [
+      assistant("", [toolCall("file-url-as-remote-url", "open_url", {
+        url: pathToFileURL(path.join(localPreviewWorkspace, "notes", "local-preview.txt")).href,
+      })]),
+      assistant("", [toolCall("read-local-preview", "read_file", {
+        path: "notes/local-preview.txt",
+      })]),
+      assistant("", [toolCall("finish-local-preview", "finish", {
+        result: "The local preview status is LOCAL_PREVIEW_READY.",
+      })]),
+    ],
+  });
+  assert.equal(
+    localFileUrlPreviewRecovery.calls.length,
+    3,
+    "a recoverable file URL mistake paused instead of switching to a workspace-native tool"
+  );
+  assert.equal(localFileUrlPreviewRecovery.result.stopped, undefined);
+  const localFileUrlBlock = localFileUrlPreviewRecovery.events.find(
+    (event) => event.type === "tool.blocked" && event.data?.toolName === "open_url"
+  );
+  assert(localFileUrlBlock, "the unsupported local file URL was not blocked");
+  assert.equal(
+    localFileUrlBlock.data?.permissionAdvice?.autoRecover,
+    true,
+    "the local file URL mistake still requests stronger permission"
+  );
+  assert(
+    localFileUrlPreviewRecovery.calls[1]?.messages.some(
+      (message) =>
+        message.role === "tool" &&
+        /open_workspace_file, preview_workspace, or read_file/i.test(String(message.content || ""))
+    ),
+    "the retry turn did not receive workspace-native local artifact guidance"
+  );
+  assert(
+    !localFileUrlPreviewRecovery.events.some(
+      (event) => event.type === "session.stopped" && event.data?.reason === "permission_required"
+    ),
+    "the local file URL recovery still persisted a permission pause"
+  );
+
+  if (await tmuxAvailable()) {
+    const tmuxAliasRecovery = await runCase({
+      id: "tmux-shell-alias-recovery",
+      goal: "Check durable host tmux sessions and report whether any sessions exist.",
+      taskProfile: "auto",
+      executionTier: "focused",
+      allowShellTool: true,
+      responses: [
+        assistant("", [toolCall("tmux-as-shell", "run_command", { command: "tmux_list_sessions" })]),
+        assistant("", [
+          toolCall("finish-tmux-alias", "finish", {
+            result: "Checked durable host tmux sessions through the native tmux listing tool.",
+          }),
+        ]),
+      ],
+    });
+    assert.equal(tmuxAliasRecovery.calls.length, 2);
+    assert.equal(tmuxAliasRecovery.result.stopped, undefined);
+    assert(
+      tmuxAliasRecovery.events.some(
+        (event) =>
+          event.type === "tool.auto_corrected" &&
+          event.data?.requestedToolName === "run_command" &&
+          event.data?.toolName === "tmux_list_sessions" &&
+          event.data?.originalCommand === "tmux_list_sessions"
+      ),
+      "run_command tmux_list_sessions alias was not recovered to the native tmux tool"
+    );
+    assert(
+      tmuxAliasRecovery.events.some(
+        (event) =>
+          event.type === "tool.started" &&
+          event.data?.toolName === "tmux_list_sessions" &&
+          event.data?.requestedToolName === "run_command"
+      ),
+      "native tmux listing was not started with original requested tool evidence"
+    );
+    assert(
+      tmuxAliasRecovery.events.some(
+        (event) =>
+          event.type === "tool.completed" &&
+          event.data?.toolName === "tmux_list_sessions"
+      ),
+      "native tmux listing did not complete after alias recovery"
+    );
+    assert(
+      !tmuxAliasRecovery.events.some(
+        (event) => event.type === "tool.started" && event.data?.toolName === "run_command"
+      ),
+      "tmux alias recovery still dispatched the generic shell command"
+    );
+    assert(
+      !tmuxAliasRecovery.events.some(
+        (event) => event.type === "session.stopped" && event.data?.reason === "permission_required"
+      ),
+      "tmux alias recovery still paused on shell permission"
+    );
+
+    const tmuxReadonlyCommandRecovery = await runCase({
+      id: "tmux-readonly-command-recovery",
+      goal: "List durable host tmux sessions using the available coordination tool.",
+      taskProfile: "auto",
+      executionTier: "focused",
+      allowShellTool: true,
+      responses: [
+        assistant("", [toolCall("tmux-command-as-shell", "run_command", { command: "tmux list-sessions" })]),
+        assistant("", [
+          toolCall("finish-tmux-command", "finish", {
+            result: "Checked durable host tmux sessions through the native tmux listing tool.",
+          }),
+        ]),
+      ],
+    });
+    assert.equal(tmuxReadonlyCommandRecovery.result.stopped, undefined);
+    assert(
+      tmuxReadonlyCommandRecovery.events.some(
+        (event) =>
+          event.type === "tool.auto_corrected" &&
+          event.data?.toolName === "tmux_list_sessions" &&
+          event.data?.originalCommand === "tmux list-sessions"
+      ),
+      "exact tmux list-sessions shell command was not recovered"
+    );
+    assert(
+      !tmuxReadonlyCommandRecovery.events.some(
+        (event) => event.type === "tool.started" && event.data?.toolName === "run_command"
+      ),
+      "exact tmux list-sessions recovery still dispatched run_command"
+    );
+
+    const tmuxMutationStillBlocked = await runCase({
+      id: "tmux-mutating-command-still-blocked",
+      goal: "Try to create a tmux session through the generic shell.",
+      taskProfile: "auto",
+      executionTier: "focused",
+      allowShellTool: true,
+      responses: [
+        assistant("", [
+          toolCall("tmux-mutating-shell", "run_command", {
+            command: "tmux new-session -d -s should-not-autocorrect",
+          }),
+        ]),
+      ],
+    });
+    assert.equal(tmuxMutationStillBlocked.result.stopped, true);
+    assert.equal(tmuxMutationStillBlocked.result.reason, "permission_required");
+    assert(
+      !tmuxMutationStillBlocked.events.some((event) => event.type === "tool.auto_corrected"),
+      "mutating tmux shell command was incorrectly auto-corrected"
+    );
+  }
+
   const reasoningTruncation = await runCase({
     id: "reasoning-only-tool-continuation",
     goal: "Run pwd and report the verified working directory.",
@@ -834,6 +4423,42 @@ try {
     2
   );
   assert(!scsUnsupportedNarrative.events.some((event) => event.type === "session.finished"));
+
+  const inventedBlockerAfterVerifiedExecution = await runCase({
+    id: "invented-blocker-after-verified-execution",
+    goal: "Run pwd and report the verified working directory.",
+    taskProfile: "shell",
+    allowShellTool: true,
+    responses: [
+      assistant("", [
+        toolCall("pwd-before-invented-blocker", "run_command", { command: "pwd" }),
+      ]),
+      assistant(
+        "I cannot proceed because no target file was named. Please specify a source file."
+      ),
+      assistant("Ran pwd and verified the working directory."),
+    ],
+  });
+  assert.equal(inventedBlockerAfterVerifiedExecution.calls.length, 3);
+  assert.equal(inventedBlockerAfterVerifiedExecution.result.stopped, undefined);
+  assert.match(inventedBlockerAfterVerifiedExecution.result.result, /verified the working directory/i);
+  assert(
+    inventedBlockerAfterVerifiedExecution.events.some(
+      (event) =>
+        event.type === "completion.evidence_rejected" &&
+        /claims the task is blocked, but no matching runtime blocker evidence exists/i.test(
+          String(event.data?.reason || "")
+        )
+    ),
+    "an invented blocker was accepted after unrelated execution evidence satisfied the task contract"
+  );
+  assert.equal(
+    inventedBlockerAfterVerifiedExecution.events.filter(
+      (event) => event.type === "session.finished"
+    ).length,
+    1,
+    "the repaired completion did not finish exactly once"
+  );
 
   const approvalNarrativeWithBlockerEvidence = await runCase({
     id: "approval-narrative-with-blocker-evidence",
@@ -1453,11 +5078,41 @@ try {
   assert.equal(unusableEmptyChat.result.stopped, true);
   assert.equal(unusableEmptyChat.result.reason, "empty_model_response");
   assert.equal(
+    unusableEmptyChat.result.result,
+    "I could not produce a reliable response for this message."
+  );
+  assert.doesNotMatch(
+    unusableEmptyChat.result.result,
+    /model|session|provider|runtime|resume|repair attempt/iu,
+    "empty chat stop exposed private runtime diagnostics"
+  );
+  assert.equal(
     unusableEmptyChat.events.filter((event) => event.type === "completion.empty_response_repair_requested").length,
     1
   );
   assert(!unusableEmptyChat.events.some((event) => event.type === "session.finished"));
   assert(!unusableEmptyChat.result.result.includes("No tool call returned"));
+
+  const chineseUnusableEmptyChat = await runCase({
+    id: "unusable-empty-chat-chinese",
+    goal: "请解释递归为什么需要终止条件。",
+    responses: [assistant(""), assistant("")],
+  });
+  assert.equal(chineseUnusableEmptyChat.result.stopped, true);
+  assert.equal(chineseUnusableEmptyChat.result.result, "这条消息暂时没有生成可靠的答复。");
+  assert(!chineseUnusableEmptyChat.events.some((event) => event.type === "session.finished"));
+
+  const japaneseUnusableEmptyChat = await runCase({
+    id: "unusable-empty-chat-japanese",
+    goal: "再帰に終了条件が必要な理由を説明してください。",
+    responses: [assistant(""), assistant("")],
+  });
+  assert.equal(japaneseUnusableEmptyChat.result.stopped, true);
+  assert.equal(
+    japaneseUnusableEmptyChat.result.result,
+    "このメッセージには、信頼できる回答を作成できませんでした。"
+  );
+  assert(!japaneseUnusableEmptyChat.events.some((event) => event.type === "session.finished"));
 
   const resumedAction = await runCase({
     id: "verified-action",

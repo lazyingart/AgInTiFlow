@@ -124,6 +124,37 @@ function deferred() {
   return Object.freeze({ promise, resolve });
 }
 
+async function fixedDocumentWorkerPortAvailable() {
+  const probe = net.createServer((socket) => socket.destroy());
+  try {
+    await new Promise((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen({
+        host: DOCUMENT_WORKER_LISTEN_HOST,
+        port: DOCUMENT_WORKER_LISTEN_PORT,
+        exclusive: true,
+      }, resolve);
+    });
+    return true;
+  } catch (error) {
+    if (error?.code === "EADDRINUSE") return false;
+    throw error;
+  } finally {
+    if (probe.listening) {
+      await new Promise((resolve, reject) => {
+        probe.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  }
+}
+
+if (!(await fixedDocumentWorkerPortAvailable())) {
+  process.stdout.write(
+    `integration document worker server smoke skipped: fixed test listener ${DOCUMENT_WORKER_LISTEN_HOST}:${DOCUMENT_WORKER_LISTEN_PORT} is already in use\n`
+  );
+  process.exit(0);
+}
+
 const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-document-worker-server-"));
 let server;
 try {

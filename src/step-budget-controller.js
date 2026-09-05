@@ -1,5 +1,7 @@
 import path from "node:path";
+import { classifyCommand } from "./command-policy.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
+import { parseTopLevelShellSequence, tokenizeShellWords } from "./shell-syntax.js";
 
 export const DYNAMIC_STEP_MODES = ["off", "auto", "on"];
 
@@ -150,11 +152,36 @@ function stableStringify(value) {
   return JSON.stringify(value);
 }
 
-export function isStaticDiscoveryToolCall(toolName, args = {}) {
+function staticDiscoveryCommandBody(command = "", commandCwd = process.cwd()) {
+  const text = String(command || "").trim();
+  const match = text.match(/^cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s*&&\s*([\s\S]+)$/);
+  if (!match) return text;
+  const target = match[1] || match[2] || match[3] || "";
+  const expected = path.resolve(commandCwd || process.cwd());
+  const resolved = path.resolve(commandCwd || process.cwd(), target);
+  return resolved === expected ? match[4].trim() : text;
+}
+
+function commandPolicyProvesStaticDiscovery(command = "", context = {}) {
+  const policy = context.commandPolicy && typeof context.commandPolicy === "object"
+    ? context.commandPolicy
+    : classifyCommand(command);
+  return Boolean(
+    policy.semanticMayMutateProject === false ||
+      (
+        policy.writesWorkspace !== true &&
+        policy.mayMutateProject !== true &&
+        !["blocked", "destructive"].includes(String(policy.category || ""))
+      )
+  );
+}
+
+export function isStaticDiscoveryToolCall(toolName, args = {}, context = {}) {
   if (
     [
       "inspect_project",
       "list_files",
+      "open_url",
       "read_file",
       "search_files",
       "read_image",
@@ -165,13 +192,13 @@ export function isStaticDiscoveryToolCall(toolName, args = {}) {
     return true;
   }
   if (toolName !== "run_command") return false;
-  const command = String(args.command || "").trim();
+  const command = staticDiscoveryCommandBody(args.command, context.commandCwd);
   if (!command) return false;
-  if (/\s--?(?:help|version)\b/i.test(command)) return true;
   if (/\b(?:watch|poll|status|queue|sleep)\b|tail\s+-f|\bcurl\b|\bps\b|tmux\s+capture-pane/i.test(command)) return false;
-  return /^(?:env\s+)?(?:ls\b|find\b|rg\b|grep\b|cat\b|head\b|sed\s+-n\b|wc\b|stat\b|file\b|realpath\b|readlink\b|jq\b)/i.test(
-    command
-  );
+  const discoveryShape =
+    /\s--?(?:help|version)\b/i.test(command) ||
+    /^(?:env\s+)?(?:ls\b|find\b|rg\b|grep\b|cat\b|head\b|sed\s+-n\b|wc\b|stat\b|file\b|realpath\b|readlink\b|jq\b)/i.test(command);
+  return discoveryShape && commandPolicyProvesStaticDiscovery(command, context);
 }
 
 function canonicalDiscoveryPath(value, commandCwd = process.cwd()) {
@@ -198,6 +225,62 @@ function canonicalDiscoveryQuery(value = "") {
     .toLocaleLowerCase("en-US");
 }
 
+function canonicalListDepth(value) {
+  const requested = Number(value);
+  if (!Number.isFinite(requested) || requested <= 0) return 4;
+  return Math.min(Math.max(Math.floor(requested), 1), 8);
+}
+
+function canonicalInspectDepth(value) {
+  const requested = Number(value);
+  if (!Number.isFinite(requested) || requested <= 0) return 6;
+  return Math.min(Math.max(Math.floor(requested), 1), 10);
+}
+
+function canonicalWebReadCharBand(value) {
+  const requested = Number(value);
+  const bounded = Math.min(
+    Math.max(Number.isFinite(requested) && requested > 0 ? requested : 20_000, 1_000),
+    40_000
+  );
+  if (bounded <= 4_000) return 4_000;
+  if (bounded <= 12_000) return 12_000;
+  if (bounded <= 24_000) return 24_000;
+  return 40_000;
+}
+
+function canonicalWebReadPassageBand(value) {
+  const requested = Number(value);
+  const bounded = Math.min(
+    Math.max(Number.isFinite(requested) && requested > 0 ? requested : 8, 1),
+    16
+  );
+  if (bounded <= 4) return 4;
+  if (bounded <= 8) return 8;
+  if (bounded <= 12) return 12;
+  return 16;
+}
+
+function canonicalImageSources(args = {}, commandCwd = process.cwd()) {
+  const raw =
+    args.imagePaths ||
+    args.images ||
+    args.paths ||
+    args.imagePath ||
+    args.path ||
+    args.url ||
+    args.referenceId ||
+    [];
+  const values = (Array.isArray(raw) ? raw : String(raw || "").split(","))
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return values.map((value) => {
+    if (/^https?:\/\//i.test(value)) return canonicalDiscoveryUrl(value);
+    if (/^vimg_[a-f0-9]{64}$/i.test(value)) return value.toLocaleLowerCase("en-US");
+    return canonicalDiscoveryPath(value, commandCwd);
+  });
+}
+
 function simpleLsPath(command = "", commandCwd = process.cwd()) {
   const match = String(command || "")
     .trim()
@@ -208,13 +291,57 @@ function simpleLsPath(command = "", commandCwd = process.cwd()) {
   return canonicalDiscoveryPath(rawPath, commandCwd);
 }
 
+function canonicalDocumentCompileSignature(command = "", commandCwd = process.cwd()) {
+  const sequence = parseTopLevelShellSequence(String(command || "").trim());
+  if (
+    !sequence.commands.length ||
+    sequence.commands.length > 2 ||
+    sequence.openQuote ||
+    sequence.trailingEscape ||
+    sequence.trailingSeparator
+  ) {
+    return "";
+  }
+
+  let effectiveCwd = path.resolve(commandCwd || process.cwd());
+  let invocation = sequence.commands[0];
+  if (sequence.commands.length === 2) {
+    if (sequence.separators[0] !== "&&") return "";
+    const cdTokens = tokenizeShellWords(sequence.commands[0]);
+    if (cdTokens.length !== 2 || cdTokens[0] !== "cd") return "";
+    effectiveCwd = path.resolve(effectiveCwd, cdTokens[1]);
+    invocation = sequence.commands[1];
+  }
+
+  const tokens = tokenizeShellWords(invocation);
+  if (!tokens.length) return "";
+  const executable = path.basename(String(tokens[0] || "")).toLocaleLowerCase("en-US");
+  if (!["latexmk", "lualatex", "pdflatex", "xelatex"].includes(executable)) return "";
+  const sourceIndexes = tokens
+    .map((token, index) => (/\.tex$/iu.test(String(token || "")) ? index : -1))
+    .filter((index) => index >= 0);
+  if (sourceIndexes.length !== 1) return "";
+  const sourceIndex = sourceIndexes[0];
+  const source = path.resolve(effectiveCwd, tokens[sourceIndex]);
+  const args = tokens.slice(1);
+  args[sourceIndex - 1] = `<source:${source}>`;
+  return `document-compile:${executable}:${stableStringify(args)}`;
+}
+
 export function staticToolCallSignature(toolName, args = {}, context = {}) {
   const commandCwd = context.commandCwd || process.cwd();
   if (toolName === "list_files") {
-    return `filesystem-list:${canonicalDiscoveryPath(args.path, commandCwd)}`;
+    return [
+      `filesystem-list:${canonicalDiscoveryPath(args.path, commandCwd)}`,
+      `depth=${canonicalListDepth(args.maxDepth)}`,
+    ].join(":");
   }
   if (toolName === "inspect_project") {
-    return `project-inspect:${canonicalDiscoveryPath(args.path, commandCwd)}`;
+    return `project-inspect:${stableStringify({
+      path: canonicalDiscoveryPath(args.path, commandCwd),
+      maxDepth: canonicalInspectDepth(args.maxDepth),
+      includeFiles: Boolean(args.includeFiles),
+    })}`;
   }
   if (toolName === "read_file") {
     return `file-read:${stableStringify({
@@ -223,29 +350,54 @@ export function staticToolCallSignature(toolName, args = {}, context = {}) {
       lineLimit: Number(args.lineLimit || args.limit || 0),
     })}`;
   }
+  if (toolName === "read_image") {
+    const detail = ["low", "high"].includes(String(args.detail || "").trim().toLowerCase())
+      ? String(args.detail).trim().toLowerCase()
+      : "auto";
+    return `image-read:${stableStringify({
+      sources: canonicalImageSources(args, commandCwd),
+      detail,
+    })}`;
+  }
   if (toolName === "search_files") {
+    const caseSensitive = Boolean(args.caseSensitive);
+    const query = String(args.query || "").trim();
     return `file-search:${stableStringify({
       path: canonicalDiscoveryPath(args.path, commandCwd),
-      query: String(args.query || "").trim(),
-      caseSensitive: Boolean(args.caseSensitive),
+      query: caseSensitive ? query : query.toLocaleLowerCase("en-US"),
+      caseSensitive,
     })}`;
   }
   if (toolName === "web_search") {
     return `web-search:${canonicalDiscoveryQuery(args.query)}`;
   }
+  if (toolName === "open_url") {
+    return `browser-open:${canonicalDiscoveryUrl(args.url)}`;
+  }
   if (toolName === "read_web_page") {
-    return `web-read:${canonicalDiscoveryUrl(args.url)}`;
+    const query = canonicalDiscoveryQuery(args.query);
+    return `web-read:${stableStringify({
+      url: canonicalDiscoveryUrl(args.url),
+      query,
+      maxChars: canonicalWebReadCharBand(args.maxChars),
+      maxPassages: query ? canonicalWebReadPassageBand(args.maxPassages) : 0,
+    })}`;
   }
   if (toolName === "run_command") {
+    const compileSignature = canonicalDocumentCompileSignature(args.command, commandCwd);
+    if (compileSignature) return compileSignature;
     const lsPath = simpleLsPath(args.command, commandCwd);
-    if (lsPath) return `filesystem-list:${lsPath}`;
+    if (lsPath) return `filesystem-list:${lsPath}:depth=1`;
   }
   return `${toolName}:${stableStringify(args || {})}`;
 }
 
-function isStaticDiscoveryResult(result = {}) {
+function isStaticDiscoveryResult(result = {}, context = {}) {
   if (!result || result.ok === false || result.blocked || result.done) return false;
-  if (isStaticDiscoveryToolCall(result.toolName, result.args || {})) return true;
+  if (isStaticDiscoveryToolCall(result.toolName, result.args || {}, {
+    ...context,
+    commandPolicy: result.commandPolicy,
+  })) return true;
   if (result.toolName !== "run_command") return false;
   if (/\b(?:watch|poll|status|queue|sleep)\b|tail\s+-f|tmux\s+capture-pane/i.test(String(result.args?.command || ""))) {
     return false;
@@ -256,8 +408,11 @@ function isStaticDiscoveryResult(result = {}) {
 function runCommandHasConcreteProgress(result = {}) {
   const policy = result.commandPolicy || {};
   const policyAllowsMutation =
-    policy.mayMutateProject === true ||
-    (policy.mayMutateProject === undefined && policy.writesWorkspace === true);
+    policy.semanticMayMutateProject !== false &&
+    (
+      policy.mayMutateProject === true ||
+      (policy.mayMutateProject === undefined && policy.writesWorkspace === true)
+    );
   return Boolean(
     policyAllowsMutation ||
       policy.substantiveTest === true ||
@@ -268,7 +423,7 @@ function runCommandHasConcreteProgress(result = {}) {
 
 export function summarizeRepeatedStaticDiscovery(recentToolResults = [], context = {}) {
   const signatures = recentToolResults
-    .filter(isStaticDiscoveryResult)
+    .filter((result) => isStaticDiscoveryResult(result, context))
     .map((result) => staticToolCallSignature(result.toolName, result.args || {}, context));
   const counts = new Map();
   for (const signature of signatures) counts.set(signature, (counts.get(signature) || 0) + 1);
@@ -405,7 +560,9 @@ function hasConcreteProgress(recentToolResults = [], events = []) {
   }
   return recentToolResults.some((result) => {
     if (result.ok === false || result.blocked || result.done) return false;
-    if (isStaticDiscoveryToolCall(result.toolName, result.args || {})) return false;
+    if (isStaticDiscoveryToolCall(result.toolName, result.args || {}, {
+      commandPolicy: result.commandPolicy,
+    })) return false;
     if (!PROGRESS_TOOL_NAMES.has(result.toolName)) return false;
     if (result.toolName === "run_command") return runCommandHasConcreteProgress(result);
     return Boolean(

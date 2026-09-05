@@ -5,10 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { allocateLoopbackTestPort } from "./fixtures/loopback-test-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-math-smoke-"));
-const port = 48000 + Math.floor(Math.random() * 1000);
+const port = await allocateLoopbackTestPort();
 let baseUrl = `http://127.0.0.1:${port}`;
 const server = spawn(
   process.execPath,

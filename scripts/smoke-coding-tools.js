@@ -8,6 +8,7 @@ import {
   buildModelTimeoutRetryMessages,
   genericArtifactFilenameBlock,
   goalClearlyAllowsOverwrite,
+  incompatibleDocumentCompilerSourceBlock,
   modelTimeoutExhaustionRoute,
   modelTimeoutRetryRoute,
   normalizeNoMatchQueryResult,
@@ -262,6 +263,55 @@ try {
     genericArtifactBlock?.category === "artifact-filename" &&
       /fluorescence|experiment/i.test(genericArtifactBlock.permissionAdvice?.instruction || ""),
     "new generic artifact filename was not redirected to a meaningful topic-derived name"
+  );
+  const echoedGenericArtifactBlock = await genericArtifactFilenameBlock(
+    "write_file",
+    { path: "output/task/report.tex", content: "document" },
+    {
+      commandCwd: workspace,
+      taskProfile: "writing",
+      goal: "Create a reader-facing evidence brief with a meaningful filename.",
+    },
+    {
+      goal: "Create a reader-facing evidence brief with a meaningful filename.",
+      messages: [
+        {
+          role: "user",
+          content:
+            "Runtime recovery: the previous attempt to create output/task/report.tex was blocked. Continue safely.",
+        },
+      ],
+      meta: {
+        goalContract: {
+          currentRequest: "Create a reader-facing evidence brief with a meaningful filename.",
+        },
+      },
+    }
+  );
+  assert(
+    echoedGenericArtifactBlock?.category === "artifact-filename",
+    "runtime feedback echoed a blocked generic filename into apparent user authorization"
+  );
+  assert(
+    (await genericArtifactFilenameBlock(
+      "write_file",
+      { path: "output/task/report.tex", content: "document" },
+      {
+        commandCwd: workspace,
+        taskProfile: "writing",
+        goal: "Create output/task/report.tex exactly as named.",
+      },
+      {
+        goal: "Create output/task/report.tex exactly as named.",
+        messages: [],
+        meta: {
+          goalContract: {
+            currentRequest: "Create output/task/report.tex exactly as named.",
+          },
+        },
+      }
+    )) === null,
+    "an exact filename in the active goal contract was incorrectly blocked"
   );
   assert(
     (await genericArtifactFilenameBlock(
@@ -1794,6 +1844,136 @@ try {
     negatedCleanupAdvice.autoRecover === true,
     "blocked cleanup under a do-not-delete goal should recover without pausing"
   );
+  const retainedReportCleanupArgs = {
+    command:
+      "rm -f /home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/task/2026-09-03-evidence-brief.pdf /home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/task/2026-09-03-evidence-brief.aux /home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/task/2026-09-03-evidence-brief.log /home/lachlan/ProjectsLFS/AgenticApp/output/wechat_worker/task/2026-09-03-evidence-brief.out",
+  };
+  const retainedReportCleanupGoal =
+    "Revise the existing report and enable host compilation. Unless the current request explicitly requires deletion, never bundle `rm`, delete, clean, reset, or scratch-file cleanup into a build or validation command. Keep prior task artifacts as evidence.";
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      retainedReportCleanupArgs,
+      { goal: retainedReportCleanupGoal },
+      {}
+    ),
+    "a safety rule against bundled cleanup was mistaken for deletion authorization"
+  );
+  const retainedReportCleanupAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: retainedReportCleanupArgs,
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: { ...dockerWorkspacePolicy, goal: retainedReportCleanupGoal },
+    state: { sessionId: "coding-retained-report-cleanup-smoke" },
+  });
+  assert(
+    retainedReportCleanupAdvice.autoRecover === true &&
+      !shouldPauseForPermissionAdvice({
+        blocked: true,
+        permissionAdvice: retainedReportCleanupAdvice,
+      }),
+    "unrequested pre-build report cleanup still paused the substantive revision"
+  );
+  assert(
+    !isUnrequestedCleanupCommand(
+      "run_command",
+      retainedReportCleanupArgs,
+      {
+        goal:
+          `${retainedReportCleanupGoal} Delete the obsolete PDF and its generated sidecars after inspection.`,
+      },
+      {}
+    ),
+    "a separate explicit deletion request was erased with the safety rule"
+  );
+  const unrequestedArtifactArchiveArgs = {
+    command:
+      "cd output/task-1 && mkdir -p _superseded_drafts && mv report-v1.pdf report-v2.pdf _superseded_drafts/ && ls -1 *.pdf",
+  };
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      unrequestedArtifactArchiveArgs,
+      { goal: "Revise report-v3.tex and verify the replacement report-v3.pdf." },
+      {}
+    ),
+    "unrequested archival relocation bundled with validation was not recognized"
+  );
+  const unrequestedArtifactArchiveAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: unrequestedArtifactArchiveArgs,
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      goal: "Revise report-v3.tex and verify the replacement report-v3.pdf.",
+    },
+    state: { sessionId: "coding-unrequested-artifact-archive-smoke" },
+  });
+  assert(
+    unrequestedArtifactArchiveAdvice.autoRecover === true &&
+      !shouldPauseForPermissionAdvice({
+        blocked: true,
+        permissionAdvice: unrequestedArtifactArchiveAdvice,
+      }),
+    "unrequested artifact archival still paused the substantive task"
+  );
+  assert(
+    !isUnrequestedCleanupCommand(
+      "run_command",
+      unrequestedArtifactArchiveArgs,
+      { goal: "Archive the old report PDFs under _superseded_drafts, then verify report-v3.pdf." },
+      {}
+    ),
+    "an explicitly requested artifact archive was incorrectly skipped"
+  );
+  const historyArchiveOnlyGoal = [
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Revise report-v3.tex and verify report-v3.pdf.","artifact_root":"/workspace/output/task-1"}',
+    "Retained chat memory: archive old report files under _superseded_drafts.",
+  ].join("\n");
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      unrequestedArtifactArchiveArgs,
+      { goal: historyArchiveOnlyGoal },
+      {}
+    ),
+    "stale chat memory incorrectly authorized archival in the active scoped task"
+  );
+  const activeArchiveGoal = [
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Archive the old report PDFs under _superseded_drafts, then verify report-v3.pdf.","artifact_root":"/workspace/output/task-1"}',
+    "Retained chat memory: revise the report without moving any files.",
+  ].join("\n");
+  assert(
+    !isUnrequestedCleanupCommand(
+      "run_command",
+      unrequestedArtifactArchiveArgs,
+      { goal: activeArchiveGoal },
+      {}
+    ),
+    "the active scoped archive request was overridden by stale no-move memory"
+  );
+  for (const command of [
+    "mv report-v2.pdf report-v3.pdf",
+    "mv report-*.pdf _superseded_drafts/",
+    "mv ../report-v2.pdf _superseded_drafts/",
+    "mv report-v2.pdf /tmp/_superseded_drafts/",
+  ]) {
+    assert(
+      !isUnrequestedCleanupCommand(
+        "run_command",
+        { command },
+        { goal: "Revise and verify report-v3.pdf." },
+        {}
+      ),
+      `unsafe or non-archival move was incorrectly treated as optional housekeeping: ${command}`
+    );
+  }
   const dynamicEvidenceAdvice = buildPermissionAdvice({
     toolName: "run_command",
     args: {
@@ -2152,6 +2332,79 @@ try {
     { allowWebSearch: true, webSearchDryRun: true }
   );
   assert(drySearch.ok && drySearch.results.length === 1, "web_search dry-run did not return deterministic result");
+  let privateQueryDispatches = 0;
+  const privateTranscriptQueries = [
+    "Chat History for sunnyyty的聊天记录",
+    "\"Conversation transcript with Alice\"",
+    "孙小雨的对话记录",
+    "アリスとのチャット履歴",
+  ];
+  for (const query of privateTranscriptQueries) {
+    const guard = checkToolUse({
+      toolName: "web_search",
+      args: { query },
+      snapshot: {},
+      config: { allowWebSearch: true },
+    });
+    assert(!guard.allowed && guard.category === "web-search-private-context", `private transcript query passed tool guard: ${query}`);
+    const result = await searchWeb(
+      { query },
+      {
+        allowWebSearch: true,
+        webSearchImpl: async () => {
+          privateQueryDispatches += 1;
+          return { ok: true, toolName: "web_search", results: [] };
+        },
+      }
+    );
+    assert(!result.ok && result.blocked && result.category === "web-search-private-context", `private transcript query reached search dispatch: ${query}`);
+  }
+  assert(privateQueryDispatches === 0, "private transcript title reached a public web-search provider");
+  for (const query of [
+    "how to export WeChat chat history safely",
+    "research on conversation history in task-oriented dialogue systems",
+    "organoid microfluidics primary research 2026",
+  ]) {
+    const guard = checkToolUse({
+      toolName: "web_search",
+      args: { query },
+      snapshot: {},
+      config: { allowWebSearch: true },
+    });
+    assert(guard.allowed, `legitimate public research query was blocked: ${query}`);
+  }
+  const secretQuery = await searchWeb(
+    { query: "debug API_KEY=secret-production-value" },
+    {
+      allowWebSearch: true,
+      webSearchImpl: async () => {
+        privateQueryDispatches += 1;
+        return { ok: true, toolName: "web_search", results: [] };
+      },
+    }
+  );
+  assert(!secretQuery.ok && secretQuery.category === "web-search-sensitive-query", "secret-bearing web query was not rejected");
+  assert(privateQueryDispatches === 0, "secret-bearing query reached a public web-search provider");
+  for (const command of [
+    "pdflatex report.md",
+    "cd artifacts && xelatex -interaction=nonstopmode daily-briefing.markdown",
+    "env TEXINPUTS=. latexmk -pdf notes.txt",
+    "lualatex existing-report.pdf",
+  ]) {
+    const block = incompatibleDocumentCompilerSourceBlock("run_command", { command });
+    assert(block?.category === "document-compiler-source-type" && block.recoverable, `incompatible document compiler source was not rejected: ${command}`);
+    assert(block.blocked && shouldShortCircuitToolBatch(block), `incompatible document compiler source did not stop its tool batch: ${command}`);
+  }
+  for (const command of [
+    "pdflatex -interaction=nonstopmode report.tex",
+    "pdflatex -jobname release.pdf report.tex",
+    "latexmk -output-directory=build.pdf -pdf report.tex",
+    "cd artifacts && latexmk -pdf daily-briefing.tex",
+    "pandoc report.md -o report.tex",
+    "python scripts/build_report.py report.md",
+  ]) {
+    assert(!incompatibleDocumentCompilerSourceBlock("run_command", { command }), `valid document command was rejected: ${command}`);
+  }
   const writingRun = await runMock("Write a novel chapter about a harbor drone repairer and save the draft.", "coding-writing-specialist");
   assert(
     writingRun.events.some((event) => event.type === "tool.completed" && event.data?.toolName === "writing_specialist"),
@@ -2382,6 +2635,40 @@ try {
   assert(
     writeScopedRead.content === "unrelated\n",
     "write-scoped artifact work could not read safe workspace evidence"
+  );
+  const taskScopedWriteConfig = {
+    commandCwd: workspace,
+    allowFileTools: true,
+    scopedArtifactTask: true,
+    scopedArtifactRoot: "output/task-scope",
+    workspaceWritePathScopeRoots: ["output/task-scope"],
+  };
+  const taskScopedBareWrite = await executeWorkspaceTool(
+    "write_file",
+    { path: "briefing-v2.md", content: "task scoped\n", mode: "create" },
+    taskScopedWriteConfig
+  );
+  assert(
+    taskScopedBareWrite.ok === true &&
+      taskScopedBareWrite.path === "output/task-scope/briefing-v2.md",
+    "a bare output filename was not resolved inside the one authoritative task artifact root"
+  );
+  assert(
+    await fs.readFile(path.join(workspace, "output", "task-scope", "briefing-v2.md"), "utf8") ===
+      "task scoped\n",
+    "the scoped bare-filename write did not reach the authoritative artifact directory"
+  );
+  const taskScopedNestedOutsideWrite = await executeWorkspaceTool(
+    "write_file",
+    { path: "unrelated/escape.md", content: "blocked\n", mode: "create" },
+    taskScopedWriteConfig
+  );
+  assert(
+    taskScopedNestedOutsideWrite.blocked === true &&
+      /outside the active task artifact scope/.test(
+        String(taskScopedNestedOutsideWrite.reason || "")
+      ),
+    "a non-bare path was silently relocated into the task artifact root"
   );
   const outsideWriteScopedWrite = await executeWorkspaceTool(
     "write_file",
@@ -3183,6 +3470,27 @@ try {
     }
   );
   assert(secretContentResult.blocked && secretContentResult.category === "workspace-content", "write_file secret-like content was not blocked");
+  const secretContentAdvice = buildPermissionAdvice({
+    toolName: "write_file",
+    args: {
+      path: "notes/secret-leak-report.md",
+      content: "[redacted from permission-advice test]",
+      mode: "create",
+    },
+    guard: secretContentResult,
+    config: {
+      commandCwd: workspace,
+      sandboxMode: "host",
+      allowFileTools: true,
+      allowShellTool: false,
+    },
+    state: {},
+  });
+  assert(secretContentAdvice.autoRecover === true, "secret-like content block still requested stronger permissions");
+  assert(
+    /redact the sensitive value/i.test(secretContentAdvice.instruction || ""),
+    "secret-like content recovery omitted its bounded redaction instruction"
+  );
   await fs
     .access(path.join(workspace, "notes/secret-leak-report.md"))
     .then(() => {
@@ -3191,6 +3499,103 @@ try {
     .catch((error) => {
       if (error.code !== "ENOENT") throw error;
     });
+
+  const opaqueBinaryTargets = [
+    "reports/research-briefing.pdf",
+    "reports/research-briefing.docx",
+    "figures/result.png",
+    "media/clip.mp4",
+    "packages/model.3mf",
+  ];
+  for (const binaryPath of opaqueBinaryTargets) {
+    const binaryWriteResult = await executeWorkspaceTool(
+      "write_file",
+      {
+        path: binaryPath,
+        content: "# This is plain UTF-8 text, not the requested binary format.\n",
+        mode: "create",
+      },
+      {
+        commandCwd: workspace,
+        allowFileTools: true,
+      }
+    );
+    assert(
+      binaryWriteResult.blocked && binaryWriteResult.category === "workspace-binary-format",
+      `write_file did not reject text disguised as ${path.extname(binaryPath)}`
+    );
+    const binaryAdvice = buildPermissionAdvice({
+      toolName: "write_file",
+      args: { path: binaryPath, content: "[omitted]", mode: "create" },
+      guard: binaryWriteResult,
+      config: {
+        commandCwd: workspace,
+        sandboxMode: "host",
+        allowFileTools: true,
+        allowShellTool: true,
+      },
+      state: {},
+    });
+    assert(
+      binaryAdvice.autoRecover === true && /established build route/i.test(binaryAdvice.instruction || ""),
+      `opaque binary write did not receive non-pausing build-route recovery for ${binaryPath}`
+    );
+    await fs
+      .access(path.join(workspace, binaryPath))
+      .then(() => {
+        throw new Error(`opaque binary target was created through the text tool: ${binaryPath}`);
+      })
+      .catch((error) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+  }
+
+  const binaryPatchResult = await executeWorkspaceTool(
+    "apply_patch",
+    {
+      patch: [
+        "*** Begin Patch",
+        "*** Add File: reports/patched-report.pdf",
+        "+%PDF-1.7",
+        "+This is still text, not a compiled PDF.",
+        "*** End Patch",
+      ].join("\n"),
+    },
+    {
+      commandCwd: workspace,
+      allowFileTools: true,
+    }
+  );
+  assert(
+    binaryPatchResult.blocked && binaryPatchResult.category === "workspace-binary-format",
+    "apply_patch allowed an opaque binary artifact to be fabricated from text"
+  );
+  await fs
+    .access(path.join(workspace, "reports/patched-report.pdf"))
+    .then(() => {
+      throw new Error("apply_patch created an opaque binary artifact through its text patch format");
+    })
+    .catch((error) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+
+  const textNativeTargets = [
+    ["notes/research-briefing.md", "# Briefing\n"],
+    ["reports/research-briefing.tex", "\\documentclass{article}\\begin{document}OK\\end{document}\n"],
+    ["figures/diagram.svg", '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>\n'],
+    ["cad/holder.step", "ISO-10303-21;\nEND-ISO-10303-21;\n"],
+    ["cad/holder.stl", "solid holder\nendsolid holder\n"],
+    ["cad/holder.obj", "o holder\nv 0 0 0\n"],
+    ["data/manifest.json", '{"ok":true}\n'],
+  ];
+  for (const [sourcePath, content] of textNativeTargets) {
+    const sourceWriteResult = await executeWorkspaceTool(
+      "write_file",
+      { path: sourcePath, content, mode: "create" },
+      { commandCwd: workspace, allowFileTools: true }
+    );
+    assert(sourceWriteResult.ok, `text-native source format was blocked: ${sourcePath}`);
+  }
 
   const safeEnvReferenceResult = await executeWorkspaceTool(
     "write_file",
@@ -3214,6 +3619,34 @@ try {
     }
   );
   assert(safeEnvReferenceResult.ok, "write_file should allow safe env-var credential references in source code");
+
+  const localFileUrlGuard = checkToolUse({
+    toolName: "open_url",
+    args: { url: `file://${path.join(workspace, "notes", "local-preview.txt")}` },
+    snapshot: {},
+    config: { allowedDomains: [] },
+  });
+  assert(
+    !localFileUrlGuard.allowed && localFileUrlGuard.category === "browser-url-scheme",
+    "a local file URL did not retain the remote-browser scheme boundary"
+  );
+  const localFileUrlAdvice = buildPermissionAdvice({
+    toolName: "open_url",
+    args: { url: `file://${path.join(workspace, "notes", "local-preview.txt")}` },
+    guard: localFileUrlGuard,
+    config: {
+      commandCwd: workspace,
+      sandboxMode: "host",
+      allowFileTools: true,
+      allowShellTool: false,
+    },
+    state: {},
+  });
+  assert(localFileUrlAdvice.autoRecover === true, "a local file URL mistake still requests stronger permission");
+  assert(
+    /open_workspace_file, preview_workspace, or read_file/i.test(localFileUrlAdvice.instruction || ""),
+    "local file URL recovery omitted workspace-native inspection tools"
+  );
 
   const safeTokenVariableSyntaxResult = await executeWorkspaceTool(
     "write_file",

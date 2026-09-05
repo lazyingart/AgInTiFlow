@@ -1,4 +1,6 @@
 import { redactSensitiveText } from "./redaction.js";
+import { tokenizeShellWords } from "./shell-syntax.js";
+import { firstJsonObject } from "./json-extraction.js";
 
 const NETWORK_FAILURE_PATTERNS = [
   /could not resolve host/i,
@@ -150,8 +152,27 @@ export function recoverableInlineReadOnlyArtifactAudit(toolName = "", args = {},
   return { relativeCwd };
 }
 
-function goalRequestsDeletion(config = {}, state = {}) {
+function permissionIntentGoal(config = {}, state = {}) {
   const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "");
+  const scopeMarker = "AGINTI_EVIDENCE_SCOPE_JSON:";
+  const markerIndex = goal.indexOf(scopeMarker);
+  if (markerIndex >= 0) {
+    const scope = firstJsonObject(goal.slice(markerIndex + scopeMarker.length));
+    if (
+      scope &&
+      String(scope.mode || "").trim() === "task" &&
+      typeof scope.request === "string" &&
+      scope.request.trim()
+    ) {
+      return scope.request.trim();
+    }
+  }
+  return goal;
+}
+
+function goalRequestsDeletion(config = {}, state = {}) {
+  const goal = permissionIntentGoal(config, state)
+    .replace(/`([^`]+)`/g, "$1");
   const deletionIntent = /\b(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)\b|删除|刪除|移除|清理|清除|删掉|刪掉|削除|消去/i;
   if (!deletionIntent.test(goal)) return false;
 
@@ -159,6 +180,10 @@ function goalRequestsDeletion(config = {}, state = {}) {
   // authorization. Strip bounded negated phrases before looking for a genuine
   // deletion request elsewhere in the goal.
   const withoutNegatedDeletion = goal
+    .replace(
+      /\b(?:do\s+not|don't|dont|never|must\s+not|should\s+not|shouldn't|without)\s+(?:bundle|include|run|execute|retry)\b[^.\n]{0,320}(?:\.|$)/gi,
+      " "
+    )
     .replace(
       /\b(?:do\s+not|don't|dont|never|must\s+not|should\s+not|shouldn't|without)\s+(?:retry(?:ing)?\s+or\s+)?(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)(?:\s+any)?\b/gi,
       " "
@@ -168,8 +193,72 @@ function goalRequestsDeletion(config = {}, state = {}) {
   return deletionIntent.test(withoutNegatedDeletion);
 }
 
+function goalRequestsArtifactArchival(config = {}, state = {}) {
+  const goal = permissionIntentGoal(config, state)
+    .replace(/`([^`]+)`/g, "$1");
+  const withoutNegatedArchival = goal
+    .replace(
+      /\b(?:do\s+not|don't|dont|never|must\s+not|should\s+not|shouldn't|without)\s+(?:archive|move|relocate|organize|supersede)\b[^.\n]{0,180}(?:\.|$)/gi,
+      " "
+    )
+    .replace(/(?:不要|不可|禁止|无需|無需|不需要)(?:归档|歸檔|移动|移動|整理|迁移|遷移)/g, " ");
+  const artifact = String.raw`(?:artifacts?|drafts?|files?|outputs?|pdfs?|reports?|sidecars?|versions?)`;
+  return (
+    new RegExp(String.raw`\b(?:archive|relocate|organize|supersede)\b[^.\n]{0,100}\b${artifact}\b`, "i").test(
+      withoutNegatedArchival
+    ) ||
+    new RegExp(String.raw`\bmove\b[^.\n]{0,100}\b${artifact}\b`, "i").test(
+      withoutNegatedArchival
+    ) ||
+    new RegExp(String.raw`\b${artifact}\b[^.\n]{0,100}\b(?:archive|move|relocate|organize|supersede)\b`, "i").test(
+      withoutNegatedArchival
+    ) ||
+    /(?:归档|歸檔|移动|移動|整理|迁移|遷移).{0,60}(?:文件|产物|產物|草稿|报告|報告|版本)/u.test(
+      withoutNegatedArchival
+    )
+  );
+}
+
+function safeExplicitWorkspaceRelativePath(value = "") {
+  const target = String(value || "").replace(/\\/g, "/").replace(/\/+$/u, "");
+  return Boolean(
+    target &&
+      !target.startsWith("/") &&
+      !target.startsWith("~") &&
+      !target.split("/").includes("..") &&
+      !/[*?\[\]{}$`]/u.test(target)
+  );
+}
+
+function isUnrequestedArtifactArchivalSegment(segment = "") {
+  const tokens = tokenizeShellWords(String(segment || "").trim()).map((token) =>
+    String(token || "")
+  );
+  if (tokens[0] === "command") tokens.shift();
+  if (tokens[0] !== "mv") return false;
+  if (tokens[1] === "--") tokens.splice(1, 1);
+  if (tokens.length < 4 || tokens.slice(1).some((token) => token.startsWith("-"))) {
+    return false;
+  }
+  const operands = tokens.slice(1);
+  const destination = operands.at(-1).replace(/\\/g, "/").replace(/\/+$/u, "");
+  if (
+    !safeExplicitWorkspaceRelativePath(destination) ||
+    !/(?:^|\/)[._-]?(?:archive(?:d|s)?|backups?|obsolete|previous|superseded)(?:[-_](?:artifacts|drafts|files|outputs|pdfs|reports|versions))?$/i.test(
+      destination
+    )
+  ) {
+    return false;
+  }
+  return operands.slice(0, -1).every(
+    (source) =>
+      safeExplicitWorkspaceRelativePath(source) &&
+      /(?:^|\/)[^/]+\.[A-Za-z0-9]{1,12}$/u.test(source)
+  );
+}
+
 export function isUnrequestedCleanupCommand(toolName = "", args = {}, config = {}, state = {}) {
-  const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "").trim();
+  const goal = permissionIntentGoal(config, state).trim();
   if (!goal || toolName !== "run_command" || goalRequestsDeletion(config, state)) return false;
   const command = String(args.command || args.text || "");
   return command
@@ -181,7 +270,9 @@ export function isUnrequestedCleanupCommand(toolName = "", args = {}, config = {
         /^find\s+\.\s+-type\s+d\s+-name\s+['"]?__pycache__['"]?\s+-prune\s+-exec\s+rm\s+-rf\s+\{\}\s+\+$/.test(
           segment
         ) ||
-        /^find\s+\.\s+-type\s+f\s+-name\s+(['"]?)\*\.pyc\1\s+-delete$/.test(segment)
+        /^find\s+\.\s+-type\s+f\s+-name\s+(['"]?)\*\.pyc\1\s+-delete$/.test(segment) ||
+        (!goalRequestsArtifactArchival(config, state) &&
+          isUnrequestedArtifactArchivalSegment(segment))
     );
 }
 
@@ -261,6 +352,32 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
     };
   }
 
+  if (category === "browser-url-scheme") {
+    const url = String(args.url || "").trim();
+    const localFile = /^file:\/\//i.test(url);
+    return {
+      ...base,
+      autoRecover: true,
+      summary: localFile
+        ? "A local file URL was sent to the remote-browser tool. This is a recoverable tool-selection error, not a permission blocker."
+        : "The remote-browser tool received an unsupported URL scheme. This is a recoverable tool-selection error, not a request for stronger permission.",
+      instruction: localFile
+        ? "Continue automatically with one workspace-native operation. Convert the file URL to its workspace-relative path and use open_workspace_file, preview_workspace, or read_file as appropriate. Do not retry open_url, start a localhost server, or ask for stronger permission."
+        : "Do not execute or rewrite the unsupported scheme. Use one exact authorized http/https source from the current request when available; otherwise continue without browser access and state the source limitation honestly. Do not ask for stronger permission.",
+      options: localFile
+        ? [
+            "Use open_workspace_file for one generated local file that needs browser rendering.",
+            "Use preview_workspace for a local static site or directory.",
+            "Use read_file for textual inspection when visual rendering is unnecessary.",
+          ]
+        : [
+            "Open an exact http/https URL already supplied by the current request.",
+            "Use a non-browser tool explicitly designed for the current source type.",
+            "Continue with an honest bounded answer when no authorized web source exists.",
+          ],
+    };
+  }
+
   if (category === "workspace-path") {
     if (READ_ONLY_FILE_TOOLS.has(toolName)) {
       return {
@@ -326,6 +443,38 @@ function adviceForCategory(category = "", { toolName = "", args = {}, config = {
         "Review page 1 alone, repair any defect, and rebuild before reviewing later pages.",
         "Review each remaining page in a separate read_image call.",
         "Finish only after every page has its own accepted visual evidence.",
+      ],
+    };
+  }
+
+  if (category === "workspace-content") {
+    return {
+      ...base,
+      autoRecover: true,
+      summary:
+        "The workspace write was blocked because its proposed content contains a secret-like value. Stronger permission cannot make that content safe to persist.",
+      instruction:
+        "Continue automatically with one corrected write: redact the sensitive value as [REDACTED] or omit the private URL, token, credential, cookie, or signed query entirely. Preserve the useful non-sensitive content and the requested artifact path. Do not repeat the blocked value, ask for stronger permission, or modify an authoritative source record merely to sanitize a derived artifact.",
+      options: [
+        "Rewrite the intended derived artifact with the sensitive value replaced by [REDACTED].",
+        "Omit the private source field when it is unnecessary to the reader-facing result.",
+        "Use dedicated key storage only when the task truly requires a reusable credential reference.",
+      ],
+    };
+  }
+
+  if (category === "workspace-binary-format") {
+    return {
+      ...base,
+      autoRecover: true,
+      summary:
+        "The proposed workspace write would label UTF-8 text as an opaque binary artifact. Stronger permission cannot make that file valid.",
+      instruction:
+        "Continue automatically through the established build route: create or repair the complete text-native source, then use an available compiler, converter, renderer, or generator. When the task contract assigns binary production to the host, return the verified editable source for that stage. Do not retry the binary path with write_file/apply_patch, encode bytes as base64, or rename text to a binary extension.",
+      options: [
+        "Write the canonical Markdown, TeX, Typst, SVG, CAD, code, or configuration source.",
+        "Run the existing project build or format-native generator when the current task owns compilation.",
+        "Return the complete editable source when a declared host stage owns binary generation and inspection.",
       ],
     };
   }

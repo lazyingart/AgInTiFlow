@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { allocateLoopbackTestPort } from "./fixtures/loopback-test-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-runtime-compat-"));
@@ -56,7 +57,7 @@ assert.equal(listSessionIndex({ projectRoot: tempRoot }).length, 1, "JSON fallba
 assert.equal(renameSessionIndex(session.sessionId, "Indexed Runtime Compatibility"), true, "JSON fallback global index rename should work");
 assert.equal(deleteSessionIndex(session.sessionId), true, "JSON fallback global index delete should work");
 
-const port = 45200 + Math.floor(Math.random() * 500);
+const port = await allocateLoopbackTestPort();
 const server = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "web", "--port", String(port), "--host", "127.0.0.1"], {
   cwd: tempRoot,
   env: {
@@ -88,6 +89,12 @@ async function waitForHealth() {
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     if (server.exitCode !== null) break;
+    const announcedUrl = stdout.match(/Website control agent UI running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+    if (!announcedUrl) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      continue;
+    }
+    baseUrl = announcedUrl;
     try {
       const response = await fetch(`${baseUrl}/health`);
       const health = await response.json();

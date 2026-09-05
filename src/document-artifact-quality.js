@@ -821,6 +821,32 @@ export async function collectDocumentSourceDocuments(commandCwd, exactInputPaths
   const maxTotalBytes = 4 * 1024 * 1024;
   const maxFileBytes = 512 * 1024;
 
+  const knownPaths = new Set();
+  for (const value of Array.isArray(exactInputPaths) ? exactInputPaths : []) {
+    if (documents.length >= maxFiles || totalBytes >= maxTotalBytes) break;
+    const absolutePath = path.resolve(commandCwd, String(value || ""));
+    if (!isInsideRoot(commandCwd, absolutePath)) continue;
+    const relativePath = portablePath(path.relative(commandCwd, absolutePath));
+    if (!relativePath || knownPaths.has(relativePath)) continue;
+    if (!DOCUMENT_EXTENSIONS.has(path.extname(absolutePath).toLowerCase())) continue;
+    try {
+      const stat = await fs.stat(absolutePath);
+      if (!stat.isFile() || stat.size <= 0 || stat.size > maxFileBytes) continue;
+      if (totalBytes + stat.size > maxTotalBytes) continue;
+      const text = await fs.readFile(absolutePath, "utf8");
+      documents.push({ path: relativePath, text });
+      knownPaths.add(relativePath);
+      totalBytes += stat.size;
+    } catch {
+      // Exact unreadable sources remain visible to the existing source/evidence gates.
+    }
+  }
+
+  // Declared task inputs are authoritative. Repository-wide discovery is a
+  // fallback for tasks that did not name a readable source, not extra context
+  // to blend into a scoped document review.
+  if (documents.length > 0) return documents;
+
   async function visit(directory, sourceRoot = false, depth = 0) {
     if (documents.length >= maxFiles || totalBytes >= maxTotalBytes || depth > 5) return;
     let entries;
@@ -857,26 +883,6 @@ export async function collectDocumentSourceDocuments(commandCwd, exactInputPaths
   }
 
   await visit(commandCwd, false, 0);
-  const knownPaths = new Set(documents.map((item) => item.path));
-  for (const value of Array.isArray(exactInputPaths) ? exactInputPaths : []) {
-    if (documents.length >= maxFiles || totalBytes >= maxTotalBytes) break;
-    const absolutePath = path.resolve(commandCwd, String(value || ""));
-    if (!isInsideRoot(commandCwd, absolutePath)) continue;
-    const relativePath = portablePath(path.relative(commandCwd, absolutePath));
-    if (!relativePath || knownPaths.has(relativePath)) continue;
-    if (!DOCUMENT_EXTENSIONS.has(path.extname(absolutePath).toLowerCase())) continue;
-    try {
-      const stat = await fs.stat(absolutePath);
-      if (!stat.isFile() || stat.size <= 0 || stat.size > maxFileBytes) continue;
-      if (totalBytes + stat.size > maxTotalBytes) continue;
-      const text = await fs.readFile(absolutePath, "utf8");
-      documents.push({ path: relativePath, text });
-      knownPaths.add(relativePath);
-      totalBytes += stat.size;
-    } catch {
-      // Exact unreadable sources remain visible to the existing source/evidence gates.
-    }
-  }
   return documents;
 }
 

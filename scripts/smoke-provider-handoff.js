@@ -341,6 +341,1264 @@ assert.equal(smart.events.filter((event) => event.type === "provider.handoff_req
 assert.equal(smart.events.filter((event) => event.type === "provider.handoff_activated").length, 1);
 assert.equal(smart.events.filter((event) => event.type === "session.failed").length, 0);
 
+async function runSourceFreeResponseOnlyHandoffScenario({
+  sessionId,
+  localResponses,
+  request: requestedResponse = "",
+}) {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-source-free-handoff-"));
+  const workspace = path.join(tempRoot, "workspace");
+  const sessionsDir = path.join(tempRoot, "sessions");
+  const projectSessionsDir = path.join(workspace, ".aginti-sessions");
+  await fs.mkdir(workspace, { recursive: true });
+
+  const requests = [];
+  const clientFactory = async (config) => ({
+    chat: {
+      completions: {
+        create: async (payload) => {
+          requests.push({ provider: config.provider, model: payload.model });
+          if (config.provider === "deepseek") {
+            throw Object.assign(new Error("402 Insufficient Balance"), { status: 402 });
+          }
+          const content = localResponses.shift();
+          assert.notEqual(content, undefined, "source-free handoff scenario exhausted scripted LocalLLM responses");
+          return assistant(content);
+        },
+      },
+    },
+  });
+  clientFactory.agintiDeterministicTest = true;
+
+  const request = requestedResponse ||
+    "Correct the prior research response using the host-managed evidence scope. No tools are available in this run.";
+  const goal = [
+    request,
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "host-managed-response",
+      request,
+    })}`,
+  ].join("\n");
+  const config = resolveRuntimeConfig(
+    {
+      goal,
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      routeProvider: "deepseek",
+      routeModel: "deepseek-v4-flash",
+      mainProvider: "deepseek",
+      mainModel: "deepseek-v4-pro",
+      spareProvider: "deepseek",
+      spareModel: "deepseek-v4-pro",
+      routingMode: "smart",
+      taskProfile: "research",
+      commandCwd: workspace,
+    },
+    {
+      baseDir: workspace,
+      packageDir: repoRoot,
+      sessionId,
+      clientFactory,
+      providerReadinessMode: "deterministic-test",
+      sandboxMode: "host",
+      useDockerSandbox: false,
+      allowShellTool: false,
+      allowFileTools: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowParallelScouts: false,
+      enableScs: "off",
+    }
+  );
+  Object.assign(config, {
+    apiKey: "deterministic-hosted-test",
+    clientFactory,
+    providerReadinessMode: "deterministic-test",
+    sessionsDir,
+    projectSessionsDir,
+    useDockerSandbox: false,
+    sandboxMode: "host",
+    enableScs: "off",
+    scsActive: false,
+    dynamicSteps: "off",
+    maxSteps: 4,
+    modelTimeoutMs: 1000,
+  });
+
+  try {
+    const result = await runAgent(config);
+    const store = new SessionStore(sessionsDir, sessionId, {
+      projectRoot: workspace,
+      commandCwd: workspace,
+      projectSessionsDir,
+    });
+    return {
+      result,
+      state: await store.loadState(),
+      events: await store.loadEvents(),
+      requests,
+    };
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+const unsafeSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-handoff-fail-closed",
+  localResponses: [
+    "2025年Nature子刊预印本未公开，已有初步验证，响应延迟低于100ms，并预测2026年底前上线。",
+    "This is unverified. The Nature publication was validated in 2025 on a 12,000-case benchmark with 94.2% accuracy.",
+  ],
+});
+assert.equal(unsafeSourceFreeHandoff.result.stopped, true);
+assert.equal(unsafeSourceFreeHandoff.result.reason, "source_free_evidence_required");
+assert.deepEqual(
+  unsafeSourceFreeHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "source-free response-only handoff did not retry exactly once on LocalLLM"
+);
+assert.equal(unsafeSourceFreeHandoff.state.meta.providerHandoff.status, "active");
+assert.equal(
+  unsafeSourceFreeHandoff.events.filter((event) => event.type === "response_only.source_free_claim_rejected").length,
+  1
+);
+assert.equal(
+  unsafeSourceFreeHandoff.events.filter((event) => event.type === "response_only.source_free_claim_failed_closed").length,
+  1
+);
+assert.equal(
+  unsafeSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
+  0,
+  "unsafe source-free response-only claim was persisted as a finished session"
+);
+assert.equal(
+  /Nature|94\.2%|100ms|2025年/.test(unsafeSourceFreeHandoff.result.result),
+  false,
+  "fail-closed response leaked the unsupported source-free claim text"
+);
+assert.doesNotMatch(
+  unsafeSourceFreeHandoff.result.result,
+  /AgInTi|evidence manifest|response-only|tool scope|resume with|provider|runtime/iu,
+  "fail-closed response exposed private response-only recovery terminology"
+);
+
+const chineseChatSourceFreeStop = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-natural-chinese-chat-stop",
+  request: [
+    "Choose one response shape:",
+    "1. CHAT: <one concise helpful chat message>",
+    "2. NO_REPLY",
+    "Current coalesced request:",
+    "用户: 这项研究可靠吗？",
+  ].join("\n"),
+  localResponses: [
+    "CHAT: 该研究已于2025年发表，并在一万例样本中得到验证。",
+    "CHAT: 2025年的论文已经证实这项研究可靠。",
+  ],
+});
+assert.equal(chineseChatSourceFreeStop.result.stopped, true);
+assert.match(
+  chineseChatSourceFreeStop.result.result,
+  /^CHAT:\s*现有信息不足以核实/u,
+  "Chinese chat fail-closed result did not preserve its human-facing CHAT protocol"
+);
+assert.doesNotMatch(
+  chineseChatSourceFreeStop.result.result,
+  /AgInTi|证据清单|工具|运行时|恢复会话|response-only|manifest/iu,
+  "Chinese chat fail-closed result exposed private runtime instructions"
+);
+
+const japaneseChatSourceFreeStop = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-natural-japanese-chat-stop",
+  request: [
+    "Choose one response shape:",
+    "1. CHAT: <one concise helpful chat message>",
+    "2. NO_REPLY",
+    "Current coalesced request:",
+    "ユーザー: この研究は信頼できますか？",
+  ].join("\n"),
+  localResponses: [
+    "CHAT: この研究は2025年に発表され、一万件の標本で検証済みです。",
+    "CHAT: 2025年の論文ですでに有効性が確認されています。",
+  ],
+});
+assert.equal(japaneseChatSourceFreeStop.result.stopped, true);
+assert.match(
+  japaneseChatSourceFreeStop.result.result,
+  /^CHAT:\s*現在の情報だけでは/u,
+  "Japanese chat fail-closed result did not preserve its human-facing CHAT protocol"
+);
+assert.doesNotMatch(
+  japaneseChatSourceFreeStop.result.result,
+  /AgInTi|エビデンスマニフェスト|ツール|ランタイム|再開|response-only|manifest/iu,
+  "Japanese chat fail-closed result exposed private runtime instructions"
+);
+
+const repairedSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-handoff-repaired",
+  localResponses: [
+    "The paper was published in 2025 and validated on a 12,000-case benchmark with 94.2% accuracy.",
+    "No fresh evidence is available, so this is an unverified hypothesis only: I cannot verify any publication, benchmark, validation, or forecast claim from this run.",
+  ],
+});
+assert.equal(repairedSourceFreeHandoff.result.stopped, undefined);
+assert.match(repairedSourceFreeHandoff.result.result, /cannot verify/i);
+assert.equal(
+  repairedSourceFreeHandoff.events.filter((event) => event.type === "response_only.source_free_claim_repaired").length,
+  1
+);
+assert.equal(
+  repairedSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const sourceFreeJsonContractRequest = [
+  "Correct the unsupported claim while preserving the response envelope.",
+  "Return one strict JSON object and no prose:",
+  JSON.stringify({ message: "", files: [], confirmation: "" }, null, 2),
+].join("\n");
+const sourceFreeRepairDropsJsonContract = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-repair-drops-json-contract",
+  request: sourceFreeJsonContractRequest,
+  localResponses: [
+    JSON.stringify({
+      message: "The paper was published in 2025 and validated on a 12,000-case benchmark.",
+      files: [],
+      confirmation: "",
+    }),
+    JSON.stringify({ message: "No fresh evidence is available, so I cannot verify that claim." }),
+  ],
+});
+assert.equal(sourceFreeRepairDropsJsonContract.result.stopped, true);
+assert.equal(
+  sourceFreeRepairDropsJsonContract.result.reason,
+  "response_only_output_contract_required"
+);
+assert.equal(
+  sourceFreeRepairDropsJsonContract.events.filter(
+    (event) => event.type === "response_only.output_contract_failed_closed"
+  ).length,
+  1
+);
+assert.equal(
+  sourceFreeRepairDropsJsonContract.events.filter((event) => event.type === "session.finished").length,
+  0,
+  "a source-free repair that dropped required JSON keys was persisted as finished"
+);
+
+const sourceFreeRepairPreservesJsonContract = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-repair-preserves-json-contract",
+  request: sourceFreeJsonContractRequest,
+  localResponses: [
+    JSON.stringify({
+      message: "The paper was published in 2025 and validated on a 12,000-case benchmark.",
+      files: [],
+      confirmation: "",
+    }),
+    JSON.stringify({
+      message: "No fresh evidence is available, so I cannot verify that claim.",
+      files: [],
+      confirmation: "",
+    }),
+  ],
+});
+assert.equal(sourceFreeRepairPreservesJsonContract.result.stopped, undefined);
+assert.deepEqual(Object.keys(JSON.parse(sourceFreeRepairPreservesJsonContract.result.result)), [
+  "message",
+  "files",
+  "confirmation",
+]);
+assert.equal(
+  sourceFreeRepairPreservesJsonContract.events.filter(
+    (event) => event.type === "response_only.source_free_claim_repaired"
+  ).length,
+  1
+);
+assert.equal(
+  sourceFreeRepairPreservesJsonContract.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const sourceFreeRepairRemovesUnexpectedJsonKey = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-repair-removes-unexpected-json-key",
+  request: sourceFreeJsonContractRequest,
+  localResponses: [
+    JSON.stringify({
+      message: "No fresh evidence is available, so I cannot verify that claim.",
+      files: [],
+      confirmation: "",
+      trace: "internal",
+    }),
+    JSON.stringify({
+      message: "No fresh evidence is available, so I cannot verify that claim.",
+      files: [],
+      confirmation: "",
+    }),
+  ],
+});
+assert.equal(sourceFreeRepairRemovesUnexpectedJsonKey.result.stopped, undefined);
+assert.equal(
+  sourceFreeRepairRemovesUnexpectedJsonKey.events.filter(
+    (event) => event.type === "response_only.output_contract_rejected"
+  ).length,
+  1
+);
+assert.deepEqual(
+  sourceFreeRepairRemovesUnexpectedJsonKey.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.unexpectedKeys,
+  ["trace"]
+);
+assert.equal(
+  sourceFreeRepairRemovesUnexpectedJsonKey.events.filter(
+    (event) => event.type === "session.finished"
+  ).length,
+  1
+);
+
+const sourceFreeJsonFailClosed = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-json-contract-fail-closed",
+  request: sourceFreeJsonContractRequest,
+  localResponses: [
+    JSON.stringify({
+      message: "The paper was published in 2025 and validated on a 12,000-case benchmark.",
+      files: [],
+      confirmation: "",
+    }),
+    JSON.stringify({
+      message: "The 2025 publication was validated with 94.2% accuracy.",
+      files: [],
+      confirmation: "",
+    }),
+  ],
+});
+assert.equal(sourceFreeJsonFailClosed.result.stopped, true);
+assert.equal(sourceFreeJsonFailClosed.result.reason, "source_free_evidence_required");
+assert.deepEqual(
+  Object.keys(JSON.parse(sourceFreeJsonFailClosed.result.result)),
+  ["message", "files", "confirmation"],
+  "a source-free fail-closed result broke the caller's explicit JSON envelope"
+);
+assert.match(
+  JSON.parse(sourceFreeJsonFailClosed.result.result).message,
+  /cannot verify/i,
+  "the schema-compatible fail-closed result omitted its truthful limitation"
+);
+assert.equal(
+  sourceFreeJsonFailClosed.events.filter((event) => event.type === "session.finished").length,
+  0,
+  "a repeated source-free claim was persisted as a finished session"
+);
+
+const requestedFalsifiablePrediction = [
+  "Create one concise inspiration message from the supplied conceptual context.",
+  "Include one clearly labeled, falsifiable 3/5/10-year prediction as your own hypothesis.",
+  "Do not claim a publication, citation, validation result, benchmark, or external source.",
+].join("\n");
+const speculativeSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-falsifiable-prediction-handoff",
+  request: requestedFalsifiablePrediction,
+  localResponses: [
+    "高风险预测：3年内可形成可测试原型；5年内若不能跨样本复现就应收缩假设；10年内若仍不能跨实验室迁移，就应否定这条路线。",
+  ],
+});
+assert.equal(speculativeSourceFreeHandoff.result.stopped, undefined);
+assert.deepEqual(
+  speculativeSourceFreeHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm"],
+  "a requested falsifiable prediction triggered an unnecessary source-free repair"
+);
+assert.equal(
+  speculativeSourceFreeHandoff.events.filter((event) => event.type === "response_only.source_free_claim_rejected").length,
+  0,
+  "a clearly labeled assistant-owned prediction was rejected as external evidence"
+);
+assert.equal(
+  speculativeSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const retainedInspirationHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-unverified-inspiration-experiment-handoff",
+  request: [
+    "Create one concise research inspiration point.",
+    "Include a clearly labeled falsifiable hypothesis, counterexample, and proposed experiment.",
+  ].join(" "),
+  localResponses: [
+    [
+      "一个未经本机验证的灵感假设：培养液的间接光学信号或许能比终点染色更早预告类器官批次的衰退。",
+      "具体做法可以不用新设备：把同一批类器官分成三组，换液时间分别延迟0/2/4小时，连续2-3周记录可测信号，再比较异常变化与最终结局的先后关系。",
+      "反例是信号变化主要来自培养箱漂移；下一步先做配对数据验证。",
+    ].join(""),
+  ],
+});
+assert.equal(retainedInspirationHandoff.result.stopped, undefined);
+assert.deepEqual(
+  retainedInspirationHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm"],
+  "a source-free unverified inspiration needed a spurious repair after provider handoff"
+);
+assert.equal(
+  retainedInspirationHandoff.events.filter(
+    (event) => event.type === "response_only.source_free_claim_rejected"
+  ).length,
+  0,
+  "a source-free unverified hypothesis and proposed experiment was rejected after handoff"
+);
+
+const routerClassification = JSON.stringify({
+  route_kind: "research_or_summary",
+  project: "labcanvas",
+  worker_needed: true,
+  needs_recent_media: false,
+  public_publish_intent: false,
+  public_publish_allowed: false,
+  external_action_allowed: true,
+  delivery_mode: "agent_decide",
+  source_policy: "current_request_only",
+  reason: "The shared links need source reading before a concise summary.",
+  ack: "",
+  chat_reply: "",
+  confidence: 0.94,
+});
+const routerSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-router-json-handoff",
+  localResponses: [routerClassification],
+});
+assert.equal(routerSourceFreeHandoff.result.stopped, undefined);
+assert.equal(routerSourceFreeHandoff.result.result, routerClassification);
+assert.deepEqual(
+  routerSourceFreeHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm"],
+  "safe router JSON did not finish on the first LocalLLM fallback response"
+);
+assert.equal(
+  routerSourceFreeHandoff.events.filter((event) => event.type === "response_only.source_free_claim_rejected").length,
+  0,
+  "a project label in safe router JSON was still classified as a forecast"
+);
+assert.equal(
+  routerSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const ambiguousNumberRouterClassification = JSON.stringify({
+  route_kind: "chat_only",
+  project: "unknown",
+  worker_needed: false,
+  needs_recent_media: false,
+  public_publish_intent: false,
+  public_publish_allowed: false,
+  external_action_allowed: false,
+  delivery_mode: "agent_decide",
+  source_policy: "current_request_only",
+  reason: "A bare six-digit number lacks enough context to predict intent or choose a worker task.",
+  ack: "",
+  chat_reply: "收到 199793。这个数字是指什么？",
+  confidence: 0.32,
+});
+const ambiguousNumberRouterHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-ambiguous-number-router-handoff",
+  localResponses: [ambiguousNumberRouterClassification],
+});
+assert.equal(ambiguousNumberRouterHandoff.result.stopped, undefined);
+assert.equal(ambiguousNumberRouterHandoff.result.result, ambiguousNumberRouterClassification);
+assert.deepEqual(
+  ambiguousNumberRouterHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm"],
+  "an ambiguous-number route did not finish on the first LocalLLM fallback response"
+);
+assert.equal(
+  ambiguousNumberRouterHandoff.events.filter(
+    (event) => event.type === "response_only.source_free_claim_rejected"
+  ).length,
+  0,
+  "a prediction-of-intent clarification triggered source-free evidence repair"
+);
+assert.equal(
+  ambiguousNumberRouterHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const publishRouterClassification = JSON.stringify({
+  route_kind: "publish_video",
+  project: "lazyedit",
+  worker_needed: true,
+  needs_recent_media: true,
+  public_publish_intent: true,
+  public_publish_allowed: true,
+  external_action_allowed: true,
+  delivery_mode: "agent_decide",
+  source_policy: "recent_media",
+  reason:
+    "The user explicitly requested publishing the referenced video, so the worker is expected to use the established LazyEdit routine.",
+  ack: "",
+  chat_reply: "",
+  confidence: 0.96,
+});
+const publishRouterRequest = [
+  "Classify the current chat request for a backend worker.",
+  "Return only JSON. No markdown.",
+  "JSON schema:",
+  JSON.stringify({
+    route_kind: "publish_video|chat_only",
+    project: "lazyedit|generic",
+    worker_needed: true,
+    needs_recent_media: false,
+    public_publish_intent: false,
+    public_publish_allowed: false,
+    external_action_allowed: true,
+    delivery_mode: "agent_decide|chat_attachment",
+    source_policy: "current_request_only|recent_media",
+    reason: "short reason",
+    ack: "",
+    chat_reply: "",
+    confidence: 0.0,
+  }, null, 2),
+].join("\n");
+const publishRouterSourceFreeHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-publish-router-json-handoff",
+  request: publishRouterRequest,
+  localResponses: [publishRouterClassification],
+});
+assert.equal(publishRouterSourceFreeHandoff.result.stopped, undefined);
+assert.equal(publishRouterSourceFreeHandoff.result.result, publishRouterClassification);
+assert.deepEqual(
+  publishRouterSourceFreeHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm"],
+  "a safe publish route did not finish on the first LocalLLM fallback response"
+);
+assert.equal(
+  publishRouterSourceFreeHandoff.events.filter(
+    (event) => event.type === "response_only.source_free_claim_rejected"
+  ).length,
+  0,
+  "operational publish routing still triggered a source-free forecast repair"
+);
+assert.equal(
+  publishRouterSourceFreeHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const explicitRouterSchema = {
+  route_kind: "research_or_summary",
+  project: "labcanvas|generic",
+  worker_needed: true,
+  needs_recent_media: false,
+  public_publish_intent: false,
+  public_publish_allowed: false,
+  external_action_allowed: true,
+  delivery_mode: "agent_decide|local_save|chat_attachment",
+  source_policy: "current_request_only|recent_media",
+  reason: "short reason",
+  ack: "",
+  chat_reply: "",
+  confidence: 0.0,
+};
+const validExplicitRouterResponse = {
+  ...explicitRouterSchema,
+  project: "generic",
+  delivery_mode: "agent_decide",
+  source_policy: "current_request_only",
+};
+const explicitRouterSchemaRequest = [
+  "Classify the current chat request for a backend worker.",
+  "Return only JSON. No markdown.",
+  "Allowed route_kind values:",
+  "- chat_only",
+  "- research_or_summary",
+  "JSON schema:",
+  JSON.stringify(explicitRouterSchema, null, 2),
+].join("\n");
+const sourceFreeRouterFailClosed = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-router-contract-fail-closed",
+  request: explicitRouterSchemaRequest,
+  localResponses: [
+    JSON.stringify({
+      ...validExplicitRouterResponse,
+      reason: "The paper was published in 2025 and validated on a 12,000-case benchmark.",
+    }),
+    JSON.stringify({
+      ...validExplicitRouterResponse,
+      reason: "The 2025 publication was validated with 94.2% accuracy.",
+    }),
+  ],
+});
+assert.equal(sourceFreeRouterFailClosed.result.stopped, true);
+assert.equal(sourceFreeRouterFailClosed.result.reason, "source_free_evidence_required");
+const sourceFreeRouterFallback = JSON.parse(sourceFreeRouterFailClosed.result.result);
+assert.deepEqual(Object.keys(sourceFreeRouterFallback), Object.keys(explicitRouterSchema));
+assert.equal(
+  sourceFreeRouterFallback.route_kind,
+  "chat_only",
+  "a fail-closed fallback overwrote a declared route enum with diagnostic prose"
+);
+assert.match(sourceFreeRouterFallback.reason, /cannot verify/i);
+assert.doesNotMatch(
+  sourceFreeRouterFallback.reason,
+  /AgInTi|evidence manifest|response-only|tool scope|resume with|provider|runtime/iu,
+  "schema-preserving source-free stop exposed private runtime terminology"
+);
+assert.equal(
+  sourceFreeRouterFailClosed.events.filter((event) => event.type === "session.finished").length,
+  0
+);
+const repairedExplicitRouterSchema = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-explicit-router-schema-repaired",
+  request: explicitRouterSchemaRequest,
+  localResponses: [
+    JSON.stringify({ route_kind: "research_or_summary" }),
+    JSON.stringify({
+      ...validExplicitRouterResponse,
+      reason: "The shared source needs backend reading.",
+      confidence: 0.92,
+    }),
+  ],
+});
+assert.equal(repairedExplicitRouterSchema.result.stopped, undefined);
+assert.deepEqual(
+  Object.keys(JSON.parse(repairedExplicitRouterSchema.result.result)),
+  Object.keys(explicitRouterSchema)
+);
+assert.deepEqual(
+  repairedExplicitRouterSchema.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "an incomplete explicit router schema did not get one bounded LocalLLM repair"
+);
+assert.equal(
+  repairedExplicitRouterSchema.events.filter(
+    (event) => event.type === "response_only.output_contract_rejected"
+  ).length,
+  1
+);
+assert.equal(
+  repairedExplicitRouterSchema.events.filter(
+    (event) => event.type === "response_only.output_contract_repaired"
+  ).length,
+  1
+);
+assert.equal(
+  repairedExplicitRouterSchema.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const repairedExplicitRouterEnum = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-explicit-router-enum-repaired",
+  request: explicitRouterSchemaRequest,
+  localResponses: [
+    JSON.stringify({
+      ...validExplicitRouterResponse,
+      route_kind: "video_generation_and_download",
+    }),
+    JSON.stringify({
+      ...validExplicitRouterResponse,
+      route_kind: "research_or_summary",
+      reason: "The shared source needs backend reading.",
+    }),
+  ],
+});
+assert.equal(repairedExplicitRouterEnum.result.stopped, undefined);
+assert.equal(
+  JSON.parse(repairedExplicitRouterEnum.result.result).route_kind,
+  "research_or_summary"
+);
+assert.deepEqual(
+  repairedExplicitRouterEnum.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "an invalid explicit router enum did not get one bounded LocalLLM repair"
+);
+const rejectedRouterEnum = repairedExplicitRouterEnum.events.find(
+  (event) => event.type === "response_only.output_contract_rejected"
+);
+assert.deepEqual(rejectedRouterEnum?.data?.enumMismatches, ["route_kind"]);
+assert.equal(
+  repairedExplicitRouterEnum.events.filter(
+    (event) => event.type === "response_only.output_contract_repaired"
+  ).length,
+  1
+);
+assert.equal(
+  repairedExplicitRouterEnum.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const completionAuditRequest = [
+  "Audit the candidate against the current request.",
+  "Role: completion_audit",
+  "Return JSON only:",
+  JSON.stringify({
+    covered_item_ids: ["source:123"],
+    missing: [],
+    legitimate_blocker: false,
+    complexity: "low",
+    summary: "one short private diagnostic",
+  }, null, 2),
+  "Task packet:",
+  JSON.stringify({
+    request_items: [{ item_id: "source:123", text: "Return a concise direct answer." }],
+    nested_worker_prompt: [
+      "Return one strict JSON object and no prose:",
+      JSON.stringify({ message: "", files: [], confirmation: "" }),
+    ].join("\n"),
+    candidate_result: {
+      message: "The concise answer.",
+      confirmation: "",
+      files: [],
+      publish_stage: {},
+      generated_pdf_content: [],
+      generated_text_content: [],
+    },
+  }, null, 2),
+].join("\n");
+const repairedOutputContractHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-json-contract-repaired",
+  request: completionAuditRequest,
+  localResponses: [
+    JSON.stringify({
+      message: "",
+      confirmation: "",
+      files: [],
+      publish_stage: {},
+      generated_pdf_content: [],
+      generated_text_content: [],
+    }),
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The current request is covered.",
+    }),
+  ],
+});
+assert.equal(repairedOutputContractHandoff.result.stopped, undefined);
+assert.deepEqual(
+  JSON.parse(repairedOutputContractHandoff.result.result).covered_item_ids,
+  ["source:123"]
+);
+assert.deepEqual(
+  repairedOutputContractHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "explicit response-only JSON contract did not get one bounded LocalLLM repair"
+);
+assert.equal(
+  repairedOutputContractHandoff.events.filter((event) => event.type === "response_only.output_contract_rejected").length,
+  1
+);
+assert.equal(
+  repairedOutputContractHandoff.events.filter((event) => event.type === "response_only.output_contract_repaired").length,
+  1
+);
+assert.equal(
+  repairedOutputContractHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
+const repairedFalseBlockerHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-completion-audit-false-blocker-repaired",
+  request: completionAuditRequest,
+  localResponses: [
+    JSON.stringify({
+      covered_item_ids: [],
+      missing: [{
+        item_id: "source:123",
+        requirement: "Return the concise answer.",
+        kind: "reply",
+      }],
+      legitimate_blocker: true,
+      complexity: "low",
+      summary: "The candidate omitted the answer.",
+    }),
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The current request is covered.",
+    }),
+  ],
+});
+assert.equal(repairedFalseBlockerHandoff.result.stopped, undefined);
+assert.deepEqual(
+  repairedFalseBlockerHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"]
+);
+assert.deepEqual(
+  repairedFalseBlockerHandoff.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.invalidAuditSemantics,
+  [
+    "legitimate_blocker:true-without-candidate-blocker",
+    "legitimate_blocker:true-without-covered-item",
+  ]
+);
+
+const emptyCompletionAuditCandidateRequest = completionAuditRequest.replace(
+  '"message": "The concise answer."',
+  '"message": ""'
+);
+const repairedEmptyCandidateCoverageHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-completion-audit-empty-candidate-repaired",
+  request: emptyCompletionAuditCandidateRequest,
+  localResponses: [
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The candidate omitted the answer.",
+    }),
+    JSON.stringify({
+      covered_item_ids: [],
+      missing: [{
+        item_id: "source:123",
+        requirement: "Return the concise answer.",
+        kind: "reply",
+      }],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The candidate omitted the answer.",
+    }),
+  ],
+});
+assert.equal(repairedEmptyCandidateCoverageHandoff.result.stopped, undefined);
+assert.deepEqual(
+  repairedEmptyCandidateCoverageHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"]
+);
+assert.deepEqual(
+  repairedEmptyCandidateCoverageHandoff.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.invalidAuditSemantics,
+  ["covered_item_ids:nonempty-for-empty-candidate"]
+);
+
+const statusOnlyCompletionAuditCandidateRequest = completionAuditRequest
+  .replace(
+    '"text": "Return a concise direct answer."',
+    '"text": "Research the question, return the evidence-backed conclusion, and attach the completed PDF."'
+  )
+  .replace(
+    '"message": "The concise answer."',
+    '"message": "Received. I am researching it now and will send the report shortly."'
+  );
+const repairedStatusOnlyCandidateCoverageHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-completion-audit-status-only-candidate-repaired",
+  request: statusOnlyCompletionAuditCandidateRequest,
+  localResponses: [
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "medium",
+      summary: "The candidate says the work is in progress.",
+    }),
+    JSON.stringify({
+      covered_item_ids: [],
+      missing: [{
+        item_id: "source:123",
+        requirement: "Provide the evidence-backed conclusion and completed PDF.",
+        kind: "artifact",
+      }],
+      legitimate_blocker: false,
+      complexity: "medium",
+      summary: "A progress acknowledgement is not the requested result.",
+    }),
+  ],
+});
+assert.equal(repairedStatusOnlyCandidateCoverageHandoff.result.stopped, undefined);
+assert.deepEqual(
+  repairedStatusOnlyCandidateCoverageHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "a status-only completion audit did not retain bounded repair after provider handoff"
+);
+assert.deepEqual(
+  repairedStatusOnlyCandidateCoverageHandoff.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.invalidAuditSemantics,
+  ["covered_item_ids:nonempty-for-status-only-candidate"]
+);
+
+const textWithoutPdfCompletionAuditRequest = completionAuditRequest.replace(
+  '"text": "Return a concise direct answer."',
+  '"text": "Return the evidence-backed answer and attach the completed PDF report."'
+);
+const repairedMissingPdfCoverageHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-completion-audit-missing-pdf-repaired",
+  request: textWithoutPdfCompletionAuditRequest,
+  localResponses: [
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "medium",
+      summary: "The answer text covers the request.",
+    }),
+    JSON.stringify({
+      covered_item_ids: [],
+      missing: [{
+        item_id: "source:123",
+        requirement: "Attach the completed PDF report.",
+        kind: "artifact",
+      }],
+      legitimate_blocker: false,
+      complexity: "medium",
+      summary: "The answer text is present, but the requested PDF is missing.",
+    }),
+  ],
+});
+assert.equal(repairedMissingPdfCoverageHandoff.result.stopped, undefined);
+assert.deepEqual(
+  repairedMissingPdfCoverageHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "a missing requested PDF did not retain bounded repair after provider handoff"
+);
+assert.deepEqual(
+  repairedMissingPdfCoverageHandoff.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.invalidAuditSemantics,
+  ["covered_item_ids:source:123-without-required-artifact:.pdf"]
+);
+
+const forbiddenArtifactCompletionAuditRequest = [
+  "Audit the candidate against the current request.",
+  "Role: completion_audit",
+  "Return JSON only:",
+  JSON.stringify({
+    covered_item_ids: ["source:123"],
+    missing: [{
+      item_id: "source:123",
+      requirement: "specific omitted action",
+      kind: "reply|artifact|action",
+    }],
+    legitimate_blocker: false,
+    complexity: "low|medium|high",
+    summary: "one short private diagnostic",
+  }, null, 2),
+  "Task packet:",
+  JSON.stringify({
+    request_items: [{
+      item_id: "source:123",
+      text: "Return exactly one chat message. Create no files or attachments.",
+    }],
+    candidate_result: {
+      message: "One concise answer.",
+      confirmation: "",
+      files: [{ name: "worker_result.json", suffix: ".json" }],
+    },
+  }, null, 2),
+].join("\n");
+const repairedForbiddenArtifactCoverageHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-completion-audit-forbidden-artifact-repaired",
+  request: forbiddenArtifactCompletionAuditRequest,
+  localResponses: [
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The answer is present.",
+    }),
+    JSON.stringify({
+      covered_item_ids: [],
+      missing: [{
+        item_id: "source:123",
+        requirement: "Return only the chat message and remove outbound files.",
+        kind: "artifact",
+      }],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The candidate includes a forbidden outbound file.",
+    }),
+  ],
+});
+assert.equal(repairedForbiddenArtifactCoverageHandoff.result.stopped, undefined);
+assert.deepEqual(
+  repairedForbiddenArtifactCoverageHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "a forbidden outbound artifact did not retain bounded repair after provider handoff"
+);
+assert.deepEqual(
+  repairedForbiddenArtifactCoverageHandoff.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.invalidAuditSemantics,
+  ["covered_item_ids:source:123-with-forbidden-artifact:file"]
+);
+
+const failedOutputContractHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-json-contract-fail-closed",
+  request: completionAuditRequest,
+  localResponses: [
+    JSON.stringify({ message: "wrong nested object", files: [] }),
+    JSON.stringify({ message: "still wrong", files: [] }),
+  ],
+});
+assert.equal(failedOutputContractHandoff.result.stopped, true);
+assert.equal(failedOutputContractHandoff.result.reason, "response_only_output_contract_required");
+const failedOutputContractFallback = JSON.parse(failedOutputContractHandoff.result.result);
+assert.deepEqual(
+  Object.keys(failedOutputContractFallback),
+  ["covered_item_ids", "missing", "legitimate_blocker", "complexity", "summary"]
+);
+assert.match(
+  failedOutputContractFallback.summary,
+  /could not produce a reliable response in the required format/i
+);
+assert.doesNotMatch(
+  failedOutputContractFallback.summary,
+  /response-only|output contract|model|session|provider|runtime|resume/iu,
+  "schema-compatible contract stop exposed private runtime diagnostics"
+);
+assert.equal(
+  failedOutputContractHandoff.events.filter((event) => event.type === "response_only.output_contract_failed_closed").length,
+  1
+);
+assert.equal(
+  failedOutputContractHandoff.events.filter((event) => event.type === "session.finished").length,
+  0,
+  "schema-invalid response-only output was persisted as a finished session"
+);
+
+const chineseJsonContractStop = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-chinese-json-contract-fail-closed",
+  request: [
+    "Return one strict JSON object and no prose:",
+    JSON.stringify({ message: "", files: [], confirmation: "" }, null, 2),
+    "Current request: 用户希望得到一个简短可靠的答复。",
+  ].join("\n"),
+  localResponses: [
+    JSON.stringify({ wrong: "第一次格式错误" }),
+    JSON.stringify({ wrong: "第二次格式仍然错误" }),
+  ],
+});
+assert.equal(chineseJsonContractStop.result.stopped, true);
+const chineseJsonContractFallback = JSON.parse(chineseJsonContractStop.result.result);
+assert.deepEqual(Object.keys(chineseJsonContractFallback), [
+  "message",
+  "files",
+  "confirmation",
+]);
+assert.match(chineseJsonContractFallback.message, /^这条消息暂时没有生成/u);
+assert.doesNotMatch(
+  chineseJsonContractFallback.message,
+  /response-only|输出契约|模型|会话|提供商|运行时|恢复/iu,
+  "Chinese schema-compatible contract stop exposed private runtime diagnostics"
+);
+
+async function runResponseOnlyContextBudgetHandoffScenario() {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-response-only-context-handoff-"));
+  const workspace = path.join(tempRoot, "workspace");
+  const sessionsDir = path.join(tempRoot, "sessions");
+  const projectSessionsDir = path.join(workspace, ".aginti-sessions");
+  const sessionId = "response-only-context-handoff";
+  await fs.mkdir(workspace, { recursive: true });
+
+  const requests = [];
+  let phase = "seed";
+  const clientFactory = async (config) => ({
+    chat: {
+      completions: {
+        create: async (payload) => {
+          requests.push({
+            phase,
+            provider: config.provider,
+            model: payload.model,
+            messages: payload.messages.length,
+            maxOutputTokens: Number(payload.max_tokens || 0),
+          });
+          if (phase === "resume" && config.provider === "deepseek") {
+            throw Object.assign(new Error("402 Insufficient Balance"), { status: 402 });
+          }
+          return assistant(
+            phase === "seed"
+              ? "Seed response-only status saved."
+              : "No fresh evidence is available; I can only give an unverified local summary of the saved status."
+          );
+        },
+      },
+    },
+  });
+  clientFactory.agintiDeterministicTest = true;
+
+  const buildConfig = ({ goal, provider, model, resume = false }) => {
+    const config = resolveRuntimeConfig(
+      {
+        goal,
+        provider,
+        model,
+        routeProvider: provider,
+        routeModel: model,
+        mainProvider: provider,
+        mainModel: model,
+        spareProvider: provider,
+        spareModel: model,
+        routingMode: "smart",
+        taskProfile: "research",
+        commandCwd: workspace,
+      },
+      {
+        baseDir: workspace,
+        packageDir: repoRoot,
+        sessionId,
+        clientFactory,
+        providerReadinessMode: "deterministic-test",
+        sandboxMode: "host",
+        useDockerSandbox: false,
+        allowShellTool: false,
+        allowFileTools: false,
+        allowWrapperTools: false,
+        allowAuxiliaryTools: false,
+        allowWebSearch: false,
+        allowMcpTools: false,
+        allowParallelScouts: false,
+        enableScs: "off",
+      }
+    );
+    Object.assign(config, {
+      apiKey: "deterministic-hosted-test",
+      clientFactory,
+      providerReadinessMode: "deterministic-test",
+      sessionsDir,
+      projectSessionsDir,
+      useDockerSandbox: false,
+      sandboxMode: "host",
+      allowShellTool: false,
+      allowFileTools: false,
+      allowWrapperTools: false,
+      allowAuxiliaryTools: false,
+      allowWebSearch: false,
+      allowMcpTools: false,
+      allowParallelScouts: false,
+      enableScs: "off",
+      scsActive: false,
+      dynamicSteps: "off",
+      maxSteps: 4,
+      modelTimeoutMs: 1_000,
+      resume: resume ? sessionId : "",
+      sessionId,
+    });
+    return config;
+  };
+
+  try {
+    await runAgent(buildConfig({
+      goal: [
+        "Save a short response-only seed for a later same-session fallback test.",
+        `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+          mode: "host-managed-response",
+          request: "Save a short response-only seed for a later same-session fallback test.",
+        })}`,
+      ].join("\n"),
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+    }));
+
+    const store = new SessionStore(sessionsDir, sessionId, {
+      projectRoot: workspace,
+      commandCwd: workspace,
+      projectSessionsDir,
+    });
+    const state = await store.loadState();
+    const retainedBulk = "Retained same-session status evidence from earlier work. ".repeat(4500);
+    state.messages.push({ role: "assistant", content: retainedBulk });
+    state.chat.push({
+      role: "assistant",
+      content: retainedBulk,
+      at: new Date().toISOString(),
+    });
+    state.updatedAt = new Date().toISOString();
+    await store.saveState(state);
+
+    phase = "resume";
+    const request =
+      "Can you just answer from the saved status in this same session? Keep it short; no tools needed.";
+    await runAgent(buildConfig({
+      goal: [
+        request,
+        `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+          mode: "host-managed-response",
+          request,
+        })}`,
+      ].join("\n"),
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      resume: true,
+    }));
+
+    const adaptedState = await store.loadState();
+    adaptedState.messages = [
+      { role: "system", content: "Keep the current response-only chat contract." },
+      { role: "assistant", content: "x".repeat(70000) },
+    ];
+    adaptedState.updatedAt = new Date().toISOString();
+    await store.saveState(adaptedState);
+
+    phase = "adaptive-resume";
+    const adaptiveRequest =
+      "Continue from this saved chat context with one concise, explicitly unverified summary.";
+    const result = await runAgent(buildConfig({
+      goal: [
+        adaptiveRequest,
+        `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+          mode: "host-managed-response",
+          request: adaptiveRequest,
+        })}`,
+      ].join("\n"),
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      resume: true,
+    }));
+    return {
+      result,
+      state: await store.loadState(),
+      events: await store.loadEvents(),
+      requests,
+    };
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+const responseOnlyContextHandoff = await runResponseOnlyContextBudgetHandoffScenario();
+assert.equal(responseOnlyContextHandoff.result.stopped, undefined);
+assert.deepEqual(
+  responseOnlyContextHandoff.requests.map((item) => `${item.phase}:${item.provider}`),
+  ["seed:deepseek", "resume:deepseek", "resume:localllm", "adaptive-resume:localllm"],
+  "response-only same-session handoff did not compact and retry on LocalLLM"
+);
+assert.equal(responseOnlyContextHandoff.state.provider, "localllm");
+assert.equal(responseOnlyContextHandoff.state.model, "localllm-deep");
+assert.equal(responseOnlyContextHandoff.state.meta.providerHandoff.status, "active");
+assert.equal(
+  responseOnlyContextHandoff.events.filter((event) => event.type === "provider.handoff_activated").length,
+  1
+);
+assert.equal(
+  responseOnlyContextHandoff.events.filter((event) => event.type === "model.local_context_budget_exceeded").length,
+  1
+);
+assert.equal(
+  responseOnlyContextHandoff.events.filter((event) => event.type === "history.compacted_for_local_context_retry").length,
+  1
+);
+assert.equal(
+  responseOnlyContextHandoff.state.meta?.localContextOutputAdaptation?.maxOutputTokens,
+  4096,
+  "response-only recovery did not retain its learned LocalLLM output cap"
+);
+assert.equal(
+  responseOnlyContextHandoff.requests.at(-1)?.maxOutputTokens,
+  4096,
+  "a later response-only continuation did not reuse the learned output cap"
+);
+assert.equal(
+  responseOnlyContextHandoff.events.filter((event) => event.type === "session.failed").length,
+  0,
+  "response-only context recovery still failed the session before completion"
+);
+
 const manual = await runScenario({ routingMode: "manual", sessionId: "manual-provider-exact" });
 assert(manual.error);
 assert.equal(manual.factoryConfigs.length, 1);

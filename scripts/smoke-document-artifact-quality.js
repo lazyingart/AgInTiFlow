@@ -360,6 +360,17 @@ assert(
 const exactSourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-document-source-"));
 try {
   await fs.writeFile(
+    path.join(exactSourceRoot, "AGENTS.md"),
+    "WeChat PYTHONPATH LazyEdit STEP WeCom CAD PCB OpenHI\n",
+    "utf8"
+  );
+  await fs.mkdir(path.join(exactSourceRoot, "references"));
+  await fs.writeFile(
+    path.join(exactSourceRoot, "references", "unrelated.md"),
+    "Repository-wide material that does not belong to this exact report.\n",
+    "utf8"
+  );
+  await fs.writeFile(
     path.join(exactSourceRoot, "chat_history.md"),
     "Later correction: keep the publication blocked until login is restored.\n",
     "utf8"
@@ -371,7 +382,13 @@ try {
   assert.deepEqual(
     exactSources.map((item) => item.path),
     ["chat_history.md"],
-    "an exact root-level source path was omitted from document validation"
+    "repository-wide context contaminated an exact document source contract"
+  );
+  const discoveredSources = await collectDocumentSourceDocuments(exactSourceRoot);
+  assert.deepEqual(
+    discoveredSources.map((item) => item.path).sort(),
+    ["AGENTS.md", "references/unrelated.md"],
+    "repository source discovery stopped working when no exact input was declared"
   );
 } finally {
   await fs.rm(exactSourceRoot, { recursive: true, force: true });

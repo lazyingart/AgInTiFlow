@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,7 +16,38 @@ function workerModule(workerRoot, relativePath) {
   return pathToFileURL(path.join(workerRoot, relativePath)).href;
 }
 
+async function fixedDocumentWorkerPortAvailable() {
+  const probe = net.createServer((socket) => socket.destroy());
+  try {
+    await new Promise((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen({
+        host: "127.0.0.1",
+        port: 18102,
+        exclusive: true,
+      }, resolve);
+    });
+    return true;
+  } catch (error) {
+    if (error?.code === "EADDRINUSE") return false;
+    throw error;
+  } finally {
+    if (probe.listening) {
+      await new Promise((resolve, reject) => {
+        probe.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  }
+}
+
 async function main() {
+  if (!(await fixedDocumentWorkerPortAvailable())) {
+    process.stdout.write(
+      "integration document worker cross-boundary smoke skipped: fixed test listener 127.0.0.1:18102 is already in use\n"
+    );
+    return;
+  }
+
   const workerRoot = path.resolve(process.argv[2] || "");
   if (!process.argv[2] || workerRoot === path.parse(workerRoot).root) {
     throw new Error("Usage: node scripts/smoke-integration-document-worker-cross-boundary.js <worker-checkout>");

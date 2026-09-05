@@ -300,6 +300,7 @@ export async function requestDirectResponse(client, config, messages = []) {
         "Response-only scope: return the requested final content directly as the assistant response.",
         "Do not produce an execution plan, call tools, mention internal runtime details, or stop at a placeholder.",
         "Preserve every material requirement and all source-grounded details supplied in the current request.",
+        "If no fresh evidence manifest or source text is present, do not claim publications, years, validation, benchmarks, quantitative metrics, citations, attributed forecasts, or source-backed conclusions. A forecast explicitly requested by the user may be offered only as your own clearly labeled, falsifiable hypothesis or prediction, never as an externally established fact; otherwise say it cannot be verified from this run.",
       ].join(" "),
     },
   ];
