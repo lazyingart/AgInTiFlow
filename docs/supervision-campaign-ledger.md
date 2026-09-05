@@ -2171,3 +2171,27 @@ ordinary agent-owned, conditional-host-fallback, and non-compiling source-check
 controls. No live provider or LocalLLM inference, LabCanvas runtime change,
 queue action, schedule, transport operation, or external side effect is
 involved.
+
+### Optional archival cannot stall the active task
+
+`labcanvas-unrequested-artifact-archive-recovery-159` follows the retained
+blocked event in LabCanvas session
+`web-agent-labcanvas-c19ceaee-0b19-4ef3-96f9-43e25ab3dff1`. After substantive
+report work, the fallback bundled validation with moving three prior PDFs into
+`_superseded_drafts/`. The active task did not request archival, but unrelated
+history inside the full host packet could be mistaken for current mutation
+intent, so the whole task paused for destructive approval.
+
+Permission intent now uses the authoritative task-scoped request when an
+`AGINTI_EVIDENCE_SCOPE_JSON` envelope is present. A move is optional
+housekeeping only when every source is an explicit workspace-relative file and
+the destination is a clearly archival workspace-relative directory. The move
+remains blocked and no file is relocated; AgInTi continues with the substantive
+checks. Globs, outside paths, ordinary renames, arbitrary destinations, and
+explicit current archive requests remain under normal mutation policy.
+
+The regression proves the exact retained command changes from a permission
+pause to bounded recovery, stale archive instructions cannot override the
+active task, and an active archive request cannot be erased by stale no-move
+memory. No live provider or LocalLLM inference, LabCanvas runtime change, queue
+action, schedule, transport operation, or external side effect is involved.

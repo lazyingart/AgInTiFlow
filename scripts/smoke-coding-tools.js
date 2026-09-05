@@ -1889,6 +1889,91 @@ try {
     ),
     "a separate explicit deletion request was erased with the safety rule"
   );
+  const unrequestedArtifactArchiveArgs = {
+    command:
+      "cd output/task-1 && mkdir -p _superseded_drafts && mv report-v1.pdf report-v2.pdf _superseded_drafts/ && ls -1 *.pdf",
+  };
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      unrequestedArtifactArchiveArgs,
+      { goal: "Revise report-v3.tex and verify the replacement report-v3.pdf." },
+      {}
+    ),
+    "unrequested archival relocation bundled with validation was not recognized"
+  );
+  const unrequestedArtifactArchiveAdvice = buildPermissionAdvice({
+    toolName: "run_command",
+    args: unrequestedArtifactArchiveArgs,
+    guard: {
+      category: "destructive",
+      reason: "Destructive shell commands require Allow destructive actions.",
+    },
+    config: {
+      ...dockerWorkspacePolicy,
+      goal: "Revise report-v3.tex and verify the replacement report-v3.pdf.",
+    },
+    state: { sessionId: "coding-unrequested-artifact-archive-smoke" },
+  });
+  assert(
+    unrequestedArtifactArchiveAdvice.autoRecover === true &&
+      !shouldPauseForPermissionAdvice({
+        blocked: true,
+        permissionAdvice: unrequestedArtifactArchiveAdvice,
+      }),
+    "unrequested artifact archival still paused the substantive task"
+  );
+  assert(
+    !isUnrequestedCleanupCommand(
+      "run_command",
+      unrequestedArtifactArchiveArgs,
+      { goal: "Archive the old report PDFs under _superseded_drafts, then verify report-v3.pdf." },
+      {}
+    ),
+    "an explicitly requested artifact archive was incorrectly skipped"
+  );
+  const historyArchiveOnlyGoal = [
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Revise report-v3.tex and verify report-v3.pdf.","artifact_root":"/workspace/output/task-1"}',
+    "Retained chat memory: archive old report files under _superseded_drafts.",
+  ].join("\n");
+  assert(
+    isUnrequestedCleanupCommand(
+      "run_command",
+      unrequestedArtifactArchiveArgs,
+      { goal: historyArchiveOnlyGoal },
+      {}
+    ),
+    "stale chat memory incorrectly authorized archival in the active scoped task"
+  );
+  const activeArchiveGoal = [
+    'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Archive the old report PDFs under _superseded_drafts, then verify report-v3.pdf.","artifact_root":"/workspace/output/task-1"}',
+    "Retained chat memory: revise the report without moving any files.",
+  ].join("\n");
+  assert(
+    !isUnrequestedCleanupCommand(
+      "run_command",
+      unrequestedArtifactArchiveArgs,
+      { goal: activeArchiveGoal },
+      {}
+    ),
+    "the active scoped archive request was overridden by stale no-move memory"
+  );
+  for (const command of [
+    "mv report-v2.pdf report-v3.pdf",
+    "mv report-*.pdf _superseded_drafts/",
+    "mv ../report-v2.pdf _superseded_drafts/",
+    "mv report-v2.pdf /tmp/_superseded_drafts/",
+  ]) {
+    assert(
+      !isUnrequestedCleanupCommand(
+        "run_command",
+        { command },
+        { goal: "Revise and verify report-v3.pdf." },
+        {}
+      ),
+      `unsafe or non-archival move was incorrectly treated as optional housekeeping: ${command}`
+    );
+  }
   const dynamicEvidenceAdvice = buildPermissionAdvice({
     toolName: "run_command",
     args: {

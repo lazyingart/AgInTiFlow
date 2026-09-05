@@ -1,4 +1,6 @@
 import { redactSensitiveText } from "./redaction.js";
+import { tokenizeShellWords } from "./shell-syntax.js";
+import { firstJsonObject } from "./json-extraction.js";
 
 const NETWORK_FAILURE_PATTERNS = [
   /could not resolve host/i,
@@ -150,8 +152,26 @@ export function recoverableInlineReadOnlyArtifactAudit(toolName = "", args = {},
   return { relativeCwd };
 }
 
+function permissionIntentGoal(config = {}, state = {}) {
+  const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "");
+  const scopeMarker = "AGINTI_EVIDENCE_SCOPE_JSON:";
+  const markerIndex = goal.indexOf(scopeMarker);
+  if (markerIndex >= 0) {
+    const scope = firstJsonObject(goal.slice(markerIndex + scopeMarker.length));
+    if (
+      scope &&
+      String(scope.mode || "").trim() === "task" &&
+      typeof scope.request === "string" &&
+      scope.request.trim()
+    ) {
+      return scope.request.trim();
+    }
+  }
+  return goal;
+}
+
 function goalRequestsDeletion(config = {}, state = {}) {
-  const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "")
+  const goal = permissionIntentGoal(config, state)
     .replace(/`([^`]+)`/g, "$1");
   const deletionIntent = /\b(?:delete|remove|clean\s+up|cleanup|purge|erase|discard|drop)\b|删除|刪除|移除|清理|清除|删掉|刪掉|削除|消去/i;
   if (!deletionIntent.test(goal)) return false;
@@ -173,8 +193,72 @@ function goalRequestsDeletion(config = {}, state = {}) {
   return deletionIntent.test(withoutNegatedDeletion);
 }
 
+function goalRequestsArtifactArchival(config = {}, state = {}) {
+  const goal = permissionIntentGoal(config, state)
+    .replace(/`([^`]+)`/g, "$1");
+  const withoutNegatedArchival = goal
+    .replace(
+      /\b(?:do\s+not|don't|dont|never|must\s+not|should\s+not|shouldn't|without)\s+(?:archive|move|relocate|organize|supersede)\b[^.\n]{0,180}(?:\.|$)/gi,
+      " "
+    )
+    .replace(/(?:不要|不可|禁止|无需|無需|不需要)(?:归档|歸檔|移动|移動|整理|迁移|遷移)/g, " ");
+  const artifact = String.raw`(?:artifacts?|drafts?|files?|outputs?|pdfs?|reports?|sidecars?|versions?)`;
+  return (
+    new RegExp(String.raw`\b(?:archive|relocate|organize|supersede)\b[^.\n]{0,100}\b${artifact}\b`, "i").test(
+      withoutNegatedArchival
+    ) ||
+    new RegExp(String.raw`\bmove\b[^.\n]{0,100}\b${artifact}\b`, "i").test(
+      withoutNegatedArchival
+    ) ||
+    new RegExp(String.raw`\b${artifact}\b[^.\n]{0,100}\b(?:archive|move|relocate|organize|supersede)\b`, "i").test(
+      withoutNegatedArchival
+    ) ||
+    /(?:归档|歸檔|移动|移動|整理|迁移|遷移).{0,60}(?:文件|产物|產物|草稿|报告|報告|版本)/u.test(
+      withoutNegatedArchival
+    )
+  );
+}
+
+function safeExplicitWorkspaceRelativePath(value = "") {
+  const target = String(value || "").replace(/\\/g, "/").replace(/\/+$/u, "");
+  return Boolean(
+    target &&
+      !target.startsWith("/") &&
+      !target.startsWith("~") &&
+      !target.split("/").includes("..") &&
+      !/[*?\[\]{}$`]/u.test(target)
+  );
+}
+
+function isUnrequestedArtifactArchivalSegment(segment = "") {
+  const tokens = tokenizeShellWords(String(segment || "").trim()).map((token) =>
+    String(token || "")
+  );
+  if (tokens[0] === "command") tokens.shift();
+  if (tokens[0] !== "mv") return false;
+  if (tokens[1] === "--") tokens.splice(1, 1);
+  if (tokens.length < 4 || tokens.slice(1).some((token) => token.startsWith("-"))) {
+    return false;
+  }
+  const operands = tokens.slice(1);
+  const destination = operands.at(-1).replace(/\\/g, "/").replace(/\/+$/u, "");
+  if (
+    !safeExplicitWorkspaceRelativePath(destination) ||
+    !/(?:^|\/)[._-]?(?:archive(?:d|s)?|backups?|obsolete|previous|superseded)(?:[-_](?:artifacts|drafts|files|outputs|pdfs|reports|versions))?$/i.test(
+      destination
+    )
+  ) {
+    return false;
+  }
+  return operands.slice(0, -1).every(
+    (source) =>
+      safeExplicitWorkspaceRelativePath(source) &&
+      /(?:^|\/)[^/]+\.[A-Za-z0-9]{1,12}$/u.test(source)
+  );
+}
+
 export function isUnrequestedCleanupCommand(toolName = "", args = {}, config = {}, state = {}) {
-  const goal = String(config.goal || state.goal || state.meta?.goalContract?.current || "").trim();
+  const goal = permissionIntentGoal(config, state).trim();
   if (!goal || toolName !== "run_command" || goalRequestsDeletion(config, state)) return false;
   const command = String(args.command || args.text || "");
   return command
@@ -186,7 +270,9 @@ export function isUnrequestedCleanupCommand(toolName = "", args = {}, config = {
         /^find\s+\.\s+-type\s+d\s+-name\s+['"]?__pycache__['"]?\s+-prune\s+-exec\s+rm\s+-rf\s+\{\}\s+\+$/.test(
           segment
         ) ||
-        /^find\s+\.\s+-type\s+f\s+-name\s+(['"]?)\*\.pyc\1\s+-delete$/.test(segment)
+        /^find\s+\.\s+-type\s+f\s+-name\s+(['"]?)\*\.pyc\1\s+-delete$/.test(segment) ||
+        (!goalRequestsArtifactArchival(config, state) &&
+          isUnrequestedArtifactArchivalSegment(segment))
     );
 }
 
