@@ -704,6 +704,69 @@ const invalidCompletionAuditMissingEntryResult = {
     kind: "later",
   }],
 };
+const completionAuditFalseBlockerGoal = [
+  `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+    mode: "host-managed-response",
+    request: "Return the completion audit JSON only.",
+  })}`,
+  "Role: completion_audit",
+  "Original prompt:",
+  "Audit the candidate against the exact task packet.",
+  "Return JSON only:",
+  JSON.stringify({
+    covered_item_ids: ["source:123"],
+    missing: [{
+      item_id: "interruption:456",
+      requirement: "specific omitted action",
+      kind: "reply|artifact|action",
+    }],
+    legitimate_blocker: false,
+    complexity: "low|medium|high",
+    summary: "one short private diagnostic",
+  }),
+  "Task packet:",
+  JSON.stringify({
+    task_id: "retained-false-blocker-audit",
+    request_items: [
+      { item_id: "task:current-message", text: "Answer the current question." },
+    ],
+    candidate_result: {
+      message: "",
+      confirmation: "",
+      files: [],
+    },
+  }),
+].join("\n");
+const retainedFalseCompletionAuditBlockerResult = {
+  covered_item_ids: [],
+  missing: [{
+    item_id: "task:current-message",
+    requirement: "Answer the current question.",
+    kind: "reply",
+  }],
+  legitimate_blocker: true,
+  complexity: "low",
+  summary: "The candidate did not answer the request.",
+};
+const correctedFalseCompletionAuditBlockerResult = {
+  ...retainedFalseCompletionAuditBlockerResult,
+  legitimate_blocker: false,
+};
+const completionAuditGenuineBlockerGoal = completionAuditFalseBlockerGoal.replace(
+  '"message":"","confirmation":"","files":[]',
+  '"message":"I cannot access the requested account because authentication is required.","confirmation":"","files":[]'
+);
+const genuineCompletionAuditBlockerResult = {
+  covered_item_ids: ["task:current-message"],
+  missing: [],
+  legitimate_blocker: true,
+  complexity: "low",
+  summary: "The candidate directly reports the authentication blocker.",
+};
+const completionAuditChineseBlockerGoal = completionAuditFalseBlockerGoal.replace(
+  '"message":"","confirmation":"","files":[]',
+  '"message":"当前无法继续，因为需要登录认证。","confirmation":"","files":[]'
+);
 assert.equal(
   evaluateSourceFreeResponseClaims({
     goal: completionAuditSourceFreeGoal,
@@ -1518,6 +1581,62 @@ try {
       .map((message) => message.content)
       .join("\n"),
     /each missing\[\] entry requires:[^\n]*"requirement":string[^\n]*"kind":string enum="reply"\|"artifact"\|"action"/iu
+  );
+
+  const repairedFalseCompletionAuditBlocker = await runCase({
+    id: "response-only-completion-audit-false-blocker",
+    taskProfile: "chatops",
+    goal: completionAuditFalseBlockerGoal,
+    responses: [
+      assistant(JSON.stringify(retainedFalseCompletionAuditBlockerResult)),
+      assistant(JSON.stringify(correctedFalseCompletionAuditBlockerResult)),
+    ],
+  });
+  assert.equal(
+    repairedFalseCompletionAuditBlocker.calls.length,
+    2,
+    "a completion audit accepted legitimate_blocker=true without a candidate blocker or covered item"
+  );
+  const falseBlockerRejection = repairedFalseCompletionAuditBlocker.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  );
+  assert.deepEqual(falseBlockerRejection?.data?.invalidAuditSemantics, [
+    "legitimate_blocker:true-without-candidate-blocker",
+    "legitimate_blocker:true-without-covered-item",
+  ]);
+  assert.match(
+    repairedFalseCompletionAuditBlocker.calls[1].messages
+      .map((message) => message.content)
+      .join("\n"),
+    /invalid completion-audit semantics:[^\n]*true-without-candidate-blocker[^\n]*true-without-covered-item/iu
+  );
+
+  const genuineCompletionAuditBlocker = await runCase({
+    id: "response-only-completion-audit-genuine-blocker",
+    taskProfile: "chatops",
+    goal: completionAuditGenuineBlockerGoal,
+    responses: [assistant(JSON.stringify(genuineCompletionAuditBlockerResult))],
+  });
+  assert.equal(
+    genuineCompletionAuditBlocker.calls.length,
+    1,
+    "a candidate's explicit authentication blocker was rejected"
+  );
+  assert.deepEqual(
+    JSON.parse(genuineCompletionAuditBlocker.result.result),
+    genuineCompletionAuditBlockerResult
+  );
+
+  const chineseCompletionAuditBlocker = await runCase({
+    id: "response-only-completion-audit-chinese-blocker",
+    taskProfile: "chatops",
+    goal: completionAuditChineseBlockerGoal,
+    responses: [assistant(JSON.stringify(genuineCompletionAuditBlockerResult))],
+  });
+  assert.equal(
+    chineseCompletionAuditBlocker.calls.length,
+    1,
+    "a candidate's explicit Chinese authentication blocker was rejected"
   );
 
   const repeatedPhantomCompletionAudit = await runCase({

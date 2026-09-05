@@ -2398,3 +2398,27 @@ Regressions cover both tool-capable completion and DeepSeek-to-LocalLLM
 response-only handoff, plus the open-shape compatibility control. No live
 provider or LocalLLM inference, LabCanvas runtime change, queue action,
 schedule, transport operation, or external side effect is involved.
+
+### Completion audits cannot invent legitimate blockers
+
+`labcanvas-completion-audit-false-blocker-171` comes from retained production
+session `web-agent-labcanvas-7159acc2-9bbe-4254-825b-ed6819f8e269`. One audit
+correctly identified that the candidate had produced no reply or artifact, but
+also returned `legitimate_blocker=true` with an empty `covered_item_ids` array.
+The candidate had not described a login, approval, dependency, safety, or other
+blocker. Exact item-identity validation therefore passed a contradictory audit
+that could turn ordinary missing work into a terminal excuse.
+
+Completion-audit contract discovery now records whether the exact packet's
+`candidate_result` actually contains a blocker explanation. A true
+`legitimate_blocker` is valid only when that candidate evidence exists and the
+audit places at least one exact task item in `covered_item_ids`, as required by
+the host contract. Unsupported blocker flags receive the existing single
+bounded schema repair; repeated invalid output still fails closed with all
+actual item IDs marked missing and `legitimate_blocker=false`.
+
+The regression preserves normal missing-work audits, accepts genuine English,
+Chinese, and Japanese authentication blockers while rejecting their explicit
+no-blocker forms, and covers the DeepSeek-to-LocalLLM response-only handoff. It
+performs no live provider inference, LabCanvas runtime change, queue action,
+schedule operation, transport operation, or external side effect.

@@ -894,6 +894,10 @@ assert.equal(
 assert.equal(finishResultClaimsBlocker("No external services, logins, or approvals are required."), false);
 assert.equal(finishResultClaimsBlocker("The task is blocked and requires human login approval."), true);
 assert.equal(finishResultClaimsBlocker("I cannot continue because login is required."), true);
+assert.equal(finishResultClaimsBlocker("当前任务无法继续，因为需要登录认证。"), true);
+assert.equal(finishResultClaimsBlocker("没有阻塞，也不需要登录或批准。"), false);
+assert.equal(finishResultClaimsBlocker("認証が必要なため、タスクを続行できません。"), true);
+assert.equal(finishResultClaimsBlocker("ブロッカーはありません。ログインも不要です。"), false);
 assert.equal(
   finishResultClaimsBlocker("Never signal processes it cannot identify as this exact gateway instance."),
   false,

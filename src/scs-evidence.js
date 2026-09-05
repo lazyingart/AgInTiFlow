@@ -5418,7 +5418,9 @@ export function finishResultClaimsBlocker(result = "") {
       /\b(?:no|not|without)\s+(?:external\s+)?(?:service|login|credential|approval|permission|api key|blocker)s?\s+(?:is|are\s+)?required\b/gi,
       ""
     )
-    .replace(/\b(?:does not|doesn't|do not|don't)\s+require\b[^.\n;]*/gi, "");
+    .replace(/\b(?:does not|doesn't|do not|don't)\s+require\b[^.\n;]*/gi, "")
+    .replace(/(?:没有|沒有|无|無|不存在|无需|無需|不需要)(?:任何)?(?:阻塞|障碍|障礙|登录|登入|认证|認證|授权|授權|批准|审批|審批|权限|權限)/gu, "")
+    .replace(/(?:ブロッカー|障害|ログイン|認証|承認|権限)(?:は|が)?(?:ありません|ない|不要です)/gu, "");
   const explicitTaskBlocker =
     /\b(?:the\s+)?(?:task|request|operation|execution|run|workflow|work)\s+(?:is|remains|was)\s+(?:currently\s+)?(?:blocked|denied|forbidden)\b/i.test(
       text
@@ -5435,11 +5437,15 @@ export function finishResultClaimsBlocker(result = "") {
     /\b(?:quota exhausted|usage limit|rate limit|missing (?:credential|api key)|external blocker)\b|\b(?:access|permission)\s+(?:is\s+)?(?:denied|forbidden)\b|\b(?:login|authentication|credentials?)\s+(?:is|are)\s+required\b|\b(?:requires?|needs?|waiting for|blocked by|encountered)\s+(?:a\s+)?(?:human\s+)?(?:approval|permission|login|credentials?|an? api key|captcha)\b/i.test(
       text
     );
+  const nonEnglishBlocker =
+    /(?:任务|任務|请求|請求|操作|执行|執行|流程|工作)(?:目前|当前|當前|现在|現在)?(?:被)?(?:阻塞|卡住|受阻|禁止)|(?:我|我们|我們)?(?:目前|当前|當前|现在|現在)?(?:无法|無法|不能|没法|沒法)(?:继续|繼續|完成|执行|執行|访问|訪問|提交|发布|發佈|上传|上傳|下载|下載|登录|登入|认证|認證)|(?:额度|額度|余额|餘額|配额|配額)(?:不足|已用完|耗尽|耗盡)|(?:需要|等待)(?:人工)?(?:登录|登入|认证|認證|授权|授權|批准|审批|審批|权限|權限|验证码|驗證碼)/u.test(text) ||
+    /(?:タスク|依頼|操作|実行|ワークフロー|作業)(?:は|が)?(?:ブロック|停止|拒否|禁止)(?:されています|中です)?|(?:続行|完了|実行|アクセス|送信|公開|アップロード|ダウンロード|ログイン|認証)(?:が)?(?:できません|不可能です)|(?:ログイン|認証|承認|権限|認証コード)(?:が)?必要(?:です)?|(?:クォータ|残高|利用枠)(?:が)?(?:不足|枯渇|上限)/u.test(text);
   return (
     explicitTaskBlocker ||
     firstPersonInability ||
     sentenceInitialInability ||
-    explicitExternalCondition
+    explicitExternalCondition ||
+    nonEnglishBlocker
   );
 }
 

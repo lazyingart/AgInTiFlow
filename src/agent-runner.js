@@ -4517,6 +4517,9 @@ function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys =
     missingItemRequiredKeys,
     missingItemKeyTypes,
     missingItemEnumValues,
+    candidateClaimsBlocker: finishResultClaimsBlocker(
+      JSON.stringify(packet?.candidate_result ?? "")
+    ),
   };
 }
 
@@ -4532,6 +4535,7 @@ function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) 
       duplicateItemIds: [],
       malformedItemReferences: [],
       invalidMissingItemFields: [],
+      invalidAuditSemantics: [],
     };
   }
 
@@ -4591,18 +4595,29 @@ function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) 
   const duplicateItemIds = [...counts.entries()]
     .filter(([, count]) => count > 1)
     .map(([itemId]) => itemId);
+  const invalidAuditSemantics = [];
+  if (value.legitimate_blocker === true) {
+    if (!contract.candidateClaimsBlocker) {
+      invalidAuditSemantics.push("legitimate_blocker:true-without-candidate-blocker");
+    }
+    if (!Array.isArray(value.covered_item_ids) || value.covered_item_ids.length === 0) {
+      invalidAuditSemantics.push("legitimate_blocker:true-without-covered-item");
+    }
+  }
   return {
     ok:
       invalidItemIds.length === 0 &&
       omittedItemIds.length === 0 &&
       duplicateItemIds.length === 0 &&
       malformedItemReferences.length === 0 &&
-      invalidMissingItemFields.length === 0,
+      invalidMissingItemFields.length === 0 &&
+      invalidAuditSemantics.length === 0,
     invalidItemIds,
     omittedItemIds,
     duplicateItemIds,
     malformedItemReferences,
     invalidMissingItemFields,
+    invalidAuditSemantics,
   };
 }
 
@@ -4693,6 +4708,7 @@ function assessResponseOnlyJsonContract(result, contract) {
       duplicateItemIds: [],
       malformedItemReferences: [],
       invalidMissingItemFields: [],
+      invalidAuditSemantics: [],
     };
   }
   const value = parseStrictResponseOnlyJson(result);
@@ -4708,6 +4724,7 @@ function assessResponseOnlyJsonContract(result, contract) {
       duplicateItemIds: [],
       malformedItemReferences: [],
       invalidMissingItemFields: [],
+      invalidAuditSemantics: [],
       reason: "The response was not exactly one valid JSON object.",
     };
   }
@@ -4786,6 +4803,7 @@ function responseOnlyJsonRepairInstruction(contract, assessment = {}) {
     assessment.duplicateItemIds?.length ? `item IDs classified more than once: ${assessment.duplicateItemIds.join(", ")}` : "",
     assessment.malformedItemReferences?.length ? `malformed item references: ${assessment.malformedItemReferences.join(", ")}` : "",
     assessment.invalidMissingItemFields?.length ? `invalid missing-item fields: ${assessment.invalidMissingItemFields.join(", ")}` : "",
+    assessment.invalidAuditSemantics?.length ? `invalid completion-audit semantics: ${assessment.invalidAuditSemantics.join(", ")}` : "",
   ].filter(Boolean).join("; ");
   return [
     "Your previous response violated the current explicit JSON output contract.",
@@ -4979,6 +4997,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       duplicateItemIds: assessment.duplicateItemIds,
       malformedItemReferences: assessment.malformedItemReferences,
       invalidMissingItemFields: assessment.invalidMissingItemFields,
+      invalidAuditSemantics: assessment.invalidAuditSemantics,
       result: publicCompletionText(stoppedResult, 500),
     };
     state.meta = state.meta || {};
@@ -5433,6 +5452,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       duplicateItemIds: outputAssessment.duplicateItemIds,
       malformedItemReferences: outputAssessment.malformedItemReferences,
       invalidMissingItemFields: outputAssessment.invalidMissingItemFields,
+      invalidAuditSemantics: outputAssessment.invalidAuditSemantics,
       preview: publicCompletionText(result, 300),
     };
     await store.appendEvent("response_only.output_contract_rejected", detail);
@@ -25473,6 +25493,7 @@ async function enforceToolCapableOutputContract({
     duplicateItemIds: assessment.duplicateItemIds,
     malformedItemReferences: assessment.malformedItemReferences,
     invalidMissingItemFields: assessment.invalidMissingItemFields,
+    invalidAuditSemantics: assessment.invalidAuditSemantics,
     preview: publicCompletionText(candidateResult, 300),
   };
   await store.appendEvent("completion.output_contract_rejected", detail);

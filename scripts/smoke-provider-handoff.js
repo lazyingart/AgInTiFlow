@@ -960,6 +960,7 @@ assert.equal(
 
 const completionAuditRequest = [
   "Audit the candidate against the current request.",
+  "Role: completion_audit",
   "Return JSON only:",
   JSON.stringify({
     covered_item_ids: ["source:123"],
@@ -1027,6 +1028,45 @@ assert.equal(
 assert.equal(
   repairedOutputContractHandoff.events.filter((event) => event.type === "session.finished").length,
   1
+);
+
+const repairedFalseBlockerHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-completion-audit-false-blocker-repaired",
+  request: completionAuditRequest,
+  localResponses: [
+    JSON.stringify({
+      covered_item_ids: [],
+      missing: [{
+        item_id: "source:123",
+        requirement: "Return the concise answer.",
+        kind: "reply",
+      }],
+      legitimate_blocker: true,
+      complexity: "low",
+      summary: "The candidate omitted the answer.",
+    }),
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The current request is covered.",
+    }),
+  ],
+});
+assert.equal(repairedFalseBlockerHandoff.result.stopped, undefined);
+assert.deepEqual(
+  repairedFalseBlockerHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"]
+);
+assert.deepEqual(
+  repairedFalseBlockerHandoff.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.invalidAuditSemantics,
+  [
+    "legitimate_blocker:true-without-candidate-blocker",
+    "legitimate_blocker:true-without-covered-item",
+  ]
 );
 
 const failedOutputContractHandoff = await runSourceFreeResponseOnlyHandoffScenario({
