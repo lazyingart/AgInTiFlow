@@ -14,6 +14,53 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+// Keep routing coverage hermetic. Developer workstations may expose a large
+// ~/.agents/skills catalog, while a clean npm publisher has no ambient packs.
+// These minimal fixtures exercise the same external-pack discovery and scoring
+// paths without making the result depend on the machine running the test.
+const routingFixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agintiflow-routing-skills-"));
+const previousRoutingHome = process.env.AGINTIFLOW_HOME;
+const previousRoutingExternalPacks = process.env.AGINTIFLOW_SKILL_PACKS;
+const previousRoutingAgentPacks = process.env.AGINTIFLOW_AGENT_SKILL_PACKS;
+const previousRoutingAgentDiscovery = process.env.AGINTIFLOW_DISCOVER_AGENT_SKILLS;
+const previousRoutingScientificDiscovery = process.env.AGINTIFLOW_DISCOVER_SCIENTIFIC_SKILLS;
+for (const [id, description] of [
+  ["analytical-method-validation", "Validate analytical LC-MS laboratory methods and report evidence."],
+  ["benchling-integration", "Use the Benchling service integration for laboratory records."],
+  ["bgpt-paper-search", "Search biomedical papers through the BGPT paper service."],
+  ["clinical-decision-support", "Build clinical decision support rules from medical evidence."],
+  ["clinical-reports", "Prepare evidence-based clinical reports."],
+  ["dnanexus-integration", "Use the DNAnexus service integration for genomics workflows."],
+  ["doubao-external-audio-video", "Use Doubao to generate browser video from an external audio track."],
+  ["exa-search", "Search the web through the Exa research service."],
+  ["exploratory-data-analysis", "Perform exploratory analysis of scientific datasets."],
+  ["labarchive-integration", "Use the LabArchives service integration for laboratory records."],
+  ["latchbio-integration", "Use the LatchBio service integration for biology workflows."],
+  ["market-research-reports", "Create market research reports with TAM forecasts."],
+  ["media-transcription-report", "Transcribe audio or video media into a structured report."],
+  ["optimize-for-gpu", "Optimize machine-learning workloads for GPU execution."],
+  ["pdf", "Read, revise, compile, render, and inspect PDF documents."],
+  ["protocolsio-integration", "Use protocols.io to read and export exact protocol versions."],
+  ["research-grants", "Write scientific grant proposals such as NIH applications."],
+  ["research-lookup", "Gather literature references and competing evidence for manuscripts."],
+  ["transcript-video-section-splitter", "Split transcript videos into named topic sections."],
+  ["video-face-image-replacement", "Replace a face in video with a supplied image."],
+  ["wechat-labcanvas-chatops", "Automate WeChat chatops for LabCanvas."],
+]) {
+  const skillDir = path.join(routingFixtureRoot, id);
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(skillDir, "SKILL.md"),
+    `---\nname: ${id}\ndescription: ${description}\n---\n# ${id}\n\nUse the focused workflow and verify its result.\n`,
+    "utf8"
+  );
+}
+process.env.AGINTIFLOW_HOME = path.join(routingFixtureRoot, "agintiflow-home");
+process.env.AGINTIFLOW_SKILL_PACKS = "";
+process.env.AGINTIFLOW_AGENT_SKILL_PACKS = routingFixtureRoot;
+process.env.AGINTIFLOW_DISCOVER_AGENT_SKILLS = "1";
+process.env.AGINTIFLOW_DISCOVER_SCIENTIFIC_SKILLS = "0";
+
 function selectedIds(goal, taskProfile = "auto") {
   return selectSkillsForGoal(goal, { taskProfile, limit: 8 }).map((skill) => skill.id);
 }
@@ -448,6 +495,18 @@ const supervisionCli = await execFileAsync(process.execPath, [path.join(repoRoot
 });
 assert(supervisionCli.stdout.includes("supervision-student"), "aginti skills supervision did not print supervision-student");
 assert(!supervisionCli.stdout.includes("r-stan:"), "aginti skills supervision incorrectly printed r-stan");
+
+if (previousRoutingHome === undefined) delete process.env.AGINTIFLOW_HOME;
+else process.env.AGINTIFLOW_HOME = previousRoutingHome;
+if (previousRoutingExternalPacks === undefined) delete process.env.AGINTIFLOW_SKILL_PACKS;
+else process.env.AGINTIFLOW_SKILL_PACKS = previousRoutingExternalPacks;
+if (previousRoutingAgentPacks === undefined) delete process.env.AGINTIFLOW_AGENT_SKILL_PACKS;
+else process.env.AGINTIFLOW_AGENT_SKILL_PACKS = previousRoutingAgentPacks;
+if (previousRoutingAgentDiscovery === undefined) delete process.env.AGINTIFLOW_DISCOVER_AGENT_SKILLS;
+else process.env.AGINTIFLOW_DISCOVER_AGENT_SKILLS = previousRoutingAgentDiscovery;
+if (previousRoutingScientificDiscovery === undefined) delete process.env.AGINTIFLOW_DISCOVER_SCIENTIFIC_SKILLS;
+else process.env.AGINTIFLOW_DISCOVER_SCIENTIFIC_SKILLS = previousRoutingScientificDiscovery;
+fs.rmSync(routingFixtureRoot, { recursive: true, force: true });
 
 console.log(
   JSON.stringify(

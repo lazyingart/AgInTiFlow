@@ -10,6 +10,7 @@ const DEFAULT_PROMPT_CHARS = 5200;
 const PROJECT_SKILLS_RELATIVE_DIR = path.join(".aginti", "skills");
 const EXTERNAL_SKILL_PACKS_ENV = "AGINTIFLOW_SKILL_PACKS";
 const SCIENTIFIC_SKILL_PACK_ENV = "AGINTIFLOW_SCIENTIFIC_SKILLS_ROOT";
+const DISCOVER_SCIENTIFIC_SKILLS_ENV = "AGINTIFLOW_DISCOVER_SCIENTIFIC_SKILLS";
 const AGENT_SKILL_PACKS_ENV = "AGINTIFLOW_AGENT_SKILL_PACKS";
 const DISCOVER_AGENT_SKILLS_ENV = "AGINTIFLOW_DISCOVER_AGENT_SKILLS";
 
@@ -231,6 +232,7 @@ function inferExternalSkillsDir(root) {
 }
 
 function defaultScientificSkillPackRoots() {
+  if (!envFlag(process.env[DISCOVER_SCIENTIFIC_SKILLS_ENV], true)) return [];
   return [
     process.env[SCIENTIFIC_SKILL_PACK_ENV],
     path.resolve(__dirname, "..", "..", "scientific-agent-skills"),
