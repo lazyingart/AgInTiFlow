@@ -468,7 +468,10 @@ const SKILL_ID_STOP_WORDS = new Set([
   "of",
   "the",
   "production",
+  "report",
+  "reports",
   "replacement",
+  "research",
   "skill",
   "system",
   "tool",
@@ -568,10 +571,26 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function englishTokenForms(token) {
+  const forms = new Set([token]);
+  if (token.length < 4) return [...forms];
+  if (token.endsWith("ies") && token.length > 4) {
+    forms.add(`${token.slice(0, -3)}y`);
+  } else if (token.endsWith("s") && !token.endsWith("ss") && !token.endsWith("us") && !token.endsWith("is")) {
+    forms.add(token.slice(0, -1));
+  } else if (!token.endsWith("s")) {
+    forms.add(`${token}s`);
+  }
+  return [...forms];
+}
+
 function textHasTrigger(text, needle) {
   if (!needle) return false;
   if (/^[a-z0-9]+(?:[\s_-]+[a-z0-9]+)*$/.test(needle)) {
-    const parts = needle.split(/[\s_-]+/).filter(Boolean).map(escapeRegExp);
+    const parts = needle
+      .split(/[\s_-]+/)
+      .filter(Boolean)
+      .map((part) => `(?:${englishTokenForms(part).map(escapeRegExp).join("|")})`);
     if (parts.length === 0) return false;
     return new RegExp(`(^|[^a-z0-9])${parts.join("[^a-z0-9]+")}([^a-z0-9]|$)`).test(text);
   }

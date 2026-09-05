@@ -2223,3 +2223,23 @@ response-only chat turn no longer spends local context on Doubao guidance, and
 an explicit Doubao external-audio video request still selects the workflow via
 its specific trigger. No response contract, execution policy, memory, provider,
 or host integration behavior changes.
+
+### Generic research stays focused while explicit subdomains still route
+
+`labcanvas-research-skill-routing-162` follows retained LabCanvas session
+`web-agent-labcanvas-064f6714-4b85-463c-af5b-43663f4da56d`. A normal daily
+biomedical-research request loaded market-report, grant-writing, and literature-
+lookup skills because the generic `research` component of each external skill ID
+was sufficient evidence. Conversely, natural singular wording such as "NIH
+grant proposal" did not match plural metadata and omitted the relevant grant
+skill.
+
+Generic `research` and `report` components no longer route compound skill IDs.
+The built-in deep-research skill explicitly owns plain research requests, and
+conservative English singular/plural matching lets domain-bearing words such as
+`grant`/`grants`, `proposal`/`proposals`, and `report`/`reports` match without
+stemming unrelated text. Deterministic controls preserve explicit market
+research, grant, and literature lookup routes while excluding unrelated
+research/report skills. No live provider or LocalLLM inference, LabCanvas
+runtime change, queue action, schedule, transport operation, or external side
+effect is involved.

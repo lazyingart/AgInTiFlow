@@ -3,6 +3,7 @@ id: deep-research
 label: Source-Grounded Deep Research
 description: Plan, retrieve, verify, synthesize, and audit current multi-source research without losing uncertainty or citation provenance.
 triggers:
+  - research
   - deep research
   - literature review
   - primary sources

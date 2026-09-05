@@ -184,6 +184,27 @@ assert(
   ),
   "an explicit Doubao external-audio video request lost its relevant skill"
 );
+const genericResearchSkills = selectedIds("research");
+assert(genericResearchSkills.includes("deep-research"), "generic research omitted deep-research guidance");
+for (const unrelated of ["market-research-reports", "research-grants", "research-lookup"]) {
+  assert(!genericResearchSkills.includes(unrelated), `generic research selected unrelated ${unrelated} guidance`);
+}
+const dailyResearchSkills = selectedIds("Prepare a daily research briefing about organoids and biomedical imaging");
+assert(dailyResearchSkills.includes("deep-research"), "daily biomedical research omitted deep-research guidance");
+for (const unrelated of ["market-research-reports", "research-grants", "research-lookup"]) {
+  assert(!dailyResearchSkills.includes(unrelated), `daily biomedical research selected unrelated ${unrelated} guidance`);
+}
+const grantResearchSkills = selectedIds("Write an NIH grant proposal for organoid imaging");
+assert(grantResearchSkills.includes("research-grants"), "natural singular grant request omitted research-grants guidance");
+const marketResearchSkills = selectedIds("Create a market research report and TAM forecast");
+assert(marketResearchSkills.includes("market-research-reports"), "market research request omitted market-research-reports guidance");
+assert(!marketResearchSkills.includes("research-grants"), "market research request selected unrelated grant guidance");
+assert(!marketResearchSkills.includes("research-lookup"), "market research request selected unrelated literature lookup guidance");
+assert(!marketResearchSkills.includes("clinical-reports"), "market research request selected unrelated clinical-report guidance");
+assert(
+  selectedIds("Gather literature references and competing evidence for this manuscript").includes("research-lookup"),
+  "literature evidence request lost research-lookup guidance"
+);
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");
