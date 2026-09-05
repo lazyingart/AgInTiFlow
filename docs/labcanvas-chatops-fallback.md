@@ -68,6 +68,22 @@ closed with the exact task item retained as missing and classified as an
 artifact requirement. LabCanvas still owns transport, compilation, validation,
 and delivery.
 
+## Source-Free Hypotheses And Experiment Plans
+
+A scheduled inspiration may explicitly ask for an original, falsifiable idea
+without supplying a fresh literature manifest. That is different from claiming
+that a paper, benchmark, or completed experiment proves the idea. AgInTi accepts
+the former only when the response locally labels it as the assistant's own
+unverified hypothesis or prediction.
+
+Numeric settings in a proposed experiment, such as group counts, durations, or
+sampling intervals, are treated as protocol parameters rather than observed
+benchmark results. The exception is narrow: wording that claims an experiment
+already found, validated, achieved, or improved a result remains evidence
+gated, as do named papers, journals, datasets, and external research tools.
+This keeps quiet-period inspiration useful when a hosted provider hands off to
+LocalLLM without allowing proposal language to launder unsupported facts.
+
 ## Bounded Media Source Quality
 
 When a response-only packet explicitly asks AgInTi to summarize actual speech,

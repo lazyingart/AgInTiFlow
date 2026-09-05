@@ -2568,3 +2568,26 @@ specific-format exclusions, mixed request packets, one bounded repair,
 schema-compatible failure, and DeepSeek-to-LocalLLM handoff. No live provider
 or LocalLLM inference, LabCanvas change, queue action, schedule, transport, or
 external side effect is involved.
+
+### Unverified inspirations may contain proposed experiment parameters
+
+`labcanvas-source-free-inspiration-experiment-178` follows retained production
+session `web-agent-labcanvas-acfafa25-d3c5-4a4e-9e12-1813973211a2`. A scheduled
+inspiration explicitly returned `一个未经本机验证的灵感假设`, a falsifiable biological
+idea, counterexample, and proposed `0/2/4`-hour experiment. The source-free
+guard rejected it twice: it did not recognize that natural Chinese hypothesis
+framing, then classified numeric protocol settings and the instruction to
+validate paired data as completed benchmark and external-evidence claims.
+
+The source-free classifier now recognizes this assistant-owned unverified
+hypothesis form even when it appears inside a structured response. It also
+distinguishes proposed experiment parameters and next-step validation from
+claims about already observed results. The exception does not cover completed
+validation or benchmark language, attributed sources, named journals, or named
+external tools; those still require fresh scoped evidence.
+
+The exact retained goal and candidate now pass directly. Deterministic tests
+cover the structured Chinese response, numeric group/duration parameters,
+completed-result and named-tool negatives, and DeepSeek-to-LocalLLM handoff.
+No live provider or LocalLLM inference, LabCanvas change, queue action,
+schedule, transport, or external side effect is involved.

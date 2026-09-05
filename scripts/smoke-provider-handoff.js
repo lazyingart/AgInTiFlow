@@ -720,6 +720,34 @@ assert.equal(
   1
 );
 
+const retainedInspirationHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-unverified-inspiration-experiment-handoff",
+  request: [
+    "Create one concise research inspiration point.",
+    "Include a clearly labeled falsifiable hypothesis, counterexample, and proposed experiment.",
+  ].join(" "),
+  localResponses: [
+    [
+      "一个未经本机验证的灵感假设：培养液的间接光学信号或许能比终点染色更早预告类器官批次的衰退。",
+      "具体做法可以不用新设备：把同一批类器官分成三组，换液时间分别延迟0/2/4小时，连续2-3周记录可测信号，再比较异常变化与最终结局的先后关系。",
+      "反例是信号变化主要来自培养箱漂移；下一步先做配对数据验证。",
+    ].join(""),
+  ],
+});
+assert.equal(retainedInspirationHandoff.result.stopped, undefined);
+assert.deepEqual(
+  retainedInspirationHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm"],
+  "a source-free unverified inspiration needed a spurious repair after provider handoff"
+);
+assert.equal(
+  retainedInspirationHandoff.events.filter(
+    (event) => event.type === "response_only.source_free_claim_rejected"
+  ).length,
+  0,
+  "a source-free unverified hypothesis and proposed experiment was rejected after handoff"
+);
+
 const routerClassification = JSON.stringify({
   route_kind: "research_or_summary",
   project: "labcanvas",

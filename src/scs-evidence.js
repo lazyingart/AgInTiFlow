@@ -2001,6 +2001,9 @@ function sourceFreeClaimSegmentHasExplicitUnverifiedFraming(text = "") {
     /(?:无法|無法|不能|未能|没法|沒法)(?:在本次|从本次|從本次)?(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明|支持)/u.test(
       value
     ) ||
+    /(?:未经|未經)(?:本机|本機|本轮|本輪|本次|当前|當前|外部)?(?:验证|驗證|核实|核實|证实|證實|确认|確認|检索|檢索)/u.test(
+      value
+    ) ||
     /(?:証拠|出典|根拠|資料|ソース)(?:が)?(?:ない|ありません|不足)|(?:検証|確認|裏付け)(?:できない|されていない|できません)|未検証/u.test(
       value
     );
@@ -2039,6 +2042,9 @@ function sourceFreeClaimSegmentIsExplicitSpeculation(text = "") {
     /(?:^|[。！？；]\s*)(?:(?:这是|這是|以下是|这里是|這裡是|我的|我们的|我們的|本回答的)\s*)?(?:(?:工作|高风险|高風險|可证伪|可證偽|推断|推斷)\s*)?(?:假设|假說|预测|預測|推测|推測|猜测|猜測)\s*[:：]/u.test(
       value
     ) ||
+    /(?:一个|一個|一种|一種|一项|一項)\s*(?:(?:未经|未經)(?:本机|本機|本轮|本輪|本次|当前|當前|外部)?(?:验证|驗證|核实|核實|证实|證實|确认|確認)的?\s*)?(?:(?:原创|原創|工作|高风险|高風險|可证伪|可證偽|灵感|靈感|推断|推斷)\s*)?(?:假设|假說|预测|預測|推测|推測|猜测|猜測)\s*[:：，,]/u.test(
+      value
+    ) ||
     /(?:我|我们|我們)(?:的)?(?:假设|假說|预测|預測|推测|推測|猜测|猜測|认为|認為)[：:]?/u.test(
       value
     ) ||
@@ -2047,6 +2053,33 @@ function sourceFreeClaimSegmentIsExplicitSpeculation(text = "") {
     ) ||
     /(?:私|私たち)(?:は|の)?(?:仮説|予測|予想|推測|と考える)/u.test(value)
   );
+}
+
+function sourceFreeClaimSegmentOnlyProposesExperiment(text = "") {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const proposesExperiment =
+    /\b(?:next\s+step|proposed?\s+(?:test|experiment|protocol)|experiment(?:al)?\s+(?:plan|design|protocol)|could|can|would|should|plan\s+to)\b[^.!?;\n]{0,180}\b(?:test|experiment|control|protocol|measure|record|compare|collect|sample|validate|falsif)/iu.test(
+      value
+    ) ||
+    /(?:具体做法|下一步|建议|建議|可以|可先|可将|可將|计划|計劃|拟|擬|设计|設計|方案|实验计划|實驗計劃)[^。！？；\n]{0,180}(?:实验|實驗|对照|對照|测试|測試|测量|測量|记录|記錄|比较|比較|采集|採集|验证|驗證|证伪|證偽|分组|分組)/u.test(
+      value
+    ) ||
+    /(?:次のステップ|提案|実験計画|実験設計|プロトコル|まず)[^。！？；\n]{0,180}(?:実験|対照|試験|測定|記録|比較|収集|検証|反証)/u.test(
+      value
+    );
+  if (!proposesExperiment) return false;
+  const claimsObservedResult =
+    /\b(?:we|researchers?|the\s+(?:study|experiment|results?|data))\s+(?:already\s+)?(?:found|showed|demonstrated|proved|confirmed|validated|achieved|improved|outperformed|observed|measured)\b/iu.test(
+      value
+    ) ||
+    /(?:研究|实验|實驗|结果|結果|数据|數據|我们|我們|团队|團隊)[^。！？；\n]{0,50}(?:已经|已經|已|发现|發現|显示|顯示|表明|证明|證明|证实|證實|确认|確認|验证了|驗證了|观察到|觀察到|达到|達到|提高了|提升了)/u.test(
+      value
+    ) ||
+    /(?:研究|実験|結果|データ|私たち|チーム)[^。！？；\n]{0,50}(?:すでに|発見|示した|証明|確認|検証済み|観察した|達成|改善した)/u.test(
+      value
+    );
+  return !claimsObservedResult;
 }
 
 function sourceFreeRequestExplicitlyAsksForSpeculation(goal = "") {
@@ -2265,8 +2298,14 @@ function sourceFreeExternalClaimAssessment(
     const inputInterpretationOnly =
       segmentCategories.every((category) => ["year", "forecast"].includes(category)) &&
       sourceFreeClaimSegmentOnlyClarifiesAmbiguousInput(segment);
+    const proposedExperimentOnly =
+      segmentCategories.every((category) =>
+        ["benchmark_or_metric", "external_evidence", "validation"].includes(category)
+      ) &&
+      sourceFreeClaimSegmentOnlyProposesExperiment(segment);
     if (
       inputInterpretationOnly ||
+      proposedExperimentOnly ||
       (forecastOnly &&
         (
           sourceFreeClaimSegmentOnlyMentionsCandidateForecast(segment) ||

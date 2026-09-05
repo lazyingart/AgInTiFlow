@@ -1030,6 +1030,46 @@ assert.equal(
   true,
   "a source-free assistant-owned hypothesis and experiment was incorrectly rejected"
 );
+const retainedUnverifiedInspirationExperiment = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult: JSON.stringify({
+    message: [
+      "一个未经本机验证的灵感假设：培养液的间接光学信号或许能比终点染色更早预告类器官批次的衰退。",
+      "具体做法可以不用新设备：把同一批类器官分成三组，换液时间分别延迟0/2/4小时，连续2-3周记录可测信号，再比较异常变化与最终结局的先后关系。",
+      "反例是信号变化主要来自培养箱漂移；下一步先做配对数据验证。",
+    ].join(""),
+    files: [],
+    confirmation: "",
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedUnverifiedInspirationExperiment.ok,
+  true,
+  "a retained unverified inspiration and numeric experiment plan was mistaken for sourced facts"
+);
+const completedResultInsideExperimentProposal = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "具体做法可以沿用某研究已经验证的方法；该研究在100个样本上达到94%准确率。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  completedResultInsideExperimentProposal.ok,
+  false,
+  "proposal wording laundered an unsupported completed validation and benchmark result"
+);
+const namedToolInsideExperimentProposal = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeInspirationGoal,
+  candidateResult:
+    "下一步可以用开源 NeuroSync Python 工具包记录100个样本，再比较两组结果。",
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  namedToolInsideExperimentProposal.ok,
+  false,
+  "an experiment proposal laundered an unsupported named external research tool"
+);
 const groundedNamedResearchResource = evaluateSourceFreeResponseClaims({
   goal: sourceFreeInspirationGoal,
   candidateResult:
