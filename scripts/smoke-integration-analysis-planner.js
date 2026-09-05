@@ -206,6 +206,25 @@ function tableResultArtifact(request, index = 0) {
   return sanitizeIntegrationArtifact({ id: artifactId(request, artifact, index), ...artifact });
 }
 
+function fitParametersTableArtifact(request, index = 0) {
+  const artifact = Object.freeze({
+    title: "Fit parameters",
+    kind: "table",
+    spec: Object.freeze({
+      schemaVersion: "1",
+      columns: Object.freeze([
+        Object.freeze({ key: "parameter", label: "Parameter" }),
+        Object.freeze({ key: "value", label: "Value" }),
+      ]),
+      rows: Object.freeze([
+        Object.freeze({ parameter: "slope", value: 7 }),
+        Object.freeze({ parameter: "intercept", value: -3 }),
+      ]),
+    }),
+  });
+  return sanitizeIntegrationArtifact({ id: artifactId(request, artifact, index), ...artifact });
+}
+
 function fibonacciPlotResultArtifact(request, index = 0) {
   const artifact = Object.freeze({
     title: "First 37 Fibonacci numbers modulo 997",
@@ -463,18 +482,19 @@ function textResponse(content) {
   return { choices: [{ message: { role: "assistant", content, tool_calls: [] } }] };
 }
 
-function texToolResponse(filename, source) {
+function texToolResponse(filename, source, extras = {}) {
+  const args = { filename, source, ...extras };
   return {
     choices: [{
       message: {
         role: "assistant",
         content: null,
         tool_calls: [{
-          id: `call_${contractDigest({ filename, source }).slice(0, 20)}`,
+          id: `call_${contractDigest(args).slice(0, 20)}`,
           type: "function",
           function: {
             name: INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
-            arguments: JSON.stringify({ filename, source }),
+            arguments: JSON.stringify(args),
           },
         }],
       },
@@ -2121,6 +2141,11 @@ async function executesAndSynthesizesPlot() {
   assert.equal(planner.attestation.numericGroundingUsesVisibleFeedbackOnly, true);
   assert.equal(planner.attestation.maximumFinalGroundingRetries, 1);
   assert.equal(planner.attestation.deterministicGroundingFallback, true);
+  assert.equal(planner.attestation.texDocumentCompoundPublicSummary, true);
+  assert.equal(planner.attestation.texDocumentCompoundPublicSummaryRequired, true);
+  assert.equal(planner.attestation.texDocumentCompoundPublicSummaryMaxBytes, 2 * 1024);
+  assert.equal(planner.attestation.texDocumentCompoundPublicSummaryNumericGrounded, true);
+  assert.equal(planner.attestation.texDocumentCompoundNoPostCommitSynthesis, true);
   assert.equal(planner.attestation.deterministicExpressionPlots, true);
   assert.equal(
     planner.attestation.expressionPlotCompilerSchemaVersion,
@@ -2402,7 +2427,10 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
     assert.match(documentEvidence, /Geometric margin/u);
     assert.doesNotMatch(documentEvidence, /0\.5000|-0\.8000|Three support vectors/u);
     assert.doesNotMatch(documentEvidence, /QAOA|prior-qaoa/iu);
-    return texToolResponse("svm-model-result.tex", documentSource);
+    assert.match(documentEvidence, /tool arguments must include publicSummary/u);
+    return texToolResponse("svm-model-result.tex", documentSource, {
+      publicSummary: "The verified SVM decision-boundary plot is ready.",
+    });
   }, {
     documentWorkerClient: documentWorker.client(),
     worker: fakeWorker((request, signal) => {
@@ -2472,7 +2500,11 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
     documentRunOptions({ onProgress: (value) => progress.push(value) })
   );
   assert.equal(modelStep, 2, "both calculation and document composition must be model-driven");
-  assert.equal(result.text, "The requested analysis artifacts, TeX document, and compiled PDF are ready below.");
+  assert.equal(
+    result.text,
+    "The verified SVM decision-boundary plot is ready.\n\n" +
+      "The requested analysis artifacts, TeX document, and compiled PDF are ready below."
+  );
   assert.equal(result.toolCalls, 2);
   assert.equal(result.executionStatus, "succeeded");
   assert.deepEqual(result.artifacts.map(({ kind }) => kind), ["plot", "table", "file", "file"]);
@@ -2486,6 +2518,7 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
   assert(compileCall, "compound task did not reach the document compiler");
   assert.equal(compileCall.request.requirements.minimumFigureCount, 1);
   assert.equal(compileCall.request.source, documentSource);
+  assert.equal(Object.hasOwn(compileCall.request, "publicSummary"), false);
   assert.match(compileCall.request.source, /Model-generated SVM analysis/u);
   assert.match(compileCall.request.source, /\\begin\{tikzpicture\}/u);
   assert.doesNotMatch(compileCall.request.source, /QAOA|prior-qaoa/iu);
@@ -2499,6 +2532,176 @@ async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
     item.executionState === "succeeded"
   ));
   compound.coordinator.close();
+}
+
+async function compoundDocumentSummaryUsesCurrentRunNumbersWithoutPostCommitModel() {
+  const prompt = [
+    "Calculate a small straight-line sample, show a plot and table, and write a paper with the figure.",
+    "Then convert to pdf from text.",
+    "In the final answer, state the fitted slope and intercept.",
+  ].join(" ");
+  const analysisSource = [
+    "slope = 7",
+    "intercept = -3",
+    "print(f'slope={slope}')",
+    "print(f'intercept={intercept}')",
+    "emit_table('Fit parameters', {'schemaVersion':'1','columns':[{'key':'parameter','label':'Parameter'},{'key':'value','label':'Value'}],'rows':[{'parameter':'slope','value':slope},{'parameter':'intercept','value':intercept}]})",
+    "emit_plot('Fit line', {'schemaVersion':'1','type':'line','xLabel':'x','yLabel':'y','labels':['zero','one'],'series':[{'name':'fit','data':[intercept, slope + intercept]}]})",
+  ].join("\n");
+  const documentSource = [
+    "\\documentclass{article}",
+    "\\begin{document}",
+    "\\section*{Current-run fit}",
+    "The slope is 7 and the intercept is -3.",
+    "\\end{document}",
+    "",
+  ].join("\n");
+  let modelStep = 0;
+  const documentWorker = createDocumentWorkerFixture();
+  const scoped = fixture(async (_client, payload) => {
+    modelStep += 1;
+    if (modelStep === 1) return toolResponse(analysisSource);
+    assert.equal(modelStep, 2);
+    assert.match(payload.messages[0].content, /tool arguments must include publicSummary/u);
+    assert.match(JSON.stringify(payload.messages), /slope=7/u);
+    return texToolResponse("line-fit.tex", documentSource, {
+      publicSummary: "The fitted slope is 7 and the intercept is -3.",
+    });
+  }, {
+    documentWorkerClient: documentWorker.client(),
+    worker: fakeWorker((request, signal) => terminalResult(
+      request,
+      signal,
+      [
+        fitParametersTableArtifact(request),
+        sanitizeIntegrationArtifact({
+          id: artifactId(request, {
+            title: "Fit line",
+            kind: "plot",
+            spec: {
+              schemaVersion: "1",
+              type: "line",
+              xLabel: "x",
+              yLabel: "y",
+              labels: ["zero", "one"],
+              series: [{ name: "fit", data: [-3, 4] }],
+            },
+          }, 1),
+          title: "Fit line",
+          kind: "plot",
+          spec: {
+            schemaVersion: "1",
+            type: "line",
+            xLabel: "x",
+            yLabel: "y",
+            labels: ["zero", "one"],
+            series: [{ name: "fit", data: [-3, 4] }],
+          },
+        }),
+      ],
+      { stdout: "slope=7\nintercept=-3\n", stderr: "" }
+    )),
+  });
+  const result = await scoped.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000230"),
+    { prompt },
+    documentRunOptions()
+  );
+  assert.equal(modelStep, 2, "summary must be produced before commit, not by a post-commit call");
+  assert.match(result.text, /^The fitted slope is 7 and the intercept is -3\./u);
+  assert.match(result.text, /requested analysis artifacts, TeX document, and compiled PDF are ready below/u);
+  assert.equal(result.toolCalls, 2);
+  const compileCall = documentWorker.calls.find(({ pathname }) => pathname === "/artifact/v1/compile");
+  assert(compileCall);
+  assert.equal(Object.hasOwn(compileCall.request, "publicSummary"), false);
+  assert.deepEqual(Object.keys(compileCall.request).sort(), [
+    "compileAuthorityEpoch",
+    "compileAuthorityToken",
+    "filename",
+    "issuanceId",
+    "requestId",
+    "requirements",
+    "schemaVersion",
+    "scope",
+    "source",
+    "sourceSha256",
+  ]);
+  scoped.coordinator.close();
+}
+
+async function compoundDocumentSummaryUnsupportedNumbersRetryAndReject() {
+  const prompt =
+    "Calculate a fitted line, show a table, and write a paper with the result. Then convert to pdf from text; report the slope and intercept. Do not use 99 unless it is computed.";
+  const analysisSource = [
+    "print('slope=7')",
+    "print('intercept=-3')",
+    "emit_table('Fit parameters', {'schemaVersion':'1','columns':[{'key':'parameter','label':'Parameter'},{'key':'value','label':'Value'}],'rows':[{'parameter':'slope','value':7},{'parameter':'intercept','value':-3}]})",
+  ].join("\n");
+  const documentSource = "\\documentclass{article}\n\\begin{document}Fit report.\\end{document}\n";
+
+  let retryStep = 0;
+  const retryWorker = createDocumentWorkerFixture();
+  const retrying = fixture(async (_client, payload) => {
+    retryStep += 1;
+    if (retryStep === 1) return toolResponse(analysisSource);
+    if (retryStep === 2) {
+      return texToolResponse("line-fit-retry.tex", documentSource, {
+        publicSummary: "The fitted slope is 99 and the intercept is -3.",
+      });
+    }
+    assert.equal(retryStep, 3);
+    assert.match(payload.messages.at(-1).content, /publicSummary/u);
+    assert.match(payload.messages.at(-1).content, /trusted current-run execution evidence/u);
+    return texToolResponse("line-fit-retry.tex", documentSource, {
+      publicSummary: "The fitted line parameters are ready in the verified artifacts.",
+    });
+  }, {
+    documentWorkerClient: retryWorker.client(),
+    worker: fakeWorker((request, signal) => terminalResult(
+      request,
+      signal,
+      [fitParametersTableArtifact(request)],
+      { stdout: "slope=7\nintercept=-3\n", stderr: "" }
+    )),
+  });
+  const retryResult = await retrying.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000231"),
+    { prompt },
+    documentRunOptions()
+  );
+  assert.equal(retryStep, 3);
+  assert.match(retryResult.text, /^The fitted line parameters are ready in the verified artifacts\./u);
+  assert.equal(retryWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length, 1);
+  retrying.coordinator.close();
+
+  let rejectStep = 0;
+  const rejectWorker = createDocumentWorkerFixture();
+  const rejecting = fixture(async () => {
+    rejectStep += 1;
+    if (rejectStep === 1) return toolResponse(analysisSource);
+    return texToolResponse("line-fit-reject.tex", documentSource, {
+      publicSummary: "The fitted slope is 99 and the intercept is -3.",
+    });
+  }, {
+    documentWorkerClient: rejectWorker.client(),
+    worker: fakeWorker((request, signal) => terminalResult(
+      request,
+      signal,
+      [fitParametersTableArtifact(request)],
+      { stdout: "slope=7\nintercept=-3\n", stderr: "" }
+    )),
+  });
+  await assert.rejects(
+    rejecting.planner.run(
+      scope("run_00000000-0000-4000-8000-000000000232"),
+      { prompt },
+      documentRunOptions()
+    ),
+    (error) => error?.code === "ANALYSIS_TEX_PUBLIC_SUMMARY_INVALID" && error?.status === 502
+  );
+  assert.equal(rejectStep, 3);
+  assert.equal(rejectWorker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length, 0);
+  rejecting.coordinator.close();
 }
 
 async function requestedPlotSeriesAreValidatedBeforePublication() {
@@ -5123,6 +5326,8 @@ await leadingGeneralFileImperativesRequireTheFileWorker();
 await texPdfIntentCannotFinishWithProseOnly();
 await texPdfIntentCompilesAndSealsBothFiles();
 await compoundAnalysisPlotPaperAndPdfCompletesEveryStage();
+await compoundDocumentSummaryUsesCurrentRunNumbersWithoutPostCommitModel();
+await compoundDocumentSummaryUnsupportedNumbersRetryAndReject();
 await requestedPlotSeriesAreValidatedBeforePublication();
 await linearClassifierGeometryIsValidatedBeforePublication();
 await compileItUsesImmediatePlotInsteadOfOlderDocument();
