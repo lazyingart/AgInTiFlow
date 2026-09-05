@@ -512,6 +512,9 @@ function normalizedSkillRoutingText(goal = "") {
       (_match, extension) => ` file.${String(extension || "").toLowerCase()} `
     )
     .replace(/\b[a-z_][a-z0-9_.-]*\s*=\s*[a-z0-9_.-]+\b/gi, " ")
+    // Multi-part snake-case values are host/task contract identifiers, not
+    // natural-language evidence for selecting domain skills.
+    .replace(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+){2,}\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
 }

@@ -205,6 +205,28 @@ assert(
   selectedIds("Gather literature references and competing evidence for this manuscript").includes("research-lookup"),
   "literature evidence request lost research-lookup guidance"
 );
+const machineRepairCodeSkills = selectedIds(
+  "Revise the exact existing report source report.md; resolve missing_source_level_methods_results_limits, " +
+    "missing_actionable_experiments_or_decisions, missing_complete_reference_section; write a clean reader-facing " +
+    "source, compile or enable host compilation of its PDF, inspect the result, and return the verified replacement PDF."
+);
+assert(machineRepairCodeSkills.includes("latex-manuscript"), "PDF source repair omitted LaTeX guidance");
+assert(machineRepairCodeSkills.includes("pdf"), "PDF source repair omitted PDF guidance");
+for (const unrelated of ["analytical-method-validation", "clinical-decision-support", "transcript-video-section-splitter"]) {
+  assert(!machineRepairCodeSkills.includes(unrelated), `machine repair codes selected unrelated ${unrelated} guidance`);
+}
+assert(
+  selectedIds("Validate this LC-MS analytical method").includes("analytical-method-validation"),
+  "natural analytical-method request lost its focused guidance"
+);
+assert(
+  selectedIds("Split this transcript video into sections").includes("transcript-video-section-splitter"),
+  "natural transcript-section request lost its focused guidance"
+);
+assert(
+  selectedIds("Build a clinical decision support rule").includes("clinical-decision-support"),
+  "natural clinical decision-support request lost its focused guidance"
+);
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");

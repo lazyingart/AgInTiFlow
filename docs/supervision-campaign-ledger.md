@@ -2243,3 +2243,23 @@ research, grant, and literature lookup routes while excluding unrelated
 research/report skills. No live provider or LocalLLM inference, LabCanvas
 runtime change, queue action, schedule, transport operation, or external side
 effect is involved.
+
+### Machine repair identifiers do not route domain skills
+
+`labcanvas-machine-repair-code-skill-routing-163` follows retained LabCanvas
+PDF-repair session `web-agent-labcanvas-23dfa04f-cef4-4d48-a99e-b152eacf4a99`.
+The active request included quality identifiers such as
+`missing_source_level_methods_results_limits` and
+`missing_actionable_experiments_or_decisions`. Skill routing split those opaque
+host-contract values into English words and loaded analytical-method validation,
+clinical decision support, and transcript/video splitting, consuming bounded
+skill slots during an ordinary report repair.
+
+Pre-routing normalization now removes multi-part snake-case identifiers before
+semantic scoring. Natural prose, file extensions, one-underscore names, and
+explicit hyphenated skill IDs remain available. The production-shaped regression
+keeps PDF, source-ingestion, and LaTeX guidance while excluding the three false
+domains; separate natural-language controls still select each excluded skill
+when it is genuinely requested. No live provider or LocalLLM inference,
+LabCanvas runtime change, queue action, schedule, transport operation, or
+external side effect is involved.
