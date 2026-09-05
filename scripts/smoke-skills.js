@@ -242,6 +242,20 @@ assert(
   selectedIds("Automate WeChat chatops for LabCanvas").includes("wechat-labcanvas-chatops"),
   "explicit WeChat chatops request lost its focused guidance"
 );
+const genericFollowupSkills = selectedIds(
+  "Complete only the still-missing reply requirements for the exact current task. The checker did not confirm that " +
+    "this numbered message was covered. Return a complete natural replacement response that retains useful prior " +
+    "conclusions. Do not create a file or attachment unless a missing requirement explicitly requests one."
+);
+assert(
+  !genericFollowupSkills.includes("protocolsio-integration"),
+  `generic completion follow-up selected protocols.io guidance: ${genericFollowupSkills.join(", ")}`
+);
+const explicitProtocolsIoSkills = selectedIds("Use the protocolsio integration for protocol version 12");
+assert(explicitProtocolsIoSkills.includes("protocolsio-integration"), "explicit protocolsio request lost its focused guidance");
+for (const unrelated of ["benchling-integration", "dnanexus-integration", "labarchive-integration", "latchbio-integration"]) {
+  assert(!explicitProtocolsIoSkills.includes(unrelated), `explicit protocolsio request selected unrelated ${unrelated}`);
+}
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");

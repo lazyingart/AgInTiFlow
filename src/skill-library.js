@@ -422,9 +422,12 @@ const DESCRIPTION_STOP_WORDS = new Set([
   "checks",
   "content",
   "create",
+  "current",
   "data",
   "exact",
   "existing",
+  "explicit",
+  "explicitly",
   "file",
   "files",
   "from",
@@ -465,6 +468,7 @@ const SKILL_ID_STOP_WORDS = new Set([
   "for",
   "development",
   "external",
+  "integration",
   "labcanvas",
   "of",
   "the",
@@ -527,7 +531,10 @@ function descriptionTerms(value = "") {
       String(value)
         .toLowerCase()
         .split(/[^a-z0-9+#.-]+/)
-        .filter((item) => item.length > 3 && !DESCRIPTION_STOP_WORDS.has(item))
+        .filter(
+          (item) =>
+            item.length > 3 && !englishTokenForms(item).some((form) => DESCRIPTION_STOP_WORDS.has(form))
+        )
     ),
   ];
 }

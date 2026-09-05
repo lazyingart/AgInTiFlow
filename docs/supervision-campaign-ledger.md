@@ -2281,3 +2281,23 @@ specific triggers. The change affects only skill discovery; response schemas,
 task context, tool policy, and host ownership remain unchanged. No live provider
 or LocalLLM inference, LabCanvas runtime change, queue action, schedule,
 transport operation, or external side effect is involved.
+
+### Generic follow-up prose does not satisfy unrelated skill descriptions
+
+`labcanvas-generic-followup-description-routing-165` follows retained
+LabCanvas session `web-agent-labcanvas-4bbdae1d-4870-4392-8073-3bccc981a4f3`.
+Its focused request asked for a complete natural replacement covering the exact
+current requirements, but ordinary words such as `current`, `requests`, and
+`explicitly` jointly satisfied the protocols.io description threshold. The
+fallback consequently spent a bounded skill slot on an unrelated protocol
+integration during response repair.
+
+Description stop words now apply through the same conservative singular/plural
+forms used for positive matching, so `request` also suppresses generic
+`requests`. Generic control terms such as `current` and `explicitly` no longer
+act as domain evidence, and `integration` alone cannot route every integration
+skill by ID. The exact retained follow-up now selects no unrelated skill, while
+an explicit protocolsio integration request selects only protocols.io rather
+than sibling Benchling, DNAnexus, LabArchives, or LatchBio integrations. No live
+provider or LocalLLM inference, LabCanvas runtime change, queue action, schedule,
+transport operation, or external side effect is involved.
