@@ -4456,7 +4456,7 @@ function responseOnlyJsonContract(config = {}, state = {}) {
     requiredKeys,
     keyTypes,
     enumValues,
-    completionAudit: responseOnlyCompletionAuditIdentityContract(source, requiredKeys),
+    completionAudit: responseOnlyCompletionAuditIdentityContract(source, requiredKeys, sample),
   };
 }
 
@@ -4471,7 +4471,7 @@ function parseStrictResponseOnlyJson(result = "") {
   }
 }
 
-function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys = []) {
+function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys = [], sample = {}) {
   const text = String(source || "");
   const explicitRole = /(?:^|\n)\s*Role\s*:\s*completion[_ -]?audit\s*(?:\n|$)/iu.test(text);
   const auditShape = ["covered_item_ids", "missing", "legitimate_blocker"]
@@ -4485,7 +4485,27 @@ function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys =
         .filter(Boolean)
     ),
   ];
-  return allowedItemIds.length ? { allowedItemIds } : null;
+  if (!allowedItemIds.length) return null;
+  const missingItemSample = (Array.isArray(sample?.missing) ? sample.missing : [])
+    .find((item) => item && typeof item === "object" && !Array.isArray(item));
+  const missingItemRequiredKeys = Object.keys(missingItemSample || {}).slice(0, 16);
+  const missingItemKeyTypes = Object.fromEntries(missingItemRequiredKeys.map((key) => {
+    const value = missingItemSample[key];
+    return [key, Array.isArray(value) ? "array" : value === null ? "null" : typeof value];
+  }));
+  const missingItemEnumValues = {};
+  for (const key of missingItemRequiredKeys) {
+    const value = missingItemSample[key];
+    if (typeof value !== "string" || !value.includes("|")) continue;
+    const values = value.split("|").map((item) => item.trim()).filter(Boolean);
+    if (values.length > 1) missingItemEnumValues[key] = [...new Set(values)];
+  }
+  return {
+    allowedItemIds,
+    missingItemRequiredKeys,
+    missingItemKeyTypes,
+    missingItemEnumValues,
+  };
 }
 
 function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) {
@@ -4499,11 +4519,13 @@ function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) 
       omittedItemIds: [],
       duplicateItemIds: [],
       malformedItemReferences: [],
+      invalidMissingItemFields: [],
     };
   }
 
   const references = [];
   const malformedItemReferences = [];
+  const invalidMissingItemFields = [];
   for (const [index, itemId] of (Array.isArray(value.covered_item_ids)
     ? value.covered_item_ids
     : []).entries()) {
@@ -4512,11 +4534,41 @@ function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) 
     else references.push(normalized);
   }
   for (const [index, item] of (Array.isArray(value.missing) ? value.missing : []).entries()) {
-    const normalized = item && typeof item === "object" && !Array.isArray(item)
+    const objectItem = item && typeof item === "object" && !Array.isArray(item)
+      ? item
+      : null;
+    const normalized = objectItem
       ? String(item.item_id || "").trim()
       : "";
     if (!normalized) malformedItemReferences.push(`missing[${index}].item_id`);
     else references.push(normalized);
+    if (!objectItem) {
+      invalidMissingItemFields.push(`missing[${index}]:expected-object`);
+      continue;
+    }
+    for (const key of contract.missingItemRequiredKeys || []) {
+      const field = `missing[${index}].${key}`;
+      if (!Object.hasOwn(objectItem, key)) {
+        invalidMissingItemFields.push(`${field}:missing`);
+        continue;
+      }
+      const valueType = Array.isArray(objectItem[key])
+        ? "array"
+        : objectItem[key] === null
+          ? "null"
+          : typeof objectItem[key];
+      if (valueType !== contract.missingItemKeyTypes?.[key]) {
+        invalidMissingItemFields.push(`${field}:expected-${contract.missingItemKeyTypes?.[key]}`);
+        continue;
+      }
+      if (key === "requirement" && typeof objectItem[key] === "string" && !objectItem[key].trim()) {
+        invalidMissingItemFields.push(`${field}:empty`);
+      }
+      const allowedValues = contract.missingItemEnumValues?.[key];
+      if (Array.isArray(allowedValues) && allowedValues.length && !allowedValues.includes(objectItem[key])) {
+        invalidMissingItemFields.push(`${field}:outside-enum`);
+      }
+    }
   }
 
   const allowed = new Set(allowedItemIds);
@@ -4532,11 +4584,13 @@ function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) 
       invalidItemIds.length === 0 &&
       omittedItemIds.length === 0 &&
       duplicateItemIds.length === 0 &&
-      malformedItemReferences.length === 0,
+      malformedItemReferences.length === 0 &&
+      invalidMissingItemFields.length === 0,
     invalidItemIds,
     omittedItemIds,
     duplicateItemIds,
     malformedItemReferences,
+    invalidMissingItemFields,
   };
 }
 
@@ -4625,6 +4679,7 @@ function assessResponseOnlyJsonContract(result, contract) {
       omittedItemIds: [],
       duplicateItemIds: [],
       malformedItemReferences: [],
+      invalidMissingItemFields: [],
     };
   }
   const value = parseStrictResponseOnlyJson(result);
@@ -4638,6 +4693,7 @@ function assessResponseOnlyJsonContract(result, contract) {
       omittedItemIds: contract.completionAudit?.allowedItemIds || [],
       duplicateItemIds: [],
       malformedItemReferences: [],
+      invalidMissingItemFields: [],
       reason: "The response was not exactly one valid JSON object.",
     };
   }
@@ -4685,8 +4741,17 @@ function responseOnlyJsonKeyContractText(contract) {
     })
     .join(", ");
   const allowedItemIds = contract.completionAudit?.allowedItemIds || [];
+  const missingItemContract = (contract.completionAudit?.missingItemRequiredKeys || [])
+    .map((key) => {
+      const allowed = contract.completionAudit?.missingItemEnumValues?.[key];
+      const enumText = Array.isArray(allowed) && allowed.length
+        ? ` enum=${allowed.map((value) => JSON.stringify(value)).join("|")}`
+        : "";
+      return `${JSON.stringify(key)}:${contract.completionAudit?.missingItemKeyTypes?.[key]}${enumText}`;
+    })
+    .join(", ");
   return allowedItemIds.length
-    ? `${keyContract}; completion-audit item IDs must each appear exactly once across covered_item_ids or missing[].item_id and must come from: ${allowedItemIds.map((value) => JSON.stringify(value)).join(", ")}`
+    ? `${keyContract}; each missing[] entry requires: ${missingItemContract}; completion-audit item IDs must each appear exactly once across covered_item_ids or missing[].item_id and must come from: ${allowedItemIds.map((value) => JSON.stringify(value)).join(", ")}`
     : keyContract;
 }
 
@@ -4700,6 +4765,7 @@ function responseOnlyJsonRepairInstruction(contract, assessment = {}) {
     assessment.omittedItemIds?.length ? `unclassified task item IDs: ${assessment.omittedItemIds.join(", ")}` : "",
     assessment.duplicateItemIds?.length ? `item IDs classified more than once: ${assessment.duplicateItemIds.join(", ")}` : "",
     assessment.malformedItemReferences?.length ? `malformed item references: ${assessment.malformedItemReferences.join(", ")}` : "",
+    assessment.invalidMissingItemFields?.length ? `invalid missing-item fields: ${assessment.invalidMissingItemFields.join(", ")}` : "",
   ].filter(Boolean).join("; ");
   return [
     "Your previous response violated the current explicit JSON output contract.",
@@ -4891,6 +4957,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       omittedItemIds: assessment.omittedItemIds,
       duplicateItemIds: assessment.duplicateItemIds,
       malformedItemReferences: assessment.malformedItemReferences,
+      invalidMissingItemFields: assessment.invalidMissingItemFields,
       result: publicCompletionText(stoppedResult, 500),
     };
     state.meta = state.meta || {};
@@ -5343,6 +5410,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       omittedItemIds: outputAssessment.omittedItemIds,
       duplicateItemIds: outputAssessment.duplicateItemIds,
       malformedItemReferences: outputAssessment.malformedItemReferences,
+      invalidMissingItemFields: outputAssessment.invalidMissingItemFields,
       preview: publicCompletionText(result, 300),
     };
     await store.appendEvent("response_only.output_contract_rejected", detail);
@@ -25381,6 +25449,7 @@ async function enforceToolCapableOutputContract({
     omittedItemIds: assessment.omittedItemIds,
     duplicateItemIds: assessment.duplicateItemIds,
     malformedItemReferences: assessment.malformedItemReferences,
+    invalidMissingItemFields: assessment.invalidMissingItemFields,
     preview: publicCompletionText(candidateResult, 300),
   };
   await store.appendEvent("completion.output_contract_rejected", detail);

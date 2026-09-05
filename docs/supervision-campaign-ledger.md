@@ -2359,3 +2359,23 @@ missing. The retained phantom-ID case, valid result, overlap, repeated failure,
 and an unrelated strict JSON envelope are covered. No live provider or LocalLLM
 inference, LabCanvas runtime change, queue action, schedule, transport
 operation, or external side effect is involved.
+
+### Completion-audit missing entries preserve their nested contract
+
+`labcanvas-completion-audit-missing-entry-shape-169` extends the same retained
+completion-audit boundary. After exact item identity was enforced, an audit
+could still classify the right task ID as missing while omitting its actionable
+`requirement` and returning a `kind` outside the declared
+`reply|artifact|action` choices. The top-level JSON remained structurally valid,
+so downstream repair could receive an unusable or misrouted instruction.
+
+The explicit completion-audit contract now derives each `missing[]` entry's
+required keys, types, and pipe-delimited enums from the caller's own example.
+Missing fields, wrong types, empty requirements, non-object entries, and enum
+violations join the existing item-identity diagnostics and receive the same one
+bounded repair. This remains scoped to an explicit `completion_audit` role with
+a recognized task packet; unrelated strict JSON envelopes retain their prior
+behavior. The before-fix case completed in one call, while the repaired case and
+provider-handoff compatibility control now pass. No live provider or LocalLLM
+inference, LabCanvas runtime change, queue action, schedule, transport
+operation, or external side effect is involved.

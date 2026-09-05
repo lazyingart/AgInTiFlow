@@ -697,6 +697,13 @@ const malformedCompletionAuditIdentityResult = {
     kind: "artifact",
   }],
 };
+const invalidCompletionAuditMissingEntryResult = {
+  ...validCompletionAuditIdentityResult,
+  missing: [{
+    item_id: "interruption:actual-pdf",
+    kind: "later",
+  }],
+};
 assert.equal(
   evaluateSourceFreeResponseClaims({
     goal: completionAuditSourceFreeGoal,
@@ -1477,6 +1484,40 @@ try {
       (event) => event.type === "response_only.output_contract_rejected"
     )?.data?.malformedItemReferences,
     ["missing[0].item_id"]
+  );
+
+  const repairedInvalidCompletionAuditMissingEntry = await runCase({
+    id: "response-only-completion-audit-missing-entry-shape",
+    taskProfile: "chatops",
+    goal: completionAuditItemIdentityGoal,
+    responses: [
+      assistant(JSON.stringify(invalidCompletionAuditMissingEntryResult)),
+      assistant(JSON.stringify(validCompletionAuditIdentityResult)),
+    ],
+  });
+  assert.equal(
+    repairedInvalidCompletionAuditMissingEntry.calls.length,
+    2,
+    "a completion-audit missing entry without a requirement and with an invalid kind was accepted"
+  );
+  const invalidMissingEntryRejection = repairedInvalidCompletionAuditMissingEntry.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  );
+  assert.deepEqual(invalidMissingEntryRejection?.data?.invalidMissingItemFields, [
+    "missing[0].requirement:missing",
+    "missing[0].kind:outside-enum",
+  ]);
+  assert.match(
+    repairedInvalidCompletionAuditMissingEntry.calls[1].messages
+      .map((message) => message.content)
+      .join("\n"),
+    /invalid missing-item fields:[^\n]*requirement:missing[^\n]*kind:outside-enum/iu
+  );
+  assert.match(
+    repairedInvalidCompletionAuditMissingEntry.calls[1].messages
+      .map((message) => message.content)
+      .join("\n"),
+    /each missing\[\] entry requires:[^\n]*"requirement":string[^\n]*"kind":string enum="reply"\|"artifact"\|"action"/iu
   );
 
   const repeatedPhantomCompletionAudit = await runCase({
