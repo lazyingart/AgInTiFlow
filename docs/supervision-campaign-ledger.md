@@ -2379,3 +2379,22 @@ behavior. The before-fix case completed in one call, while the repaired case and
 provider-handoff compatibility control now pass. No live provider or LocalLLM
 inference, LabCanvas runtime change, queue action, schedule, transport
 operation, or external side effect is involved.
+
+### Explicitly closed JSON envelopes reject undeclared fields
+
+`labcanvas-strict-json-unexpected-fields-170` extends the retained response-only
+host-envelope cases. AgInTi already required every declared top-level key, type,
+and enum, but it accepted additional fields. A fallback could therefore return
+the correct host payload plus undeclared provider, trace, status, or runtime
+metadata and still finish, despite an explicit `strict`, `exactly`, `only`, or
+`no prose` contract.
+
+Contract discovery now records whether the exact schema marker closes the
+top-level shape. Explicit strict/exact/only/no-prose markers and JSON
+schema/shape/format headings reject undeclared fields, report their names, and
+use the existing one bounded repair and schema-valid fail-closed path. A plain
+`Return JSON:` example remains extensible and can carry useful optional fields.
+Regressions cover both tool-capable completion and DeepSeek-to-LocalLLM
+response-only handoff, plus the open-shape compatibility control. No live
+provider or LocalLLM inference, LabCanvas runtime change, queue action,
+schedule, transport operation, or external side effect is involved.

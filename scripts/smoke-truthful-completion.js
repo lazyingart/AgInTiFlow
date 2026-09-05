@@ -1946,6 +1946,72 @@ try {
   assert.equal(quotedChatClassification.result.result, '{"intent":"generation_only","publish":false}');
   assert(!quotedChatClassification.events.some((event) => event.type === "completion.evidence_rejected"));
 
+  const repairedUnexpectedStrictJsonField = await runCase({
+    id: "tool-capable-strict-json-unexpected-field",
+    taskProfile: "chatops",
+    goal: [
+      "Answer the current chat message.",
+      'Return exactly one strict JSON object and no prose: {"response":"","handled":true}.',
+    ].join("\n"),
+    responses: [
+      assistant(JSON.stringify({
+        response: "Handled the current message.",
+        handled: true,
+        provider: "localllm",
+      })),
+      assistant(JSON.stringify({
+        response: "Handled the current message.",
+        handled: true,
+      })),
+    ],
+  });
+  assert.equal(
+    repairedUnexpectedStrictJsonField.calls.length,
+    2,
+    "an undeclared field was accepted in an explicitly closed JSON envelope"
+  );
+  const unexpectedFieldRejection = repairedUnexpectedStrictJsonField.events.find(
+    (event) =>
+      event.type === "completion.output_contract_rejected" &&
+      event.data?.unexpectedKeys?.length
+  );
+  assert(
+    unexpectedFieldRejection,
+    `missing unexpected-key rejection: ${JSON.stringify(
+      repairedUnexpectedStrictJsonField.events.filter(
+        (event) => event.type === "completion.output_contract_rejected"
+      )
+    )}`
+  );
+  assert.deepEqual(unexpectedFieldRejection?.data?.unexpectedKeys, ["provider"]);
+  assert.match(
+    repairedUnexpectedStrictJsonField.calls[1].messages
+      .map((message) => message.content)
+      .join("\n"),
+    /undeclared top-level keys: provider/iu
+  );
+
+  const extensibleJsonField = await runCase({
+    id: "tool-capable-extensible-json-field",
+    taskProfile: "chatops",
+    goal: [
+      "Answer the current chat message.",
+      'Return JSON: {"response":""}.',
+    ].join("\n"),
+    responses: [assistant(JSON.stringify({
+      response: "Handled the current message.",
+      detail: "Useful optional detail.",
+    }))],
+  });
+  assert.equal(extensibleJsonField.calls.length, 1);
+  assert.equal(extensibleJsonField.result.stopped, undefined);
+  assert(
+    !extensibleJsonField.events.some(
+      (event) => event.type === "completion.output_contract_rejected"
+    ),
+    "a plain extensible JSON example rejected an optional top-level field"
+  );
+
   const toolCapableJsonGoal = [
     "Run pwd and report the verified working directory.",
     "Return one strict JSON object and no prose:",

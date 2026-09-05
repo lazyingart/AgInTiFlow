@@ -4414,16 +4414,27 @@ function responseOnlyJsonContract(config = {}, state = {}) {
     /(?:^|\n)\s*JSON\s+(?:schema|shape|format)\s*:\s*/gi,
   ];
   const matches = markers
-    .map((marker) => {
+    .map((marker, markerIndex) => {
       const match = marker.exec(contractSource);
-      return match ? { index: match.index, end: match.index + match[0].length } : null;
+      return match
+        ? {
+            index: match.index,
+            end: match.index + match[0].length,
+            closedTopLevelShape:
+              markerIndex > 0 || /\b(?:exactly|strict|only)\b|\bno\s+prose\b/iu.test(match[0]),
+          }
+        : null;
     })
     .filter(Boolean)
     .sort((left, right) => left.index - right.index);
   if (!matches.length) return null;
-  const sample = matches
-    .map((match) => firstJsonObject(contractSource.slice(match.end)))
-    .find((value) => value && typeof value === "object" && !Array.isArray(value));
+  const contractMatch = matches
+    .map((match) => ({
+      ...match,
+      sample: firstJsonObject(contractSource.slice(match.end)),
+    }))
+    .find(({ sample }) => sample && typeof sample === "object" && !Array.isArray(sample));
+  const sample = contractMatch?.sample;
   if (!sample || Array.isArray(sample)) return null;
   const requiredKeys = Object.keys(sample).slice(0, 64);
   if (!requiredKeys.length) return null;
@@ -4456,6 +4467,7 @@ function responseOnlyJsonContract(config = {}, state = {}) {
     requiredKeys,
     keyTypes,
     enumValues,
+    closedTopLevelShape: Boolean(contractMatch.closedTopLevelShape),
     completionAudit: responseOnlyCompletionAuditIdentityContract(source, requiredKeys, sample),
   };
 }
@@ -4673,6 +4685,7 @@ function assessResponseOnlyJsonContract(result, contract) {
     return {
       ok: true,
       missingKeys: [],
+      unexpectedKeys: [],
       typeMismatches: [],
       enumMismatches: [],
       invalidItemIds: [],
@@ -4687,6 +4700,7 @@ function assessResponseOnlyJsonContract(result, contract) {
     return {
       ok: false,
       missingKeys: [...contract.requiredKeys],
+      unexpectedKeys: [],
       typeMismatches: [],
       enumMismatches: [],
       invalidItemIds: [],
@@ -4698,6 +4712,9 @@ function assessResponseOnlyJsonContract(result, contract) {
     };
   }
   const missingKeys = contract.requiredKeys.filter((key) => !Object.hasOwn(value, key));
+  const unexpectedKeys = contract.closedTopLevelShape
+    ? Object.keys(value).filter((key) => !contract.requiredKeys.includes(key))
+    : [];
   const typeMismatches = contract.requiredKeys.filter((key) => {
     if (!Object.hasOwn(value, key)) return false;
     const actual = Array.isArray(value[key]) ? "array" : value[key] === null ? "null" : typeof value[key];
@@ -4713,12 +4730,14 @@ function assessResponseOnlyJsonContract(result, contract) {
   );
   const structurallyValid =
     missingKeys.length === 0 &&
+    unexpectedKeys.length === 0 &&
     typeMismatches.length === 0 &&
     enumMismatches.length === 0;
   return {
     ...completionAuditIdentity,
     ok: structurallyValid && completionAuditIdentity.ok,
     missingKeys,
+    unexpectedKeys,
     typeMismatches,
     enumMismatches,
     reason: !structurallyValid
@@ -4759,6 +4778,7 @@ function responseOnlyJsonRepairInstruction(contract, assessment = {}) {
   const keyContract = responseOnlyJsonKeyContractText(contract);
   const diagnostics = [
     assessment.missingKeys?.length ? `missing keys: ${assessment.missingKeys.join(", ")}` : "",
+    assessment.unexpectedKeys?.length ? `undeclared top-level keys: ${assessment.unexpectedKeys.join(", ")}` : "",
     assessment.typeMismatches?.length ? `wrong value types: ${assessment.typeMismatches.join(", ")}` : "",
     assessment.enumMismatches?.length ? `values outside their declared enums: ${assessment.enumMismatches.join(", ")}` : "",
     assessment.invalidItemIds?.length ? `item IDs absent from the exact task packet: ${assessment.invalidItemIds.join(", ")}` : "",
@@ -4951,6 +4971,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       reason: assessment.reason,
       requiredKeys: contract.requiredKeys,
       missingKeys: assessment.missingKeys,
+      unexpectedKeys: assessment.unexpectedKeys,
       typeMismatches: assessment.typeMismatches,
       enumMismatches: assessment.enumMismatches,
       invalidItemIds: assessment.invalidItemIds,
@@ -5404,6 +5425,7 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
       reason: outputAssessment.reason,
       requiredKeys: outputContract.requiredKeys,
       missingKeys: outputAssessment.missingKeys,
+      unexpectedKeys: outputAssessment.unexpectedKeys,
       typeMismatches: outputAssessment.typeMismatches,
       enumMismatches: outputAssessment.enumMismatches,
       invalidItemIds: outputAssessment.invalidItemIds,
@@ -25443,6 +25465,7 @@ async function enforceToolCapableOutputContract({
     reason: assessment.reason,
     requiredKeys: contract.requiredKeys,
     missingKeys: assessment.missingKeys,
+    unexpectedKeys: assessment.unexpectedKeys,
     typeMismatches: assessment.typeMismatches,
     enumMismatches: assessment.enumMismatches,
     invalidItemIds: assessment.invalidItemIds,

@@ -621,6 +621,43 @@ assert.equal(
   1
 );
 
+const sourceFreeRepairRemovesUnexpectedJsonKey = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-repair-removes-unexpected-json-key",
+  request: sourceFreeJsonContractRequest,
+  localResponses: [
+    JSON.stringify({
+      message: "No fresh evidence is available, so I cannot verify that claim.",
+      files: [],
+      confirmation: "",
+      trace: "internal",
+    }),
+    JSON.stringify({
+      message: "No fresh evidence is available, so I cannot verify that claim.",
+      files: [],
+      confirmation: "",
+    }),
+  ],
+});
+assert.equal(sourceFreeRepairRemovesUnexpectedJsonKey.result.stopped, undefined);
+assert.equal(
+  sourceFreeRepairRemovesUnexpectedJsonKey.events.filter(
+    (event) => event.type === "response_only.output_contract_rejected"
+  ).length,
+  1
+);
+assert.deepEqual(
+  sourceFreeRepairRemovesUnexpectedJsonKey.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.unexpectedKeys,
+  ["trace"]
+);
+assert.equal(
+  sourceFreeRepairRemovesUnexpectedJsonKey.events.filter(
+    (event) => event.type === "session.finished"
+  ).length,
+  1
+);
+
 const sourceFreeJsonFailClosed = await runSourceFreeResponseOnlyHandoffScenario({
   sessionId: "source-free-json-contract-fail-closed",
   request: sourceFreeJsonContractRequest,
