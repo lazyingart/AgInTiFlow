@@ -947,21 +947,35 @@ export function createWorkerAdmission(candidateValue, value) {
     ["transport", "releaseId", "releaseDigest", "capabilitiesDigest", "canaryDigest", "protocols", "observedAt", "expiresAt"],
     "worker admission input"
   );
-  const unsigned = {
+  if (
+    typeof input.transport !== "string" ||
+    !TRANSPORTS.has(input.transport) ||
+    typeof input.releaseId !== "string" ||
+    !RELEASE_ID.test(input.releaseId)
+  ) {
+    fail("WORKER_ADMISSION_INVALID", "worker admission identity is invalid.", { status: 502 });
+  }
+  const protocols = sortedUniqueStrings(
+    input.protocols,
+    (protocol) => PROTOCOL.test(protocol),
+    "worker admission protocols",
+    { code: "WORKER_ADMISSION_INVALID" }
+  );
+  const unsigned = Object.freeze({
     schemaVersion: INTEGRATION_WORKER_ADMISSION_SCHEMA_VERSION,
     nodeId: candidate.nodeId,
     bindingId: candidate.bindingId,
     roles: candidate.roles,
     transport: input.transport,
     releaseId: input.releaseId,
-    releaseDigest: input.releaseDigest,
-    capabilitiesDigest: input.capabilitiesDigest,
-    canaryDigest: input.canaryDigest,
-    protocols: input.protocols,
+    releaseDigest: safeDigest(input.releaseDigest, "worker admission releaseDigest", "WORKER_ADMISSION_INVALID"),
+    capabilitiesDigest: safeDigest(input.capabilitiesDigest, "worker admission capabilitiesDigest", "WORKER_ADMISSION_INVALID"),
+    canaryDigest: safeDigest(input.canaryDigest, "worker admission canaryDigest", "WORKER_ADMISSION_INVALID"),
+    protocols,
     ready: true,
-    observedAt: input.observedAt,
-    expiresAt: input.expiresAt,
-  };
+    observedAt: canonicalTimestamp(input.observedAt, "worker admission observedAt", "WORKER_ADMISSION_INVALID"),
+    expiresAt: canonicalTimestamp(input.expiresAt, "worker admission expiresAt", "WORKER_ADMISSION_INVALID"),
+  });
   const provisional = Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
   return validateAdmission(provisional, candidate, Date.parse(input.observedAt));
 }

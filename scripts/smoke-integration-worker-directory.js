@@ -59,6 +59,60 @@ function admission(candidate, { observedMs = clockMs, expiresMs = clockMs + 5 * 
   });
 }
 
+function smokeAdmissionProtocolCanonicalization() {
+  const unsorted = ["aginti-execution-worker-api-v1", "aginti-execution-job-manager-v1"];
+  const canonical = createWorkerAdmission(NODE_A, {
+    transport: "lazyedge-private-http-v1",
+    releaseId: "worker-r1",
+    releaseDigest: RELEASE_DIGEST,
+    capabilitiesDigest: CAPABILITIES_DIGEST,
+    canaryDigest: CANARY_DIGEST,
+    protocols: unsorted,
+    observedAt: new Date(clockMs).toISOString(),
+    expiresAt: new Date(clockMs + 5 * 60_000).toISOString(),
+  });
+  assert.deepEqual(canonical.protocols, ["aginti-execution-job-manager-v1", "aginti-execution-worker-api-v1"]);
+  const { digest, ...unsigned } = canonical;
+  assert.equal(digest, contractDigest(unsigned));
+  const reversed = createWorkerAdmission(NODE_A, {
+    transport: "lazyedge-private-http-v1",
+    releaseId: "worker-r1",
+    releaseDigest: RELEASE_DIGEST,
+    capabilitiesDigest: CAPABILITIES_DIGEST,
+    canaryDigest: CANARY_DIGEST,
+    protocols: [...unsorted].reverse(),
+    observedAt: new Date(clockMs).toISOString(),
+    expiresAt: new Date(clockMs + 5 * 60_000).toISOString(),
+  });
+  assert.equal(reversed.digest, canonical.digest);
+  assert.throws(
+    () => createWorkerAdmission(NODE_A, {
+      transport: "lazyedge-private-http-v1",
+      releaseId: "worker-r1",
+      releaseDigest: RELEASE_DIGEST,
+      capabilitiesDigest: CAPABILITIES_DIGEST,
+      canaryDigest: CANARY_DIGEST,
+      protocols: [unsorted[0], unsorted[0]],
+      observedAt: new Date(clockMs).toISOString(),
+      expiresAt: new Date(clockMs + 5 * 60_000).toISOString(),
+    }),
+    (error) => error instanceof IntegrationWorkerDirectoryError && error.code === "WORKER_ADMISSION_INVALID"
+  );
+  assert.throws(
+    () => createWorkerAdmission(NODE_A, {
+      transport: "lazyedge-private-http-v1",
+      releaseId: "worker-r1",
+      releaseDigest: RELEASE_DIGEST,
+      capabilitiesDigest: CAPABILITIES_DIGEST,
+      canaryDigest: CANARY_DIGEST,
+      protocols: ["not valid"],
+      observedAt: new Date(clockMs).toISOString(),
+      expiresAt: new Date(clockMs + 5 * 60_000).toISOString(),
+    }),
+    (error) => error instanceof IntegrationWorkerDirectoryError && error.code === "WORKER_ADMISSION_INVALID"
+  );
+}
+
 async function probe(candidate) {
   if (probeMode.get(candidate.nodeId) === "stale") {
     return admission(candidate, {
@@ -245,6 +299,7 @@ try {
   const tamperRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-worker-directory-tamper-"));
   roots.push(lifecycleRoot, randomRoot, tamperRoot);
 
+  smokeAdmissionProtocolCanonicalization();
   const result = await smokeLifecycle(lifecycleRoot);
   await assertProtectedStore(lifecycleRoot);
   await smokeInvalidRandom(randomRoot);
@@ -259,6 +314,7 @@ try {
     eventHead: result.beforeRestart.eventCursor.lastHash,
     attestedTransportSplit: true,
     failClosedTamperCases: ["corrupt", "symlink", "hardlink"],
+    canonicalAdmissionProtocols: true,
   }, null, 2));
 } finally {
   for (const rootDir of roots) await fs.rm(rootDir, { recursive: true, force: true });
