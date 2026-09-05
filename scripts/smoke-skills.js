@@ -227,6 +227,21 @@ assert(
   selectedIds("Build a clinical decision support rule").includes("clinical-decision-support"),
   "natural clinical decision-support request lost its focused guidance"
 );
+const hostOwnedResponseSkills = selectedIds(
+  "Return only the requested content; the LabCanvas host owns persistence, compilation, validation, and delivery."
+);
+assert(
+  !hostOwnedResponseSkills.includes("analytical-method-validation"),
+  `response-only host validation selected analytical-method guidance: ${hostOwnedResponseSkills.join(", ")}`
+);
+assert(
+  !hostOwnedResponseSkills.includes("wechat-labcanvas-chatops"),
+  `response-only LabCanvas ownership selected WeChat guidance: ${hostOwnedResponseSkills.join(", ")}`
+);
+assert(
+  selectedIds("Automate WeChat chatops for LabCanvas").includes("wechat-labcanvas-chatops"),
+  "explicit WeChat chatops request lost its focused guidance"
+);
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");

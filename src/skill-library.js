@@ -465,6 +465,7 @@ const SKILL_ID_STOP_WORDS = new Set([
   "for",
   "development",
   "external",
+  "labcanvas",
   "of",
   "the",
   "production",
@@ -476,6 +477,7 @@ const SKILL_ID_STOP_WORDS = new Set([
   "system",
   "tool",
   "tools",
+  "validation",
   "workflow",
 ]);
 

@@ -2263,3 +2263,21 @@ domains; separate natural-language controls still select each excluded skill
 when it is genuinely requested. No live provider or LocalLLM inference,
 LabCanvas runtime change, queue action, schedule, transport operation, or
 external side effect is involved.
+
+### Response-only host nouns do not activate domain workflows
+
+`labcanvas-response-only-host-noun-skill-routing-164` follows retained
+LabCanvas response-only session
+`web-agent-labcanvas-dc5db4bc-5d33-427b-aafb-042e44ef9595`. The exact scoped
+instruction said that the LabCanvas host owned persistence, compilation,
+validation, and delivery, but the generic words `LabCanvas` and `validation`
+activated WeChat chatops and analytical-method-validation skills in a turn that
+explicitly prohibited external action.
+
+Those platform/control nouns are now ignored as standalone compound skill-ID
+evidence. Explicit natural requests for WeChat chatops and analytical-method
+validation still select the correct skills through stronger domain terms and
+specific triggers. The change affects only skill discovery; response schemas,
+task context, tool policy, and host ownership remain unchanged. No live provider
+or LocalLLM inference, LabCanvas runtime change, queue action, schedule,
+transport operation, or external side effect is involved.
