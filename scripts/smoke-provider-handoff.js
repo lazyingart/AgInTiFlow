@@ -1069,6 +1069,46 @@ assert.deepEqual(
   ]
 );
 
+const emptyCompletionAuditCandidateRequest = completionAuditRequest.replace(
+  '"message": "The concise answer."',
+  '"message": ""'
+);
+const repairedEmptyCandidateCoverageHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-completion-audit-empty-candidate-repaired",
+  request: emptyCompletionAuditCandidateRequest,
+  localResponses: [
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The candidate omitted the answer.",
+    }),
+    JSON.stringify({
+      covered_item_ids: [],
+      missing: [{
+        item_id: "source:123",
+        requirement: "Return the concise answer.",
+        kind: "reply",
+      }],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The candidate omitted the answer.",
+    }),
+  ],
+});
+assert.equal(repairedEmptyCandidateCoverageHandoff.result.stopped, undefined);
+assert.deepEqual(
+  repairedEmptyCandidateCoverageHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"]
+);
+assert.deepEqual(
+  repairedEmptyCandidateCoverageHandoff.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.invalidAuditSemantics,
+  ["covered_item_ids:nonempty-for-empty-candidate"]
+);
+
 const failedOutputContractHandoff = await runSourceFreeResponseOnlyHandoffScenario({
   sessionId: "response-only-json-contract-fail-closed",
   request: completionAuditRequest,

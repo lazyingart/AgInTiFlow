@@ -752,6 +752,21 @@ const correctedFalseCompletionAuditBlockerResult = {
   ...retainedFalseCompletionAuditBlockerResult,
   legitimate_blocker: false,
 };
+const retainedEmptyCandidateCoveredResult = {
+  covered_item_ids: ["task:current-message"],
+  missing: [],
+  legitimate_blocker: false,
+  complexity: "low",
+  summary: "The candidate did not answer the request.",
+};
+const completionAuditExplicitSilenceGoal = completionAuditFalseBlockerGoal.replace(
+  '"text":"Answer the current question."',
+  '"text":"Do not send a reply; leave the response empty."'
+);
+const explicitSilenceCoveredResult = {
+  ...retainedEmptyCandidateCoveredResult,
+  summary: "The explicit no-reply request is covered by the empty candidate.",
+};
 const completionAuditGenuineBlockerGoal = completionAuditFalseBlockerGoal.replace(
   '"message":"","confirmation":"","files":[]',
   '"message":"I cannot access the requested account because authentication is required.","confirmation":"","files":[]'
@@ -1637,6 +1652,63 @@ try {
     chineseCompletionAuditBlocker.calls.length,
     1,
     "a candidate's explicit Chinese authentication blocker was rejected"
+  );
+
+  const repairedEmptyCandidateCoverage = await runCase({
+    id: "response-only-completion-audit-empty-candidate-covered",
+    taskProfile: "chatops",
+    goal: completionAuditFalseBlockerGoal,
+    responses: [
+      assistant(JSON.stringify(retainedEmptyCandidateCoveredResult)),
+      assistant(JSON.stringify(correctedFalseCompletionAuditBlockerResult)),
+    ],
+  });
+  assert.equal(
+    repairedEmptyCandidateCoverage.calls.length,
+    2,
+    "an empty candidate was accepted as covering an exact task item"
+  );
+  assert.deepEqual(
+    repairedEmptyCandidateCoverage.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.invalidAuditSemantics,
+    ["covered_item_ids:nonempty-for-empty-candidate"]
+  );
+
+  const repeatedEmptyCandidateCoverage = await runCase({
+    id: "response-only-completion-audit-empty-candidate-covered-stop",
+    taskProfile: "chatops",
+    goal: completionAuditFalseBlockerGoal,
+    responses: [
+      assistant(JSON.stringify(retainedEmptyCandidateCoveredResult)),
+      assistant(JSON.stringify(retainedEmptyCandidateCoveredResult)),
+    ],
+  });
+  assert.equal(repeatedEmptyCandidateCoverage.calls.length, 2);
+  assert.equal(repeatedEmptyCandidateCoverage.result.stopped, true);
+  assert.deepEqual(
+    JSON.parse(repeatedEmptyCandidateCoverage.result.result).missing.map(
+      (item) => item.item_id
+    ),
+    ["task:current-message"]
+  );
+  assert(
+    !repeatedEmptyCandidateCoverage.events.some(
+      (event) => event.type === "session.finished"
+    ),
+    "repeated empty-candidate coverage reached terminal success"
+  );
+
+  const explicitSilenceCoverage = await runCase({
+    id: "response-only-completion-audit-explicit-silence-covered",
+    taskProfile: "chatops",
+    goal: completionAuditExplicitSilenceGoal,
+    responses: [assistant(JSON.stringify(explicitSilenceCoveredResult))],
+  });
+  assert.equal(
+    explicitSilenceCoverage.calls.length,
+    1,
+    "an explicit no-reply request could not be covered by an empty candidate"
   );
 
   const repeatedPhantomCompletionAudit = await runCase({

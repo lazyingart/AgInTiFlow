@@ -2422,3 +2422,27 @@ Chinese, and Japanese authentication blockers while rejecting their explicit
 no-blocker forms, and covers the DeepSeek-to-LocalLLM response-only handoff. It
 performs no live provider inference, LabCanvas runtime change, queue action,
 schedule operation, transport operation, or external side effect.
+
+### Empty candidates cannot cover requested work
+
+`labcanvas-completion-audit-empty-candidate-coverage-172` was found by pairing
+every retained completion-audit prompt with its exact task packet and terminal
+result. Seven audits put one or more exact request IDs in `covered_item_ids`
+while the explicit `candidate_result` contained no message, file, publication
+state, generated content, or other meaningful value. Their own summaries said
+the reply, PDF, or video delivery was missing, but the contradictory structured
+classification could prevent that work from being reprocessed.
+
+When an explicit completion-audit packet includes `candidate_result`, contract
+validation now records whether it has any meaningful output. A genuinely empty
+candidate cannot cover an item. It receives one bounded repair, and repeated
+invalid coverage stops conservatively with the actual item marked missing.
+This rule does not infer emptiness when an older generic packet omits
+`candidate_result`, and it permits an empty candidate when the exact human
+request explicitly asks for no reply or a blank response.
+
+Regressions cover the retained contradiction, bounded repair, repeated-invalid
+fail-closed behavior, explicit-silence compatibility, omitted-candidate
+compatibility, and DeepSeek-to-LocalLLM response-only handoff. No live provider
+or LocalLLM inference, LabCanvas runtime change, queue action, schedule,
+transport operation, or external side effect is involved.

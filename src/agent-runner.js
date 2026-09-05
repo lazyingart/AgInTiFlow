@@ -1700,6 +1700,12 @@ function hasMeaningfulResponseOnlyValue(value) {
   return false;
 }
 
+function responseOnlyRequestExplicitlyAllowsEmpty(request = "") {
+  return /(?:return|leave|keep)\s+(?:the\s+)?(?:message|reply|response)\s+(?:field\s+)?(?:empty|blank)|(?:do not|don't)\s+(?:send\s+)?(?:a\s+)?(?:message|reply|response)|(?:无需|無需|不必|不要)(?:回复|回覆|响应|響應)|(?:返信|応答)(?:不要|なし)/iu.test(
+    String(request || "")
+  );
+}
+
 export function assessResponseOnlyEmptyEnvelope({ goal = "", result = "" } = {}) {
   const packet = responseOnlyTaskPacket(goal);
   const parsed = parseStrictResponseOnlyJson(result);
@@ -1721,10 +1727,7 @@ export function assessResponseOnlyEmptyEnvelope({ goal = "", result = "" } = {})
     return { ok: true, reason: "not-a-human-facing-envelope" };
   }
   const humanRequest = responseOnlyHumanRequestFromPacket(packet);
-  const explicitlyAllowsEmpty =
-    /(?:return|leave|keep)\s+(?:the\s+)?(?:message|reply|response)\s+(?:field\s+)?(?:empty|blank)|(?:do not|don't)\s+(?:send\s+)?(?:a\s+)?(?:message|reply|response)|(?:无需|無需|不必|不要)(?:回复|回覆|响应|響應)|(?:返信|応答)(?:不要|なし)/iu.test(
-      humanRequest
-    );
+  const explicitlyAllowsEmpty = responseOnlyRequestExplicitlyAllowsEmpty(humanRequest);
   if (explicitlyAllowsEmpty) return { ok: true, reason: "explicit-empty-response-contract" };
   const meaningfulKeys = responseKeys.filter((key) => hasMeaningfulResponseOnlyValue(parsed[key]));
   return {
@@ -4517,6 +4520,11 @@ function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys =
     missingItemRequiredKeys,
     missingItemKeyTypes,
     missingItemEnumValues,
+    candidateObserved: Object.hasOwn(packet, "candidate_result"),
+    candidateHasMeaningfulOutput: hasMeaningfulResponseOnlyValue(packet?.candidate_result),
+    candidateExplicitlyAllowsEmpty: responseOnlyRequestExplicitlyAllowsEmpty(
+      responseOnlyHumanRequestFromPacket(packet)
+    ),
     candidateClaimsBlocker: finishResultClaimsBlocker(
       JSON.stringify(packet?.candidate_result ?? "")
     ),
@@ -4603,6 +4611,15 @@ function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) 
     if (!Array.isArray(value.covered_item_ids) || value.covered_item_ids.length === 0) {
       invalidAuditSemantics.push("legitimate_blocker:true-without-covered-item");
     }
+  }
+  if (
+    contract.candidateObserved &&
+    !contract.candidateHasMeaningfulOutput &&
+    !contract.candidateExplicitlyAllowsEmpty &&
+    Array.isArray(value.covered_item_ids) &&
+    value.covered_item_ids.length > 0
+  ) {
+    invalidAuditSemantics.push("covered_item_ids:nonempty-for-empty-candidate");
   }
   return {
     ok:
