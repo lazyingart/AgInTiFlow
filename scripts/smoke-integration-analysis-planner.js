@@ -2263,6 +2263,7 @@ async function hostNativeToolRequestsFailClosedWithoutPythonSubstitution() {
   const benignPrompts = [
     "Use train_test_split to split this dataset.",
     "Show the process values in this supplied table.",
+    "Use psnr_metric to evaluate this reconstruction.",
   ];
   for (let index = 0; index < benignPrompts.length; index += 1) {
     const prompt = benignPrompts[index];
