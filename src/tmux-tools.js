@@ -218,13 +218,22 @@ function parsePanes(stdout = "") {
     });
 }
 
+function isMissingTmuxServer(result = {}) {
+  if (result.ok) return false;
+  const diagnostic = `${result.stderr || ""} ${result.error || ""}`;
+  return (
+    /\b(?:no server running|failed to connect to server)\b/iu.test(diagnostic) ||
+    /\berror connecting to\b[^\r\n]*(?:no such file or directory|connection refused)/iu.test(diagnostic)
+  );
+}
+
 export async function listTmuxSessions(args = {}, config = {}) {
   const sessionsResult = await runTmux([
     "list-sessions",
     "-F",
     "#{session_name}|#{session_windows}|#{session_attached}|#{session_created}|#{session_activity}",
   ], { signal: config.abortSignal });
-  if (!sessionsResult.ok && /no server running|failed to connect/i.test(`${sessionsResult.stderr} ${sessionsResult.error}`)) {
+  if (isMissingTmuxServer(sessionsResult)) {
     return { ok: true, toolName: "tmux_list_sessions", sessions: [], panes: [], summary: "No tmux server is running." };
   }
   if (!sessionsResult.ok) return { ok: false, toolName: "tmux_list_sessions", error: sessionsResult.stderr || sessionsResult.error };

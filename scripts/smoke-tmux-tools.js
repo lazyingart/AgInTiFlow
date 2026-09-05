@@ -41,6 +41,29 @@ const dockerNoInstallsConfig = {
   packageInstallPolicy: "block",
 };
 
+async function assertUbuntuMissingServerIsAnEmptyList() {
+  const fakeBin = path.join(workspace, "fake-tmux-bin");
+  const fakeTmux = path.join(fakeBin, "tmux");
+  const originalPath = process.env.PATH;
+  await fs.mkdir(fakeBin, { recursive: true });
+  await fs.writeFile(
+    fakeTmux,
+    '#!/bin/sh\nprintf "%s\\n" "error connecting to /tmp/tmux-1001/default (No such file or directory)" >&2\nexit 1\n',
+    { mode: 0o755 }
+  );
+  process.env.PATH = `${fakeBin}:${originalPath || ""}`;
+  try {
+    const list = await listTmuxSessions({ includePanes: true });
+    assert.equal(list.ok, true, list.error || "Ubuntu missing-server result was not accepted");
+    assert.deepEqual(list.sessions, [], "missing tmux server should produce no sessions");
+    assert.deepEqual(list.panes, [], "missing tmux server should produce no panes");
+    assert.equal(list.summary, "No tmux server is running.");
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+  }
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -57,6 +80,8 @@ async function captureUntil(target, pattern, timeoutMs = 5000) {
 }
 
 try {
+  await assertUbuntuMissingServerIsAnEmptyList();
+
   if (!(await tmuxAvailable())) {
     console.log(JSON.stringify({ ok: true, skipped: true, reason: "tmux is not installed" }, null, 2));
     process.exit(0);
@@ -290,6 +315,7 @@ try {
           "send-keys",
           "capture-pane",
           "list-sessions",
+          "ubuntu-missing-server-empty-list",
           "secret-guardrail",
           "destructive-guardrail",
           "host-danger-workspace-cleanup-allowed",
