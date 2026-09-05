@@ -1267,10 +1267,50 @@ try {
         },
       },
     };
-    const portCollisionPacket = await buildFailedTestRecoveryPacket(
-      { commandCwd: baselineWorkspace },
-      portCollisionState
+    const realSsPath = spawnSync("which", ["ss"], { encoding: "utf8" }).stdout.trim();
+    assert(realSsPath, "foreign listener smoke requires ss on linux");
+    const fakeSsBin = path.join(tempRoot, "fake-ss-bin");
+    const fakeSsState = path.join(tempRoot, "fake-ss-state.txt");
+    await fs.mkdir(fakeSsBin, { recursive: true });
+    await fs.writeFile(
+      path.join(fakeSsBin, "ss"),
+      [
+        "#!/usr/bin/env node",
+        "import fs from 'node:fs';",
+        "import { spawnSync } from 'node:child_process';",
+        "const statePath = process.env.AGINTI_SMOKE_FAKE_SS_STATE;",
+        "const realSs = process.env.AGINTI_SMOKE_REAL_SS;",
+        "let count = 0;",
+        "try { count = Number(fs.readFileSync(statePath, 'utf8') || '0'); } catch {}",
+        "fs.writeFileSync(statePath, String(count + 1));",
+        "if (count === 0) process.exit(0);",
+        "const result = spawnSync(realSs, process.argv.slice(2), { stdio: 'inherit' });",
+        "process.exit(typeof result.status === 'number' ? result.status : 1);",
+        "",
+      ].join("\n"),
+      { encoding: "utf8", mode: 0o755 }
     );
+    const priorPath = process.env.PATH;
+    const priorFakeSsState = process.env.AGINTI_SMOKE_FAKE_SS_STATE;
+    const priorFakeSsReal = process.env.AGINTI_SMOKE_REAL_SS;
+    process.env.PATH = `${fakeSsBin}${path.delimiter}${priorPath || ""}`;
+    process.env.AGINTI_SMOKE_FAKE_SS_STATE = fakeSsState;
+    process.env.AGINTI_SMOKE_REAL_SS = realSsPath;
+    let portCollisionPacket;
+    try {
+      portCollisionPacket = await buildFailedTestRecoveryPacket(
+        { commandCwd: baselineWorkspace },
+        portCollisionState
+      );
+    } finally {
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+      if (priorFakeSsState === undefined) delete process.env.AGINTI_SMOKE_FAKE_SS_STATE;
+      else process.env.AGINTI_SMOKE_FAKE_SS_STATE = priorFakeSsState;
+      if (priorFakeSsReal === undefined) delete process.env.AGINTI_SMOKE_REAL_SS;
+      else process.env.AGINTI_SMOKE_REAL_SS = priorFakeSsReal;
+    }
+    const fakeSsCalls = Number(await fs.readFile(fakeSsState, "utf8").catch(() => "0"));
     const portCollisionFocus = portCollisionState.meta.failedTestDiagnostic.focuses.find(
       (focus) => focus.kind === "python-agent-test-foreign-port-collision"
     );
@@ -1282,7 +1322,8 @@ try {
         portCollisionFocus?.portOccurrences === 2 &&
         portCollisionFocus?.listenerEvidence?.[0]?.ownership === "outside-task-workspace" &&
         portCollisionFocus?.testNames?.join(",") === "test_start" &&
-        portCollisionFocus?.assertionCount === 2,
+        portCollisionFocus?.assertionCount === 2 &&
+        fakeSsCalls >= 2,
       "a foreign hard-coded port or its exact executable dependency was not retained for repair"
     );
     const dynamicPortSource = [

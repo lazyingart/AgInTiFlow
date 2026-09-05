@@ -12113,7 +12113,7 @@ async function loopbackPortAcceptsConnections(port, timeoutMs = 350) {
   });
 }
 
-async function loopbackListenerOwnership(config = {}, port = 0) {
+async function loopbackListenerOwnershipOnce(config = {}, port = 0) {
   if (!(await loopbackPortAcceptsConnections(port))) return null;
   if (process.platform !== "linux") {
     return { port, occupied: true, workspaceOwned: null, processName: "unknown" };
@@ -12153,6 +12153,7 @@ async function loopbackListenerOwnership(config = {}, port = 0) {
   const processCwd = await fs.readlink(`/proc/${pid}/cwd`).catch(() => "");
   const commandLine = await fs.readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "");
   const resolvedProcessCwd = processCwd ? path.resolve(processCwd) : "";
+  const hasOwnershipEvidence = Boolean(processCwd || commandLine);
   const workspaceOwned = Boolean(
     (resolvedProcessCwd &&
       (resolvedProcessCwd === commandCwd || resolvedProcessCwd.startsWith(`${commandCwd}${path.sep}`))) ||
@@ -12162,7 +12163,20 @@ async function loopbackListenerOwnership(config = {}, port = 0) {
       return resolved === commandCwd || resolved.startsWith(`${commandCwd}${path.sep}`);
     })
   );
-  return { port, occupied: true, workspaceOwned, processName };
+  return { port, occupied: true, workspaceOwned: hasOwnershipEvidence ? workspaceOwned : null, processName };
+}
+
+async function loopbackListenerOwnership(config = {}, port = 0) {
+  let lastOccupiedUnknown = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const snapshot = await loopbackListenerOwnershipOnce(config, port);
+    if (snapshot?.occupied === true && snapshot.workspaceOwned !== null) return snapshot;
+    if (snapshot?.occupied === true) lastOccupiedUnknown = snapshot;
+    if (attempt < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+  }
+  return lastOccupiedUnknown;
 }
 
 async function pythonAgentCreatedTestPortCollisionDefects(
