@@ -2132,10 +2132,19 @@ function sourceFreeClaimSegmentOnlyClarifiesAmbiguousInput(text = "") {
     /\b(?:may|might|could|possibly)\s+(?:mean|refer\s+to|be)|\b(?:cannot|can't|could\s+not|unable\s+to)\s+(?:safely\s+)?(?:infer|interpret|determine)|\bambiguous\b/iu.test(
       value
     ) ||
+    /\b(?:(?:without|lacks?|missing|insufficient)\s+(?:enough\s+)?context|not\s+enough\s+(?:context\s+)?to\s+(?:infer|interpret|determine|predict)|insufficient\s+(?:context\s+)?to\s+(?:infer|interpret|determine|predict))\b/iu.test(
+      value
+    ) ||
     /(?:可能(?:是|指|表示)|也可能|或许|或許|无法|無法|不能|不确定|不確定|不清楚|不知道)[^。！？；\n]{0,60}(?:含义|含義|意思|指什么|指什麼|上下文|编号|編號|日期|金额|金額|误发|誤發)/u.test(
       value
     ) ||
+    /(?:缺少|没有|沒有|上下文不足|信息不足|資訊不足)[^。！？；\n]{0,50}(?:上下文|语境|語境|信息|資訊|含义|含義|意思|意图|意圖|任务|任務|请求|請求|预测|預測|推断|推斷|判断|判斷)/u.test(
+      value
+    ) ||
     /(?:かもしれない|可能性|判断できない|特定できない|曖昧)[^。！？；\n]{0,60}(?:意味|文脈|番号|日付|金額|誤送信)/u.test(
+      value
+    ) ||
+    /(?:文脈|情報)(?:が)?(?:ない|不足|欠けている)[^。！？；\n]{0,50}(?:意味|意図|依頼|タスク|予測|推測|判断)/u.test(
       value
     );
   if (!namesInput || !framesInterpretations) return false;
@@ -2150,6 +2159,26 @@ function sourceFreeClaimSegmentOnlyClarifiesAmbiguousInput(text = "") {
       value
     );
   return !assertsExternalOutcome;
+}
+
+function sourceFreeClaimSegmentOnlyNegatesForecast(text = "") {
+  const value = String(text || "");
+  if (!value.trim()) return false;
+  const withoutNegation = value
+    .replace(
+      /\b(?:no|not\s+(?:a|an|the)?|without|does\s+not|doesn't|is\s+not|isn't)\s+(?:external\s+)?(?:forecast|prediction|projection|predictive\s+claim)s?\b/giu,
+      " "
+    )
+    .replace(
+      /(?:不是|並非|并非|没有|沒有|无|無|不作|不做|无需|無需|不需要)(?:任何)?(?:预测|預測|预计|預計|推测|推測|预言|預言)/gu,
+      " "
+    )
+    .replace(
+      /(?:予測|予想|推測|見込み)(?:ではない|ではありません|しない|不要|なし)/gu,
+      " "
+    );
+  if (withoutNegation === value) return false;
+  return !sourceFreeExternalClaimCategoriesForSegment(withoutNegation).includes("forecast");
 }
 
 function sourceFreeClaimSegmentOnlyDescribesTaskIntent(text = "") {
@@ -2241,7 +2270,8 @@ function sourceFreeExternalClaimAssessment(
       (forecastOnly &&
         (
           sourceFreeClaimSegmentOnlyMentionsCandidateForecast(segment) ||
-          sourceFreeClaimSegmentOnlyDescribesTaskIntent(segment)
+          sourceFreeClaimSegmentOnlyDescribesTaskIntent(segment) ||
+          sourceFreeClaimSegmentOnlyNegatesForecast(segment)
         ))
     ) {
       continue;

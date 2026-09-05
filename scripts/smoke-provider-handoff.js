@@ -756,6 +756,44 @@ assert.equal(
   1
 );
 
+const ambiguousNumberRouterClassification = JSON.stringify({
+  route_kind: "chat_only",
+  project: "unknown",
+  worker_needed: false,
+  needs_recent_media: false,
+  public_publish_intent: false,
+  public_publish_allowed: false,
+  external_action_allowed: false,
+  delivery_mode: "agent_decide",
+  source_policy: "current_request_only",
+  reason: "A bare six-digit number lacks enough context to predict intent or choose a worker task.",
+  ack: "",
+  chat_reply: "收到 199793。这个数字是指什么？",
+  confidence: 0.32,
+});
+const ambiguousNumberRouterHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "source-free-ambiguous-number-router-handoff",
+  localResponses: [ambiguousNumberRouterClassification],
+});
+assert.equal(ambiguousNumberRouterHandoff.result.stopped, undefined);
+assert.equal(ambiguousNumberRouterHandoff.result.result, ambiguousNumberRouterClassification);
+assert.deepEqual(
+  ambiguousNumberRouterHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm"],
+  "an ambiguous-number route did not finish on the first LocalLLM fallback response"
+);
+assert.equal(
+  ambiguousNumberRouterHandoff.events.filter(
+    (event) => event.type === "response_only.source_free_claim_rejected"
+  ).length,
+  0,
+  "a prediction-of-intent clarification triggered source-free evidence repair"
+);
+assert.equal(
+  ambiguousNumberRouterHandoff.events.filter((event) => event.type === "session.finished").length,
+  1
+);
+
 const publishRouterClassification = JSON.stringify({
   route_kind: "publish_video",
   project: "lazyedit",

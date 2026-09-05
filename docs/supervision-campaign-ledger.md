@@ -2470,3 +2470,22 @@ URL, so a release-to-bind race still follows the product's normal fallback.
 The standalone public-research CLI accepts port `0` and reports the actual
 kernel-assigned URL, eliminating that race without probing or killing any
 foreign listener.
+
+### Ambiguous-input clarification is not a forecast
+
+`labcanvas-ambiguous-input-negated-forecast-174` correlates three retained
+response-only failures for the bare message `199793`. The router correctly
+selected natural clarification, but explanations such as “not enough context
+to predict intent” or “no forecast is requested” contained forecast vocabulary.
+The evidence guard treated that metalinguistic wording as an external future
+claim, retried it, then stopped the otherwise valid route.
+
+The source-free validator now recognizes bounded English, Chinese, and Japanese
+ambiguous-input explanations and explicit forecast negation. This exception is
+semantic rather than route-specific: the same sentence must name an ambiguous
+input or actually negate forecasting, and it stops applying when any residual
+text asserts a future outcome. Genuine claims such as “the market analysis
+predicts demand will grow next year” remain fail-closed. A deterministic
+DeepSeek-to-LocalLLM handoff regression proves the production-shaped route
+finishes in the first fallback turn without requiring evidence or changing the
+caller envelope.

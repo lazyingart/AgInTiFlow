@@ -1065,6 +1065,63 @@ assert.equal(
   true,
   "a routing clarification for a bare numeric message triggered source-free evidence repair"
 );
+const retainedBareNumberPredictionClarification = evaluateSourceFreeResponseClaims({
+  goal: sourceFreeResearchGoal,
+  candidateResult: JSON.stringify({
+    route_kind: "chat_only",
+    project: "unknown",
+    worker_needed: false,
+    needs_recent_media: false,
+    public_publish_intent: false,
+    public_publish_allowed: false,
+    external_action_allowed: false,
+    delivery_mode: "agent_decide",
+    source_policy: "current_request_only",
+    reason: "A bare six-digit number lacks enough context to predict intent or choose a worker task.",
+    ack: "",
+    chat_reply: "收到 199793。这个数字是指什么？",
+    confidence: 0.32,
+  }),
+  evidenceLedger: { itemCount: 0, categories: [], items: [] },
+});
+assert.equal(
+  retainedBareNumberPredictionClarification.ok,
+  true,
+  "metalinguistic prediction wording in an ambiguous-input route was mistaken for an external forecast"
+);
+for (const candidateResult of [
+  "No forecast is requested; please clarify what this number means.",
+  "这不是预测；这串数字缺少上下文，无法判断它的含义。",
+  "これは予測ではありません。この数字だけでは文脈が不足しており、意味を判断できません。",
+]) {
+  const negatedForecastClarification = evaluateSourceFreeResponseClaims({
+    goal: sourceFreeResearchGoal,
+    candidateResult,
+    evidenceLedger: { itemCount: 0, categories: [], items: [] },
+  });
+  assert.equal(
+    negatedForecastClarification.ok,
+    true,
+    `an explicit forecast negation was treated as a forecast: ${candidateResult}`
+  );
+}
+for (const candidateResult of [
+  "The input is ambiguous, but the market analysis predicts demand will grow next year.",
+  "No forecast was requested, but demand will grow next year.",
+  "这串数字缺少上下文，但报告预测市场需求明年会增长。",
+  "予測ではありませんが、市場需要は来年増加する見込みです。",
+]) {
+  const disguisedForecast = evaluateSourceFreeResponseClaims({
+    goal: sourceFreeResearchGoal,
+    candidateResult,
+    evidenceLedger: { itemCount: 0, categories: [], items: [] },
+  });
+  assert.equal(
+    disguisedForecast.ok,
+    false,
+    `ambiguous-input or negation wording hid a real external forecast: ${candidateResult}`
+  );
+}
 const ambiguousInputExternalClaim = evaluateSourceFreeResponseClaims({
   goal: sourceFreeResearchGoal,
   candidateResult: "这条消息可能是指某研究在2025年发表并已验证。",
