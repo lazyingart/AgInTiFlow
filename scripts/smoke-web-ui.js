@@ -5,12 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { allocateLoopbackTestPort } from "./fixtures/loopback-test-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-web-ui-"));
 const agintiflowHome = path.join(runtimeDir, ".agintiflow-home");
-const port = 47000 + Math.floor(Math.random() * 1000);
-const baseUrl = `http://127.0.0.1:${port}`;
+const port = await allocateLoopbackTestPort();
+let baseUrl = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "web", "--port", String(port), "--host", "127.0.0.1"], {
   cwd: runtimeDir,
   env: {
@@ -26,6 +27,8 @@ let stdout = "";
 let stderr = "";
 server.stdout.on("data", (chunk) => {
   stdout += chunk.toString();
+  const announcedUrl = stdout.match(/Website control agent UI running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+  if (announcedUrl) baseUrl = announcedUrl;
 });
 server.stderr.on("data", (chunk) => {
   stderr += chunk.toString();
@@ -40,6 +43,12 @@ async function waitForHealth() {
   let lastError = "";
   while (Date.now() < deadline) {
     if (server.exitCode !== null) break;
+    const announcedUrl = stdout.match(/Website control agent UI running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+    if (!announcedUrl) {
+      await delay(100);
+      continue;
+    }
+    baseUrl = announcedUrl;
     try {
       const health = await fetch(`${baseUrl}/health`).then((response) => response.json());
       if (health.ok) return health;

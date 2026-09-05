@@ -12,8 +12,8 @@ const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "agintiflow-public-re
 const fakeBin = path.join(runtimeDir, "bin");
 const dedicatedCodexHome = path.join(runtimeDir, "server-codex-home");
 const agintiflowHome = path.join(runtimeDir, ".agintiflow-home");
-const port = 45000 + Math.floor(Math.random() * 1000);
-const baseUrl = `http://127.0.0.1:${port}`;
+const port = 0;
+let baseUrl = "";
 
 await fs.mkdir(fakeBin, { recursive: true });
 await fs.mkdir(dedicatedCodexHome, { recursive: true });
@@ -122,6 +122,8 @@ let stdout = "";
 let stderr = "";
 server.stdout.on("data", (chunk) => {
   stdout += chunk.toString();
+  const announcedUrl = stdout.match(/aginti-public-research: (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+  if (announcedUrl) baseUrl = announcedUrl;
 });
 server.stderr.on("data", (chunk) => {
   stderr += chunk.toString();
@@ -141,6 +143,12 @@ async function waitForHealth() {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     if (server.exitCode !== null) break;
+    const announcedUrl = stdout.match(/aginti-public-research: (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+    if (!announcedUrl) {
+      await delay(100);
+      continue;
+    }
+    baseUrl = announcedUrl;
     try {
       const { response, body } = await fetchJson("/health");
       if (response.ok && body.ok) return;
@@ -149,7 +157,7 @@ async function waitForHealth() {
     }
     await delay(250);
   }
-  throw new Error(`web server did not become healthy. stdout=${stdout.slice(-500)} stderr=${stderr.slice(-500)}`);
+  throw new Error(`web server did not become healthy at ${baseUrl || "an unannounced URL"}. stdout=${stdout.slice(-500)} stderr=${stderr.slice(-500)}`);
 }
 
 try {

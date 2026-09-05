@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { SessionStore } from "../src/session-store.js";
 import { projectPaths, sessionStoreOptions } from "../src/project.js";
 import { WebDatabase } from "../src/web-db.js";
+import { allocateLoopbackTestPort } from "./fixtures/loopback-test-port.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureMcpServer = path.join(repoRoot, "scripts", "fixtures", "mcp-stdio-smoke-server.mjs");
@@ -15,8 +16,8 @@ const runtimeDir = path.join(fixtureRoot, "workspace");
 await fs.mkdir(runtimeDir, { recursive: true });
 const agintiflowHome = path.join(runtimeDir, ".agintiflow-home");
 process.env.AGINTIFLOW_HOME = agintiflowHome;
-const port = 43000 + Math.floor(Math.random() * 1000);
-const baseUrl = `http://127.0.0.1:${port}`;
+const port = await allocateLoopbackTestPort();
+let baseUrl = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js"), "web", "--port", String(port), "--host", "127.0.0.1"], {
   cwd: runtimeDir,
   env: {
@@ -32,6 +33,8 @@ let stdout = "";
 let stderr = "";
 server.stdout.on("data", (chunk) => {
   stdout += chunk.toString();
+  const announcedUrl = stdout.match(/Website control agent UI running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+  if (announcedUrl) baseUrl = announcedUrl;
 });
 server.stderr.on("data", (chunk) => {
   stderr += chunk.toString();
@@ -54,6 +57,12 @@ async function waitForHealth() {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     if (server.exitCode !== null) break;
+    const announcedUrl = stdout.match(/Website control agent UI running on (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
+    if (!announcedUrl) {
+      await delay(100);
+      continue;
+    }
+    baseUrl = announcedUrl;
     try {
       const health = await fetchJson("/health");
       if (health.ok) return health;

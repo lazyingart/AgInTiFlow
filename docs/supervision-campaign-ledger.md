@@ -2446,3 +2446,27 @@ fail-closed behavior, explicit-silence compatibility, omitted-candidate
 compatibility, and DeepSeek-to-LocalLLM response-only handoff. No live provider
 or LocalLLM inference, LabCanvas runtime change, queue action, schedule,
 transport operation, or external side effect is involved.
+
+### Local-server smoke tests preserve foreign listeners
+
+`webapp-command-occupied-port-isolation-173` came from the full package gate,
+not a synthetic model response. The slash-command smoke selected a random port
+already occupied on the shared workstation. AgInTiFlow correctly started its
+webapp on the next compatible port, but the smoke waited only for the original
+URL and timed out. Its cleanup then used `lsof` against the requested port,
+which could terminate the unrelated listener while leaving the actual fallback
+webapp behind.
+
+The smoke now reserves an occupied kernel-assigned port deliberately, accepts
+the verified fallback URL printed by the CLI, and checks that the foreign
+listener survives. Cleanup extracts only URLs observed during that test and
+calls the normal ownership-aware webapp stop API with the exact temporary
+runtime directory and home. It no longer kills arbitrary listeners by port.
+Repeated focused runs also prove that no test-owned fallback process remains.
+The full gate then exposed the same fixed-range random-port assumption in the
+standalone public-research smoke. All affected Studio fixtures now ask the
+kernel for an ephemeral loopback port and consume the child process's announced
+URL, so a release-to-bind race still follows the product's normal fallback.
+The standalone public-research CLI accepts port `0` and reports the actual
+kernel-assigned URL, eliminating that race without probing or killing any
+foreign listener.

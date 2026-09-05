@@ -115,6 +115,7 @@
     "scripts/smoke-runtime-core.js",
     "scripts/smoke-mcp.js",
     "scripts/fixtures/mcp-stdio-smoke-server.mjs",
+    "scripts/fixtures/loopback-test-port.mjs",
     "scripts/smoke-model-roles.js",
     "scripts/smoke-platform.js",
     "scripts/smoke-perception-research.js",
