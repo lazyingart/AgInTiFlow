@@ -38,6 +38,28 @@ AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"task","request":"Create the requested PDF f
 
 For `chat-response`, ordinary conversation and routing do not require file or command evidence. `host-managed-response` is for content-only subtasks such as a LaTeX body, translation, completion audit, or scheduled lesson where LabCanvas owns persistence, compilation, validation, and delivery. For `task`, evidence requirements are inferred only from the exact request, not from surrounding wrapper prose. Artifact requests still require real artifacts.
 
+## Completion-Audit Artifact Coverage
+
+A completion audit cannot mark an exact task item covered merely because its
+candidate contains a substantive text answer. When that item directly asks to
+create, attach, send, save, download, or otherwise deliver a file, the
+candidate must contain compatible material artifact evidence.
+
+Accepted evidence includes structured `files`, `artifacts`, `attachments`, or
+deliverable records with a matching extension, MIME type, or media kind. A
+nonempty `generated_pdf_content` field also satisfies a PDF requirement when
+the host owns compilation. Plain prose such as `the PDF was sent` does not.
+The boundary covers document, image, video, audio, archive, and common CAD
+formats in English, Chinese, and Japanese.
+
+Artifact intent remains scoped to the output. Reading `report.pdf`, analyzing
+an attached video, or returning a summary of a video does not require the input
+file to be returned. Explicit `do not attach a PDF` wording likewise remains a
+text-only request. An invalid audit receives one bounded repair; repeated
+invalid coverage fails closed with the exact task item retained as missing and
+classified as an artifact requirement. LabCanvas still owns transport,
+compilation, validation, and delivery.
+
 ## Bounded Media Source Quality
 
 When a response-only packet explicitly asks AgInTi to summarize actual speech,

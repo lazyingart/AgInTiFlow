@@ -2517,3 +2517,28 @@ repeated-invalid fail-closed behavior, negated acknowledgement wording, and
 DeepSeek-to-LocalLLM handoff. No live provider or LocalLLM inference, LabCanvas
 runtime change, queue action, schedule, transport operation, or external side
 effect is involved.
+
+### Text answers cannot stand in for requested artifacts
+
+`labcanvas-completion-audit-artifact-coverage-176` extends the retained
+completion-audit family behind repeated LabCanvas reports that an answer
+arrived but its requested PDF did not. The auditor could place an exact item in
+`covered_item_ids` when `candidate_result` contained a useful answer but an
+empty `files` list. Empty- and status-only-candidate checks did not apply
+because the answer itself was substantive.
+
+Completion-audit contract discovery now derives explicit material artifact
+requirements from each exact request item and compares them with structured
+candidate evidence. Files, attachments, artifacts, deliverables, matching
+extensions and MIME types, and host-owned generated PDF content count; a prose
+claim that a file was sent does not. The check covers common document, image,
+video, audio, archive, and CAD formats in English, Chinese, and Japanese.
+
+The intent boundary distinguishes outputs from inputs: reading a PDF,
+analyzing an attached video, or sending a summary of a video does not require
+the source media to be returned. Negated artifact requests remain text-only.
+One invalid audit receives the existing bounded repair. Repeated invalid
+coverage fails closed with the original exact request retained as a missing
+artifact item. Deterministic tests cover direct execution and
+DeepSeek-to-LocalLLM handoff without live inference, LabCanvas changes, queue
+actions, schedules, transports, or external side effects.

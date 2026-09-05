@@ -832,6 +832,25 @@ const retainedStatusOnlyCoveredResult = {
   complexity: "medium",
   summary: "The candidate says work will continue later.",
 };
+const completionAuditTextWithoutPdfGoal = completionAuditGoalForCandidate(
+  "Answer the question with evidence and attach the completed PDF report.",
+  {
+    message: "The evidence supports the stated conclusion.",
+    confirmation: "",
+    files: [],
+  }
+);
+const correctedMissingPdfAuditResult = {
+  covered_item_ids: [],
+  missing: [{
+    item_id: "task:current-message",
+    requirement: "Attach the completed PDF report.",
+    kind: "artifact",
+  }],
+  legitimate_blocker: false,
+  complexity: "medium",
+  summary: "The answer text is present, but the requested PDF is missing.",
+};
 const correctedStatusOnlyAuditResult = {
   covered_item_ids: [],
   missing: [{
@@ -1934,6 +1953,171 @@ try {
       acceptedStatusCompatibleCandidate.calls.length,
       1,
       `${id} was mistaken for an unhandled progress acknowledgement`
+    );
+  }
+
+  const repairedMissingRequestedPdf = await runCase({
+    id: "response-only-completion-audit-artifact-coverage-repair",
+    taskProfile: "chatops",
+    goal: completionAuditTextWithoutPdfGoal,
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(correctedMissingPdfAuditResult)),
+    ],
+  });
+  assert.equal(
+    repairedMissingRequestedPdf.calls.length,
+    2,
+    "substantive answer text was accepted as the explicitly requested PDF artifact"
+  );
+  assert.deepEqual(
+    repairedMissingRequestedPdf.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.invalidAuditSemantics,
+    ["covered_item_ids:task:current-message-without-required-artifact:.pdf"]
+  );
+  assert.deepEqual(
+    JSON.parse(repairedMissingRequestedPdf.result.result),
+    correctedMissingPdfAuditResult
+  );
+
+  const acceptedRequestedPdf = await runCase({
+    id: "response-only-completion-audit-artifact-coverage-valid",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Answer the question with evidence and attach the completed PDF report.",
+      {
+        message: "The report is complete.",
+        confirmation: "",
+        files: [{ name: "evidence-report.pdf", suffix: ".pdf" }],
+      }
+    ),
+    responses: [assistant(JSON.stringify(retainedStatusOnlyCoveredResult))],
+  });
+  assert.equal(
+    acceptedRequestedPdf.calls.length,
+    1,
+    "a structured requested PDF attachment was rejected"
+  );
+
+  for (const [id, request] of [
+    ["chinese", "请回答问题并附上完成的 PDF 报告。"],
+    ["japanese", "質問に答え、完成した PDF レポートを添付してください。"],
+  ]) {
+    const repairedMultilingualMissingPdf = await runCase({
+      id: `response-only-completion-audit-artifact-coverage-${id}`,
+      taskProfile: "chatops",
+      goal: completionAuditGoalForCandidate(request, {
+        message: "The evidence-backed answer is present.",
+        confirmation: "",
+        files: [],
+      }),
+      responses: [
+        assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+        assistant(JSON.stringify(correctedMissingPdfAuditResult)),
+      ],
+    });
+    assert.equal(
+      repairedMultilingualMissingPdf.calls.length,
+      2,
+      `${id} requested PDF was satisfied by answer text alone`
+    );
+  }
+
+  const repairedProseOnlyPdfClaim = await runCase({
+    id: "response-only-completion-audit-artifact-prose-claim",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Answer the question and attach the completed PDF report.",
+      {
+        message: "The answer is complete and the PDF was sent.",
+        confirmation: "",
+        files: [],
+      }
+    ),
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(correctedMissingPdfAuditResult)),
+    ],
+  });
+  assert.equal(
+    repairedProseOnlyPdfClaim.calls.length,
+    2,
+    "prose claiming that a PDF was sent counted as a material attachment"
+  );
+
+  const repeatedMissingRequestedPdf = await runCase({
+    id: "response-only-completion-audit-artifact-coverage-stop",
+    taskProfile: "chatops",
+    goal: completionAuditTextWithoutPdfGoal,
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+    ],
+  });
+  assert.equal(repeatedMissingRequestedPdf.result.stopped, true);
+  assert.deepEqual(JSON.parse(repeatedMissingRequestedPdf.result.result).missing, [{
+    item_id: "task:current-message",
+    requirement: "Answer the question with evidence and attach the completed PDF report.",
+    kind: "artifact",
+  }]);
+
+  for (const [id, request, candidate] of [
+    [
+      "negated-pdf",
+      "Answer in chat; do not attach or create a PDF.",
+      { message: "The direct answer is here.", confirmation: "", files: [] },
+    ],
+    [
+      "pdf-definition",
+      "What is a PDF? Answer in one sentence.",
+      { message: "PDF is a portable document format.", confirmation: "", files: [] },
+    ],
+    [
+      "video-source-summary",
+      "Analyze the attached video and return a concise summary.",
+      { message: "The video shows the documented experiment.", confirmation: "", files: [] },
+    ],
+    [
+      "video-source-summary-chinese",
+      "分析这个视频并给我一段简短摘要。",
+      { message: "视频展示了实验过程。", confirmation: "", files: [] },
+    ],
+    [
+      "pdf-source-explanation",
+      "Read report.pdf and explain its conclusion in chat.",
+      { message: "The report concludes that the intervention helped.", confirmation: "", files: [] },
+    ],
+    [
+      "host-generated-pdf",
+      "Answer the question and attach the completed PDF report.",
+      {
+        message: "The report is complete.",
+        confirmation: "",
+        files: [],
+        generated_pdf_content: ["\\documentclass{article}\\begin{document}Done\\end{document}"],
+      },
+    ],
+    [
+      "video-attachment",
+      "Send the completed video file.",
+      {
+        message: "The video is ready.",
+        confirmation: "",
+        files: [{ path: "artifacts/final-video.mp4", mime_type: "video/mp4" }],
+      },
+    ],
+  ]) {
+    const acceptedArtifactBoundary = await runCase({
+      id: `response-only-completion-audit-artifact-compatible-${id}`,
+      taskProfile: "chatops",
+      goal: completionAuditGoalForCandidate(request, candidate),
+      responses: [assistant(JSON.stringify(retainedStatusOnlyCoveredResult))],
+    });
+    assert.equal(
+      acceptedArtifactBoundary.calls.length,
+      1,
+      `${id} crossed the explicit artifact completion boundary incorrectly`
     );
   }
 

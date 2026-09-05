@@ -1700,6 +1700,210 @@ function hasMeaningfulResponseOnlyValue(value) {
   return false;
 }
 
+const RESPONSE_ONLY_ARTIFACT_EXTENSIONS = new Set([
+  ".3mf",
+  ".7z",
+  ".csv",
+  ".docx",
+  ".flac",
+  ".gz",
+  ".jpeg",
+  ".jpg",
+  ".json",
+  ".md",
+  ".mkv",
+  ".mov",
+  ".mp3",
+  ".mp4",
+  ".odp",
+  ".pdf",
+  ".png",
+  ".pptx",
+  ".rar",
+  ".step",
+  ".stl",
+  ".stp",
+  ".svg",
+  ".tar",
+  ".tex",
+  ".txt",
+  ".wav",
+  ".webm",
+  ".webp",
+  ".xlsx",
+  ".zip",
+]);
+
+function responseOnlyCanonicalArtifactKind(value = "") {
+  const kind = String(value || "").trim().toLocaleLowerCase("en-US");
+  if (!kind) return "";
+  if (kind === ".stp") return ".step";
+  return kind;
+}
+
+function responseOnlyArtifactCategory(kind = "") {
+  const value = responseOnlyCanonicalArtifactKind(kind);
+  if ([".png", ".jpg", ".jpeg", ".webp", ".svg"].includes(value)) return "image";
+  if ([".mp4", ".mov", ".mkv", ".webm"].includes(value)) return "video";
+  if ([".mp3", ".wav", ".flac"].includes(value)) return "audio";
+  if ([".zip", ".rar", ".7z", ".tar", ".gz"].includes(value)) return "archive";
+  if ([".step", ".stl", ".3mf"].includes(value)) return "cad";
+  return "";
+}
+
+function responseOnlyArtifactKindsFromText(value = "") {
+  const text = String(value || "");
+  const kinds = new Set();
+  for (const match of text.matchAll(/\.(?:3mf|7z|csv|docx|flac|gz|jpe?g|json|md|mkv|mov|mp3|mp4|odp|pdf|png|pptx|rar|step|stl|stp|svg|tar|tex|txt|wav|webm|webp|xlsx|zip)(?=$|[\s?#&'"`),;:}\]])/giu)) {
+    const kind = responseOnlyCanonicalArtifactKind(match[0]);
+    if (!RESPONSE_ONLY_ARTIFACT_EXTENSIONS.has(match[0].toLocaleLowerCase("en-US"))) continue;
+    kinds.add(kind);
+    const category = responseOnlyArtifactCategory(kind);
+    if (category) kinds.add(category);
+  }
+  if (/\bimage\/(?:png|jpe?g|webp|svg\+xml)\b/iu.test(text)) kinds.add("image");
+  if (/\bvideo\/(?:mp4|quicktime|x-matroska|webm)\b/iu.test(text)) kinds.add("video");
+  if (/\baudio\/(?:mpeg|wav|x-wav|flac)\b/iu.test(text)) kinds.add("audio");
+  if (/\bapplication\/pdf\b/iu.test(text)) kinds.add(".pdf");
+  return kinds;
+}
+
+function responseOnlyArtifactClauseHasOutputIntent(clause = "") {
+  const text = String(clause || "");
+  const artifact = String.raw`(?:\.(?:3mf|7z|csv|docx|flac|gz|jpe?g|json|md|mkv|mov|mp3|mp4|odp|pdf|png|pptx|rar|step|stl|stp|svg|tar|tex|txt|wav|webm|webp|xlsx|zip)\b|\b(?:PDF|DOCX|Word\s+document|PPTX|PowerPoint|Excel\s+workbook|XLSX|Markdown\s+(?:file|document)|LaTeX\s+source|TeX\s+source|STEP|STL|3MF|image|figure|screenshot|video|audio|archive|attachment|artifact|file)\b)`;
+  const actionBefore = new RegExp(
+    String.raw`\b(?:attach|send|provide|deliver|return|create|generate|make|produce|compile|export|save|download|copy|upload)\b([^.!?;。！？；\n]{0,100}?)${artifact}`,
+    "giu"
+  );
+  for (const match of text.matchAll(actionBefore)) {
+    if (
+      !/\b(?:analysis|answer|caption|contents?|description|explanation|information|report|review|summary|text|transcript|translation)\s+(?:about|of|from)\s+(?:an?\s+|the\s+)?$/iu.test(
+        String(match[1] || "")
+      )
+    ) {
+      return true;
+    }
+  }
+  const wantsArtifact = new RegExp(
+    String.raw`\b(?:i|we)\s+(?:also\s+)?(?:need|want|request|would\s+like)\b([^.!?;。！？；\n]{0,100}?)${artifact}`,
+    "giu"
+  );
+  for (const match of text.matchAll(wantsArtifact)) {
+    if (
+      !/\b(?:analysis|answer|caption|contents?|description|explanation|information|report|review|summary|text|transcript|translation)\s+(?:about|of|from)\s+(?:an?\s+|the\s+)?$/iu.test(
+        String(match[1] || "")
+      )
+    ) {
+      return true;
+    }
+  }
+  if (
+    new RegExp(
+      String.raw`${artifact}[^.!?;。！？；\n]{0,80}\b(?:must|should|needs?\s+to|has\s+to)\s+be\s+(?:attached|sent|provided|delivered|returned|created|generated|produced|compiled|exported|saved|downloaded|copied|uploaded)\b`,
+      "iu"
+    ).test(text)
+  ) {
+    return true;
+  }
+  return (
+    /(?:附上|附加|发送|發送|发回|發回|提供|交付|生成|制作|製作|创建|建立|输出|輸出|导出|導出|保存|下载|下載|上传|上傳|提交|复制|複製|拷贝|拷貝|给我|給我|需要)[^。！？；\n]{0,30}(?:PDF|Word|PPT|Excel|LaTeX|STEP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件)(?![^。！？；\n]{0,12}(?:摘要|分析|说明|說明|描述|内容|內容|文字|转录|轉錄|翻译|翻譯))/u.test(text) ||
+    /(?:PDF|Word|PPT|Excel|LaTeX|STEP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件)(?:文件)?\s*(?:请|請)?(?:直接)?(?:附上|发给我|發給我|发送给我|發送給我|发回|發回|提供|交付|输出|輸出|导出|導出|保存|下载|下載|上传|上傳|提交)/u.test(text) ||
+    /(?:添付|送信|返送|提供|作成|生成|出力|書き出し|保存|ダウンロード|アップロード|提出)[^。！？；\n]{0,30}(?:PDF|Word|PowerPoint|Excel|LaTeX|STEP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル)(?![^。！？；\n]{0,12}(?:要約|分析|説明|内容|テキスト|文字起こし|翻訳))/u.test(text) ||
+    /(?:PDF|Word|PowerPoint|Excel|LaTeX|STEP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル)(?:\s*(?:レポート|文書|ファイル))?(?:を)?\s*(?:添付|送信|返送|提供|作成|生成|出力|保存|提出)(?:して|する|してください|願います|します)?/u.test(text)
+  );
+}
+
+function responseOnlyRequestedArtifactKinds(request = "") {
+  const kinds = new Set();
+  const clauses = String(request || "")
+    .split(/[.!?;。！？；\n]+/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const clause of clauses) {
+    const explicitArtifact = /\.(?:3mf|7z|csv|docx|flac|gz|jpe?g|json|md|mkv|mov|mp3|mp4|odp|pdf|png|pptx|rar|step|stl|stp|svg|tar|tex|txt|wav|webm|webp|xlsx|zip)\b|\b(?:PDF|DOCX|Word\s+document|PPTX|PowerPoint|Excel\s+workbook|XLSX|Markdown\s+(?:file|document)|LaTeX\s+source|TeX\s+source|STEP|STL|3MF|image|figure|screenshot|video|audio|archive|attachment|artifact|file)\b|(?:PDF|Word|PPT|Excel|LaTeX|STEP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件)|(?:PDF|Word|PowerPoint|Excel|LaTeX|STEP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル)/iu.test(clause);
+    const outputIntent = responseOnlyArtifactClauseHasOutputIntent(clause);
+    const negatedArtifact = /\b(?:do\s+not|don't|without|no\s+need\s+to)\b[^.!?;]{0,80}\b(?:attach|send|provide|create|generate|produce|pdf|file|artifact)\b|\bno\s+(?:pdf|file|attachment|artifact)\b[^.!?;]{0,40}\b(?:needed|required|necessary)\b|(?:不要|无需|無需|不必)\s*(?:附上|发送|發送|提供|生成|制作|製作|文件|附件|PDF)|(?:添付|送信|作成|生成)(?:しない|不要|は不要)/iu.test(clause);
+    if (!explicitArtifact || !outputIntent || negatedArtifact) continue;
+
+    for (const kind of responseOnlyArtifactKindsFromText(clause)) kinds.add(kind);
+    if (/\bPDF\b/iu.test(clause)) kinds.add(".pdf");
+    if (/\b(?:DOCX|Word\s+document)\b/iu.test(clause)) kinds.add(".docx");
+    if (/\b(?:PPTX|PowerPoint)\b/iu.test(clause)) kinds.add(".pptx");
+    if (/\b(?:XLSX|Excel\s+workbook)\b/iu.test(clause)) kinds.add(".xlsx");
+    if (/\bMarkdown\s+(?:file|document)\b/iu.test(clause)) kinds.add(".md");
+    if (/\b(?:LaTeX|TeX)\s+source\b/iu.test(clause)) kinds.add(".tex");
+    if (/\b(?:STEP|STP)\b/iu.test(clause)) kinds.add(".step");
+    if (/\bSTL\b/iu.test(clause)) kinds.add(".stl");
+    if (/\b3MF\b/iu.test(clause)) kinds.add(".3mf");
+    if (/\b(?:image|figure|screenshot)\b|(?:图片|圖像|图像|截图|截圖)|(?:画像|図|スクリーンショット)/iu.test(clause)) kinds.add("image");
+    if (/\bvideo\b|(?:视频|影片)|(?:動画)/iu.test(clause)) kinds.add("video");
+    if (/\baudio\b|(?:音频|音訊)|(?:音声)/iu.test(clause)) kinds.add("audio");
+    if (/\barchive\b|(?:压缩包|壓縮包)|(?:アーカイブ)/iu.test(clause)) kinds.add("archive");
+    if (!kinds.size || /\b(?:attachment|artifact|file)\b|(?:附件|文件)|(?:添付ファイル|ファイル)/iu.test(clause)) {
+      kinds.add("file");
+    }
+  }
+  return [...kinds];
+}
+
+function responseOnlyCandidateArtifactKinds(candidate) {
+  const kinds = new Set();
+  const addKinds = (value) => {
+    for (const kind of responseOnlyArtifactKindsFromText(value)) kinds.add(kind);
+  };
+  const visitMaterial = (value) => {
+    if (!hasMeaningfulResponseOnlyValue(value)) return;
+    kinds.add("file");
+    if (typeof value === "string") {
+      addKinds(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visitMaterial);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [key, nested] of Object.entries(value)) {
+      if (/^(?:path|file_path|filepath|name|filename|suffix|extension|format|mime|mime_type|mimetype|type)$/iu.test(key)) {
+        addKinds(nested);
+        const label = String(nested || "").trim().toLocaleLowerCase("en-US");
+        if (["image", "video", "audio", "archive", "cad"].includes(label)) kinds.add(label);
+      }
+      if (nested && typeof nested === "object") visitMaterial(nested);
+    }
+  };
+
+  if (typeof candidate === "string") {
+    addKinds(candidate);
+    if (kinds.size) kinds.add("file");
+    return [...kinds];
+  }
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+  for (const key of ["files", "artifacts", "attachments", "deliverables", "output_files"]) {
+    if (hasMeaningfulResponseOnlyValue(candidate[key])) visitMaterial(candidate[key]);
+  }
+  for (const key of ["path", "file_path", "filepath", "output_path", "artifact_path"]) {
+    if (!hasMeaningfulResponseOnlyValue(candidate[key])) continue;
+    visitMaterial(candidate[key]);
+  }
+  if (hasMeaningfulResponseOnlyValue(candidate.generated_pdf_content)) {
+    kinds.add("file");
+    kinds.add(".pdf");
+  }
+  if (hasMeaningfulResponseOnlyValue(candidate.generated_image_content)) {
+    kinds.add("file");
+    kinds.add("image");
+  }
+  return [...kinds];
+}
+
+function responseOnlyCandidateSatisfiesArtifactKind(candidateKinds = [], requiredKind = "") {
+  const observed = new Set(candidateKinds);
+  const required = responseOnlyCanonicalArtifactKind(requiredKind);
+  if (required === "file") return observed.has("file");
+  return observed.has(required);
+}
+
 function responseOnlyRequestExplicitlyAllowsEmpty(request = "") {
   return /(?:return|leave|keep)\s+(?:the\s+)?(?:message|reply|response)\s+(?:field\s+)?(?:empty|blank)|(?:do not|don't)\s+(?:send\s+)?(?:a\s+)?(?:message|reply|response)|(?:无需|無需|不必|不要)(?:回复|回覆|响应|響應)|(?:返信|応答)(?:不要|なし)/iu.test(
     String(request || "")
@@ -4577,6 +4781,22 @@ function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys =
     ),
   ];
   if (!allowedItemIds.length) return null;
+  const requestTextByItemId = Object.fromEntries(
+    (Array.isArray(packet?.request_items) ? packet.request_items : [])
+      .map((item) => [
+        String(item?.item_id || "").trim(),
+        String(item?.text || "").trim(),
+      ])
+      .filter(([itemId, requestText]) => itemId && requestText)
+  );
+  const requestedArtifactKindsByItemId = Object.fromEntries(
+    (Array.isArray(packet?.request_items) ? packet.request_items : [])
+      .map((item) => [
+        String(item?.item_id || "").trim(),
+        responseOnlyRequestedArtifactKinds(item?.text),
+      ])
+      .filter(([itemId, kinds]) => itemId && kinds.length)
+  );
   const missingItemSample = (Array.isArray(sample?.missing) ? sample.missing : [])
     .find((item) => item && typeof item === "object" && !Array.isArray(item));
   const missingItemRequiredKeys = Object.keys(missingItemSample || {}).slice(0, 16);
@@ -4593,6 +4813,7 @@ function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys =
   }
   return {
     allowedItemIds,
+    requestTextByItemId,
     missingItemRequiredKeys,
     missingItemKeyTypes,
     missingItemEnumValues,
@@ -4605,6 +4826,8 @@ function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys =
     candidateExplicitlyAllowsStatusOnly: responseOnlyRequestExplicitlyAllowsStatusOnly(
       responseOnlyHumanRequestFromPacket(packet)
     ),
+    requestedArtifactKindsByItemId,
+    candidateArtifactKinds: responseOnlyCandidateArtifactKinds(packet?.candidate_result),
     candidateClaimsBlocker: finishResultClaimsBlocker(
       JSON.stringify(packet?.candidate_result ?? "")
     ),
@@ -4709,6 +4932,24 @@ function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) 
     value.covered_item_ids.length > 0
   ) {
     invalidAuditSemantics.push("covered_item_ids:nonempty-for-status-only-candidate");
+  }
+  if (contract.candidateHasMeaningfulOutput && !contract.candidateOnlyStatusUpdate) {
+    for (const itemId of Array.isArray(value.covered_item_ids) ? value.covered_item_ids : []) {
+      const normalizedItemId = typeof itemId === "string" ? itemId.trim() : "";
+      const requiredKinds = contract.requestedArtifactKindsByItemId?.[normalizedItemId] || [];
+      for (const requiredKind of requiredKinds) {
+        if (
+          !responseOnlyCandidateSatisfiesArtifactKind(
+            contract.candidateArtifactKinds,
+            requiredKind
+          )
+        ) {
+          invalidAuditSemantics.push(
+            `covered_item_ids:${normalizedItemId}-without-required-artifact:${requiredKind}`
+          );
+        }
+      }
+    }
   }
   return {
     ok:
@@ -4981,8 +5222,10 @@ function responseOnlyContractFallbackResult(contract, message) {
     value.covered_item_ids = [];
     value.missing = completionAuditItemIds.map((itemId) => ({
       item_id: itemId,
-      requirement: message,
-      kind: "reply",
+      requirement: contract.completionAudit?.requestTextByItemId?.[itemId] || message,
+      kind: contract.completionAudit?.requestedArtifactKindsByItemId?.[itemId]?.length
+        ? "artifact"
+        : "reply",
     }));
   }
   return JSON.stringify(value);

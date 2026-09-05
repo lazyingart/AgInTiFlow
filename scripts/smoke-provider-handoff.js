@@ -1193,6 +1193,47 @@ assert.deepEqual(
   ["covered_item_ids:nonempty-for-status-only-candidate"]
 );
 
+const textWithoutPdfCompletionAuditRequest = completionAuditRequest.replace(
+  '"text": "Return a concise direct answer."',
+  '"text": "Return the evidence-backed answer and attach the completed PDF report."'
+);
+const repairedMissingPdfCoverageHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-completion-audit-missing-pdf-repaired",
+  request: textWithoutPdfCompletionAuditRequest,
+  localResponses: [
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "medium",
+      summary: "The answer text covers the request.",
+    }),
+    JSON.stringify({
+      covered_item_ids: [],
+      missing: [{
+        item_id: "source:123",
+        requirement: "Attach the completed PDF report.",
+        kind: "artifact",
+      }],
+      legitimate_blocker: false,
+      complexity: "medium",
+      summary: "The answer text is present, but the requested PDF is missing.",
+    }),
+  ],
+});
+assert.equal(repairedMissingPdfCoverageHandoff.result.stopped, undefined);
+assert.deepEqual(
+  repairedMissingPdfCoverageHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "a missing requested PDF did not retain bounded repair after provider handoff"
+);
+assert.deepEqual(
+  repairedMissingPdfCoverageHandoff.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.invalidAuditSemantics,
+  ["covered_item_ids:source:123-without-required-artifact:.pdf"]
+);
+
 const failedOutputContractHandoff = await runSourceFreeResponseOnlyHandoffScenario({
   sessionId: "response-only-json-contract-fail-closed",
   request: completionAuditRequest,
