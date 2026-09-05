@@ -2489,3 +2489,31 @@ predicts demand will grow next year” remain fail-closed. A deterministic
 DeepSeek-to-LocalLLM handoff regression proves the production-shaped route
 finishes in the first fallback turn without requiring evidence or changing the
 caller envelope.
+
+### Progress acknowledgements cannot close substantive tasks
+
+`labcanvas-completion-audit-status-only-coverage-175` comes from retained
+production session `web-agent-labcanvas-7159acc2-9bbe-4254-825b-ed6819f8e269`.
+A completion candidate said that it would send the finished portion now and
+supplement the uncovered messages later. The message was nonempty, so the
+existing empty-candidate safeguard could not prevent an audit from placing the
+substantive research item in `covered_item_ids`. This is the failure mode behind
+apparently responsive chat that never delivers the promised answer or artifact.
+
+Completion-audit contract discovery now distinguishes a human-facing result
+from a receipt, progress report, queue notice, generic completion assertion, or
+promise of later delivery. A status-only candidate cannot cover a substantive
+task item. It gets the existing one bounded repair; repeated invalid coverage
+fails closed with every exact packet item retained as missing. The test surface
+uses semantic English, Chinese, and Japanese forms rather than a LabCanvas
+route or transport special case.
+
+The compatibility boundary is explicit. A short social turn, a request that
+asks only for acknowledgement, and a pure status question may be answered with
+status text. A concrete answer following an acknowledgement, a real attachment,
+a confirmation question, generated content, publication state, or a genuine
+blocker remains substantive. Deterministic regressions cover bounded repair,
+repeated-invalid fail-closed behavior, negated acknowledgement wording, and
+DeepSeek-to-LocalLLM handoff. No live provider or LocalLLM inference, LabCanvas
+runtime change, queue action, schedule, transport operation, or external side
+effect is involved.

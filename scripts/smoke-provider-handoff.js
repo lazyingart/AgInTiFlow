@@ -1147,6 +1147,52 @@ assert.deepEqual(
   ["covered_item_ids:nonempty-for-empty-candidate"]
 );
 
+const statusOnlyCompletionAuditCandidateRequest = completionAuditRequest
+  .replace(
+    '"text": "Return a concise direct answer."',
+    '"text": "Research the question, return the evidence-backed conclusion, and attach the completed PDF."'
+  )
+  .replace(
+    '"message": "The concise answer."',
+    '"message": "Received. I am researching it now and will send the report shortly."'
+  );
+const repairedStatusOnlyCandidateCoverageHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-completion-audit-status-only-candidate-repaired",
+  request: statusOnlyCompletionAuditCandidateRequest,
+  localResponses: [
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "medium",
+      summary: "The candidate says the work is in progress.",
+    }),
+    JSON.stringify({
+      covered_item_ids: [],
+      missing: [{
+        item_id: "source:123",
+        requirement: "Provide the evidence-backed conclusion and completed PDF.",
+        kind: "artifact",
+      }],
+      legitimate_blocker: false,
+      complexity: "medium",
+      summary: "A progress acknowledgement is not the requested result.",
+    }),
+  ],
+});
+assert.equal(repairedStatusOnlyCandidateCoverageHandoff.result.stopped, undefined);
+assert.deepEqual(
+  repairedStatusOnlyCandidateCoverageHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "a status-only completion audit did not retain bounded repair after provider handoff"
+);
+assert.deepEqual(
+  repairedStatusOnlyCandidateCoverageHandoff.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.invalidAuditSemantics,
+  ["covered_item_ids:nonempty-for-status-only-candidate"]
+);
+
 const failedOutputContractHandoff = await runSourceFreeResponseOnlyHandoffScenario({
   sessionId: "response-only-json-contract-fail-closed",
   request: completionAuditRequest,

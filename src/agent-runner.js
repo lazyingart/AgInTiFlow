@@ -1706,6 +1706,82 @@ function responseOnlyRequestExplicitlyAllowsEmpty(request = "") {
   );
 }
 
+function responseOnlyRequestExplicitlyAllowsStatusOnly(request = "") {
+  const text = String(request || "").trim();
+  if (!text) return false;
+  if (responseOnlyRequestExplicitlyAllowsEmpty(text)) return true;
+  if (/\bnot\s+(?:only|just)\b|不(?:只|仅|僅)(?:是|要|需|需要)?/iu.test(text)) return false;
+  if (
+    /\b(?:only|just)\s+(?:acknowledge|confirm)\s+(?:that\s+)?(?:you\s+)?(?:received|saw|understood)(?:\s+(?:it|this|the\s+(?:message|request|file)))?|\b(?:only|just)\s+(?:reply|respond|say)\s+(?:with\s+)?["']?(?:received|acknowledged|got it|understood)["']?/iu.test(text) ||
+    /(?:^|[\s，,。；;：:])(?:请|請)?(?:只|仅|僅)(?:需要|需|要)?(?:回复|回覆|回答|确认|確認)(?:一句|我)?[“"']?(?:收到|已收到|明白|了解|知道了)[”"']?|(?:^|[\s，,。；;：:])(?:仅|僅)(?:作|做)?(?:收悉|收到)(?:确认|確認)/u.test(text) ||
+    /(?:受領|受信)(?:したこと)?(?:だけ|のみ)(?:を)?(?:確認|返信)|[「『]?(?:承知しました|受け取りました|確認しました)[」』]?と(?:だけ|のみ)(?:返信|回答)/u.test(text)
+  ) {
+    return true;
+  }
+  if (
+    /^(?:hi|hello|hey|thanks?|thank\s+you|good\s+(?:morning|afternoon|evening)|ok(?:ay)?|got\s+it)[.!?\s]*$/iu.test(text) ||
+    /^(?:你好|您好|嗨|谢谢|謝謝|多谢|多謝|早上好|下午好|晚上好|好的?|收到|明白了?)[。！？!?.\s]*$/u.test(text) ||
+    /^(?:こんにちは|こんばんは|おはよう(?:ございます)?|ありがとう(?:ございます)?|承知しました|了解しました|はい)[。！？!?.\s]*$/u.test(text)
+  ) {
+    return true;
+  }
+  return (
+    /^(?:please\s+)?(?:(?:check|tell|report|show|give)\s+(?:me\s+)?(?:the\s+)?)?(?:current\s+)?(?:status|progress)(?:\s+(?:of|on)\s+[^\n.!?]+)?[.!?\s]*$|^(?:is|has|did)\s+[^\n.!?]+\s+(?:done|finished|completed|finish|complete)(?:\s+yet)?[?\s]*$/iu.test(text) ||
+    /^(?:请|請)?(?:查|检查|檢查|告诉|告訴|汇报|匯報|说|說|给我|給我)?(?:一下)?(?:当前|目前)?(?:状态|狀態|进度|進度)(?:如何|怎么样|怎麼樣)?[。！？?\s]*$|^[^\n。！？]+(?:完成了吗|完成了嗎|做完了吗|做完了嗎|好了吗|好了嗎|结束了吗|結束了嗎)[。！？?\s]*$/u.test(text) ||
+    /^(?:現在の)?(?:状態|状況|進捗)(?:を)?(?:確認|教えて|報告)?(?:してください)?[。！？?\s]*$|^[^\n。！？]+(?:完了|終了)(?:しましたか|した)[。！？?\s]*$/u.test(text)
+  );
+}
+
+function responseOnlyCandidateHumanFacingText(candidate) {
+  if (typeof candidate === "string") return candidate.trim();
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return "";
+  return ["message", "response", "chat_reply", "ack"]
+    .map((key) => candidate[key])
+    .filter((value) => typeof value === "string" && value.trim())
+    .join("\n")
+    .trim();
+}
+
+function responseOnlyCandidateHasMaterialPayload(candidate) {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+  return [
+    "files",
+    "artifacts",
+    "attachments",
+    "confirmation",
+    "publish_stage",
+    "generated_pdf_content",
+    "generated_text_content",
+    "knowledge_items",
+    "upstream_feedback",
+  ].some((key) => hasMeaningfulResponseOnlyValue(candidate[key]));
+}
+
+function responseOnlyStatusOnlyCandidate(candidate) {
+  if (responseOnlyCandidateHasMaterialPayload(candidate)) return false;
+  const text = responseOnlyCandidateHumanFacingText(candidate);
+  if (!text || finishResultClaimsBlocker(text)) return false;
+  if (
+    /https?:\/\/|\b(?:doi|pmid|isbn)\s*[:：]|(?:answer|result|conclusion|reason|summary|transcript|path|file|link)\s*[:：]|(?:答案|结果|結果|结论|結論|原因|摘要|转录|轉錄|路径|路徑|文件|链接|連結)\s*[:：]|(?:答え|結果|結論|理由|要約|文字起こし|パス|ファイル|リンク)\s*[:：]|```|(?:^|\n)\s*(?:[-*]|\d+[.)、])/iu.test(text)
+  ) {
+    return false;
+  }
+  const clauses = text
+    .split(/[.!?;。！？；\n]+/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!clauses.length) return false;
+  return clauses.every((clause) => (
+    /^(?:(?:ok(?:ay)?|got\s+it|understood|received|acknowledged|sure|all\s+right|thanks?|thank\s+you)(?:\s+(?:it|this|that|the\s+(?:message|request|file|task)))?|(?:好(?:的)?|收到|已收到|明白(?:了)?|了解(?:了)?|知道了|没问题|謝謝|谢谢|多谢|多謝)|(?:承知しました|了解しました|受け取りました|確認しました|わかりました|ありがとうございます|はい))[,，\s]*$/iu.test(clause) ||
+    /\b(?:working|processing|checking|reviewing|preparing|generating|downloading|researching|investigating|looking\s+into|in\s+progress|queued|on\s+the\s+way|please\s+wait)\b|\b(?:I(?:'m|\s+am|'ll|\s+will)|we(?:'re|\s+are|'ll|\s+will))\b[^.!?;\n]{0,180}\b(?:work|handle|process|check|review|prepare|generate|download|research|investigate|send|reply|return|get\s+back|follow\s+up|update)\b/iu.test(clause) ||
+    /(?:正在|处理中|處理中|分析中|整理中|检查中|檢查中|搜索中|搜尋中|检索中|檢索中|研究中|生成中|下载中|下載中|准备中|準備中|排队中|排隊中|请稍候|請稍候|请稍等|請稍等|稍后|稍後|随后|隨後|完成后|完成後|马上|馬上|待会|待會|等会|等會|会自动补充|會自動補充|不会把.+标记为已处理|不會把.+標記為已處理|我先发送已完成的部分|我先發送已完成的部分)|(?:我|我们|我們|系统|系統)?(?:会|會|将|將|马上|馬上)[^。！？；]{0,120}(?:处理|處理|检查|檢查|分析|整理|搜索|搜尋|研究|生成|下载|下載|回复|回覆|发送|發送|返回|更新|补充|補充)/u.test(clause) ||
+    /(?:対応中|処理中|確認中|作業中|準備中|調査中|生成中|ダウンロード中|少々お待ち|しばらくお待ち|後ほど|完了後|これから.+(?:対応|処理|確認|送信|返信|報告)|(?:対応|処理|確認|送信|返信|報告)します)/u.test(clause) ||
+    /^(?:(?:the\s+)?(?:task|request|work|job|report|file|video)\s+)?(?:is|has\s+been\s+)?(?:done|complete|completed|finished|queued|started)[,，\s]*$/iu.test(clause) ||
+    /^(?:(?:任务|任務|请求|請求|工作|报告|報告|文件|视频|影片)(?:已经|已經|已))?(?:完成|处理完成|處理完成|排队|排隊|开始|開始)[,，\s]*$/u.test(clause) ||
+    /^(?:(?:タスク|依頼|作業|レポート|ファイル|動画)(?:は|が)?)?(?:完了|終了|開始|待機中)(?:しました|です)?[,，\s]*$/u.test(clause)
+  ));
+}
+
 export function assessResponseOnlyEmptyEnvelope({ goal = "", result = "" } = {}) {
   const packet = responseOnlyTaskPacket(goal);
   const parsed = parseStrictResponseOnlyJson(result);
@@ -4525,6 +4601,10 @@ function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys =
     candidateExplicitlyAllowsEmpty: responseOnlyRequestExplicitlyAllowsEmpty(
       responseOnlyHumanRequestFromPacket(packet)
     ),
+    candidateOnlyStatusUpdate: responseOnlyStatusOnlyCandidate(packet?.candidate_result),
+    candidateExplicitlyAllowsStatusOnly: responseOnlyRequestExplicitlyAllowsStatusOnly(
+      responseOnlyHumanRequestFromPacket(packet)
+    ),
     candidateClaimsBlocker: finishResultClaimsBlocker(
       JSON.stringify(packet?.candidate_result ?? "")
     ),
@@ -4620,6 +4700,15 @@ function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) 
     value.covered_item_ids.length > 0
   ) {
     invalidAuditSemantics.push("covered_item_ids:nonempty-for-empty-candidate");
+  }
+  if (
+    contract.candidateObserved &&
+    contract.candidateOnlyStatusUpdate &&
+    !contract.candidateExplicitlyAllowsStatusOnly &&
+    Array.isArray(value.covered_item_ids) &&
+    value.covered_item_ids.length > 0
+  ) {
+    invalidAuditSemantics.push("covered_item_ids:nonempty-for-status-only-candidate");
   }
   return {
     ok:

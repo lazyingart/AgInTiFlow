@@ -782,6 +782,67 @@ const completionAuditChineseBlockerGoal = completionAuditFalseBlockerGoal.replac
   '"message":"","confirmation":"","files":[]',
   '"message":"当前无法继续，因为需要登录认证。","confirmation":"","files":[]'
 );
+function completionAuditGoalForCandidate(request, candidateResult) {
+  return [
+    `AGINTI_EVIDENCE_SCOPE_JSON: ${JSON.stringify({
+      mode: "host-managed-response",
+      request: "Return the completion audit JSON only.",
+    })}`,
+    "Role: completion_audit",
+    "Original prompt:",
+    "Audit the candidate against the exact task packet.",
+    "Return JSON only:",
+    JSON.stringify({
+      covered_item_ids: ["task:current-message"],
+      missing: [{
+        item_id: "task:current-message",
+        requirement: "specific omitted action",
+        kind: "reply|artifact|action",
+      }],
+      legitimate_blocker: false,
+      complexity: "low|medium|high",
+      summary: "one short private diagnostic",
+    }),
+    "Task packet:",
+    JSON.stringify({
+      task_id: "retained-status-only-audit",
+      request_items: [
+        { item_id: "task:current-message", text: request },
+      ],
+      candidate_result: candidateResult,
+    }),
+  ].join("\n");
+}
+const retainedStatusOnlyCandidate = {
+  message: "我先发送已完成的部分；系统已保留未覆盖的消息并会自动补充，不会把它标记为已处理。",
+  confirmation: "",
+  files: [],
+  publish_stage: {},
+  generated_pdf_content: [],
+  generated_text_content: [],
+};
+const completionAuditStatusOnlyGoal = completionAuditGoalForCandidate(
+  "研究这个问题，给出有证据的结论，并附上完成的 PDF。",
+  retainedStatusOnlyCandidate
+);
+const retainedStatusOnlyCoveredResult = {
+  covered_item_ids: ["task:current-message"],
+  missing: [],
+  legitimate_blocker: false,
+  complexity: "medium",
+  summary: "The candidate says work will continue later.",
+};
+const correctedStatusOnlyAuditResult = {
+  covered_item_ids: [],
+  missing: [{
+    item_id: "task:current-message",
+    requirement: "Provide the evidence-backed conclusion and completed PDF.",
+    kind: "artifact",
+  }],
+  legitimate_blocker: false,
+  complexity: "medium",
+  summary: "A progress acknowledgement is not the requested result.",
+};
 assert.equal(
   evaluateSourceFreeResponseClaims({
     goal: completionAuditSourceFreeGoal,
@@ -1766,6 +1827,134 @@ try {
     explicitSilenceCoverage.calls.length,
     1,
     "an explicit no-reply request could not be covered by an empty candidate"
+  );
+
+  const repairedStatusOnlyCandidateCoverage = await runCase({
+    id: "response-only-completion-audit-status-only-candidate-covered",
+    taskProfile: "chatops",
+    goal: completionAuditStatusOnlyGoal,
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(correctedStatusOnlyAuditResult)),
+    ],
+  });
+  assert.equal(
+    repairedStatusOnlyCandidateCoverage.calls.length,
+    2,
+    "a progress acknowledgement was accepted as completed substantive work"
+  );
+  assert.deepEqual(
+    repairedStatusOnlyCandidateCoverage.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.invalidAuditSemantics,
+    ["covered_item_ids:nonempty-for-status-only-candidate"]
+  );
+  assert.match(
+    repairedStatusOnlyCandidateCoverage.calls[1].messages
+      .map((message) => message.content)
+      .join("\n"),
+    /nonempty-for-status-only-candidate/iu
+  );
+
+  for (const [id, request, message] of [
+    [
+      "english",
+      "Download the requested paper, analyze it, and attach the completed PDF.",
+      "Received. I am researching it now and will send the report shortly.",
+    ],
+    [
+      "japanese",
+      "指定された論文を調査し、完成した PDF を添付してください。",
+      "承知しました。現在調査中です。完了後に送信します。",
+    ],
+    [
+      "negated-acknowledgement",
+      "Do not only acknowledge receipt; answer the question with its evidence.",
+      "Received.",
+    ],
+    [
+      "chinese-future-work",
+      "请分析上传的文件并给出结论。",
+      "好的，我会处理并稍后回复。",
+    ],
+  ]) {
+    const repairedMultilingualStatusOnly = await runCase({
+      id: `response-only-completion-audit-status-only-${id}`,
+      taskProfile: "chatops",
+      goal: completionAuditGoalForCandidate(request, {
+        message,
+        confirmation: "",
+        files: [],
+      }),
+      responses: [
+        assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+        assistant(JSON.stringify(correctedStatusOnlyAuditResult)),
+      ],
+    });
+    assert.equal(
+      repairedMultilingualStatusOnly.calls.length,
+      2,
+      `${id} progress-only candidate bypassed completion repair`
+    );
+  }
+
+  for (const [id, request, candidate] of [
+    [
+      "explicit-acknowledgement",
+      "只回复收到，不需要执行其他操作。",
+      { message: "收到", confirmation: "", files: [] },
+    ],
+    [
+      "status-question",
+      "Is the report finished yet?",
+      { message: "The report is still processing.", confirmation: "", files: [] },
+    ],
+    [
+      "substantive-answer-after-ack",
+      "What is the nominal C-mount thread diameter?",
+      { message: "收到。答案：C-mount 的公称大径是 25.4 mm。", confirmation: "", files: [] },
+    ],
+    [
+      "material-attachment",
+      "Create and attach the requested PDF.",
+      {
+        message: "The report is complete.",
+        confirmation: "",
+        files: [{ name: "evidence-report.pdf", suffix: ".pdf" }],
+      },
+    ],
+  ]) {
+    const acceptedStatusCompatibleCandidate = await runCase({
+      id: `response-only-completion-audit-status-compatible-${id}`,
+      taskProfile: "chatops",
+      goal: completionAuditGoalForCandidate(request, candidate),
+      responses: [assistant(JSON.stringify(retainedStatusOnlyCoveredResult))],
+    });
+    assert.equal(
+      acceptedStatusCompatibleCandidate.calls.length,
+      1,
+      `${id} was mistaken for an unhandled progress acknowledgement`
+    );
+  }
+
+  const repeatedStatusOnlyCoverage = await runCase({
+    id: "response-only-completion-audit-status-only-stop",
+    taskProfile: "chatops",
+    goal: completionAuditStatusOnlyGoal,
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+    ],
+  });
+  assert.equal(repeatedStatusOnlyCoverage.calls.length, 2);
+  assert.equal(repeatedStatusOnlyCoverage.result.stopped, true);
+  assert.deepEqual(
+    JSON.parse(repeatedStatusOnlyCoverage.result.result).missing.map((item) => item.item_id),
+    ["task:current-message"]
+  );
+  assert(
+    !repeatedStatusOnlyCoverage.events.some((event) => event.type === "session.finished"),
+    "repeated progress-only coverage reached terminal success"
   );
 
   const repeatedPhantomCompletionAudit = await runCase({
