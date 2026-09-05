@@ -1822,7 +1822,8 @@ function responseOnlyRequestedArtifactKinds(request = "") {
   for (const clause of clauses) {
     const explicitArtifact = /\.(?:3mf|7z|csv|docx|flac|gz|jpe?g|json|md|mkv|mov|mp3|mp4|odp|pdf|png|pptx|rar|step|stl|stp|svg|tar|tex|txt|wav|webm|webp|xlsx|zip)\b|\b(?:PDF|DOCX|Word\s+document|PPTX|PowerPoint|Excel\s+workbook|XLSX|Markdown\s+(?:file|document)|LaTeX\s+source|TeX\s+source|STEP|STL|3MF|image|figure|screenshot|video|audio|archive|attachment|artifact|file)\b|(?:PDF|Word|PPT|Excel|LaTeX|STEP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件)|(?:PDF|Word|PowerPoint|Excel|LaTeX|STEP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル)/iu.test(clause);
     const outputIntent = responseOnlyArtifactClauseHasOutputIntent(clause);
-    const negatedArtifact = /\b(?:do\s+not|don't|without|no\s+need\s+to)\b[^.!?;]{0,80}\b(?:attach|send|provide|create|generate|produce|pdf|file|artifact)\b|\bno\s+(?:pdf|file|attachment|artifact)\b[^.!?;]{0,40}\b(?:needed|required|necessary)\b|(?:不要|无需|無需|不必)\s*(?:附上|发送|發送|提供|生成|制作|製作|文件|附件|PDF)|(?:添付|送信|作成|生成)(?:しない|不要|は不要)/iu.test(clause);
+    const negatedArtifact = /\b(?:do\s+not|don't|without|no\s+need\s+to)\b[^.!?;]{0,80}\b(?:attach|send|provide|create|generate|produce|pdf|file|artifact)\b|\bno\s+(?:pdf|file|attachment|artifact)\b[^.!?;]{0,40}\b(?:needed|required|necessary)\b|(?:不要|无需|無需|不必)\s*(?:附上|发送|發送|提供|生成|制作|製作|创建|建立|文件|附件|PDF)|(?:添付|送信|作成|生成)(?:しない|不要|は不要)/iu.test(clause) ||
+      responseOnlyForbiddenArtifactKinds(clause).length > 0;
     if (!explicitArtifact || !outputIntent || negatedArtifact) continue;
 
     for (const kind of responseOnlyArtifactKindsFromText(clause)) kinds.add(kind);
@@ -1842,6 +1843,55 @@ function responseOnlyRequestedArtifactKinds(request = "") {
     if (!kinds.size || /\b(?:attachment|artifact|file)\b|(?:附件|文件)|(?:添付ファイル|ファイル)/iu.test(clause)) {
       kinds.add("file");
     }
+  }
+  return [...kinds];
+}
+
+function responseOnlyArtifactKindsNamedInClause(clause = "") {
+  const text = String(clause || "");
+  const kinds = responseOnlyArtifactKindsFromText(text);
+  if (/\bPDF\b/iu.test(text)) kinds.add(".pdf");
+  if (/\b(?:DOCX|Word\s+document)\b/iu.test(text)) kinds.add(".docx");
+  if (/\b(?:PPTX|PowerPoint)\b/iu.test(text)) kinds.add(".pptx");
+  if (/\b(?:XLSX|Excel\s+workbook)\b/iu.test(text)) kinds.add(".xlsx");
+  if (/\bMarkdown(?:\s+(?:file|document))?\b/iu.test(text)) kinds.add(".md");
+  if (/\b(?:LaTeX|TeX)(?:\s+source)?\b/iu.test(text)) kinds.add(".tex");
+  if (/\b(?:STEP|STP)\b/iu.test(text)) kinds.add(".step");
+  if (/\bSTL\b/iu.test(text)) kinds.add(".stl");
+  if (/\b3MF\b/iu.test(text)) kinds.add(".3mf");
+  if (/\b(?:image|figure|screenshot)\b|(?:图片|圖像|图像|截图|截圖)|(?:画像|図|スクリーンショット)/iu.test(text)) kinds.add("image");
+  if (/\bvideo\b|(?:视频|影片)|(?:動画)/iu.test(text)) kinds.add("video");
+  if (/\baudio\b|(?:音频|音訊)|(?:音声)/iu.test(text)) kinds.add("audio");
+  if (/\barchive\b|(?:压缩包|壓縮包)|(?:アーカイブ)/iu.test(text)) kinds.add("archive");
+  if (/\b(?:attachments?|artifacts?|files?)\b|(?:附件|文件|产物|產物)|(?:添付ファイル|ファイル|成果物)/iu.test(text)) {
+    kinds.add("file");
+  }
+  if (kinds.size > 1) kinds.delete("file");
+  return [...kinds];
+}
+
+function responseOnlyForbiddenArtifactKinds(request = "") {
+  const kinds = new Set();
+  const clauses = String(request || "")
+    .split(/[.!?;。！？；\n]+/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  for (const clause of clauses) {
+    if (/\b(?:do\s+not|don't|never)\s+(?:only|just)\b/iu.test(clause)) continue;
+    const englishForbidden =
+      /\b(?:do\s+not|don't|never)\b[^.!?;]{0,50}\b(?:attach|send|provide|deliver|return|create|generate|make|produce|compile|export|save|download|copy|upload)\b[^.!?;]{0,80}\b(?:PDF|DOCX|Word|PPTX|PowerPoint|XLSX|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|image|figure|screenshot|video|audio|archive|attachments?|artifacts?|files?)\b/iu.test(clause) ||
+      /\b(?:attach|send|provide|deliver|return|create|generate|make|produce|compile|export|save|download|copy|upload)\b[^.!?;]{0,30}\bno\s+(?:PDFs?|documents?|images?|figures?|screenshots?|videos?|audio|archives?|attachments?|artifacts?|files?)\b/iu.test(clause) ||
+      /\bwithout\b[^.!?;]{0,30}\b(?:attaching|sending|providing|delivering|returning|creating|generating|making|producing|compiling|exporting|saving|downloading|copying|uploading)\b[^.!?;]{0,80}\b(?:PDF|DOCX|Word|PPTX|PowerPoint|XLSX|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|image|figure|screenshot|video|audio|archive|attachments?|artifacts?|files?)\b/iu.test(clause) ||
+      /^(?:no|without)\s+(?:outbound\s+)?(?:PDFs?|documents?|images?|figures?|screenshots?|videos?|audio|archives?|attachments?|artifacts?|files?)(?:\s+(?:or|and)\s+(?:PDFs?|documents?|images?|figures?|screenshots?|videos?|audio|archives?|attachments?|artifacts?|files?))*\s*(?:needed|required|necessary)?$/iu.test(clause) ||
+      /\b(?:PDFs?|documents?|images?|figures?|screenshots?|videos?|audio|archives?|attachments?|artifacts?|files?)\b[^.!?;]{0,30}\b(?:must|should|need)\s+not\s+be\s+(?:attached|sent|provided|delivered|returned|created|generated|produced|compiled|exported|saved|downloaded|copied|uploaded)\b/iu.test(clause);
+    const chineseForbidden =
+      /(?:不要|无需|無需|不必|请勿|請勿|禁止)[^。！？；\n]{0,35}(?:附上|附加|发送|發送|发回|發回|提供|交付|返回|生成|制作|製作|创建|建立|输出|輸出|导出|導出|保存|下载|下載|上传|上傳|提交|复制|複製|拷贝|拷貝)?[^。！？；\n]{0,25}(?:PDF|Word|PPT|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件|产物|產物)/u.test(clause) ||
+      /(?:PDF|Word|PPT|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|图片|圖像|图像|截图|截圖|视频|影片|音频|音訊|压缩包|壓縮包|附件|文件|产物|產物)[^。！？；\n]{0,20}(?:不要|无需|無需|不必|禁止)(?:附上|发送|發送|提供|生成|制作|製作|输出|輸出|导出|導出|保存|提交)?/u.test(clause);
+    const japaneseForbidden =
+      /(?:PDF|Word|PowerPoint|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル|成果物)[^。！？；\n]{0,35}(?:添付|送信|返送|提供|作成|生成|出力|書き出し|保存|ダウンロード|アップロード|提出)?(?:しない|しなくてよい|不要|なし)/u.test(clause) ||
+      /(?:添付|送信|返送|提供|作成|生成|出力|書き出し|保存|ダウンロード|アップロード|提出)[^。！？；\n]{0,30}(?:しない|しなくてよい|不要)[^。！？；\n]{0,25}(?:PDF|Word|PowerPoint|Excel|Markdown|LaTeX|TeX|STEP|STP|STL|3MF|画像|図|スクリーンショット|動画|音声|アーカイブ|添付ファイル|ファイル|成果物)/u.test(clause);
+    if (!englishForbidden && !chineseForbidden && !japaneseForbidden) continue;
+    for (const kind of responseOnlyArtifactKindsNamedInClause(clause)) kinds.add(kind);
   }
   return [...kinds];
 }
@@ -1882,6 +1932,9 @@ function responseOnlyCandidateArtifactKinds(candidate) {
   for (const key of ["files", "artifacts", "attachments", "deliverables", "output_files"]) {
     if (hasMeaningfulResponseOnlyValue(candidate[key])) visitMaterial(candidate[key]);
   }
+  for (const key of ["generated_text_content", "generated_document_content"]) {
+    if (hasMeaningfulResponseOnlyValue(candidate[key])) visitMaterial(candidate[key]);
+  }
   for (const key of ["path", "file_path", "filepath", "output_path", "artifact_path"]) {
     if (!hasMeaningfulResponseOnlyValue(candidate[key])) continue;
     visitMaterial(candidate[key]);
@@ -1893,6 +1946,14 @@ function responseOnlyCandidateArtifactKinds(candidate) {
   if (hasMeaningfulResponseOnlyValue(candidate.generated_image_content)) {
     kinds.add("file");
     kinds.add("image");
+  }
+  if (hasMeaningfulResponseOnlyValue(candidate.generated_video_content)) {
+    kinds.add("file");
+    kinds.add("video");
+  }
+  if (hasMeaningfulResponseOnlyValue(candidate.generated_audio_content)) {
+    kinds.add("file");
+    kinds.add("audio");
   }
   return [...kinds];
 }
@@ -4797,6 +4858,14 @@ function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys =
       ])
       .filter(([itemId, kinds]) => itemId && kinds.length)
   );
+  const forbiddenArtifactKindsByItemId = Object.fromEntries(
+    (Array.isArray(packet?.request_items) ? packet.request_items : [])
+      .map((item) => [
+        String(item?.item_id || "").trim(),
+        responseOnlyForbiddenArtifactKinds(item?.text),
+      ])
+      .filter(([itemId, kinds]) => itemId && kinds.length)
+  );
   const missingItemSample = (Array.isArray(sample?.missing) ? sample.missing : [])
     .find((item) => item && typeof item === "object" && !Array.isArray(item));
   const missingItemRequiredKeys = Object.keys(missingItemSample || {}).slice(0, 16);
@@ -4827,6 +4896,7 @@ function responseOnlyCompletionAuditIdentityContract(source = "", requiredKeys =
       responseOnlyHumanRequestFromPacket(packet)
     ),
     requestedArtifactKindsByItemId,
+    forbiddenArtifactKindsByItemId,
     candidateArtifactKinds: responseOnlyCandidateArtifactKinds(packet?.candidate_result),
     candidateClaimsBlocker: finishResultClaimsBlocker(
       JSON.stringify(packet?.candidate_result ?? "")
@@ -4934,6 +5004,9 @@ function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) 
     invalidAuditSemantics.push("covered_item_ids:nonempty-for-status-only-candidate");
   }
   if (contract.candidateHasMeaningfulOutput && !contract.candidateOnlyStatusUpdate) {
+    const requestedKindsAcrossPacket = [
+      ...new Set(Object.values(contract.requestedArtifactKindsByItemId || {}).flat()),
+    ];
     for (const itemId of Array.isArray(value.covered_item_ids) ? value.covered_item_ids : []) {
       const normalizedItemId = typeof itemId === "string" ? itemId.trim() : "";
       const requiredKinds = contract.requestedArtifactKindsByItemId?.[normalizedItemId] || [];
@@ -4946,6 +5019,23 @@ function assessResponseOnlyCompletionAuditIdentity(value = {}, contract = null) 
         ) {
           invalidAuditSemantics.push(
             `covered_item_ids:${normalizedItemId}-without-required-artifact:${requiredKind}`
+          );
+        }
+      }
+      const forbiddenKinds = contract.forbiddenArtifactKindsByItemId?.[normalizedItemId] || [];
+      for (const forbiddenKind of forbiddenKinds) {
+        const conflictsWithAnotherRequiredArtifact = forbiddenKind === "file"
+          ? requestedKindsAcrossPacket.length > 0
+          : requestedKindsAcrossPacket.includes(forbiddenKind);
+        if (
+          !conflictsWithAnotherRequiredArtifact &&
+          responseOnlyCandidateSatisfiesArtifactKind(
+            contract.candidateArtifactKinds,
+            forbiddenKind
+          )
+        ) {
+          invalidAuditSemantics.push(
+            `covered_item_ids:${normalizedItemId}-with-forbidden-artifact:${forbiddenKind}`
           );
         }
       }
@@ -5223,7 +5313,8 @@ function responseOnlyContractFallbackResult(contract, message) {
     value.missing = completionAuditItemIds.map((itemId) => ({
       item_id: itemId,
       requirement: contract.completionAudit?.requestTextByItemId?.[itemId] || message,
-      kind: contract.completionAudit?.requestedArtifactKindsByItemId?.[itemId]?.length
+      kind: contract.completionAudit?.requestedArtifactKindsByItemId?.[itemId]?.length ||
+        contract.completionAudit?.forbiddenArtifactKindsByItemId?.[itemId]?.length
         ? "artifact"
         : "reply",
     }));

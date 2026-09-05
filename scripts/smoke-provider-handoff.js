@@ -1234,6 +1234,71 @@ assert.deepEqual(
   ["covered_item_ids:source:123-without-required-artifact:.pdf"]
 );
 
+const forbiddenArtifactCompletionAuditRequest = [
+  "Audit the candidate against the current request.",
+  "Role: completion_audit",
+  "Return JSON only:",
+  JSON.stringify({
+    covered_item_ids: ["source:123"],
+    missing: [{
+      item_id: "source:123",
+      requirement: "specific omitted action",
+      kind: "reply|artifact|action",
+    }],
+    legitimate_blocker: false,
+    complexity: "low|medium|high",
+    summary: "one short private diagnostic",
+  }, null, 2),
+  "Task packet:",
+  JSON.stringify({
+    request_items: [{
+      item_id: "source:123",
+      text: "Return exactly one chat message. Create no files or attachments.",
+    }],
+    candidate_result: {
+      message: "One concise answer.",
+      confirmation: "",
+      files: [{ name: "worker_result.json", suffix: ".json" }],
+    },
+  }, null, 2),
+].join("\n");
+const repairedForbiddenArtifactCoverageHandoff = await runSourceFreeResponseOnlyHandoffScenario({
+  sessionId: "response-only-completion-audit-forbidden-artifact-repaired",
+  request: forbiddenArtifactCompletionAuditRequest,
+  localResponses: [
+    JSON.stringify({
+      covered_item_ids: ["source:123"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The answer is present.",
+    }),
+    JSON.stringify({
+      covered_item_ids: [],
+      missing: [{
+        item_id: "source:123",
+        requirement: "Return only the chat message and remove outbound files.",
+        kind: "artifact",
+      }],
+      legitimate_blocker: false,
+      complexity: "low",
+      summary: "The candidate includes a forbidden outbound file.",
+    }),
+  ],
+});
+assert.equal(repairedForbiddenArtifactCoverageHandoff.result.stopped, undefined);
+assert.deepEqual(
+  repairedForbiddenArtifactCoverageHandoff.requests.map((item) => item.provider),
+  ["deepseek", "localllm", "localllm"],
+  "a forbidden outbound artifact did not retain bounded repair after provider handoff"
+);
+assert.deepEqual(
+  repairedForbiddenArtifactCoverageHandoff.events.find(
+    (event) => event.type === "response_only.output_contract_rejected"
+  )?.data?.invalidAuditSemantics,
+  ["covered_item_ids:source:123-with-forbidden-artifact:file"]
+);
+
 const failedOutputContractHandoff = await runSourceFreeResponseOnlyHandoffScenario({
   sessionId: "response-only-json-contract-fail-closed",
   request: completionAuditRequest,

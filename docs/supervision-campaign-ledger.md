@@ -2542,3 +2542,29 @@ coverage fails closed with the original exact request retained as a missing
 artifact item. Deterministic tests cover direct execution and
 DeepSeek-to-LocalLLM handoff without live inference, LabCanvas changes, queue
 actions, schedules, transports, or external side effects.
+
+### Completion audits enforce negative artifact contracts
+
+`labcanvas-completion-audit-forbidden-artifact-177` comes from retained
+production session `web-agent-labcanvas-f8f84223-7216-4bcf-abe6-999d4fb074ff`.
+Its exact inspiration request required one natural chat message and explicitly
+said to create no files or attachments. The candidate nevertheless placed
+`worker_result.json` in the structured outbound file list. The model called it
+an internal transport envelope and treated the request as covered, contradicting
+the packet rule that `candidate_result.files` is the outbound attachment list.
+
+Completion-audit contract discovery now derives negative artifact constraints
+from each exact request item. Structured files and generated document, image,
+video, or audio content cannot satisfy a covered message-only item when that
+item forbids them. Format-specific exclusions remain narrow: a PDF-only request
+may reject an extra Markdown source without rejecting the PDF. A separate exact
+item that positively requests an artifact wins only for that independent
+requirement, preserving consecutive-message composition instead of applying a
+global no-file switch.
+
+The retained shape previously completed in one call. Deterministic regressions
+now cover English, Chinese, and Japanese wording, generated document content,
+specific-format exclusions, mixed request packets, one bounded repair,
+schema-compatible failure, and DeepSeek-to-LocalLLM handoff. No live provider
+or LocalLLM inference, LabCanvas change, queue action, schedule, transport, or
+external side effect is involved.

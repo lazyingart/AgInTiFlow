@@ -55,10 +55,18 @@ formats in English, Chinese, and Japanese.
 Artifact intent remains scoped to the output. Reading `report.pdf`, analyzing
 an attached video, or returning a summary of a video does not require the input
 file to be returned. Explicit `do not attach a PDF` wording likewise remains a
-text-only request. An invalid audit receives one bounded repair; repeated
-invalid coverage fails closed with the exact task item retained as missing and
-classified as an artifact requirement. LabCanvas still owns transport,
-compilation, validation, and delivery.
+text-only request. A completion audit also enforces explicit negative delivery
+contracts. It cannot cover `create no files or attachments` when the structured
+candidate contains outbound files or generated document/media content. A
+format-specific exclusion such as `send PDF only; do not attach Markdown`
+rejects only the forbidden format. If another exact request item in the same
+packet positively requires an artifact, that independent requirement remains
+valid instead of being erased by the first item's preference.
+
+An invalid audit receives one bounded repair; repeated invalid coverage fails
+closed with the exact task item retained as missing and classified as an
+artifact requirement. LabCanvas still owns transport, compilation, validation,
+and delivery.
 
 ## Bounded Media Source Quality
 

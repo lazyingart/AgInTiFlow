@@ -1956,6 +1956,163 @@ try {
     );
   }
 
+  const correctedForbiddenArtifactAuditResult = {
+    covered_item_ids: [],
+    missing: [{
+      item_id: "task:current-message",
+      requirement: "Return only the requested chat message and remove outbound files or attachments.",
+      kind: "artifact",
+    }],
+    legitimate_blocker: false,
+    complexity: "low",
+    summary: "The chat answer is present, but the candidate includes a forbidden outbound file.",
+  };
+  const repairedForbiddenArtifactCoverage = await runCase({
+    id: "response-only-completion-audit-forbidden-artifact-repair",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Return exactly one natural chat message. Create no files or attachments.",
+      {
+        message: "One concise and useful answer.",
+        confirmation: "",
+        files: [{ name: "worker_result.json", suffix: ".json" }],
+      }
+    ),
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(correctedForbiddenArtifactAuditResult)),
+    ],
+  });
+  assert.equal(
+    repairedForbiddenArtifactCoverage.calls.length,
+    2,
+    "an outbound file was accepted despite the exact no-files completion contract"
+  );
+  assert.deepEqual(
+    repairedForbiddenArtifactCoverage.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.invalidAuditSemantics,
+    ["covered_item_ids:task:current-message-with-forbidden-artifact:file"]
+  );
+  assert.deepEqual(
+    JSON.parse(repairedForbiddenArtifactCoverage.result.result),
+    correctedForbiddenArtifactAuditResult
+  );
+
+  const acceptedNoFilesMessageOnly = await runCase({
+    id: "response-only-completion-audit-no-files-message-only",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Return exactly one natural chat message. Create no files or attachments.",
+      { message: "One concise and useful answer.", confirmation: "", files: [] }
+    ),
+    responses: [assistant(JSON.stringify(retainedStatusOnlyCoveredResult))],
+  });
+  assert.equal(
+    acceptedNoFilesMessageOnly.calls.length,
+    1,
+    "a message-only candidate was rejected by its matching no-files contract"
+  );
+
+  for (const [id, request] of [
+    ["chinese", "只回复一条自然聊天消息，不要创建或发送任何文件或附件。"],
+    ["japanese", "チャットメッセージだけを返し、ファイルや添付を作成・送信しないでください。"],
+  ]) {
+    const repairedMultilingualForbiddenArtifact = await runCase({
+      id: `response-only-completion-audit-forbidden-artifact-${id}`,
+      taskProfile: "chatops",
+      goal: completionAuditGoalForCandidate(request, {
+        message: "One concise and useful answer.",
+        confirmation: "",
+        files: [],
+        generated_text_content: [{ name: "unrequested-note.md", content: "extra" }],
+      }),
+      responses: [
+        assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+        assistant(JSON.stringify(correctedForbiddenArtifactAuditResult)),
+      ],
+    });
+    assert.equal(
+      repairedMultilingualForbiddenArtifact.calls.length,
+      2,
+      `${id} no-files contract accepted generated document content`
+    );
+  }
+
+  const acceptedSpecificArtifactExclusion = await runCase({
+    id: "response-only-completion-audit-specific-artifact-exclusion-valid",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Attach the final PDF only. Do not attach Markdown files.",
+      {
+        message: "The report is complete.",
+        confirmation: "",
+        files: [{ name: "final-report.pdf", suffix: ".pdf" }],
+      }
+    ),
+    responses: [assistant(JSON.stringify(retainedStatusOnlyCoveredResult))],
+  });
+  assert.equal(
+    acceptedSpecificArtifactExclusion.calls.length,
+    1,
+    "an allowed PDF was mistaken for the specifically forbidden Markdown source"
+  );
+
+  const repairedSpecificArtifactExclusion = await runCase({
+    id: "response-only-completion-audit-specific-artifact-exclusion-repair",
+    taskProfile: "chatops",
+    goal: completionAuditGoalForCandidate(
+      "Attach the final PDF only. Do not attach Markdown files.",
+      {
+        message: "The report is complete.",
+        confirmation: "",
+        files: [
+          { name: "final-report.pdf", suffix: ".pdf" },
+          { name: "unrequested-source.md", suffix: ".md" },
+        ],
+      }
+    ),
+    responses: [
+      assistant(JSON.stringify(retainedStatusOnlyCoveredResult)),
+      assistant(JSON.stringify(correctedForbiddenArtifactAuditResult)),
+    ],
+  });
+  assert.equal(repairedSpecificArtifactExclusion.calls.length, 2);
+  assert.deepEqual(
+    repairedSpecificArtifactExclusion.events.find(
+      (event) => event.type === "response_only.output_contract_rejected"
+    )?.data?.invalidAuditSemantics,
+    ["covered_item_ids:task:current-message-with-forbidden-artifact:.md"]
+  );
+
+  const mixedArtifactContractGoal = completionAuditItemIdentityGoal.replace(
+    '"text":"Answer the current question."',
+    '"text":"Answer this item in chat and create no files or attachments."'
+  ).replace(
+    '"text":"Also attach the requested PDF."',
+    '"text":"For this separate item, attach the requested PDF."'
+  ).replace(
+    '"request_items":[',
+    '"candidate_result":{"message":"Both answers are complete.","files":[{"name":"requested-report.pdf","suffix":".pdf"}]},"request_items":['
+  );
+  const acceptedMixedArtifactContract = await runCase({
+    id: "response-only-completion-audit-mixed-artifact-contract",
+    taskProfile: "chatops",
+    goal: mixedArtifactContractGoal,
+    responses: [assistant(JSON.stringify({
+      covered_item_ids: ["task:actual-message", "interruption:actual-pdf"],
+      missing: [],
+      legitimate_blocker: false,
+      complexity: "medium",
+      summary: "The shared candidate answers both items and includes the separately requested PDF.",
+    }))],
+  });
+  assert.equal(
+    acceptedMixedArtifactContract.calls.length,
+    1,
+    "one item's no-file preference blocked another exact item's requested PDF"
+  );
+
   const repairedMissingRequestedPdf = await runCase({
     id: "response-only-completion-audit-artifact-coverage-repair",
     taskProfile: "chatops",
