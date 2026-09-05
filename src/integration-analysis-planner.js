@@ -248,7 +248,11 @@ const UNSUPPORTED_SINGLE_TEX_PDF_ACTION =
   /^(?:make|create|generate|produce|prepare|export|save|download|upload|provide|return|output)\b[^.!?;\r\n]{0,180}(?:\.(?:tex|pdf)\b|\b(?:pdf\s+(?:file|report|document)|(?:latex|tex)\s+(?:source|file)\s+only|(?:as|in)\s+(?:a\s+)?pdf)\b)|^(?:compile|typeset|render|export|build|convert)\b[^.!?;\r\n]{0,180}\b(?:latex|tex|source)\b[^.!?;\r\n]{0,120}\b(?:to|into|as)\s+(?:a\s+)?pdf\b/iu;
 const UNSUPPORTED_EXTERNAL_ACTION =
   /^(?:deploy|publish|push|upload|email|post|submit)\b|^send\b[^.!?;\r\n]{0,160}\b(?:email|notification)\b|^send\b[^.!?;\r\n]{0,160}\bto\s+(?!(?:me|us|here|this\s+chat)\b)\S|^(?:change|update|delete|remove)\b[^.!?;\r\n]{0,160}\b(?:account|website|site|server|deployment|repository|repo|setting|record|remote)\b|\b(?:and|then|also)\s+(?:deploy|publish|push|upload|email|post|submit)\b/iu;
-const UNSUPPORTED_CAPABILITY_ORDER = Object.freeze(["package", "shell", "search", "web", "file", "external"]);
+const UNSUPPORTED_NATIVE_HOST_TOOL_ACTION =
+  /\b(?:use|call|invoke|run|execute)\s+(?:the\s+)?(?!execute_python_analysis\b|grounded_search\b|deep_research\b|compile_tex_document\b|publish_file_artifact\b)[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/iu;
+const UNSUPPORTED_NATIVE_HOST_INSPECTION_ACTION =
+  /\b(?:inspect|list|show|check|query|get|read)\b[^.!?;\r\n]{0,160}\b(?:native|host|workstation|tmux|terminal\s+sessions?|shell\s+sessions?|process(?:es)?|systemd|journalctl|ss|lsof)\b|\b(?:tmux|terminal|shell)\s+sessions?\b[^.!?;\r\n]{0,120}\b(?:inspect|list|show|check|query|get|read|running|active)\b/iu;
+const UNSUPPORTED_CAPABILITY_ORDER = Object.freeze(["package", "shell", "search", "web", "file", "external", "nativeHost"]);
 const GENERAL_FILE_CREATION_ACTION =
   /^(?:(?:using|from|with|based\s+on)\b[^.!?;\r\n]{0,180},?\s+)?(?:make|create|generate|write|produce|prepare|export|save|provide|return|output)\b[^.!?;\r\n]{0,220}(?:\b(?:files?|attachments?|downloads?|archives?)\b|\.(?:csv|json|md|markdown|txt|log|xml|html?|css|m?js|cjs|tsx?|py|sh|svg|png|jpe?g|webp|gif|zip|gz|bin|dat|docx|xlsx|pptx)\b)|^turn\b[^.!?;\r\n]{0,160}\binto\b[^.!?;\r\n]{0,100}(?:\b(?:files?|attachments?|downloads?|archives?)\b|\.(?:csv|json|md|markdown|txt|log|xml|html?|css|m?js|cjs|tsx?|py|sh|svg|png|jpe?g|webp|gif|zip|gz|bin|dat|docx|xlsx|pptx)\b)|\b(?:and|then|also)\s+(?:make|create|generate|write|produce|prepare|export|save)\b[^.!?;\r\n]{0,180}(?:\bfiles?\b|\.(?:csv|json|md|txt|py|js|ts|html|svg|png|jpe?g|webp|zip)\b)/iu;
 const UNSUPPORTED_CAPABILITY_TEXT = Object.freeze({
@@ -258,6 +262,8 @@ const UNSUPPORTED_CAPABILITY_TEXT = Object.freeze({
   web: "Capability limit: arbitrary web browsing and exact URL opening or fetching are unavailable; enabled Search can retrieve only bounded evidence sources.",
   file: "Capability limit: the requested file operation is outside the bounded verified local artifact broker.",
   external: "Capability limit: external actions such as deployment, publishing, uploads, messaging, and email are unavailable.",
+  nativeHost:
+    "Capability limit: native host/session tools are not exposed in this public Agent; I cannot inspect tmux sessions, host processes, terminals, or private workstation state.",
 });
 const EXPRESSION_PLOT_MODEL_FALLBACK_PROMPT =
   "The user explicitly requires a plot, but the fixed single-expression compiler could not represent this natural-language request. Interpret the request and its conversation context, then call the bounded analysis tool and emit a real plot artifact. Never claim a plot exists unless the tool succeeds and emits it.";
@@ -713,6 +719,16 @@ function requiresGeneralFileCreation(value, { texPdfEnabled = false } = {}) {
   ));
 }
 
+function unsupportedNativeHostCapabilityRequired(value) {
+  return unquotedImperativeClauses(value).some((clause) => (
+    !UNSUPPORTED_ACTION_EXCLUSION.test(clause) &&
+    !NON_EXECUTION_LEAD.test(clause) &&
+    !UNSUPPORTED_DISCUSSION_LEAD.test(clause) &&
+    (UNSUPPORTED_NATIVE_HOST_TOOL_ACTION.test(clause) ||
+      UNSUPPORTED_NATIVE_HOST_INSPECTION_ACTION.test(clause))
+  ));
+}
+
 function unsupportedCapabilityRequests(
   value,
   { searchEnabled = false, texPdfEnabled = false, fileCreationEnabled = false } = {}
@@ -743,6 +759,10 @@ function unsupportedCapabilityRequests(
     if (!fileCreationEnabled && UNSUPPORTED_FILE_ACTION.test(fileClause)) requested.add("file");
     if (!texPdfEnabled && UNSUPPORTED_SINGLE_TEX_PDF_ACTION.test(clause)) requested.add("file");
     if (UNSUPPORTED_EXTERNAL_ACTION.test(clause)) requested.add("external");
+    if (UNSUPPORTED_NATIVE_HOST_TOOL_ACTION.test(clause) ||
+        UNSUPPORTED_NATIVE_HOST_INSPECTION_ACTION.test(clause)) {
+      requested.add("nativeHost");
+    }
   }
   return Object.freeze(UNSUPPORTED_CAPABILITY_ORDER.filter((category) => requested.has(category)));
 }
@@ -750,6 +770,12 @@ function unsupportedCapabilityRequests(
 function prependCapabilityLimits(text, categories) {
   if (!Array.isArray(categories) || categories.length === 0) return text;
   return `${categories.map((category) => UNSUPPORTED_CAPABILITY_TEXT[category]).join("\n")}\n\n${text}`;
+}
+
+function blockingUnsupportedCapabilityLimitText(categories) {
+  const ordered = categories.includes("nativeHost") ? categories : Object.freeze([...categories, "nativeHost"]);
+  return `${ordered.map((category) => UNSUPPORTED_CAPABILITY_TEXT[category]).join("\n")}\n\n` +
+    "No host evidence was collected, and no bounded Python analysis was run.";
 }
 
 function contextualNoToolTurn(conversation, priorArtifacts, explicitExecution) {
@@ -2827,6 +2853,7 @@ function createPlanner({
     priorArtifactsAuthorizeExecution: false,
     priorArtifactsCountAsCurrentEvidence: false,
     contextualTurnsRequireCurrentExecutionAuthority: true,
+    hostNativeToolRequestsFailClosed: true,
     maximumToolCalls: INTEGRATION_ANALYSIS_MAX_TOOL_CALLS,
     maximumRequiredToolFormationRetries: MAXIMUM_REQUIRED_TOOL_FORMATION_RETRIES,
     exactToolArguments: true,
@@ -3149,6 +3176,7 @@ function createPlanner({
       texPdfEnabled: documentArtifactIntent.required,
       fileCreationEnabled: fileArtifactRequired,
     });
+    const blockingUnsupportedNativeHost = unsupportedNativeHostCapabilityRequired(input.prompt);
     if (documentArtifactRevision && options.priorDocument === undefined) {
       fail(
         "ANALYSIS_DOCUMENT_SOURCE_REQUIRED",
@@ -3274,6 +3302,26 @@ function createPlanner({
       assertNotAborted(signal);
       return finalResult;
     };
+
+    const finalizeBlockingUnsupportedCapability = async () => {
+      const finalResult = publicFinalResult({
+        text: blockingUnsupportedCapabilityLimitText(unsupportedCapabilities),
+        toolCalls: 0,
+        artifacts,
+        executionStatus: null,
+      });
+      if (options.onFinal) await options.onFinal(finalResult);
+      assertNotAborted(signal);
+      return finalResult;
+    };
+
+    if (blockingUnsupportedNativeHost) {
+      await emitProgress("synthesizing", {
+        executionSucceeded: false,
+        artifactCount: 0,
+      });
+      return await finalizeBlockingUnsupportedCapability();
+    }
 
     const executeOnce = async (executionInput, toolCallNumber) => {
       let lastExecutionState = "";

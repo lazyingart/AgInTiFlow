@@ -2128,6 +2128,7 @@ async function executesAndSynthesizesPlot() {
   assert.equal(planner.attestation.priorArtifactsAuthorizeExecution, false);
   assert.equal(planner.attestation.priorArtifactsCountAsCurrentEvidence, false);
   assert.equal(planner.attestation.contextualTurnsRequireCurrentExecutionAuthority, true);
+  assert.equal(planner.attestation.hostNativeToolRequestsFailClosed, true);
   assert.equal(planner.attestation.maximumToolCalls, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS);
   assert.equal(planner.attestation.maximumRequiredToolFormationRetries, 2);
   assert.equal(planner.attestation.boundedCurrentRunArtifactEvidence, true);
@@ -2187,6 +2188,77 @@ async function directAnswerDoesNotExecute() {
   assert.deepEqual(finalEvents, [result]);
   assert.equal(rpcCalls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart), false);
   coordinator.close();
+}
+
+async function hostNativeToolRequestsFailClosedWithoutPythonSubstitution() {
+  const prompts = [
+    "Use tmux_list_sessions to inspect active native tmux sessions and tell me what is running.",
+    "Inspect the host terminal sessions and report the active tmux windows.",
+  ];
+  for (let index = 0; index < prompts.length; index += 1) {
+    const prompt = prompts[index];
+    let modelCalls = 0;
+    const progress = [];
+    const finals = [];
+    const routed = fixture(async () => {
+      modelCalls += 1;
+      return toolResponse("print('invented host evidence')");
+    });
+    const result = await routed.planner.run(
+      scope(`run_00000000-0000-4000-8000-${String(170 + index).padStart(12, "0")}`),
+      { prompt },
+      {
+        onProgress(value) {
+          progress.push(value);
+        },
+        onFinal(value) {
+          finals.push(value);
+        },
+      }
+    );
+    assert.equal(modelCalls, 0, prompt);
+    assert.equal(result.kind, "direct", prompt);
+    assert.equal(result.toolCalls, 0, prompt);
+    assert.equal(result.executionStatus, null, prompt);
+    assert.deepEqual(result.artifacts, [], prompt);
+    assert.match(result.text, /native host\/session tools are not exposed/u, prompt);
+    assert.match(result.text, /No host evidence was collected/u, prompt);
+    assert.doesNotMatch(result.text, /invented|tmux windows:/iu, prompt);
+    assert.deepEqual(finals, [result], prompt);
+    assert.deepEqual(progress, [
+      Object.freeze({
+        phase: "synthesizing",
+        toolCallsCompleted: 0,
+        executionSucceeded: false,
+        artifactCount: 0,
+      }),
+    ], prompt);
+    assert.equal(
+      routed.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      0,
+      prompt
+    );
+    routed.coordinator.close();
+  }
+
+  let explanatoryModelCalls = 0;
+  const explanatory = fixture(async () => {
+    explanatoryModelCalls += 1;
+    return textResponse("tmux_list_sessions would list terminal multiplexer sessions when such a host tool exists.");
+  });
+  const explanatoryResult = await explanatory.planner.run(
+    scope("run_00000000-0000-4000-8000-000000000172"),
+    { prompt: "Explain what a tool named tmux_list_sessions would do, without using it." }
+  );
+  assert.equal(explanatoryModelCalls, 1);
+  assert.equal(explanatoryResult.kind, "direct");
+  assert.equal(explanatoryResult.toolCalls, 0);
+  assert.doesNotMatch(explanatoryResult.text, /Capability limit:/u);
+  assert.equal(
+    explanatory.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+    0
+  );
+  explanatory.coordinator.close();
 }
 
 async function unsupportedMixedActionsDiscloseAndContinue() {
@@ -5320,6 +5392,7 @@ await groundsWithPrivateSearchBeforeModelSynthesis();
 await deepResearchCompletesWithoutSecondModelSynthesis();
 await executesAndSynthesizesPlot();
 await directAnswerDoesNotExecute();
+await hostNativeToolRequestsFailClosedWithoutPythonSubstitution();
 await unsupportedMixedActionsDiscloseAndContinue();
 await coordinatedExecutionClausesHonorLocalNegation();
 await leadingGeneralFileImperativesRequireTheFileWorker();

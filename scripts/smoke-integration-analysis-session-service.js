@@ -617,6 +617,74 @@ async function plotThenProseContinuationRoundTrip(temporaryRoot) {
   }
 }
 
+async function hostNativeToolCapabilityLimitRoundTrip(temporaryRoot) {
+  const root = path.join(temporaryRoot, "host-native-limit-state");
+  const prompt = "Use tmux_list_sessions to inspect active native tmux sessions and tell me what is running.";
+  const fixture = createExplicitPythonRunnerFixture({
+    async complete() {
+      return {
+        choices: [{
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_wrong_host_substitute",
+              type: "function",
+              function: {
+                name: "execute_python_analysis",
+                arguments: JSON.stringify({ source: "print('invented host evidence')" }),
+              },
+            }],
+          },
+        }],
+      };
+    },
+  });
+  let service = createTestOnlyIntegrationAnalysisSessionService({
+    analysisRunner: fixture.planner,
+    stateRoot: root,
+  });
+  let restarted = null;
+  try {
+    const created = await service.createThread({ title: "Host-native limit" }, context());
+    const started = await service.startRun({
+      threadId: created.thread.id,
+      input: { text: prompt },
+    }, context());
+    await service.waitForIdle();
+
+    const completed = (await service.getRunStatus({ runId: started.run.id }, context())).run;
+    assert.equal(completed.status, "completed", JSON.stringify(completed.error));
+    assert.match(completed.output, /native host\/session tools are not exposed/u);
+    assert.match(completed.output, /No host evidence was collected/u);
+    assert.equal(fixture.modelCalls, 0);
+    assert.equal(fixture.workerSources.length, 0);
+    assert.equal(
+      fixture.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      0
+    );
+    const events = await (await service.loadRunEvents(eventsRequest(started.run.id), context()))
+      .publicEventLedger.loadEventsAfter(0);
+    assert.equal(events.some((event) => event.type.startsWith("tool.")), false);
+    assert(events.some((event) => event.type === "run.completed"));
+    assert.deepEqual((await service.listArtifacts({ runId: started.run.id }, context())).artifacts, []);
+
+    await service.close({ mode: "wait" });
+    service = null;
+    restarted = createTestOnlyIntegrationAnalysisSessionService({
+      analysisRunner: fixture.planner,
+      stateRoot: root,
+    });
+    const replayed = (await restarted.getRunStatus({ runId: started.run.id }, context())).run;
+    assert.equal(replayed.output, completed.output);
+    assert.equal(fixture.modelCalls, 0, "durable replay must not call the model");
+  } finally {
+    await service?.close({ mode: "abort" }).catch(() => {});
+    await restarted?.close({ mode: "abort" }).catch(() => {});
+    fixture.coordinator.close();
+  }
+}
+
 async function markdownArtifactFollowupUsesToolRoundTrip(temporaryRoot) {
   const root = path.join(temporaryRoot, "markdown-followup-state");
   const followupPrompt =
@@ -3998,6 +4066,7 @@ async function main() {
   try {
     await explicitPythonDurabilityRoundTrip(temporaryRoot);
     await plotThenProseContinuationRoundTrip(temporaryRoot);
+    await hostNativeToolCapabilityLimitRoundTrip(temporaryRoot);
     await markdownArtifactFollowupUsesToolRoundTrip(temporaryRoot);
     await boundedPriorArtifactContextRoundTrip(temporaryRoot);
     await groundedSearchDurabilityRoundTrip(temporaryRoot);
