@@ -100,6 +100,7 @@ const MAX_RUNTIME_PROBE_BYTES = 16 * 1024;
 const RUNTIME_PROBE_TIMEOUT_MS = 3_000;
 const RUNTIME_CAPABILITY_CACHE_MS = 1_000;
 const TERMINATION_GRACE_MS = 1_000;
+const TERMINATION_ACCEPTED_SIGNAL_PROOF_MS = 5_000;
 const EXECUTION_WORKER_SOURCE_URL = new URL(import.meta.url);
 const EXECUTION_ARTIFACTS_SOURCE_URL = new URL("./integration-artifacts.js", import.meta.url);
 const ALLOWED_TERMINAL_STATUSES = new Set([
@@ -788,12 +789,27 @@ function killChild(child) {
 function createTerminationSupervisor(child) {
   let graceTimer = null;
   let forceResolve;
+  let forceSettled = false;
+  let signalAccepted = false;
   const forced = new Promise((resolve) => { forceResolve = resolve; });
+  const scheduleUnproven = (delayMs) => {
+    if (forceSettled) return;
+    if (graceTimer) clearTimeout(graceTimer);
+    graceTimer = setTimeout(() => {
+      forceSettled = true;
+      forceResolve(Object.freeze({ terminationUnproven: true, code: null, signal: null }));
+    }, delayMs);
+  };
   const terminate = () => {
     const killed = killChild(child);
-    graceTimer ||= setTimeout(() => {
-      forceResolve(Object.freeze({ terminationUnproven: true, code: null, signal: null }));
-    }, TERMINATION_GRACE_MS);
+    if (killed) {
+      if (!signalAccepted) {
+        signalAccepted = true;
+        scheduleUnproven(TERMINATION_ACCEPTED_SIGNAL_PROOF_MS);
+      }
+    } else if (!graceTimer) {
+      scheduleUnproven(TERMINATION_GRACE_MS);
+    }
     return killed;
   };
   const clear = () => {

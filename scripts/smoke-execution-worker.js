@@ -688,6 +688,64 @@ await assert.rejects(
   (error) => error instanceof ExecutionWorkerError && error.code === "EXECUTION_RUNTIME_UNAVAILABLE"
 );
 
+function delayedAcceptedKillChild({ delayMs, close = true }) {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdin = new Writable({
+    write(_chunk, _encoding, callback) {
+      callback();
+    },
+  });
+  let killCalls = 0;
+  let closeTimer = null;
+  child.kill = () => {
+    killCalls += 1;
+    if (close && !closeTimer) {
+      closeTimer = setTimeout(() => child.emit("close", null, "SIGKILL"), delayMs);
+      closeTimer.unref?.();
+    }
+    return true;
+  };
+  child.killCalls = () => killCalls;
+  child.unref = () => {};
+  return child;
+}
+
+let delayedCloseChild;
+const delayedCloseWorker = createPythonExecutionWorker({
+  workerId: WORKER_ID,
+  testOnlyAllowMissingSeccomp: true,
+  runtimeProbeImpl: async () => liveProof,
+  spawnImpl: () => {
+    delayedCloseChild = delayedAcceptedKillChild({ delayMs: 1_250 });
+    queueMicrotask(() => delayedCloseAbort.abort());
+    return delayedCloseChild;
+  },
+});
+const delayedCloseAbort = new AbortController();
+const delayedCloseRun = delayedCloseWorker.execute(
+  job("while True:\n    pass", { timeoutMs: 5_000 }),
+  { signal: delayedCloseAbort.signal }
+);
+const delayedCloseResult = await delayedCloseRun;
+assert.equal(delayedCloseResult.status, "cancelled");
+assert.equal(delayedCloseResult.exitCode, null);
+assert(delayedCloseChild.killCalls() >= 1, "delayed close fixture did not exercise SIGKILL");
+const delayedCloseCapabilities = await delayedCloseWorker.capabilities();
+assert(!delayedCloseCapabilities.activation.blockers.includes("worker-termination-degraded"));
+
+const acceptedNoCloseWorker = createPythonExecutionWorker({
+  workerId: WORKER_ID,
+  testOnlyAllowMissingSeccomp: true,
+  runtimeProbeImpl: async () => liveProof,
+  spawnImpl: () => delayedAcceptedKillChild({ delayMs: 0, close: false }),
+});
+const acceptedNoClose = await acceptedNoCloseWorker.execute(job("while True:\n    pass", { timeoutMs: 100 }));
+assert.equal(acceptedNoClose.status, "termination_unproven");
+const acceptedNoCloseCapabilities = await acceptedNoCloseWorker.capabilities();
+assert(acceptedNoCloseCapabilities.activation.blockers.includes("worker-termination-degraded"));
+
 function noCloseChild() {
   const child = new EventEmitter();
   child.stdout = new PassThrough();
