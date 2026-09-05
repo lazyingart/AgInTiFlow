@@ -333,7 +333,8 @@ function createCoordinator(clientOrRouter, { requireSystemdCredential, pollMs = 
     }
     if (signal?.aborted) throw abortError(signal.reason);
     const request = executionRequest(scope, input, ordinal);
-    async function executeWithClient(workerClient, _route = null, prevalidatedCapabilities = null) {
+    async function executeWithClient(workerClient, _route = null, prevalidatedCapabilities = null, routeContext = null) {
+      const effectiveSignal = routeContext?.signal ?? signal;
       const reference = Object.freeze({ jobId: request.jobId, attempt: request.attempt });
       let started = false;
       let terminal = false;
@@ -360,16 +361,16 @@ function createCoordinator(clientOrRouter, { requireSystemdCredential, pollMs = 
       }
 
       try {
-        const capabilities = prevalidatedCapabilities ?? await workerClient.capabilities({ signal });
+        const capabilities = prevalidatedCapabilities ?? await workerClient.capabilities({ signal: effectiveSignal });
         readinessResponse(capabilities);
-        let status = await workerClient.start(request, { signal });
+        let status = await workerClient.start(request, { signal: effectiveSignal });
         started = true;
         await options.onProgress?.(Object.freeze({ state: status.state }));
 
         while (!status.terminal) {
-          if (signal?.aborted) {
+          if (effectiveSignal?.aborted) {
             await cancelBestEffort();
-            throw abortError(signal.reason);
+            throw signal?.aborted ? abortError(signal.reason) : (effectiveSignal.reason || new Error("execution route interrupted"));
           }
           if (Date.now() - startedAt > coordinatorDeadlineMs) {
             await cancelBestEffort();
@@ -379,11 +380,11 @@ function createCoordinator(clientOrRouter, { requireSystemdCredential, pollMs = 
             ...reference,
             afterSeq: cursor.seq,
             afterHash: cursor.hash,
-          }, { signal });
+          }, { signal: effectiveSignal });
           cursor = replay.cursor;
           if (replay.events.length) lastEvent = replay.events.at(-1);
-          await delay(pollMs, signal);
-          status = await workerClient.status(reference, { signal });
+          await delay(pollMs, effectiveSignal);
+          status = await workerClient.status(reference, { signal: effectiveSignal });
           await options.onProgress?.(Object.freeze({ state: status.state }));
         }
         terminal = true;
@@ -391,16 +392,16 @@ function createCoordinator(clientOrRouter, { requireSystemdCredential, pollMs = 
           ...reference,
           afterSeq: cursor.seq,
           afterHash: cursor.hash,
-        }, { signal });
+        }, { signal: effectiveSignal });
         cursor = finalEvents.cursor;
         if (finalEvents.events.length) lastEvent = finalEvents.events.at(-1);
         validateTerminalEvidence(finalEvents, status, lastEvent);
 
         const artifacts = status.state === "succeeded"
-          ? await workerClient.listArtifacts(reference, status.result, { signal })
+          ? await workerClient.listArtifacts(reference, status.result, { signal: effectiveSignal })
           : Object.freeze([]);
         for (const artifact of artifacts) {
-          const exact = await workerClient.getArtifact({ ...reference, artifactId: artifact.id }, { signal });
+          const exact = await workerClient.getArtifact({ ...reference, artifactId: artifact.id }, { signal: effectiveSignal });
           if (contractDigest(exact) !== contractDigest(artifact)) {
             fail("EXECUTION_PROTOCOL_INVALID", "execution artifact detail diverged from its validated list.");
           }
@@ -408,9 +409,10 @@ function createCoordinator(clientOrRouter, { requireSystemdCredential, pollMs = 
         }
         return publicResult(status, artifacts);
       } catch (error) {
-        if (signal?.aborted) {
+        if (effectiveSignal?.aborted) {
           await cancelBestEffort();
-          throw abortError(signal.reason || error);
+          if (signal?.aborted) throw abortError(signal.reason || error);
+          throw effectiveSignal.reason || error;
         }
         await cancelBestEffort();
         throw translateError(error);

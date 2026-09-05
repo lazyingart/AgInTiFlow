@@ -29,6 +29,7 @@ import {
 import { sanitizeIntegrationArtifact } from "../src/integration-artifacts.js";
 import { projectCoreEvent } from "../src/integration-core-event-projector.js";
 import {
+  INTEGRATION_EXECUTION_WORKER_LEASE_TTL_MS,
   createIntegrationExecutionWorkerRouter,
   createTestOnlyExecutionWorkerBindingAuthority,
 } from "../src/integration-execution-worker-router.js";
@@ -203,6 +204,42 @@ function deferred() {
     resolve = resolvePromise;
   });
   return Object.freeze({ promise, resolve });
+}
+
+function delayed(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function withTimeout(promise, label, ms = 2_000) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function waitFor(predicate, label, { timeoutMs = 1_000, intervalMs = 10 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() <= deadline) {
+    try {
+      if (await predicate()) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await delayed(intervalMs);
+  }
+  const error = new Error(`${label} did not become true`);
+  if (lastError) error.cause = lastError;
+  throw error;
 }
 
 function rpcForManager(manager, mutate = null, calls = []) {
@@ -717,6 +754,272 @@ async function routedLeasePinsCutover() {
   }
 }
 
+async function routedLeaseHeartbeatRenewsPinnedNodeAcrossSwitch() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-analysis-routed-heartbeat-"));
+  const nodeA = Object.freeze({
+    nodeId: "node_analysis_heartbeat_0001",
+    bindingId: "binding_analysis_heartbeat_0001",
+    platform: "workstation",
+    roles: Object.freeze(["execution"]),
+  });
+  const nodeB = Object.freeze({
+    nodeId: "node_analysis_heartbeat_0002",
+    bindingId: "binding_analysis_heartbeat_0002",
+    platform: "jetson",
+    roles: Object.freeze(["execution"]),
+  });
+  const workerStarted = deferred();
+  const workerRelease = deferred();
+  const workerA = Object.freeze({
+    capabilities: async () => capability(),
+    async execute(request, { signal } = {}) {
+      workerStarted.resolve();
+      await Promise.race([
+        workerRelease.promise,
+        new Promise((resolve) => signal?.addEventListener?.("abort", resolve, { once: true })),
+      ]);
+      return terminalResult(request, signal?.aborted ? "cancelled" : "succeeded");
+    },
+  });
+  const clientA = createTestOnlyExecutionWorkerClient(rpcForManager(
+    createExecutionJobManager({ worker: workerA })
+  ));
+  const clientB = createTestOnlyExecutionWorkerClient(rpcForManager(
+    createExecutionJobManager({ worker: fakeWorker({ delayMs: 20 }) })
+  ));
+  const [capabilitiesA, capabilitiesB] = await Promise.all([
+    clientA.capabilities(),
+    clientB.capabilities(),
+  ]);
+  const capabilityDigests = new Map([
+    [nodeA.nodeId, capabilitiesA.capabilityDigest],
+    [nodeB.nodeId, capabilitiesB.capabilityDigest],
+  ]);
+  const baseMs = Date.parse("2026-09-02T12:00:00.000Z");
+  let clockMs = baseMs;
+  let randomCounter = 0;
+  const probeCalls = [];
+  const now = () => new Date(clockMs);
+  const directory = await createIntegrationWorkerDirectory({
+    rootDir,
+    now,
+    randomHex(bytes) {
+      randomCounter += 1;
+      return randomCounter.toString(16).padStart(bytes * 2, "0");
+    },
+    async probe(candidate) {
+      probeCalls.push(Object.freeze({ nodeId: candidate.nodeId, at: now().toISOString() }));
+      const observedAt = now();
+      return createWorkerAdmission(candidate, {
+        transport: "lazyedge-private-http-v1",
+        releaseId: "analysis-worker-r1",
+        releaseDigest: contractDigest({ release: candidate.nodeId }),
+        capabilitiesDigest: capabilityDigests.get(candidate.nodeId),
+        canaryDigest: contractDigest({ canary: candidate.nodeId }),
+        protocols: ["aginti-execution-worker-v1"],
+        observedAt: observedAt.toISOString(),
+        expiresAt: new Date(observedAt.valueOf() + 5 * 60_000).toISOString(),
+      });
+    },
+  });
+  const bindingAuthority = createTestOnlyExecutionWorkerBindingAuthority([
+    { bindingId: nodeA.bindingId, client: clientA },
+    { bindingId: nodeB.bindingId, client: clientB },
+  ]);
+  const router = createIntegrationExecutionWorkerRouter({
+    directory,
+    bindingAuthority,
+    leaseHeartbeatMs: 25,
+    leaseReleaseDrainMs: 100,
+  });
+  const coordinator = createTestOnlyRoutedIntegrationAnalysisCoordinator(router, { pollMs: 25 });
+
+  async function waitForPinnedLease(offsetMs) {
+    clockMs = baseMs + offsetMs;
+    await waitFor(async () => {
+      const status = await directory.status();
+      const lease = status.leases.find((item) => item.nodeId === nodeA.nodeId);
+      return lease && Date.parse(lease.expiresAt) >= clockMs + INTEGRATION_EXECUTION_WORKER_LEASE_TTL_MS;
+    }, `pinned lease renewal at ${offsetMs}ms`, { timeoutMs: 2_000 });
+  }
+
+  try {
+    await directory.enroll(nodeA);
+    await directory.enroll(nodeB);
+    await directory.switchRole("execution", nodeA.nodeId, { expectedGeneration: 0 });
+    const first = coordinator.execute(scope(), { source: "print('pinned-a-heartbeat')", timeoutMs: 1_000 });
+    await withTimeout(workerStarted.promise, "worker A started");
+    await directory.switchRole("execution", nodeB.nodeId, { expectedGeneration: 1 });
+    assert.equal((await directory.resolve("execution")).nodeId, nodeB.nodeId);
+
+    await waitForPinnedLease(45_000);
+    assert.equal((await directory.status()).leases[0].nodeId, nodeA.nodeId);
+    await assert.rejects(
+      directory.finalizeRole("execution", { expectedGeneration: 2 }),
+      (error) => error?.code === "WORKER_DRAIN_INCOMPLETE"
+    );
+    await waitForPinnedLease(90_000);
+    await waitForPinnedLease(135_000);
+    await waitForPinnedLease(180_000);
+    await waitForPinnedLease(225_000);
+    const oldNodeProbeCount = probeCalls.filter((call) => call.nodeId === nodeA.nodeId).length;
+    await waitForPinnedLease(260_000);
+    assert(
+      probeCalls.filter((call) => call.nodeId === nodeA.nodeId).length > oldNodeProbeCount,
+      "lease renewal should refresh the leased old node admission near the five-minute horizon"
+    );
+    assert.equal((await directory.resolve("execution")).nodeId, nodeB.nodeId);
+    assert.equal((await directory.status()).leases[0].nodeId, nodeA.nodeId);
+    await assert.rejects(
+      directory.finalizeRole("execution", { expectedGeneration: 2 }),
+      (error) => error?.code === "WORKER_DRAIN_INCOMPLETE"
+    );
+
+    workerRelease.resolve();
+    assert.equal((await withTimeout(first, "long routed operation")).status, "succeeded");
+    assert.equal((await directory.status()).leases.length, 0);
+    await directory.finalizeRole("execution", { expectedGeneration: 2 });
+    const probeCountAfterRelease = probeCalls.length;
+    await delayed(75);
+    assert.equal(probeCalls.length, probeCountAfterRelease);
+  } finally {
+    workerRelease.resolve();
+    await coordinator.close?.();
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+}
+
+async function routedLeaseFailureCleanupPreservesPinUntilOperationSettles() {
+  async function runCase({ delayedSettlement }) {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-analysis-routed-failure-"));
+    const nodeA = Object.freeze({
+      nodeId: delayedSettlement ? "node_route_failure_delay01" : "node_route_failure_stuck01",
+      bindingId: delayedSettlement ? "binding_route_failure_delay01" : "binding_route_failure_stuck01",
+      platform: "workstation",
+      roles: Object.freeze(["execution"]),
+    });
+    const nodeB = Object.freeze({
+      nodeId: delayedSettlement ? "node_route_failure_delay02" : "node_route_failure_stuck02",
+      bindingId: delayedSettlement ? "binding_route_failure_delay02" : "binding_route_failure_stuck02",
+      platform: "jetson",
+      roles: Object.freeze(["execution"]),
+    });
+    const clientA = createTestOnlyExecutionWorkerClient(rpcForManager(
+      createExecutionJobManager({ worker: fakeWorker({ delayMs: 20 }) })
+    ));
+    const clientB = createTestOnlyExecutionWorkerClient(rpcForManager(
+      createExecutionJobManager({ worker: fakeWorker({ delayMs: 20 }) })
+    ));
+    const [capabilitiesA, capabilitiesB] = await Promise.all([
+      clientA.capabilities(),
+      clientB.capabilities(),
+    ]);
+    const capabilityDigests = new Map([
+      [nodeA.nodeId, capabilitiesA.capabilityDigest],
+      [nodeB.nodeId, capabilitiesB.capabilityDigest],
+    ]);
+    const baseMs = Date.parse("2026-09-02T13:00:00.000Z");
+    let clockMs = baseMs;
+    let randomCounter = 0;
+    let probeFails = false;
+    const now = () => new Date(clockMs);
+    const directory = await createIntegrationWorkerDirectory({
+      rootDir,
+      now,
+      randomHex(bytes) {
+        randomCounter += 1;
+        return randomCounter.toString(16).padStart(bytes * 2, "0");
+      },
+      async probe(candidate) {
+        if (probeFails) throw new Error("admission probe unavailable");
+        const observedAt = now();
+        return createWorkerAdmission(candidate, {
+          transport: "lazyedge-private-http-v1",
+          releaseId: "analysis-worker-r1",
+          releaseDigest: contractDigest({ release: candidate.nodeId }),
+          capabilitiesDigest: capabilityDigests.get(candidate.nodeId),
+          canaryDigest: contractDigest({ canary: candidate.nodeId }),
+          protocols: ["aginti-execution-worker-v1"],
+          observedAt: observedAt.toISOString(),
+          expiresAt: new Date(observedAt.valueOf() + 80_000).toISOString(),
+        });
+      },
+    });
+    const bindingAuthority = createTestOnlyExecutionWorkerBindingAuthority([
+      { bindingId: nodeA.bindingId, client: clientA },
+      { bindingId: nodeB.bindingId, client: clientB },
+    ]);
+    const router = createIntegrationExecutionWorkerRouter({
+      directory,
+      bindingAuthority,
+      leaseHeartbeatMs: 25,
+      leaseReleaseDrainMs: delayedSettlement ? 500 : 50,
+    });
+    const owner = "2".repeat(64);
+    const operationStarted = deferred();
+    const operationAborted = deferred();
+    const operationSettle = deferred();
+    const operationSettled = deferred();
+    let routed = null;
+
+    try {
+      await directory.enroll(nodeA);
+      await directory.enroll(nodeB);
+      await directory.switchRole("execution", nodeA.nodeId, { expectedGeneration: 0 });
+      routed = router.withClient(owner, async (_client, _route, _capabilities, routeContext) => {
+        operationStarted.resolve();
+        routeContext.signal.addEventListener("abort", () => operationAborted.resolve(), { once: true });
+        await operationAborted.promise;
+        await operationSettle.promise;
+        operationSettled.resolve();
+        throw routeContext.signal.reason || new Error("route interrupted");
+      });
+      await withTimeout(operationStarted.promise, "route operation started");
+      await directory.switchRole("execution", nodeB.nodeId, { expectedGeneration: 1 });
+      probeFails = true;
+      clockMs = baseMs + 30_000;
+      await withTimeout(operationAborted.promise, "route heartbeat abort");
+      assert.equal((await directory.status()).leases[0].nodeId, nodeA.nodeId);
+
+      if (delayedSettlement) {
+        await delayed(50);
+        assert.equal((await directory.status()).leases[0].nodeId, nodeA.nodeId);
+        operationSettle.resolve();
+        await assert.rejects(
+          withTimeout(routed, "delayed routed failure"),
+          (error) => error?.code === "WORKER_PROBE_UNAVAILABLE"
+        );
+        assert.equal((await directory.status()).leases.length, 0);
+        await directory.finalizeRole("execution", { expectedGeneration: 2 });
+      } else {
+        await assert.rejects(
+          withTimeout(routed, "uncooperative routed failure"),
+          (error) => error?.code === "WORKER_PROBE_UNAVAILABLE"
+        );
+        assert.equal((await directory.status()).leases[0].nodeId, nodeA.nodeId);
+        await assert.rejects(
+          directory.finalizeRole("execution", { expectedGeneration: 2 }),
+          (error) => error?.code === "WORKER_DRAIN_INCOMPLETE"
+        );
+        operationSettle.resolve();
+        await withTimeout(operationSettled.promise, "uncooperative operation cleanup");
+        await delayed(75);
+        assert.equal((await directory.status()).leases[0].nodeId, nodeA.nodeId);
+        clockMs = baseMs + 91_000;
+        await directory.finalizeRole("execution", { expectedGeneration: 2 });
+      }
+    } finally {
+      operationSettle.resolve();
+      await routed?.catch(() => {});
+      router.close();
+      await fs.rm(rootDir, { recursive: true, force: true });
+    }
+  }
+
+  await runCase({ delayedSettlement: true });
+  await runCase({ delayedSettlement: false });
+}
+
 await successfulExecution();
 await publicActivationGates();
 await rejectsCallerTransportFields();
@@ -726,5 +1029,7 @@ await rejectsEventTamper();
 await cancellationPropagates();
 await awaitsProgressDeliveryAndPropagatesRejections();
 await routedLeasePinsCutover();
+await routedLeaseHeartbeatRenewsPinnedNodeAcrossSwitch();
+await routedLeaseFailureCleanupPreservesPinUntilOperationSettles();
 
 console.log("integration analysis coordinator smoke passed");

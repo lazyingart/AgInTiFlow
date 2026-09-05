@@ -17,6 +17,8 @@ export const INTEGRATION_EXECUTION_WORKER_ROUTER_SCHEMA_VERSION =
 export const INTEGRATION_EXECUTION_WORKER_BINDING_AUTHORITY_SCHEMA_VERSION =
   "aginti-integration-execution-worker-binding-authority-v1";
 export const INTEGRATION_EXECUTION_WORKER_LEASE_TTL_MS = 60_000;
+export const INTEGRATION_EXECUTION_WORKER_LEASE_HEARTBEAT_MS = 20_000;
+export const INTEGRATION_EXECUTION_WORKER_LEASE_RELEASE_DRAIN_MS = 2_000;
 
 const ROUTER_BRAND = new WeakSet();
 const BINDING_AUTHORITY_BRAND = new WeakSet();
@@ -73,6 +75,22 @@ function ownerDigest(value) {
   return value;
 }
 
+function leaseHeartbeatMs(value) {
+  const heartbeatMs = value ?? INTEGRATION_EXECUTION_WORKER_LEASE_HEARTBEAT_MS;
+  if (!Number.isSafeInteger(heartbeatMs) || heartbeatMs < 25 || heartbeatMs > INTEGRATION_EXECUTION_WORKER_LEASE_TTL_MS / 2) {
+    fail("EXECUTION_ROUTER_INVALID", "execution route lease heartbeat interval is invalid.", { status: 400 });
+  }
+  return heartbeatMs;
+}
+
+function leaseReleaseDrainMs(value) {
+  const drainMs = value ?? INTEGRATION_EXECUTION_WORKER_LEASE_RELEASE_DRAIN_MS;
+  if (!Number.isSafeInteger(drainMs) || drainMs < 25 || drainMs > 30_000) {
+    fail("EXECUTION_ROUTER_INVALID", "execution route lease release drain interval is invalid.", { status: 400 });
+  }
+  return drainMs;
+}
+
 function bindingId(value) {
   if (typeof value !== "string" || !BINDING_ID.test(value)) {
     fail("EXECUTION_BINDING_INVALID", "execution worker binding ID is invalid.");
@@ -94,6 +112,94 @@ function assertBindingAuthority(value) {
     throw new TypeError("execution worker binding authority is not AgInTi-owned");
   }
   return value;
+}
+
+function createLeaseHeartbeat(directory, lease, owner, { heartbeatMs, signal }) {
+  const controller = new AbortController();
+  let timer = null;
+  let renewal = null;
+  let stopped = false;
+  let failed = false;
+  let failureError = null;
+  let rejectFailure;
+  const failure = new Promise((_, reject) => {
+    rejectFailure = reject;
+  });
+  failure.catch(() => {});
+
+  const abortFromCaller = () => {
+    if (!controller.signal.aborted) controller.abort(signal?.reason || new Error("execution route was cancelled"));
+  };
+  const failRenewal = (error) => {
+    if (stopped || failed) return;
+    failed = true;
+    const translated = translateDirectoryError(error);
+    failureError = translated;
+    if (!controller.signal.aborted) controller.abort(translated);
+    rejectFailure(translated);
+  };
+  const schedule = () => {
+    if (stopped || failed || controller.signal.aborted) return;
+    timer = setTimeout(runRenewal, heartbeatMs);
+    timer.unref?.();
+  };
+  const runRenewal = () => {
+    timer = null;
+    if (stopped || failed || controller.signal.aborted) return;
+    renewal = directory.renewLease(lease.leaseId, owner, {
+      ttlMs: INTEGRATION_EXECUTION_WORKER_LEASE_TTL_MS,
+    }).then(
+      () => {
+        renewal = null;
+        schedule();
+      },
+      (error) => {
+        renewal = null;
+        failRenewal(error);
+      }
+    );
+    renewal.catch(() => {});
+  };
+
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener?.("abort", abortFromCaller, { once: true });
+  schedule();
+
+  return Object.freeze({
+    signal: controller.signal,
+    failure,
+    async stop() {
+      stopped = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      signal?.removeEventListener?.("abort", abortFromCaller);
+      if (renewal) await renewal.catch(() => {});
+    },
+    failed() {
+      return failureError !== null;
+    },
+  });
+}
+
+async function waitForOperationDrain(operationPromise, drainMs) {
+  if (!operationPromise) return true;
+  let timer = null;
+  try {
+    return await Promise.race([
+      operationPromise.then(
+        () => true,
+        () => true
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), drainMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function createTestOnlyExecutionWorkerBindingAuthority(entriesValue) {
@@ -205,22 +311,29 @@ export async function createSystemdExecutionWorkerBindingAuthority(...args) {
 export function createIntegrationExecutionWorkerRouter(optionsValue) {
   const options = exactObject(
     optionsValue,
-    ["directory", "bindingAuthority"],
+    ["directory", "bindingAuthority", "leaseHeartbeatMs", "leaseReleaseDrainMs"],
     ["directory", "bindingAuthority"],
     "execution worker router options"
   );
   const directory = assertIntegrationWorkerDirectory(options.directory);
   const bindingAuthority = assertBindingAuthority(options.bindingAuthority);
+  const heartbeatMs = leaseHeartbeatMs(options.leaseHeartbeatMs);
+  const releaseDrainMs = leaseReleaseDrainMs(options.leaseReleaseDrainMs);
   const proofUnsigned = Object.freeze({
     schemaVersion: INTEGRATION_EXECUTION_WORKER_ROUTER_SCHEMA_VERSION,
     owner: "aginti",
     authority: "aginti",
     role: "execution",
     leaseTtlMs: INTEGRATION_EXECUTION_WORKER_LEASE_TTL_MS,
+    leaseHeartbeatMs: heartbeatMs,
+    leaseReleaseDrainMs: releaseDrainMs,
     directoryAttestationDigest: directory.attestation.stateRootDigest,
     bindingAuthorityAttestationDigest: bindingAuthority.attestation.digest,
     credentialSource: bindingAuthority.attestation.authority,
     leasePinsWorkerForEntireOperation: true,
+    leaseHeartbeatExtendsActiveOperation: true,
+    leaseHeartbeatRenewsAdmission: true,
+    leaseReleaseWaitsForCancellationDrain: true,
     assignmentSwitchAffectsNewLeasesOnly: true,
     capabilityDigestRevalidated: true,
     callerSelectableBinding: false,
@@ -244,32 +357,55 @@ export function createIntegrationExecutionWorkerRouter(optionsValue) {
       }
       let lease = null;
       let operationError = null;
+      let heartbeat = null;
+      let operationPromise = null;
+      let releaseLease = true;
+      const withHeartbeat = (promise) => heartbeat
+        ? Promise.race([promise, heartbeat.failure])
+        : promise;
       try {
         lease = await directory.acquire("execution", owner, {
           ttlMs: INTEGRATION_EXECUTION_WORKER_LEASE_TTL_MS,
         });
-        const route = await directory.resolveLease(lease.leaseId, owner);
-        const client = assertExecutionWorkerClient(await bindingAuthority.open(route));
-        const capabilities = await client.capabilities({ signal: options.signal });
+        heartbeat = createLeaseHeartbeat(directory, lease, owner, {
+          heartbeatMs,
+          signal: options.signal,
+        });
+        const route = await withHeartbeat(directory.resolveLease(lease.leaseId, owner));
+        const client = assertExecutionWorkerClient(await withHeartbeat(bindingAuthority.open(route)));
+        const capabilities = await withHeartbeat(client.capabilities({ signal: heartbeat.signal }));
         if (capabilities.capabilityDigest !== route.capabilitiesDigest) {
           fail(
             "EXECUTION_BINDING_DIVERGED",
             "execution worker capabilities diverged from admitted binding evidence."
           );
         }
-        return await operation(client, Object.freeze({ ...route }), capabilities);
+        operationPromise = Promise.resolve().then(() => operation(
+          client,
+          Object.freeze({ ...route }),
+          capabilities,
+          Object.freeze({ signal: heartbeat.signal })
+        ));
+        operationPromise.catch(() => {});
+        return await withHeartbeat(operationPromise);
       } catch (error) {
         operationError = translateDirectoryError(error);
         throw operationError;
       } finally {
+        if (heartbeat) await heartbeat.stop();
+        if (heartbeat?.failed() && operationPromise) {
+          releaseLease = await waitForOperationDrain(operationPromise, releaseDrainMs);
+        }
         if (lease) {
-          try {
-            await directory.releaseLease(lease.leaseId, owner);
-          } catch (releaseError) {
-            if (!operationError) {
-              fail("EXECUTION_LEASE_RELEASE_FAILED", "execution worker lease could not be released.", {
-                cause: releaseError,
-              });
+          if (releaseLease) {
+            try {
+              await directory.releaseLease(lease.leaseId, owner);
+            } catch (releaseError) {
+              if (!operationError) {
+                fail("EXECUTION_LEASE_RELEASE_FAILED", "execution worker lease could not be released.", {
+                  cause: releaseError,
+                });
+              }
             }
           }
         }

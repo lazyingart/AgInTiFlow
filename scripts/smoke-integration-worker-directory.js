@@ -270,6 +270,81 @@ async function smokeInvalidRandom(rootDir) {
   assert.equal((await directory.status()).assignments.length, 0);
 }
 
+async function smokeAcquireAutoRenewal(rootDir) {
+  let localClockMs = Date.parse("2026-09-02T10:00:00.000Z");
+  let mode = "ok";
+  let probeCalls = [];
+  function localNow() {
+    return new Date(localClockMs);
+  }
+  async function localProbe(candidate) {
+    probeCalls.push({ nodeId: candidate.nodeId, at: localNow().toISOString(), mode });
+    if (mode === "throw") throw new Error("worker readiness route unavailable");
+    const lifetimeMs = mode === "short" ? 30_000 : 5 * 60_000;
+    return createWorkerAdmission(candidate, {
+      transport: "lazyedge-private-http-v1",
+      releaseId: "worker-r1",
+      releaseDigest: RELEASE_DIGEST,
+      capabilitiesDigest: CAPABILITIES_DIGEST,
+      canaryDigest: CANARY_DIGEST,
+      protocols: ["aginti-execution-worker-api-v1", "aginti-execution-job-manager-v1"],
+      observedAt: new Date(localClockMs).toISOString(),
+      expiresAt: new Date(localClockMs + lifetimeMs).toISOString(),
+    });
+  }
+  const directory = await createIntegrationWorkerDirectory({
+    rootDir,
+    probe: localProbe,
+    now: localNow,
+    randomHex,
+  });
+  await directory.enroll(NODE_A);
+  await directory.switchRole("execution", NODE_A.nodeId, { expectedGeneration: 0 });
+
+  probeCalls = [];
+  const freshEvents = (await directory.events()).length;
+  const freshLease = await directory.acquire("execution", OWNER_DIGEST, { ttlMs: 60_000 });
+  assert.equal(probeCalls.length, 0, "fresh assigned admission triggered a redundant probe");
+  assert.equal(Date.parse(freshLease.expiresAt), localClockMs + 60_000);
+  assert.equal((await directory.events()).length, freshEvents, "fresh acquire appended a redundant event");
+  await directory.releaseLease(freshLease.leaseId, OWNER_DIGEST);
+
+  localClockMs += 4 * 60_000 + 30_000;
+  probeCalls = [];
+  const nearEvents = (await directory.events()).length;
+  const nearLease = await directory.acquire("execution", OWNER_DIGEST, { ttlMs: 60_000 });
+  assert.equal(probeCalls.length, 1, "near-expiry assigned admission was not refreshed");
+  assert.equal(Date.parse(nearLease.expiresAt), localClockMs + 60_000);
+  assert.equal((await directory.events()).length, nearEvents + 1, "auto renewal did not append a node.renewed event");
+  const nearStatus = await directory.status();
+  const nearResolve = await directory.resolve("execution");
+  assert.equal(nearResolve.admissionDigest, nearStatus.nodes.find(({ nodeId }) => nodeId === NODE_A.nodeId).admission.digest);
+  await directory.releaseLease(nearLease.leaseId, OWNER_DIGEST);
+
+  localClockMs += 6 * 60_000;
+  probeCalls = [];
+  const expiredLease = await directory.acquire("execution", OWNER_DIGEST, { ttlMs: 60_000 });
+  assert.equal(probeCalls.length, 1, "expired assigned admission did not self-recover");
+  assert.equal(Date.parse(expiredLease.expiresAt), localClockMs + 60_000);
+  await directory.releaseLease(expiredLease.leaseId, OWNER_DIGEST);
+
+  localClockMs += 4 * 60_000 + 45_000;
+  mode = "throw";
+  probeCalls = [];
+  const beforeFailure = await directory.status();
+  await expectCode(() => directory.acquire("execution", OWNER_DIGEST, { ttlMs: 60_000 }), "WORKER_PROBE_UNAVAILABLE");
+  const afterFailure = await directory.status();
+  assert.equal(probeCalls.length, 1, "probe failure regression did not exercise the probe");
+  assert.equal(afterFailure.revision, beforeFailure.revision);
+  assert.equal(afterFailure.integrityDigest, beforeFailure.integrityDigest);
+  assert.deepEqual(afterFailure.assignments, beforeFailure.assignments);
+
+  mode = "short";
+  probeCalls = [];
+  await expectCode(() => directory.acquire("execution", OWNER_DIGEST, { ttlMs: 60_000 }), "WORKER_ADMISSION_STALE");
+  assert.equal(probeCalls.length, 1, "short-admission regression did not exercise the probe");
+}
+
 async function smokeTamper(caseRoot, kind) {
   const rootDir = path.join(caseRoot, kind);
   const directory = await createDirectory(rootDir);
@@ -296,13 +371,15 @@ const roots = [];
 try {
   const lifecycleRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-worker-directory-"));
   const randomRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-worker-directory-random-"));
+  const acquireRefreshRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-worker-directory-acquire-refresh-"));
   const tamperRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-worker-directory-tamper-"));
-  roots.push(lifecycleRoot, randomRoot, tamperRoot);
+  roots.push(lifecycleRoot, randomRoot, acquireRefreshRoot, tamperRoot);
 
   smokeAdmissionProtocolCanonicalization();
   const result = await smokeLifecycle(lifecycleRoot);
   await assertProtectedStore(lifecycleRoot);
   await smokeInvalidRandom(randomRoot);
+  await smokeAcquireAutoRenewal(acquireRefreshRoot);
   for (const kind of ["corrupt", "symlink", "hardlink"]) await smokeTamper(tamperRoot, kind);
 
   console.log(JSON.stringify({
@@ -315,6 +392,7 @@ try {
     attestedTransportSplit: true,
     failClosedTamperCases: ["corrupt", "symlink", "hardlink"],
     canonicalAdmissionProtocols: true,
+    acquireAutoRenewal: true,
   }, null, 2));
 } finally {
   for (const rootDir of roots) await fs.rm(rootDir, { recursive: true, force: true });

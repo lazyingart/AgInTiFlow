@@ -19,7 +19,7 @@ It does not store endpoints, bearer tokens, cookies, passkeys, or other credenti
 
 ## Admission contract
 
-Enrollment and every switch or rollback require fresh probe evidence. Evidence binds the node and opaque binding, role set, transport kind, release and capability digests, canary digest, supported protocols, observation time, and expiry. Admission lifetime is at most ten minutes.
+Enrollment and every switch or rollback require fresh probe evidence. Lease acquisition for the assigned node also refreshes evidence under the directory mutation lock when the stored admission is expired or cannot cover the requested lease TTL; sufficiently fresh admissions are reused without probing. Evidence binds the node and opaque binding, role set, transport kind, release and capability digests, canary digest, supported protocols, observation time, and expiry. Admission lifetime is at most ten minutes.
 
 The probe belongs to the trusted coordinator bootstrap. Candidate input containing an endpoint or credential is rejected before any probe or write. A later transport-binding adapter may resolve an opaque binding to a systemd credential and LazyEdge route, but that adapter must remain outside caller input.
 
@@ -36,9 +36,9 @@ Every mutation is serialized by an owner-only directory lock and committed with 
 
 ## Leased execution routing
 
-The analysis coordinator now has a routed mode. It acquires one execution lease before capability validation, resolves that lease to the opaque binding, opens the binding through an AgInTi-owned authority, and holds the lease through job start, polling, cancellation, terminal-ledger validation, artifact retrieval, and artifact callbacks. A role switch affects only later leases, so an in-flight job never changes workers halfway through its protocol.
+The analysis coordinator now has a routed mode. It acquires one execution lease before capability validation, refreshing the assigned node admission first if needed, resolves that lease to the opaque binding, opens the binding through an AgInTi-owned authority, and renews the lease heartbeat through job start, polling, cancellation, terminal-ledger validation, artifact retrieval, and artifact callbacks. Lease renewal refreshes admission for the leased node when the current evidence cannot cover the next lease TTL, even after the role has switched to a replacement. A role switch affects only later leases, so an in-flight job never changes workers halfway through its protocol.
 
-The router revalidates the worker capability digest against the admitted node evidence before starting a job. It releases the lease on success, cancellation, or failure. A successful operation is not reported if its lease release cannot be committed; deterministic job identity allows the caller to retry safely.
+The router revalidates the worker capability digest against the admitted node evidence before starting a job. It releases the lease on success, cancellation, or failure only after the routed operation has settled. If lease renewal fails and the worker-side operation refuses to settle within the bounded cancellation drain, the router returns the renewal failure but keeps the durable lease for natural expiry so finalization/removal cannot race an unproven worker cleanup. A successful operation is not reported if its lease release cannot be committed; deterministic job identity allows the caller to retry safely.
 
 ## Current limitation and next integration step
 
@@ -69,9 +69,9 @@ The transition ledger currently refuses further transitions after its conservati
 npm run smoke:integration-worker-directory
 ```
 
-The directory smoke covers workstation-to-Jetson migration, live-lease drain blocking, two-way rollback, finalization, retirement/removal, persisted restart recovery, expired-lease sweeping, stale and mismatched admission rejection, caller endpoint/credential rejection, invalid randomness, and fail-closed corruption, symlink, and hardlink cases.
+The directory smoke covers workstation-to-Jetson migration, live-lease drain blocking, automatic acquire-time admission renewal, two-way rollback, finalization, retirement/removal, persisted restart recovery, expired-lease sweeping, stale and mismatched admission rejection, caller endpoint/credential rejection, invalid randomness, and fail-closed corruption, symlink, and hardlink cases.
 
-`npm run smoke:integration-analysis-coordinator` additionally proves that an in-flight job stays pinned to worker A during a switch, finalization waits for its lease, the next job uses worker B, and capability/admission divergence fails closed without leaking a lease.
+`npm run smoke:integration-analysis-coordinator` additionally proves that an in-flight job stays pinned to worker A during a switch, logical lease-heartbeats cross the 60-second lease and five-minute admission boundaries, finalization waits for its lease, uncooperative cancellation never drops the pin early, the next job uses worker B, and capability/admission divergence fails closed without leaking a settled lease.
 
 `npm run smoke:integration-execution-worker-binding-config` covers manifest canonicalization, local and LazyEdge port policy, uniqueness, fixed-path loading, branded bindings, and rejection of URL/token/endpoint injection.
 

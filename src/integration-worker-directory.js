@@ -518,6 +518,26 @@ function freshNode(node, nowMs) {
   return node;
 }
 
+async function ensureNodeLeaseAdmission(node, ttlMs, at, probe) {
+  if (!node || node.lifecycle !== "enrolled") {
+    fail("WORKER_NOT_READY", "worker node is not enrolled with fresh admission evidence.", { status: 503 });
+  }
+  const nowMs = at.valueOf();
+  let admissionExpiresMs = Date.parse(node.admission.expiresAt);
+  let renewed = false;
+  if (admissionExpiresMs - nowMs < ttlMs) {
+    const admission = await probe(nodeCandidate(node), nowMs);
+    node.admission = admission;
+    node.updatedAt = at.toISOString();
+    admissionExpiresMs = Date.parse(admission.expiresAt);
+    renewed = true;
+  }
+  if (admissionExpiresMs - nowMs < ttlMs) {
+    fail("WORKER_ADMISSION_STALE", "worker admission expires too soon for the requested lease.", { status: 503 });
+  }
+  return Object.freeze({ node, renewed });
+}
+
 function publicSnapshot(state, nowMs) {
   const activeLeases = state.leases.filter((lease) => Date.parse(lease.expiresAt) > nowMs);
   return Object.freeze({
@@ -811,10 +831,13 @@ export async function createIntegrationWorkerDirectory(options = {}) {
         if (options.expectedGeneration !== undefined && expectedGeneration(options.expectedGeneration) !== assignment.generation) {
           fail("WORKER_ASSIGNMENT_CONFLICT", "worker assignment generation changed.");
         }
-        const node = freshNode(next.nodes.find((candidate) => candidate.nodeId === assignment.nodeId), at.valueOf());
-        const admissionExpiresMs = Date.parse(node.admission.expiresAt);
-        const expiresMs = Math.min(at.valueOf() + ttlMs, admissionExpiresMs);
-        if (expiresMs - at.valueOf() < 1_000) fail("WORKER_ADMISSION_STALE", "worker admission expires too soon for a lease.", { status: 503 });
+        const { node, renewed } = await ensureNodeLeaseAdmission(
+          next.nodes.find((candidate) => candidate.nodeId === assignment.nodeId),
+          ttlMs,
+          at,
+          probe
+        );
+        const expiresMs = at.valueOf() + ttlMs;
         const leaseId = `lease_${randomToken(random, 16, "worker lease")}`;
         if (next.leases.some((lease) => lease.leaseId === leaseId)) {
           fail("WORKER_DIRECTORY_RANDOM_INVALID", "worker lease random source repeated an identifier.", { status: 503 });
@@ -829,7 +852,11 @@ export async function createIntegrationWorkerDirectory(options = {}) {
           expiresAt: new Date(expiresMs).toISOString(),
         };
         next.leases.push(lease);
-        return { changed: true, resultFactory: (sealed) => publicSnapshot(sealed, at.valueOf()).leases.find(({ leaseId }) => leaseId === lease.leaseId) };
+        return {
+          changed: true,
+          event: renewed ? { type: "node.renewed", payload: { nodeId: node.nodeId, admissionDigest: node.admission.digest } } : undefined,
+          resultFactory: (sealed) => publicSnapshot(sealed, at.valueOf()).leases.find(({ leaseId }) => leaseId === lease.leaseId),
+        };
       }));
     },
 
@@ -870,12 +897,19 @@ export async function createIntegrationWorkerDirectory(options = {}) {
       return locked(async (state, at) => writeMutation(state, at, async (next) => {
         const lease = next.leases.find((candidate) => candidate.leaseId === leaseId);
         if (!lease || lease.ownerDigest !== ownerDigest) fail("WORKER_LEASE_NOT_FOUND", "worker lease is unavailable.", { status: 404 });
-        const node = next.nodes.find((candidate) => candidate.nodeId === lease.nodeId);
-        if (!node) fail("WORKER_LEASE_NOT_FOUND", "worker lease node is unavailable.", { status: 404 });
-        const expiresMs = Math.min(at.valueOf() + ttlMs, Date.parse(node.admission.expiresAt));
-        if (expiresMs - at.valueOf() < 1_000) fail("WORKER_ADMISSION_STALE", "worker admission expires too soon to renew the lease.", { status: 503 });
+        const { node, renewed } = await ensureNodeLeaseAdmission(
+          next.nodes.find((candidate) => candidate.nodeId === lease.nodeId),
+          ttlMs,
+          at,
+          probe
+        );
+        const expiresMs = at.valueOf() + ttlMs;
         lease.expiresAt = new Date(expiresMs).toISOString();
-        return { changed: true, resultFactory: (sealed) => publicSnapshot(sealed, at.valueOf()).leases.find((candidate) => candidate.leaseId === leaseId) };
+        return {
+          changed: true,
+          event: renewed ? { type: "node.renewed", payload: { nodeId: node.nodeId, admissionDigest: node.admission.digest } } : undefined,
+          resultFactory: (sealed) => publicSnapshot(sealed, at.valueOf()).leases.find((candidate) => candidate.leaseId === leaseId),
+        };
       }));
     },
 
