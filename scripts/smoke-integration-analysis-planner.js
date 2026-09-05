@@ -2259,6 +2259,33 @@ async function hostNativeToolRequestsFailClosedWithoutPythonSubstitution() {
     0
   );
   explanatory.coordinator.close();
+
+  const benignPrompts = [
+    "Use train_test_split to split this dataset.",
+    "Show the process values in this supplied table.",
+  ];
+  for (let index = 0; index < benignPrompts.length; index += 1) {
+    const prompt = benignPrompts[index];
+    let benignModelCalls = 0;
+    const benign = fixture(async () => {
+      benignModelCalls += 1;
+      return textResponse("This benign request is handled without host-native capability claims.");
+    });
+    const benignResult = await benign.planner.run(
+      scope(`run_00000000-0000-4000-8000-${String(173 + index).padStart(12, "0")}`),
+      { prompt }
+    );
+    assert.equal(benignModelCalls, 1, prompt);
+    assert.equal(benignResult.kind, "direct", prompt);
+    assert.equal(benignResult.toolCalls, 0, prompt);
+    assert.doesNotMatch(benignResult.text, /Capability limit:/u, prompt);
+    assert.equal(
+      benign.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+      0,
+      prompt
+    );
+    benign.coordinator.close();
+  }
 }
 
 async function unsupportedMixedActionsDiscloseAndContinue() {
