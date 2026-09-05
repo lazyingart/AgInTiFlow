@@ -2301,3 +2301,22 @@ an explicit protocolsio integration request selects only protocols.io rather
 than sibling Benchling, DNAnexus, LabArchives, or LatchBio integrations. No live
 provider or LocalLLM inference, LabCanvas runtime change, queue action, schedule,
 transport operation, or external side effect is involved.
+
+### Dotted service names remain distinct from filenames
+
+`labcanvas-dotted-service-skill-routing-166` covers a natural request to read
+and export an exact `protocols.io` protocol. Existing path-noise normalization
+treated the service name as an `.io` filename, so neither ordinary prose nor an
+official protocols.io URL selected its integration skill. The synthetic
+undotted spelling `protocolsio` worked, but users should not need to know an
+internal skill ID.
+
+Skill routing now derives dotted identities from a skill's own ID, label,
+description, and triggers. A matching bare domain, subdomain, or HTTP(S) URL
+adds strong identity evidence only when the compact dotted name occurs in that
+skill's declared identity. File paths and extension-bearing lookalikes such as
+`docs/protocols.io.md`, `/tmp/protocols.io`, and `protocols.io.txt` remain under
+file normalization and do not activate the integration. This is metadata-driven
+rather than a protocols.io exception and does not weaken path-noise isolation.
+No live provider or LocalLLM inference, LabCanvas runtime change, queue action,
+schedule, transport operation, or external side effect is involved.

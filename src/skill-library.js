@@ -548,10 +548,51 @@ function focusedGenericSignal(goalText, needle) {
   return terms.length <= 4 && textHasTrigger(goalText, needle);
 }
 
-function scoreSkill(skill, text, taskProfile, goalText = text) {
+function dottedSkillIdentities(skill = {}) {
+  const identityText = `${skill.id || ""} ${skill.label || ""}`.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const metadataText = [skill.label, skill.description, ...(skill.triggers || [])].filter(Boolean).join(" ").toLowerCase();
+  return [
+    ...new Set(
+      [...metadataText.matchAll(/\b[a-z0-9](?:[a-z0-9-]{0,62}\.)+[a-z]{2,12}\b/g)]
+        .map((match) => match[0])
+        .filter((item) => {
+          const compact = item.replace(/[^a-z0-9]+/g, "");
+          return compact.length >= 5 && identityText.includes(compact);
+        })
+    ),
+  ];
+}
+
+function textMentionsDottedIdentity(text = "", identity = "") {
+  const source = String(text || "").toLowerCase();
+  const domain = String(identity || "").toLowerCase();
+  if (!source || !domain) return false;
+  const escaped = escapeRegExp(domain);
+  const bareDomain = new RegExp(
+    `(^|[^a-z0-9_./-])(?:[a-z0-9-]+\\.)*${escaped}(?=$|[^a-z0-9_.-])`,
+    "i"
+  );
+  if (bareDomain.test(source)) return true;
+  for (const match of source.matchAll(/\bhttps?:\/\/[^\s`'"<>]+/gi)) {
+    try {
+      const hostname = new URL(match[0].replace(/[),.;!?]+$/g, "")).hostname.toLowerCase();
+      if (hostname === domain || hostname.endsWith(`.${domain}`)) return true;
+    } catch {
+      // Ignore malformed URL-like prose and retain normal skill scoring.
+    }
+  }
+  return false;
+}
+
+function dottedSkillIdentityScore(skill, originalGoal = "") {
+  return dottedSkillIdentities(skill).some((identity) => textMentionsDottedIdentity(originalGoal, identity)) ? 6 : 0;
+}
+
+function scoreSkill(skill, text, taskProfile, goalText = text, originalGoal = goalText) {
   let score = 0;
   if (skill.id === taskProfile) score += 10;
   if (skill.triggers.includes(taskProfile)) score += 6;
+  score += dottedSkillIdentityScore(skill, originalGoal);
   const idTerms = String(skill.id || "")
     .toLowerCase()
     .split(/[^a-z0-9+#.]+/)
@@ -616,8 +657,8 @@ export function selectSkillsForGoal(goal = "", { taskProfile = "auto", limit = 6
   const ranked = skills
     .map((skill) => ({
       skill,
-      score: scoreSkill(skill, text, taskProfile, goalText),
-      directGoalScore: scoreSkill(skill, goalText, "auto", goalText),
+      score: scoreSkill(skill, text, taskProfile, goalText, goal),
+      directGoalScore: scoreSkill(skill, goalText, "auto", goalText, goal),
     }))
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.skill.id.localeCompare(b.skill.id));

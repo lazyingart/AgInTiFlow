@@ -256,6 +256,21 @@ assert(explicitProtocolsIoSkills.includes("protocolsio-integration"), "explicit 
 for (const unrelated of ["benchling-integration", "dnanexus-integration", "labarchive-integration", "latchbio-integration"]) {
   assert(!explicitProtocolsIoSkills.includes(unrelated), `explicit protocolsio request selected unrelated ${unrelated}`);
 }
+const dottedProtocolsIoSkills = selectedIds("Read and export this exact protocols.io protocol version");
+assert(dottedProtocolsIoSkills.includes("protocolsio-integration"), "natural protocols.io request lost its focused guidance");
+const protocolsIoUrlSkills = selectedIds("Read https://www.protocols.io/view/example and summarize the protocol");
+assert(protocolsIoUrlSkills.includes("protocolsio-integration"), "protocols.io URL lost its focused guidance");
+for (const unrelated of ["benchling-integration", "dnanexus-integration", "labarchive-integration", "latchbio-integration"]) {
+  assert(!dottedProtocolsIoSkills.includes(unrelated), `natural protocols.io request selected unrelated ${unrelated}`);
+  assert(!protocolsIoUrlSkills.includes(unrelated), `protocols.io URL selected unrelated ${unrelated}`);
+}
+for (const fileGoal of [
+  "Read docs/protocols.io.md and summarize it",
+  "Read /tmp/protocols.io and summarize the file",
+  "Open protocols.io.txt and inspect its contents",
+]) {
+  assert(!selectedIds(fileGoal).includes("protocolsio-integration"), `dotted filename selected protocols.io guidance: ${fileGoal}`);
+}
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");
