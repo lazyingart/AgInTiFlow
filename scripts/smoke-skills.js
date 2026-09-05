@@ -156,6 +156,20 @@ assert(
   ).length === 0,
   "generic file work selected unrelated domain skills"
 );
+const focusedReplacementPdfSkills = selectedIds(
+  "Resolve the rejected PDF quality issues, materially revise the source, rebuild and inspect the replacement PDF, and return the verified replacement PDF."
+);
+assert(
+  focusedReplacementPdfSkills.includes("latex-manuscript") &&
+    !focusedReplacementPdfSkills.includes("video-face-image-replacement"),
+  `a replacement PDF repair selected unrelated video-face guidance: ${focusedReplacementPdfSkills.join(", ")}`
+);
+assert(
+  selectedIds("Replace the face in this video with the supplied image.").includes(
+    "video-face-image-replacement"
+  ),
+  "the focused video-face replacement request lost its relevant skill"
+);
 
 const prompt = formatSkillsForPrompt(selectSkillsForGoal("write latex manuscript with figures", { taskProfile: "latex", limit: 3 }));
 assert(prompt.includes("A skill is Markdown guidance"), "skill prompt does not explain skill semantics");

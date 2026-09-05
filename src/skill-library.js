@@ -467,6 +467,7 @@ const SKILL_ID_STOP_WORDS = new Set([
   "of",
   "the",
   "production",
+  "replacement",
   "skill",
   "system",
   "tool",

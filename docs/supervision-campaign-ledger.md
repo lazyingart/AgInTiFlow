@@ -2195,3 +2195,18 @@ pause to bounded recovery, stale archive instructions cannot override the
 active task, and an active archive request cannot be erased by stale no-move
 memory. No live provider or LocalLLM inference, LabCanvas runtime change, queue
 action, schedule, transport operation, or external side effect is involved.
+
+### Generic replacement wording does not load a video workflow
+
+`labcanvas-focused-replacement-skill-routing-160` follows a retained LabCanvas
+PDF repair whose exact scoped request was correctly isolated from same-chat
+history. Skill scoring still selected `video-face-image-replacement` because
+the ordinary document phrase "replacement PDF" matched one component of that
+multi-part skill ID. This spent a local-model skill slot and prompt budget on
+an unrelated media workflow.
+
+`replacement` is now ignored as a standalone skill-ID routing token. Specific
+video-face trigger phrases still select the workflow, while a focused PDF
+replacement keeps document skills and omits video guidance. The change affects
+only skill discovery; task memory, evidence contracts, tool availability, and
+LabCanvas policy remain unchanged.
