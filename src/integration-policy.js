@@ -421,7 +421,7 @@ export function validateIntegrationImageAttachments(value) {
 
 function validateInput(value, { optional = false } = {}) {
   if (optional && value === undefined) return undefined;
-  const input = integrationExactKeys(value, ["text", "search", "searchInference", "attachments"], "input", ["text"]);
+  const input = integrationExactKeys(value, ["text", "search", "searchInference", "inference", "attachments"], "input", ["text"]);
   const text = integrationBoundedText(input.text, "input.text", 32_000, { minimum: 1 }).trim();
   if (!text) integrationInvalid("input.text must contain a non-whitespace character");
   if (Buffer.byteLength(text, "utf8") > 32 * 1024) {
@@ -430,14 +430,26 @@ function validateInput(value, { optional = false } = {}) {
   if (input.searchInference !== undefined && typeof input.searchInference !== "boolean") {
     integrationInvalid("input.searchInference must be a boolean");
   }
+  if (input.inference !== undefined && (input.search !== undefined || input.attachments !== undefined || input.searchInference === true)) {
+    integrationInvalid("Inference-only input cannot request search or attachments");
+  }
   return Object.freeze({
     text,
+    ...(input.inference === undefined ? {} : { inference: validateIntegrationInference(input.inference) }),
     ...(input.search === undefined ? {} : { search: validateIntegrationSearch(input.search) }),
     ...(input.searchInference === undefined ? {} : { searchInference: input.searchInference }),
     ...(input.attachments === undefined
       ? {}
       : { attachments: validateIntegrationImageAttachments(input.attachments) }),
   });
+}
+
+export function validateIntegrationInference(value) {
+  const inference = integrationExactKeys(value, ["responseFormat"], "input.inference", ["responseFormat"]);
+  if (!["text", "json_object"].includes(inference.responseFormat)) {
+    integrationInvalid("input.inference.responseFormat must be text or json_object");
+  }
+  return Object.freeze({ responseFormat: inference.responseFormat });
 }
 
 export function validateIntegrationSearch(value) {

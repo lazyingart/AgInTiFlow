@@ -2323,6 +2323,63 @@ async function explicitPythonDurabilityRoundTrip(temporaryRoot) {
   }
 }
 
+async function inferenceOnlyDurabilityRoundTrip(temporaryRoot) {
+  const root = path.join(temporaryRoot, "inference-only-state");
+  const calls = [];
+  const runner = { async run(_scope, input, options) {
+    calls.push(input);
+    if (input.inference) {
+      for (const name of ["onArtifact", "onDocumentCompileIntent", "onDocumentCommitIntent", "onFilePublishIntent", "onFileCommitIntent"]) {
+        await assert.rejects(options[name]({}), error => error.code === "ANALYSIS_RUNNER_PROTOCOL_INVALID");
+      }
+    }
+    const result = plannerResult({ text: '{"title":"A Research Task"}', toolCalls: 0 });
+    await options.onFinal(result);
+    return result;
+  } };
+  let service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: runner, stateRoot: root, searchEnabled: true });
+  try {
+    const created = await service.createThread({ title: "Inference-only policy" }, context());
+    const payload = { threadId: created.thread.id, input: {
+      text: 'Name this task: "Search for papers, use Python, create a PDF, then revise the PDF."',
+      inference: { responseFormat: "json_object" },
+    } };
+    assert.deepEqual(sanitizeIntegrationRequest(INTEGRATION_RPC_PATHS.runsStart, payload).input.inference,
+      { responseFormat: "json_object" });
+    for (const extra of [
+      { inference: null }, { inference: {} }, { inference: { responseFormat: "yaml" } },
+      { inference: { responseFormat: "json_object", tools: true } },
+      { searchInference: true }, { search: { mode: "papers", limit: 2 } }, { attachments: [] },
+    ]) {
+      const invalid = { ...payload, input: { ...payload.input, ...extra } };
+      assert.throws(() => sanitizeIntegrationRequest(INTEGRATION_RPC_PATHS.runsStart, invalid));
+      await assert.rejects(service.startRun(invalid, context()));
+    }
+    assert.equal(calls.length, 0);
+    const first = await service.startRun(payload, context());
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: first.run.id }, context())).run.status, "completed");
+    assert.deepEqual(calls.at(-1).inference, payload.input.inference);
+    assert.equal(calls.at(-1).search, undefined);
+    assert.deepEqual(calls.at(-1).priorArtifacts, []);
+    await service.close({ mode: "wait" });
+    service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: runner, stateRoot: root, searchEnabled: true });
+    const retry = await service.resumeRun({ runId: first.run.id }, context());
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: retry.run.id }, context())).run.status, "completed");
+    assert.deepEqual(calls.at(-1).inference, payload.input.inference);
+    assert.equal(calls.at(-1).search, undefined);
+    const saved = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+    assert.deepEqual(saved.state.runs.find(r => r.id === retry.run.id).inference, payload.input.inference);
+    assert.equal(saved.state.runs.find(r => r.id === retry.run.id).searchInference, false);
+    const corrected = await service.resumeRun({ runId: retry.run.id, input: { text: "Explain the last title." } }, context());
+    await service.waitForIdle();
+    assert.equal((await service.getRunStatus({ runId: corrected.run.id }, context())).run.status, "completed");
+    assert.equal(calls.at(-1).inference, undefined, "new input inherits no stale inference-only policy");
+    await service.deleteThread({ threadId: created.thread.id }, context());
+  } finally { await service.close({ mode: "wait" }); }
+}
+
 async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
   const root = path.join(temporaryRoot, "grounded-search-state");
   const calls = [];
@@ -4110,6 +4167,7 @@ async function main() {
     await hostNativeToolCapabilityLimitRoundTrip(temporaryRoot);
     await markdownArtifactFollowupUsesToolRoundTrip(temporaryRoot);
     await boundedPriorArtifactContextRoundTrip(temporaryRoot);
+    await inferenceOnlyDurabilityRoundTrip(temporaryRoot);
     await groundedSearchDurabilityRoundTrip(temporaryRoot);
     await retainedMultiImageRoundTrip(temporaryRoot);
     await r67StatePersistenceCompatibilityRoundTrip(temporaryRoot);

@@ -106,6 +106,7 @@ import {
   integrationExactKeys,
   integrationRpcPathIsMutation,
   validateIntegrationSearch,
+  validateIntegrationInference,
   validateIntegrationIdempotencyKey,
   validateIntegrationImageAttachments,
   validateIntegrationArtifactId,
@@ -1015,6 +1016,7 @@ function compactedRunLineageDigest(state, threadId, runIds) {
         completedAt: run.completedAt,
         outputDigest: contractDigest({ output: run.output }),
         searchDigest: contractDigest({ search: run.search ?? null }),
+        ...(run.inference === undefined ? {} : { inferenceDigest: contractDigest(run.inference) }),
       };
     }),
   });
@@ -1879,6 +1881,7 @@ function validateRun(run, scope, threadIds) {
       "inputMessageId",
       "search",
       "searchInference",
+      "inference",
       "documentCompileIntent",
       "filePublishIntent",
       "events",
@@ -1915,6 +1918,12 @@ function validateRun(run, scope, threadIds) {
   }
   if (!RUN_SCHEDULING_STATES.has(run.schedulingState)) corrupt();
   if (run.searchInference !== undefined && run.searchInference !== false) corrupt();
+  if (run.inference !== undefined) {
+    try {
+      if (canonicalJson(validateIntegrationInference(run.inference)) !== canonicalJson(run.inference)
+          || run.search !== undefined || run.searchInference !== false) corrupt();
+    } catch (error) { corrupt(error); }
+  }
   if (run.search !== undefined) {
     try {
       const normalizedSearch = validateIntegrationSearch(run.search);
@@ -2058,6 +2067,7 @@ function validateRun(run, scope, threadIds) {
       contextDigest: run.authority.contextDigest,
       ...(run.search === undefined ? {} : { search: run.search }),
       ...(run.searchInference === false ? { searchInference: false } : {}),
+      ...(run.inference === undefined ? {} : { inference: run.inference }),
     })
   ) {
     corrupt();
@@ -5339,7 +5349,8 @@ function createService(options, { testOnly }) {
       .filter((message) => lineageRunIds.has(message.runId))
       .filter((message) => message.runId !== excludedRetryRunId)
       .slice(-maximumRecentMessages);
-    const priorArtifactContext = priorArtifactsForRun(state, run);
+    const priorArtifactContext = run.inference === undefined ? priorArtifactsForRun(state, run)
+      : { artifacts: Object.freeze([]), messageBytes: 0 };
     const maximumConversationBytes = Math.min(
       INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConversationBytes,
       Math.max(
@@ -5358,11 +5369,12 @@ function createService(options, { testOnly }) {
       selected.unshift(Object.freeze({ role: message.role, content }));
       totalBytes += bytes;
     }
-    const retainedAttachments = retainedAttachmentDescriptorsForRun(state, run);
+    const retainedAttachments = run.inference === undefined ? retainedAttachmentDescriptorsForRun(state, run) : [];
     return Object.freeze({
       prompt,
       conversation: Object.freeze(selected),
       priorArtifacts: priorArtifactContext.artifacts,
+      ...(run.inference === undefined ? {} : { inference: validateIntegrationInference(run.inference) }),
       ...(retainedAttachments.length === 0
         ? {}
         : { retainedAttachments }),
@@ -6618,7 +6630,7 @@ function createService(options, { testOnly }) {
     });
   }
 
-  function normalizeRunnerResult(value, { searchExpected = false } = {}) {
+  function normalizeRunnerResult(value, { searchExpected = false, inference } = {}) {
     const result = exact(
       value,
       ["schemaVersion", "text", "kind", "toolCalls", "executionStatus", "artifacts"],
@@ -6666,6 +6678,20 @@ function createService(options, { testOnly }) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner result fields are inconsistent.", { status: 502 });
     }
     const text = publicText(result.text, "analysis runner text");
+    if (inference !== undefined) {
+      if (result.kind !== "direct" || result.toolCalls !== 0 || artifacts.length !== 0 || result.executionStatus !== null) {
+        fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Inference-only runs cannot return tool results.", { status: 502 });
+      }
+      if (inference.responseFormat === "json_object") {
+        try {
+          const parsed = JSON.parse(text);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object required");
+          canonicalJson(parsed);
+        } catch {
+          fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Inference-only JSON response is invalid.", { status: 502 });
+        }
+      }
+    }
     return Object.freeze({
       schemaVersion: result.schemaVersion,
       text,
@@ -6788,7 +6814,7 @@ function createService(options, { testOnly }) {
         if (TERMINAL_RUN_STATUSES.has(run.status)) return { changed: false, result: null };
         const thread = findThread(state, threadId);
         const input = inputForRun(state, run);
-        const revisionLineage = revisionLineageForRun(state, run, input);
+        const revisionLineage = input.inference === undefined ? revisionLineageForRun(state, run, input) : null;
         const startedAt = timestamp();
         run.status = "running";
         run.schedulingState = "running";
@@ -6841,9 +6867,15 @@ function createService(options, { testOnly }) {
         prompt: input.prompt,
         conversation: input.conversation,
         priorArtifacts: input.priorArtifacts,
+        ...(input.inference === undefined ? {} : { inference: input.inference }),
         ...(input.search === undefined ? {} : { search: input.search }),
         ...(visionEvidence === undefined ? {} : { visionEvidence }),
       });
+      const requireToolRun = () => {
+        if (input.inference !== undefined) {
+          fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Inference-only runs cannot use tools or artifacts.", { status: 502 });
+        }
+      };
       const runnerResult = await analysisRunner.run(
         scopeWithRun(scope, threadId, runId),
         runnerInput,
@@ -6852,17 +6884,26 @@ function createService(options, { testOnly }) {
           ...(revisionMaterial === null ? {} : { priorDocument: revisionMaterial.priorDocument }),
           onProgress: async (progress) => recordProgress(scope, runId, progress),
           onArtifact: async (artifact) => {
+            requireToolRun();
             if (inspectIntegrationDocumentWorkerFileArtifact(artifact)) privateDocumentEvidence.push(artifact);
             await recordArtifact(scope, threadId, runId, artifact, revisionLineage);
           },
-          onDocumentCompileIntent: async (request) =>
-            authorizeDocumentCompile(scope, threadId, runId, request),
-          onDocumentCommitIntent: async (fileArtifacts) =>
-            authorizeDocumentCommit(scope, threadId, runId, fileArtifacts),
-          onFilePublishIntent: async (request) =>
-            authorizeFilePublish(scope, threadId, runId, request),
-          onFileCommitIntent: async (fileArtifacts) =>
-            authorizeFileCommit(scope, threadId, runId, fileArtifacts),
+          onDocumentCompileIntent: async (request) => {
+            requireToolRun();
+            return authorizeDocumentCompile(scope, threadId, runId, request);
+          },
+          onDocumentCommitIntent: async (fileArtifacts) => {
+            requireToolRun();
+            return authorizeDocumentCommit(scope, threadId, runId, fileArtifacts);
+          },
+          onFilePublishIntent: async (request) => {
+            requireToolRun();
+            return authorizeFilePublish(scope, threadId, runId, request);
+          },
+          onFileCommitIntent: async (fileArtifacts) => {
+            requireToolRun();
+            return authorizeFileCommit(scope, threadId, runId, fileArtifacts);
+          },
           onFinal: async (value) => {
             finalCallbackCount += 1;
             if (finalCallbackCount > 1) {
@@ -6870,15 +6911,16 @@ function createService(options, { testOnly }) {
                 status: 502,
               });
             }
-            await acknowledgeCommittedDocumentArtifacts(scope, threadId, runId, value?.artifacts);
-            await acknowledgeCommittedFileArtifacts(scope, threadId, runId, value?.artifacts);
             finalCallbackDigest = contractDigest(normalizeRunnerResult(value, {
               searchExpected: input.search !== undefined,
+              inference: input.inference,
             }));
+            await acknowledgeCommittedDocumentArtifacts(scope, threadId, runId, value?.artifacts);
+            await acknowledgeCommittedFileArtifacts(scope, threadId, runId, value?.artifacts);
           },
         })
       );
-      const result = normalizeRunnerResult(runnerResult, { searchExpected: input.search !== undefined });
+      const result = normalizeRunnerResult(runnerResult, { searchExpected: input.search !== undefined, inference: input.inference });
       if (finalCallbackCount !== 1 || finalCallbackDigest !== contractDigest(result)) {
         fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner final callback disagreed with its result.", {
           status: 502,
@@ -6887,7 +6929,7 @@ function createService(options, { testOnly }) {
       if (result.kind === "analysis" && !SUCCESSFUL_EXECUTION_STATUSES.has(result.executionStatus)) {
         fail("ANALYSIS_EXECUTION_FAILED", "Analysis execution did not complete successfully.", { status: 502 });
       }
-      const documentGate = await evaluateIntegrationDocumentArtifactCompletion(
+      const documentGate = input.inference !== undefined ? { ok: true } : await evaluateIntegrationDocumentArtifactCompletion(
         classifyIntegrationDocumentArtifactIntent(
           input.prompt,
           input.conversation,
@@ -7014,7 +7056,11 @@ function createService(options, { testOnly }) {
     if (payload.input?.searchInference !== undefined && typeof payload.input.searchInference !== "boolean") {
       fail("INVALID_REQUEST", "Search inference control must be a boolean.", { status: 400 });
     }
-    const inferSearch = payload.input?.searchInference !== false;
+    const inference = payload.input?.inference === undefined ? undefined : validateIntegrationInference(payload.input.inference);
+    if (inference !== undefined && (payload.input.search !== undefined || payload.input.attachments !== undefined || payload.input.searchInference === true)) {
+      fail("INVALID_REQUEST", "Inference-only input cannot request search or attachments.", { status: 400 });
+    }
+    const inferSearch = inference === undefined && payload.input?.searchInference !== false;
     const inferredResearch = inferSearch ? inferIntegrationDeepResearchRequestFromPrompt(prompt) : null;
     const search = payload.input?.search === undefined
       ? !inferSearch ? undefined : inferredResearch === null
@@ -7163,6 +7209,7 @@ function createService(options, { testOnly }) {
                   contextDigest: thread.authority.contextDigest,
                   ...(search === undefined ? {} : { search }),
                   ...(!inferSearch ? { searchInference: false } : {}),
+                  ...(inference === undefined ? {} : { inference }),
                 }),
                 runtimeRevision: thread.revision + 1,
                 contextDigest: thread.authority.contextDigest,
@@ -7170,6 +7217,7 @@ function createService(options, { testOnly }) {
               inputMessageId: inputMessage.id,
               ...(search === undefined ? {} : { search }),
               ...(!inferSearch ? { searchInference: false } : {}),
+              ...(inference === undefined ? {} : { inference }),
               events: [],
             };
             appendEvent(record, "run.status", { status: "starting" }, createdAt);
@@ -7788,7 +7836,7 @@ function createService(options, { testOnly }) {
 
     async startRun(payload, context) {
       exact(payload, ["threadId", "input"], ["threadId", "input"], "start run request");
-      exact(payload.input, ["text", "search", "searchInference", "attachments"], ["text"], "start run input");
+      exact(payload.input, ["text", "search", "searchInference", "inference", "attachments"], ["text"], "start run input");
       const run = await createRun(payload, context, null);
       return Object.freeze({ run });
     },
@@ -8013,7 +8061,7 @@ function createService(options, { testOnly }) {
         fail("INVALID_REQUEST", "reuseAttachments is only valid for a retry without input.", { status: 400 });
       }
       if (payload.input !== undefined) {
-        exact(payload.input, ["text", "search", "searchInference", "attachments"], ["text"], "resume run input");
+        exact(payload.input, ["text", "search", "searchInference", "inference", "attachments"], ["text"], "resume run input");
       }
       const scope = normalizeScopeFromContext(context);
       const previousInput = await inspect(scope, (state) => {
@@ -8033,6 +8081,7 @@ function createService(options, { testOnly }) {
             ? {}
             : { search: validateIntegrationSearch(previous.search) }),
           ...(previous.searchInference === false ? { searchInference: false } : {}),
+          ...(previous.inference === undefined ? {} : { inference: validateIntegrationInference(previous.inference) }),
           usedAttachments: payload.input === undefined && isHead
             ? retainedAttachmentDescriptorsForRun(state, previous).length > 0
             : false,
@@ -8064,6 +8113,7 @@ function createService(options, { testOnly }) {
           text: previousInput.text,
           ...(previousInput.search === undefined ? {} : { search: previousInput.search }),
           ...(previousInput.searchInference === false ? { searchInference: false } : {}),
+          ...(previousInput.inference === undefined ? {} : { inference: previousInput.inference }),
         });
       } else {
         nextInput = Object.freeze({
@@ -8074,6 +8124,7 @@ function createService(options, { testOnly }) {
           ...(payload.input.searchInference === undefined
             ? {}
             : { searchInference: payload.input.searchInference }),
+          ...(payload.input.inference === undefined ? {} : { inference: validateIntegrationInference(payload.input.inference) }),
           ...(payload.input.attachments === undefined
             ? {}
             : { attachments: validateIntegrationImageAttachments(payload.input.attachments) }),

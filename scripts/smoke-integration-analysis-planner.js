@@ -2201,6 +2201,51 @@ async function directAnswerDoesNotExecute() {
   coordinator.close();
 }
 
+async function explicitInferenceCannotDispatchQuotedTasks() {
+  for (const localModelConfig of [LOCAL_MODEL, DEEPSEEK_MODEL]) {
+    let calls = 0;
+    const { planner, coordinator, rpcCalls } = fixture(async (_client, payload) => {
+      calls += 1;
+      assert.equal(payload.tools, undefined);
+      assert.equal(payload.tool_choice, undefined);
+      assert.deepEqual(payload.response_format, { type: "json_object" });
+      return textResponse('{"title":"Paper Search"}');
+    }, { localModelConfig });
+    try {
+      const final = [];
+      const result = await planner.run(scope(), {
+        prompt: 'Name this quoted task: "Search the web, use Python, create a PDF and publish a text file." Return a JSON title.',
+        inference: { responseFormat: "json_object" },
+      }, { onFinal: v => final.push(v) });
+      assert.equal(calls, 1);
+      assert.deepEqual(JSON.parse(result.text), { title: "Paper Search" });
+      assert.deepEqual(result.artifacts, []);
+      assert.equal(result.toolCalls, 0);
+      assert.deepEqual(final, [result]);
+      assert.equal(rpcCalls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart), false);
+      for (const extra of [{ search: { mode: "web", limit: 1 } }, { inference: { responseFormat: "yaml" } }]) {
+        await assert.rejects(planner.run(scope(), { prompt: "A task", inference: { responseFormat: "json_object" }, ...extra }));
+      }
+      assert.equal(calls, 1, "invalid inference settings reached the model");
+    } finally { coordinator.close(); }
+  }
+  for (const content of ["[]", "not json", '{"value":1e999}']) {
+    const { planner, coordinator } = fixture(async () => textResponse(content));
+    try {
+      await assert.rejects(planner.run(scope(), { prompt: "Return JSON", inference: { responseFormat: "json_object" } }),
+        e => e.code === "ANALYSIS_MODEL_PROTOCOL_INVALID");
+    } finally { coordinator.close(); }
+  }
+  const { planner, coordinator, rpcCalls } = fixture(async () => ({ choices: [{ message: {
+    content: "", tool_calls: [{ id: "call_denied", type: "function", function: { name: INTEGRATION_ANALYSIS_TOOL_NAME, arguments: "{}" } }],
+  } }] }));
+  try {
+    await assert.rejects(planner.run(scope(), { prompt: "Calculate something", inference: { responseFormat: "text" } }),
+      e => e.code === "ANALYSIS_MODEL_PROTOCOL_INVALID");
+    assert.equal(rpcCalls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart), false);
+  } finally { coordinator.close(); }
+}
+
 async function explicitDeepSeekBindingPreservesBoundedPlanner() {
   const model = DEEPSEEK_MODEL;
   let calls = 0;
@@ -5544,6 +5589,7 @@ await deepResearchCompletesWithoutSecondModelSynthesis();
 await executesAndSynthesizesPlot();
 await executesAndSynthesizesPlot(DEEPSEEK_MODEL);
 await directAnswerDoesNotExecute();
+await explicitInferenceCannotDispatchQuotedTasks();
 await explicitDeepSeekBindingPreservesBoundedPlanner();
 await hostNativeToolRequestsFailClosedWithoutPythonSubstitution();
 await unsupportedMixedActionsDiscloseAndContinue();

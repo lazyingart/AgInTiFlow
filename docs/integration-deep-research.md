@@ -27,3 +27,21 @@ selects its own policy, so a subsequent normal request is not accidentally
 restricted by an older private phase. This is tool-routing policy; the hosted
 model still receives the input submitted to it, and worker sandbox/network
 controls remain separate.
+
+## Text-only application inference
+
+For a private routing decision or title, pass
+`input.inference: {responseFormat: "json_object"}` (or `"text"`). This is a
+separate, explicit capability: the planner makes one model completion with no
+tools, before task classification, search, document revision or execution.
+Structured tool-call responses are rejected; quoted tool instructions and code
+examples remain text. JSON output must be a complete object. Applications still
+validate their own response schema.
+
+Inference cannot be combined with search, attachments or enabled search
+inference. It has no retained artifact/image inputs or document lineage, and
+session callbacks cannot issue or commit files. The immutable choice survives
+restart and input-less retry; a new input selects its own policy. Normal runs
+without this field keep their existing tool capabilities. The chosen hosted
+model receives the inference input, so this is tool isolation, not an on-device
+privacy promise.

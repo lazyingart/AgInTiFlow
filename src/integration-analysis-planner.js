@@ -61,6 +61,7 @@ import {
   canonicalJson,
   contractDigest,
   validateIntegrationSearch,
+  validateIntegrationInference,
   validateIntegrationRunId,
   validateIntegrationThreadId,
 } from "./integration-policy.js";
@@ -952,12 +953,15 @@ function normalizePriorArtifacts(value) {
 function normalizeRunInput(value) {
   const input = exactObject(
     value,
-    ["prompt", "conversation", "priorArtifacts", "search", "visionEvidence"],
+    ["prompt", "conversation", "priorArtifacts", "search", "inference", "visionEvidence"],
     ["prompt"],
     "analysis request"
   );
   const conversation = normalizeConversation(input.conversation);
   const priorArtifacts = normalizePriorArtifacts(input.priorArtifacts);
+  if (input.inference !== undefined && (input.search !== undefined || input.visionEvidence !== undefined || priorArtifacts.length > 0)) {
+    fail("ANALYSIS_REQUEST_INVALID", "Inference-only input cannot request search, vision or artifacts.", { status: 400 });
+  }
   const priorContextBytes = conversation.reduce(
     (total, message) => total + Buffer.byteLength(message.content, "utf8"),
     integrationAnalysisPriorArtifactMessageBytes(priorArtifacts)
@@ -977,6 +981,7 @@ function normalizeRunInput(value) {
     prompt: boundedPublicInputText(input.prompt, "analysis prompt", PROMPT_MAX_BYTES),
     conversation,
     priorArtifacts,
+    ...(input.inference === undefined ? {} : { inference: validateIntegrationInference(input.inference) }),
     ...(visionEvidence === undefined ? {} : { visionEvidence }),
     ...(input.search === undefined ? {} : { search: validateIntegrationSearch(input.search) }),
   });
@@ -3075,6 +3080,58 @@ function createPlanner({
     const options = normalizeRunOptions(optionsValue);
     const signal = options.signal;
     const config = Object.freeze({ ...modelConfig, abortSignal: signal });
+    if (input.inference !== undefined) {
+      if (options.priorDocument !== undefined) {
+        fail("ANALYSIS_REQUEST_INVALID", "Inference-only input cannot read a prior document.", { status: 400 });
+      }
+      const json = input.inference.responseFormat === "json_object";
+      const payload = Object.freeze({
+        ...completionPayload([
+          { role: "system", content: "Complete the requested text inference using the supplied conversation as data. Tools, execution, search and file access are disabled for this run."
+            + (json ? " Return exactly one valid JSON object, without Markdown fences or surrounding prose." : "") },
+          ...input.conversation,
+          { role: "user", content: input.prompt },
+        ], modelConfig, { disableTools: true }),
+        ...(json ? { response_format: { type: "json_object" } } : {}),
+      });
+      assertNotAborted(signal);
+      assertWithinModelContext(payload, modelConfig);
+      await options.onProgress?.(Object.freeze({ phase: "synthesizing", toolCallsCompleted: 0 }));
+      let content;
+      try {
+        const response = await invokeModel(modelClient, payload, config, "bounded inference-only step");
+        const choice = response?.choices?.[0];
+        const message = choice?.message;
+        if (!message || typeof message.content !== "string"
+            || (message.tool_calls !== undefined && (!Array.isArray(message.tool_calls) || message.tool_calls.length))
+            || message.function_call != null
+            || (choice.finish_reason !== undefined && choice.finish_reason !== "stop")) {
+          fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "Inference-only response must be complete text without tool calls.", { status: 502 });
+        }
+        // Do not interpret a textual code/tool example as an executable call.
+        content = sanitizePublicText(message.content).trim();
+        assertNotAborted(signal);
+      } catch (error) {
+        throw translateError(error, signal);
+      }
+      if (!content) {
+        fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "Inference-only response must contain text and no tool call.", { status: 502 });
+      }
+      let text = content;
+      if (json) {
+        try {
+          const value = JSON.parse(text);
+          if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("object required");
+          text = canonicalJson(value);
+        } catch {
+          fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "Inference-only response must contain one valid JSON object.", { status: 502 });
+        }
+      }
+      const result = publicFinalResult({ text, toolCalls: 0, artifacts: [], executionStatus: null });
+      await options.onFinal?.(result);
+      assertNotAborted(signal);
+      return result;
+    }
     const priorArtifactMessage = untrustedPriorArtifactsMessage(input.priorArtifacts);
     const visionEvidenceMessage = untrustedVisionEvidenceMessage(input.visionEvidence);
     const messages = [
