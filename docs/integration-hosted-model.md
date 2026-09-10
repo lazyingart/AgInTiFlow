@@ -78,6 +78,13 @@ Disabled-tool turns and forbidden tools keep their original denial behavior.
 Current-turn computation requests such as "use Python to calculate" remain
 executable after prior chat; explanations, quotes and negations stay distinct.
 
+Plain TeX/PDF creation advertises only `filename` and `source` to the model.
+The evidence-backed `publicSummary` belongs to compound calculation/document
+requests. If a plain-document call supplies invalid summary metadata, its
+bounded correction asks the model to omit that field, rather than requiring
+calculation evidence that the task never needed. Compound summary validation,
+numeric grounding, compiler authority and artifact commit remain unchanged.
+
 The execution-worker entrypoint requires Node22 or later and now fails at
 startup on an older runtime instead of announcing a listener that cannot
 process jobs. Do not upgrade another project's system Node to fix one service.

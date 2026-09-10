@@ -2531,6 +2531,7 @@ async function texPdfIntentCompilesAndSealsBothFiles(localModelConfig = LOCAL_MO
     if (step === 1) {
       assert.equal(payload.tool_choice, "required");
       assert.deepEqual(payload.tools.map(({ function: fn }) => fn.name), [INTEGRATION_DOCUMENT_WORKER_TOOL_NAME]);
+      assert.deepEqual(Object.keys(payload.tools[0].function.parameters.properties).sort(), ["filename", "source"]);
       return texToolResponse("truthful-report.tex", source);
     }
     throw new Error("post-commit model synthesis must not be on the success-critical path");
@@ -2553,6 +2554,29 @@ async function texPdfIntentCompilesAndSealsBothFiles(localModelConfig = LOCAL_MO
   assert(result.artifacts.every((artifact) => inspectIntegrationDocumentWorkerFileArtifact(artifact) === null));
   assert.doesNotMatch(JSON.stringify(result), /(?:privateBytes|contentBytes|blobRef|receiptId)/u);
   compiled.coordinator.close();
+}
+
+async function plainDocumentSummaryRetryUsesOnlyDocumentArguments() {
+  for (const localModelConfig of [LOCAL_MODEL, DEEPSEEK_MODEL]) {
+    for (const publicSummary of [null, "The E = mc^2 equation is ready."]) {
+      let calls = 0;
+      const worker = createDocumentWorkerFixture();
+      const source = "\\documentclass{article}\n\\begin{document}A note.\\end{document}\n";
+      const test = fixture(async (_client, payload) => {
+        calls += 1;
+        if (calls === 1) return texToolResponse("note.tex", source, { publicSummary });
+        assert.match(payload.messages.at(-1).content, /Omit publicSummary/u);
+        assert.doesNotMatch(payload.messages.at(-1).content, /must include publicSummary/u);
+        return texToolResponse("note.tex", source);
+      }, { documentWorkerClient: worker.client(), localModelConfig });
+      try {
+        const result = await test.planner.run(scope(), { prompt: "Create a LaTeX source and compiled PDF." }, documentRunOptions());
+        assert.equal(calls, 2);
+        assert.equal(result.artifacts.length, 2);
+        assert.equal(worker.calls.filter(({ pathname }) => pathname === "/artifact/v1/compile").length, 1);
+      } finally { test.coordinator.close(); }
+    }
+  }
 }
 
 async function compoundAnalysisPlotPaperAndPdfCompletesEveryStage() {
@@ -5598,6 +5622,7 @@ await leadingGeneralFileImperativesRequireTheFileWorker();
 await texPdfIntentCannotFinishWithProseOnly();
 await texPdfIntentCompilesAndSealsBothFiles();
 await texPdfIntentCompilesAndSealsBothFiles(DEEPSEEK_MODEL);
+await plainDocumentSummaryRetryUsesOnlyDocumentArguments();
 await compoundAnalysisPlotPaperAndPdfCompletesEveryStage();
 await compoundDocumentSummaryUsesCurrentRunNumbersWithoutPostCommitModel();
 await compoundDocumentSummaryUnsupportedNumbersRetryAndReject();

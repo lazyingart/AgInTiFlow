@@ -1276,7 +1276,30 @@ function texToolWireArguments(args) {
   });
 }
 
-function texToolRetryInstructionFor(error) {
+function texDocumentTool(requirePublicSummary) {
+  if (requirePublicSummary) return TEX_DOCUMENT_TOOL;
+  // A plain document has no current-run calculation to summarize. Advertise
+  // only the two arguments it needs; optional numeric summaries belong to
+  // the compound execution workflow, where evidence validation is required.
+  const { filename, source } = TEX_DOCUMENT_TOOL.function.parameters.properties;
+  return Object.freeze({
+    ...TEX_DOCUMENT_TOOL,
+    function: Object.freeze({
+      ...TEX_DOCUMENT_TOOL.function,
+      parameters: Object.freeze({
+        ...TEX_DOCUMENT_TOOL.function.parameters,
+        properties: Object.freeze({ filename, source }),
+      }),
+    }),
+  });
+}
+
+function texToolRetryInstructionFor(error, { requirePublicSummary }) {
+  if (!requirePublicSummary && new Set([
+    "ANALYSIS_TEX_PUBLIC_SUMMARY_INVALID", "ANALYSIS_TEX_PUBLIC_SUMMARY_REQUIRED",
+  ]).has(error?.code)) {
+    return `Return exactly one complete ${INTEGRATION_DOCUMENT_WORKER_TOOL_NAME} call with only filename and source. Omit publicSummary for this ordinary document request.`;
+  }
   return new Set([
     "ANALYSIS_TEX_PUBLIC_SUMMARY_INVALID",
     "ANALYSIS_TEX_PUBLIC_SUMMARY_REQUIRED",
@@ -3762,7 +3785,7 @@ function createPlanner({
             model: modelConfig.model,
             temperature: 0,
             messages,
-            tools: Object.freeze([TEX_DOCUMENT_TOOL]),
+            tools: Object.freeze([texDocumentTool(compoundDocumentExecution)]),
             tool_choice: "required",
             parallel_tool_calls: false,
             max_tokens: modelConfig.maxOutputTokens,
@@ -3825,7 +3848,9 @@ function createPlanner({
               executionState: "failed",
             });
             if (attempt === 1 && retryableMalformed) {
-              messages.push(Object.freeze({ role: "user", content: texToolRetryInstructionFor(error) }));
+              messages.push(Object.freeze({ role: "user", content: texToolRetryInstructionFor(error, {
+                requirePublicSummary: compoundDocumentExecution,
+              }) }));
               continue;
             }
             throw error;
