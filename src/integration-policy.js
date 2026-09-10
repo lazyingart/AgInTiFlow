@@ -874,7 +874,9 @@ export function integrationCapabilitiesResponse({
   files = false,
   attachments = false,
   roles,
+  modelLabel = "LocalLLM",
 } = {}) {
+  if (!new Set(["LocalLLM", "AI"]).has(modelLabel)) integrationInvalid("Unsupported inference label");
   const searchEnabled = Boolean(enabled && search);
   const fileEnabled = Boolean(enabled && files);
   const attachmentsEnabled = Boolean(enabled && attachments);
@@ -887,7 +889,7 @@ export function integrationCapabilitiesResponse({
     schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
     enabled: Boolean(enabled),
     agent: Object.freeze({ kind: "aginti", label: "AgInTi Agent" }),
-    model: Object.freeze({ label: "LocalLLM" }),
+    model: Object.freeze({ label: modelLabel }),
     actions: Object.freeze({
       cancel: Boolean(enabled && cancel),
       resume: Boolean(enabled && resume),

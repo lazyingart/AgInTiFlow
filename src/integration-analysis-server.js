@@ -674,7 +674,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
     const planner = createIntegrationAnalysisPlanner({
       coordinator,
       localModelConfig: {
-        ...config.localModel,
+        ...(config.model ?? config.localModel),
         apiKey: options.localModelApiKey,
       },
       ...(searchEnabled && searchCredentialPresent

@@ -7,6 +7,7 @@ import {
   loadIntegrationAnalysisDocumentWorkerCredential,
   loadIntegrationAnalysisGroundedSearchCredential,
   loadIntegrationAnalysisLocalModelCredential,
+  loadIntegrationAnalysisHostedModelCredential,
   loadIntegrationAnalysisServiceConfig,
   isMissingIntegrationAnalysisDocumentWorkerCredentialError,
   isMissingIntegrationAnalysisOptionalCredentialError,
@@ -141,7 +142,7 @@ export function integrationAnalysisCliSummary(config, status, roleStates) {
     stateRoot: publicConfig.stateRoot,
     idempotencyRoot: publicConfig.idempotencyRoot,
     vision: Object.freeze({ enabled: publicConfig.vision?.enabled === true }),
-    localModel: publicConfig.localModel,
+    ...(publicConfig.model === undefined ? { localModel: publicConfig.localModel } : { model: publicConfig.model }),
     ...(publicConfig.groundedSearch === undefined ? {} : { groundedSearch: publicConfig.groundedSearch }),
     ...(publicConfig.documentWorker === undefined ? {} : { documentWorker: publicConfig.documentWorker }),
     ...(roleStates === undefined ? {} : { roles: roleStates }),
@@ -174,7 +175,9 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const config = await loadIntegrationAnalysisServiceConfig(parsed.configPath, options.filePolicy || {});
   const [proxyToken, localModelApiKey, groundedSearchApiKey, documentWorkerCredential, executionWorkerCredential] = await Promise.all([
     loadTrustedPrincipalProxyCredential(),
-    loadIntegrationAnalysisLocalModelCredential(),
+    config.model === undefined
+      ? loadIntegrationAnalysisLocalModelCredential()
+      : loadIntegrationAnalysisHostedModelCredential(),
     config.groundedSearch?.enabled === true
       ? loadIntegrationAnalysisGroundedSearchCredential().catch((error) => {
           if (isMissingIntegrationAnalysisOptionalCredentialError(error)) return undefined;

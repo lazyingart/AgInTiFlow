@@ -66,6 +66,7 @@ import {
   INTEGRATION_ANALYSIS_ATTACHMENT_AUTHORITY_SCHEMA_VERSION,
   INTEGRATION_ANALYSIS_STARTUP_RECOVERY_SCHEMA_VERSION,
   assertIntegrationAnalysisSessionService,
+  integrationAnalysisSessionModelLabel,
 } from "./integration-analysis-session-service.js";
 import {
   INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_KEYS,
@@ -1624,6 +1625,7 @@ function assertActivatedReadiness({ sessionService, idempotencyStore, policy }, 
 function activatedCapabilitiesForService(options, activationMetadata) {
   const metadata = assertActivatedReadiness(options, activationMetadata);
   return integrationCapabilitiesResponse({
+    modelLabel: integrationAnalysisSessionModelLabel(options.sessionService),
     enabled: true,
     cancel: metadata.serviceCapabilities.cancel,
     resume: metadata.serviceCapabilities.resume,
@@ -2278,7 +2280,7 @@ function assertPublicCapabilityResponse(value = {}) {
     roles = Object.freeze(roleSnapshots);
   }
   if (agent.kind !== "aginti" || agent.label !== "AgInTi Agent") integrationInvalid("agent authority must be AgInTi");
-  if (model.label !== "LocalLLM") integrationInvalid("agent inference label must be LocalLLM");
+  if (!new Set(["LocalLLM", "AI"]).has(model.label)) integrationInvalid("agent inference label is unsupported");
   if (![actions.cancel, actions.resume, actions.retry, attachments.enabled, search.enabled].every((flag) => typeof flag === "boolean")) {
     integrationInvalid("agent capability flags must be booleans");
   }
@@ -2375,7 +2377,7 @@ function assertPublicCapabilityResponse(value = {}) {
     schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
     enabled: response.enabled,
     agent: Object.freeze({ kind: "aginti", label: "AgInTi Agent" }),
-    model: Object.freeze({ label: "LocalLLM" }),
+    model: Object.freeze({ label: model.label }),
     actions: Object.freeze({ cancel: actions.cancel, resume: actions.resume, retry: actions.retry }),
     attachments: attachmentCapability,
     ...(search.enabled

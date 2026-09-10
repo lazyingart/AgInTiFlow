@@ -8227,8 +8227,13 @@ function createService(options, { testOnly }) {
     },
   });
   SESSION_BRAND.add(service);
-  SESSION_METADATA.set(service, Object.freeze({ testOnly }));
+  SESSION_METADATA.set(service, Object.freeze({ testOnly, modelProvider: analysisRunner.attestation?.provider }));
   return service;
+}
+
+export function integrationAnalysisSessionModelLabel(value) {
+  // A display label is derived from the AgInTi-owned runner, never API input.
+  return SESSION_METADATA.get(value)?.modelProvider === "deepseek" ? "AI" : "LocalLLM";
 }
 
 export function assertIntegrationAnalysisSessionService(value, { allowTestOnly = false } = {}) {

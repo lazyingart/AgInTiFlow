@@ -94,6 +94,11 @@ const LOCAL_MODEL = Object.freeze({
   maxOutputTokens: 1_024,
   modelTimeoutMs: 30_000,
 });
+const DEEPSEEK_MODEL = Object.freeze({
+  provider: "deepseek", baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-flash",
+  apiKey: "fixture-deepseek-credential-value", thinking: "disabled",
+  contextWindowTokens: 32_768, maxOutputTokens: 1_024, modelTimeoutMs: 30_000,
+});
 
 function scope(runId = RUN_ID) {
   return Object.freeze({
@@ -537,7 +542,13 @@ function fixture(complete, {
     coordinator,
     localModelConfig: localModelConfig || LOCAL_MODEL,
     modelClient: Object.freeze({ mock: true }),
-    complete,
+    complete: async (...args) => {
+      if (localModelConfig?.provider === "deepseek") {
+        assert.deepEqual(args[1].thinking, { type: "disabled" });
+        assert.equal(args[1].reasoning_effort, undefined);
+      }
+      return complete(...args);
+    },
     ...(groundedSearchClient === undefined ? {} : { groundedSearchClient }),
     ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
     ...(requireConfiguredCapabilities === undefined ? {} : { requireConfiguredCapabilities }),
@@ -2046,13 +2057,13 @@ async function unsupportedSafeExpressionPlotFallsBackToBoundedModelExecution() {
   unsafe.coordinator.close();
 }
 
-async function executesAndSynthesizesPlot() {
+async function executesAndSynthesizesPlot(model = LOCAL_MODEL) {
   const modelCalls = [];
   const { planner, coordinator, rpcCalls } = fixture(async (_client, payload, config) => {
     modelCalls.push(payload);
-    assert.equal(config.provider, "localllm");
-    assert.equal(config.baseURL, "http://127.0.0.1:8008/v1");
-    assert.equal(config.model, LOCAL_MODEL.model);
+    assert.equal(config.provider, model.provider || "localllm");
+    assert.equal(config.baseURL, model.baseURL);
+    assert.equal(config.model, model.model);
     if (modelCalls.length === 1) {
       assert.equal(payload.tool_choice, "required");
       assert.match(payload.messages[0].content, /columns:\[\{key:'number',label:'Number'\}/u);
@@ -2081,7 +2092,7 @@ async function executesAndSynthesizesPlot() {
     assert.match(feedback.stderr, /\[REDACTED_PATH\]/u);
     assert.doesNotMatch(payload.messages.at(-1).content, /abcdefghijklmnopqrstu|\/home\/private/u);
     return textResponse("The Python run completed and the square-number line plot is ready.");
-  });
+  }, { localModelConfig: model });
   const progress = [];
   const artifacts = [];
   const finals = [];
@@ -2114,7 +2125,7 @@ async function executesAndSynthesizesPlot() {
   assert.equal(rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length, 1);
 
   const proofJson = JSON.stringify(planner.attestation);
-  assert.equal(planner.attestation.loopbackOnly, true);
+  assert.equal(planner.attestation.loopbackOnly, model.provider !== "deepseek");
   assert.equal(planner.attestation.callerSelectableEndpoint, false);
   assert.equal(planner.attestation.callerSelectableModel, false);
   assert.equal(planner.attestation.callerSelectableCredential, false);
@@ -2158,7 +2169,7 @@ async function executesAndSynthesizesPlot() {
   assert.equal(planner.attestation.serverIntegrated, false);
   assert.doesNotMatch(proofJson, /127\.0\.0\.1|localllm-analysis-smoke|test-local-secret-credential/u);
   assertIntegrationAnalysisPlanner(planner, { requireSystemdCredential: false });
-  assert.throws(() => assertIntegrationAnalysisPlanner(planner), /fixed LocalLLM binding/u);
+  assert.throws(() => assertIntegrationAnalysisPlanner(planner), /fixed provider binding/u);
   coordinator.close();
 }
 
@@ -2188,6 +2199,34 @@ async function directAnswerDoesNotExecute() {
   assert.deepEqual(finalEvents, [result]);
   assert.equal(rpcCalls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart), false);
   coordinator.close();
+}
+
+async function explicitDeepSeekBindingPreservesBoundedPlanner() {
+  const model = DEEPSEEK_MODEL;
+  let calls = 0;
+  const hosted = fixture(async (_client, payload, config) => {
+    calls += 1;
+    assert.equal(config.provider, "deepseek");
+    assert.equal(config.baseURL, model.baseURL);
+    assert.deepEqual(payload.thinking, { type: "disabled" });
+    assert.equal(payload.reasoning_effort, undefined);
+    assert.equal(payload.model, model.model);
+    return textResponse("The median is the middle ordered value.");
+  }, { localModelConfig: model });
+  try {
+    const result = await hosted.planner.run(scope(), { prompt: "What is a median?" });
+    assert.equal(result.kind, "direct");
+    assert.equal(calls, 1);
+    assert.equal(hosted.planner.attestation.provider, "deepseek");
+    assert.equal(hosted.planner.attestation.loopbackOnly, false);
+    assert.equal(hosted.planner.attestation.modelTransport, "test-only-injected-model");
+    assert.equal(JSON.stringify(hosted.planner.attestation).includes(model.apiKey), false);
+    assert.throws(() => assertIntegrationAnalysisPlanner(hosted.planner));
+    await assert.rejects(hosted.planner.run(scope(), { prompt: "Hello", provider: "localllm" }),
+      error => error.code === "ANALYSIS_REQUEST_INVALID");
+  } finally {
+    hosted.coordinator.close();
+  }
 }
 
 async function hostNativeToolRequestsFailClosedWithoutPythonSubstitution() {
@@ -2432,7 +2471,7 @@ async function texPdfIntentCannotFinishWithProseOnly() {
   gated.coordinator.close();
 }
 
-async function texPdfIntentCompilesAndSealsBothFiles() {
+async function texPdfIntentCompilesAndSealsBothFiles(localModelConfig = LOCAL_MODEL) {
   let step = 0;
   const documentWorker = createDocumentWorkerFixture();
   const source = [
@@ -2450,7 +2489,7 @@ async function texPdfIntentCompilesAndSealsBothFiles() {
       return texToolResponse("truthful-report.tex", source);
     }
     throw new Error("post-commit model synthesis must not be on the success-critical path");
-  }, { documentWorkerClient: documentWorker.client() });
+  }, { documentWorkerClient: documentWorker.client(), localModelConfig });
   const privateArtifacts = [];
   const result = await compiled.planner.run(
     scope("run_00000000-0000-4000-8000-000000000098"),
@@ -5419,13 +5458,16 @@ await unsupportedSafeExpressionPlotFallsBackToBoundedModelExecution();
 await groundsWithPrivateSearchBeforeModelSynthesis();
 await deepResearchCompletesWithoutSecondModelSynthesis();
 await executesAndSynthesizesPlot();
+await executesAndSynthesizesPlot(DEEPSEEK_MODEL);
 await directAnswerDoesNotExecute();
+await explicitDeepSeekBindingPreservesBoundedPlanner();
 await hostNativeToolRequestsFailClosedWithoutPythonSubstitution();
 await unsupportedMixedActionsDiscloseAndContinue();
 await coordinatedExecutionClausesHonorLocalNegation();
 await leadingGeneralFileImperativesRequireTheFileWorker();
 await texPdfIntentCannotFinishWithProseOnly();
 await texPdfIntentCompilesAndSealsBothFiles();
+await texPdfIntentCompilesAndSealsBothFiles(DEEPSEEK_MODEL);
 await compoundAnalysisPlotPaperAndPdfCompletesEveryStage();
 await compoundDocumentSummaryUsesCurrentRunNumbersWithoutPostCommitModel();
 await compoundDocumentSummaryUnsupportedNumbersRetryAndReject();

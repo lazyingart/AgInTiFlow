@@ -24,9 +24,16 @@ import {
 } from "./integration-document-worker-client.js";
 import { INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES } from "./integration-analysis-state-persistence.js";
 import { INTEGRATION_RPC_PATH_LIST, INTEGRATION_RPC_PATHS } from "./integration-policy.js";
+import {
+  normalizeIntegrationModelBinding,
+  integrationModelPublicBinding,
+} from "./integration-model-binding.js";
 
 export const INTEGRATION_ANALYSIS_SERVICE_CONFIG_SCHEMA_VERSION =
   "aginti-integration-analysis-service-config-v2";
+export const INTEGRATION_ANALYSIS_HOSTED_CONFIG_SCHEMA_VERSION =
+  "aginti-integration-analysis-service-config-v3";
+export const INTEGRATION_ANALYSIS_HOSTED_CREDENTIAL_NAME = "deepseek-token";
 export const DEFAULT_INTEGRATION_ANALYSIS_CONFIG_PATH = "/etc/agintiflow/integration-analysis.json";
 export const DEFAULT_INTEGRATION_ANALYSIS_SERVICE_STATE_ROOT = "/var/lib/agintiflow-integration/analysis";
 export const INTEGRATION_ANALYSIS_LISTEN_HOST = "127.0.0.1";
@@ -148,10 +155,13 @@ function normalizeScopes(value) {
 }
 
 export function validateIntegrationAnalysisServiceConfig(value) {
-  const config = exactObject(value, CONFIG_KEYS, REQUIRED_CONFIG_KEYS, "analysis integration config");
+  const hosted = plainDataObject(value)
+    && Object.getOwnPropertyDescriptor(value, "schemaVersion")?.value === INTEGRATION_ANALYSIS_HOSTED_CONFIG_SCHEMA_VERSION;
+  const selectKeys = (keys) => hosted ? keys.map((key) => key === "localModel" ? "model" : key) : keys;
+  const config = exactObject(value, selectKeys(CONFIG_KEYS), selectKeys(REQUIRED_CONFIG_KEYS), "analysis integration config");
   fixed(
     config.schemaVersion,
-    INTEGRATION_ANALYSIS_SERVICE_CONFIG_SCHEMA_VERSION,
+    hosted ? INTEGRATION_ANALYSIS_HOSTED_CONFIG_SCHEMA_VERSION : INTEGRATION_ANALYSIS_SERVICE_CONFIG_SCHEMA_VERSION,
     "analysis integration config schemaVersion"
   );
   const capability = exactObject(config.capability, CAPABILITY_KEYS, CAPABILITY_KEYS, "capability");
@@ -187,16 +197,28 @@ export function validateIntegrationAnalysisServiceConfig(value) {
     vision = Object.freeze({ enabled: candidate.enabled });
   }
 
-  const localModel = exactObject(config.localModel, MODEL_KEYS, MODEL_KEYS, "localModel");
-  fixed(localModel.baseURL, INTEGRATION_ANALYSIS_LOCALLLM_BASE_URL, "localModel.baseURL");
-  fixed(localModel.model, INTEGRATION_ANALYSIS_LOCALLLM_MODEL, "localModel.model");
-  fixed(
-    localModel.contextWindowTokens,
-    INTEGRATION_ANALYSIS_LOCALLLM_CONTEXT_TOKENS,
-    "localModel.contextWindowTokens"
-  );
-  fixed(localModel.maxOutputTokens, INTEGRATION_ANALYSIS_LOCALLLM_OUTPUT_TOKENS, "localModel.maxOutputTokens");
-  fixed(localModel.modelTimeoutMs, INTEGRATION_ANALYSIS_LOCALLLM_TIMEOUT_MS, "localModel.modelTimeoutMs");
+  let selectedModel;
+  if (hosted) {
+    const keys = [...MODEL_KEYS, "provider", "thinking"];
+    const model = exactObject(config.model, keys, keys, "model");
+    fixed(model.provider, "deepseek", "model.provider");
+    try {
+      selectedModel = integrationModelPublicBinding(normalizeIntegrationModelBinding(model, { requireCredential: false }));
+    } catch {
+      fail("ANALYSIS_CONFIG_INVALID", "Hosted model configuration is invalid.");
+    }
+    if (vision?.enabled === true) {
+      fail("ANALYSIS_CONFIG_INVALID", "Hosted inference requires an independent local vision binding before image activation.");
+    }
+  } else {
+    const localModel = exactObject(config.localModel, MODEL_KEYS, MODEL_KEYS, "localModel");
+    fixed(localModel.baseURL, INTEGRATION_ANALYSIS_LOCALLLM_BASE_URL, "localModel.baseURL");
+    fixed(localModel.model, INTEGRATION_ANALYSIS_LOCALLLM_MODEL, "localModel.model");
+    fixed(localModel.contextWindowTokens, INTEGRATION_ANALYSIS_LOCALLLM_CONTEXT_TOKENS, "localModel.contextWindowTokens");
+    fixed(localModel.maxOutputTokens, INTEGRATION_ANALYSIS_LOCALLLM_OUTPUT_TOKENS, "localModel.maxOutputTokens");
+    fixed(localModel.modelTimeoutMs, INTEGRATION_ANALYSIS_LOCALLLM_TIMEOUT_MS, "localModel.modelTimeoutMs");
+    selectedModel = Object.freeze({ ...localModel });
+  }
 
   let groundedSearch;
   if (config.groundedSearch !== undefined) {
@@ -281,20 +303,14 @@ export function validateIntegrationAnalysisServiceConfig(value) {
   fixed(clientId, INTEGRATION_ANALYSIS_TRUSTED_CLIENT_ID, "trustedPrincipalProxy.clientId");
 
   return Object.freeze({
-    schemaVersion: INTEGRATION_ANALYSIS_SERVICE_CONFIG_SCHEMA_VERSION,
+    schemaVersion: config.schemaVersion,
     capability: Object.freeze({ enabled: true, mode: "analysis-execution" }),
     listen: Object.freeze({ host: INTEGRATION_ANALYSIS_LISTEN_HOST, port: INTEGRATION_ANALYSIS_LISTEN_PORT }),
     stateRoot: DEFAULT_INTEGRATION_ANALYSIS_SERVICE_STATE_ROOT,
     idempotencyRoot: DEFAULT_INTEGRATION_ANALYSIS_IDEMPOTENCY_ROOT,
     statePersistence: Object.freeze({ mode: statePersistence.mode }),
     ...(vision === undefined ? {} : { vision }),
-    localModel: Object.freeze({
-      baseURL: INTEGRATION_ANALYSIS_LOCALLLM_BASE_URL,
-      model: INTEGRATION_ANALYSIS_LOCALLLM_MODEL,
-      contextWindowTokens: INTEGRATION_ANALYSIS_LOCALLLM_CONTEXT_TOKENS,
-      maxOutputTokens: INTEGRATION_ANALYSIS_LOCALLLM_OUTPUT_TOKENS,
-      modelTimeoutMs: INTEGRATION_ANALYSIS_LOCALLLM_TIMEOUT_MS,
-    }),
+    ...(hosted ? { model: selectedModel } : { localModel: selectedModel }),
     ...(groundedSearch === undefined ? {} : { groundedSearch }),
     ...(documentWorker === undefined ? {} : { documentWorker }),
     trustedPrincipalProxy: Object.freeze({
@@ -541,6 +557,17 @@ export async function loadIntegrationAnalysisLocalModelCredential(...args) {
   });
 }
 
+export async function loadIntegrationAnalysisHostedModelCredential(...args) {
+  if (args.length !== 0) {
+    fail("ANALYSIS_CREDENTIAL_SOURCE_FORBIDDEN", "Hosted model credential source is fixed by systemd LoadCredential.");
+  }
+  return loadIntegrationAnalysisCredential({
+    credentialPath: `${INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY}/${INTEGRATION_ANALYSIS_HOSTED_CREDENTIAL_NAME}`,
+    label: "DeepSeek model credential",
+    parse: (raw) => parseIntegrationAnalysisCredential(raw, "DeepSeek model credential"),
+  });
+}
+
 export async function loadIntegrationAnalysisGroundedSearchCredential(...args) {
   if (args.length !== 0) {
     fail(
@@ -594,7 +621,7 @@ export function publicIntegrationAnalysisServiceConfig(configInput) {
     idempotencyRoot: config.idempotencyRoot,
     statePersistence: config.statePersistence,
     ...(config.vision === undefined ? {} : { vision: config.vision }),
-    localModel: config.localModel,
+    ...(config.model === undefined ? { localModel: config.localModel } : { model: config.model }),
     ...(config.groundedSearch === undefined ? {} : { groundedSearch: config.groundedSearch }),
     ...(config.documentWorker === undefined ? {} : { documentWorker: config.documentWorker }),
     trustedPrincipalProxy: Object.freeze({
@@ -603,7 +630,9 @@ export function publicIntegrationAnalysisServiceConfig(configInput) {
       scopes: config.trustedPrincipalProxy.scopes,
       credentialName: DEFAULT_INTEGRATION_CREDENTIAL_NAME,
     }),
-    localModelCredentialName: INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_NAME,
+    ...(config.model === undefined
+      ? { localModelCredentialName: INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_NAME }
+      : { modelCredentialName: INTEGRATION_ANALYSIS_HOSTED_CREDENTIAL_NAME }),
     ...(config.groundedSearch?.enabled === true
       ? { groundedSearchCredentialName: INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME }
       : {}),
