@@ -700,7 +700,9 @@ function hasDsmlToolCallMarker(content = "") {
   const scan = text.length > MAX_DSML_TEXT_TOOL_MARKER_SCAN_CHARACTERS
     ? text.slice(0, MAX_DSML_TEXT_TOOL_MARKER_SCAN_CHARACTERS)
     : text;
-  return /<[|｜]{2}DSML[|｜]{2}\s*tool_calls\b/iu.test(scan);
+  // Recognize the protocol before validating its exact grammar. Unknown or
+  // malformed DSML tags must request correction, not become a final answer.
+  return /<\/?[|｜]{2}DSML[|｜]{2}/iu.test(scan);
 }
 
 function decodeXmlToolArgs(value = "") {

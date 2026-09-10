@@ -3968,6 +3968,90 @@ async function priorFibonacciTableCanDriveMarkdownWithoutRecomputation() {
   planned.coordinator.close();
 }
 
+async function optionalMalformedToolFormationRetriesStayBounded() {
+  const malformed = "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"execute_python_analysis\">";
+  const prompt = "Calculate 37 times 49.";
+  for (const [recover, responseKind] of [[true, "dsml"], [false, "dsml"], [true, "arguments"], [false, "arguments"]]) {
+    let modelCalls = 0;
+    const planned = fixture(async (_client, payload) => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        assert.equal(payload.tool_choice, "auto", "fixture must exercise advertised but optional tools");
+      }
+      if (modelCalls > 1 && (modelCalls === 2 || !recover)) {
+        assert.equal(payload.messages.at(-1).role, "system");
+        assert.match(payload.messages.at(-1).content, /required valid execute_python_analysis call/u);
+        assert.match(payload.messages.at(-1).content, /If no execution is needed, answer directly without a tool/u);
+        assert.doesNotMatch(payload.messages.at(-1).content, /current user explicitly authorized/u);
+        assert.doesNotMatch(JSON.stringify(payload.messages), /DSML/u);
+      }
+      if (!recover || modelCalls === 1) {
+        return responseKind === "dsml" ? textResponse(malformed) : toolResponse("", { code: "print(37 * 49)" });
+      }
+      if (modelCalls === 2) return toolResponse("print('answer=9')");
+      assert.equal(JSON.parse(payload.messages.at(-1).content).ok, true);
+      return textResponse("The calculation completed and the result is ready.");
+    }, { localModelConfig: DEEPSEEK_MODEL });
+    try {
+      const run = planned.planner.run(scope(), { prompt });
+      if (recover) {
+        const result = await run;
+        assert.equal(result.toolCalls, 1);
+        assert.equal(result.executionStatus, "succeeded");
+        assert.doesNotMatch(result.text, /DSML/u);
+      } else {
+        await assert.rejects(run, (error) => error?.code === "ANALYSIS_TOOL_CALL_INVALID");
+      }
+      assert.equal(modelCalls, 3, "malformed tool correction must use the existing two-retry budget");
+      assert.equal(
+        planned.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length,
+        recover ? 1 : 0
+      );
+    } finally {
+      planned.coordinator.close();
+    }
+  }
+}
+
+async function pythonComputationImperativesWorkAfterConversation() {
+  const conversation = [{ role: "user", content: "Hello." }, { role: "assistant", content: "Hello." }];
+  const positives = [
+    "Use Python to multiply 37 by 49.",
+    "Could you use Python to calculate the square of three?",
+    "Please use Python to sort the numbers 3, 1, 2.",
+    "Use Python to analyze the supplied values 1, 2, 3.",
+  ];
+  const negatives = [
+    "Do not use Python to multiply 37 by 49.",
+    "Avoid using Python to calculate the answer.",
+    "Explain how to use Python to multiply numbers.",
+    'Translate "Use Python to multiply 37 by 49" into French.',
+    'Previous request: Use Python to calculate the result.\nDescribe that request.',
+    "Review this example without executing it: `Use Python to sort the values`.",
+  ];
+  for (const prompt of [...positives, ...negatives]) {
+    const execute = positives.includes(prompt);
+    let calls = 0;
+    const planned = fixture(async (_client, payload) => {
+      calls += 1;
+      if (execute && calls === 1) {
+        assert.equal(payload.tool_choice, "required");
+        return toolResponse("print('answer=9')");
+      }
+      assert.equal(Object.hasOwn(payload, "tools"), false);
+      return textResponse("The requested response is ready.");
+    });
+    try {
+      const result = await planned.planner.run(scope(), { prompt, conversation });
+      assert.equal(result.toolCalls, execute ? 1 : 0, prompt);
+      assert.equal(calls, execute ? 2 : 1, prompt);
+      assert.equal(planned.rpcCalls.filter(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length, execute ? 1 : 0);
+    } finally {
+      planned.coordinator.close();
+    }
+  }
+}
+
 async function requiredToolFormationRetryIsContextBoundedAndWorkerless() {
   let modelCalls = 0;
   const estimatedTokens = [];
@@ -5486,6 +5570,8 @@ await configuredCapabilityOutagesFailStartup();
 await texPdfIntentRejectsMetadataOnlyCompilerForgery();
 await conversationalFollowupUsesOnlyCurrentTurnExecutionAuthority();
 await priorFibonacciTableCanDriveMarkdownWithoutRecomputation();
+await optionalMalformedToolFormationRetriesStayBounded();
+await pythonComputationImperativesWorkAfterConversation();
 await requiredToolFormationRetryIsContextBoundedAndWorkerless();
 await priorArtifactsCannotSatisfyCurrentArtifactObligations();
 await priorArtifactInputBoundsAndSanitizationAreEnforced();

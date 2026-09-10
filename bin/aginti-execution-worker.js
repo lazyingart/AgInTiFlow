@@ -6,6 +6,11 @@ import {
 } from "../src/execution-worker-server.js";
 
 try {
+  if (Number.parseInt(process.versions.node, 10) < 22) {
+    throw Object.assign(new Error("The execution worker requires Node 22 or later."), {
+      code: "EXECUTION_WORKER_NODE_UNSUPPORTED",
+    });
+  }
   const config = await loadExecutionWorkerServerConfig();
   const runtime = await createProductionExecutionWorkerServer({ config });
   installExecutionWorkerShutdownHandlers(runtime.server);

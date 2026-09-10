@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 import {
   EXECUTION_WORKER_CGROUP_LIMITS,
@@ -399,6 +400,31 @@ const installedUnits = await attestInstalledExecutionWorkerUnits({
 });
 assert.equal(installedUnits.installed, true);
 assert.equal(installedUnits.socketUnitSha256, units.socketUnitSha256);
+
+const nodeRuntimeDigest = createHash("sha256").update("reviewed-node-22").digest("hex");
+const pinnedOptions = { workerReleaseDigest: WORKER_RELEASE_DIGEST, runtimeBundleDigest: RUNTIME_BUNDLE_DIGEST, nodeRuntimeDigest };
+const pinnedUnits = createExecutionWorkerSystemdUnits(pinnedOptions);
+assert.equal(pinnedUnits.socketUnit, units.socketUnit);
+assert.ok(pinnedUnits.serviceUnit.includes(`ExecStart=/opt/aginti-node/releases/${nodeRuntimeDigest}/bin/node --disable-proto=throw `));
+assert.throws(() => createExecutionWorkerSystemdUnits({ ...pinnedOptions, nodeRuntimeDigest: "../node\nUser=root" }));
+const pinnedFs = deploymentFixture(pinnedUnits)
+  .addFile(pinnedUnits.deployment.nodeExecutable, "reviewed-node-22", { mode: 0o555 });
+assert.equal((await attestExecutionWorkerDeploymentInputs({ ...pinnedOptions, filesystem: pinnedFs, runtimeBundleValidator })).rootControlled, true);
+assert.equal((await attestInstalledExecutionWorkerUnits({ ...pinnedOptions, filesystem: pinnedFs })).installed, true);
+await expectCode(
+  () => attestInstalledExecutionWorkerUnits({ ...pinnedOptions, nodeRuntimeDigest: undefined, filesystem: pinnedFs }),
+  "EXECUTION_SYSTEMD_UNIT_POLICY_MISMATCH"
+);
+pinnedFs.mutate(pinnedUnits.deployment.nodeExecutable, { content: Buffer.from("wrong-node") });
+await expectCode(
+  () => attestExecutionWorkerDeploymentInputs({ ...pinnedOptions, filesystem: pinnedFs, runtimeBundleValidator }),
+  "EXECUTION_NODE_RUNTIME_INVALID"
+);
+pinnedFs.mutate(pinnedUnits.deployment.nodeExecutable, { content: Buffer.from("reviewed-node-22"), uid: 1000 });
+await expectCode(
+  () => attestExecutionWorkerDeploymentInputs({ ...pinnedOptions, filesystem: pinnedFs, runtimeBundleValidator }),
+  "EXECUTION_DEPLOYMENT_INPUT_UNTRUSTED"
+);
 
 filesystem = deploymentFixture(units);
 filesystem.mutate(units.deployment.workerReleaseDirectory, { uid: 1000 });

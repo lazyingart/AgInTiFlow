@@ -3725,7 +3725,15 @@ try {
       `${label} DSML envelope did not request a safe retry`
     );
     assert(normalized.choices[0].message.tool_calls.length === 0, `${label} DSML retry should be tool-free`);
+    assert(!normalized.choices[0].message.content.includes("DSML"), `${label} DSML markup leaked into final text`);
   };
+  for (const marker of ["<｜｜DSML｜｜ calls>", "<||DSML||unknown>", "</｜｜DSML｜｜ invoke>"]) {
+    assertDsmlRejected(marker, "unrecognized DSML protocol tag");
+  }
+  assertDsmlRejected(
+    deepSeekDsml.replaceAll("tool_calls", " calls").replaceAll("｜｜invoke", "｜｜ invoke"),
+    "alternate malformed DSML calls envelope"
+  );
   assertDsmlRejected(
     [
       "I will read it now.",

@@ -94,15 +94,20 @@ function validateDigest(value, label) {
   return value;
 }
 
-function deploymentPaths({ workerReleaseDigest, runtimeBundleDigest }) {
+function deploymentPaths({ workerReleaseDigest, runtimeBundleDigest, nodeRuntimeDigest }) {
   validateDigest(workerReleaseDigest, "workerReleaseDigest");
   validateDigest(runtimeBundleDigest, "runtimeBundleDigest");
+  if (nodeRuntimeDigest !== undefined) validateDigest(nodeRuntimeDigest, "nodeRuntimeDigest");
   const workerReleaseDirectory = path.posix.join(EXECUTION_WORKER_RELEASE_ROOT, workerReleaseDigest);
   const runtimeBundleDirectory = path.posix.join(
     EXECUTION_RUNTIME_BUNDLE_PRODUCTION_ROOT,
     runtimeBundleDigest
   );
   return Object.freeze({
+    ...(nodeRuntimeDigest === undefined ? {} : {
+      nodeRuntimeDigest,
+      nodeExecutable: `/opt/aginti-node/releases/${nodeRuntimeDigest}/bin/node`,
+    }),
     workerReleaseDirectory,
     workerEntrypoint: path.posix.join(workerReleaseDirectory, RELEASE_ENTRYPOINT_RELATIVE),
     runtimeBundleDirectory,
@@ -137,10 +142,10 @@ WantedBy=sockets.target
 `;
 }
 
-function renderServiceUnit({ workerReleaseDigest, runtimeBundleDigest }) {
-  const paths = deploymentPaths({ workerReleaseDigest, runtimeBundleDigest });
+function renderServiceUnit({ workerReleaseDigest, runtimeBundleDigest, nodeRuntimeDigest }) {
+  const paths = deploymentPaths({ workerReleaseDigest, runtimeBundleDigest, nodeRuntimeDigest });
   const execStart = [
-    EXECUTION_WORKER_NODE_PATH,
+    paths.nodeExecutable ?? EXECUTION_WORKER_NODE_PATH,
     "--disable-proto=throw",
     paths.workerEntrypoint,
   ].join(" ");
@@ -222,10 +227,11 @@ WantedBy=multi-user.target
 export function createExecutionWorkerSystemdUnits({
   workerReleaseDigest,
   runtimeBundleDigest,
+  nodeRuntimeDigest,
 } = {}) {
-  const paths = deploymentPaths({ workerReleaseDigest, runtimeBundleDigest });
+  const paths = deploymentPaths({ workerReleaseDigest, runtimeBundleDigest, nodeRuntimeDigest });
   const socketUnit = renderSocketUnit();
-  const serviceUnit = renderServiceUnit({ workerReleaseDigest, runtimeBundleDigest });
+  const serviceUnit = renderServiceUnit({ workerReleaseDigest, runtimeBundleDigest, nodeRuntimeDigest });
   return Object.freeze({
     schemaVersion: EXECUTION_WORKER_SYSTEMD_BOUNDARY_SCHEMA_VERSION,
     serviceUnitName: EXECUTION_WORKER_SERVICE_UNIT,
@@ -265,12 +271,13 @@ function validateUnitBytes(value, label) {
 export function validateExecutionWorkerSystemdUnits({
   workerReleaseDigest,
   runtimeBundleDigest,
+  nodeRuntimeDigest,
   socketUnit,
   serviceUnit,
 } = {}) {
   validateUnitBytes(socketUnit, "socketUnit");
   validateUnitBytes(serviceUnit, "serviceUnit");
-  const expected = createExecutionWorkerSystemdUnits({ workerReleaseDigest, runtimeBundleDigest });
+  const expected = createExecutionWorkerSystemdUnits({ workerReleaseDigest, runtimeBundleDigest, nodeRuntimeDigest });
   if (socketUnit !== expected.socketUnit || serviceUnit !== expected.serviceUnit) {
     fail(
       "EXECUTION_SYSTEMD_UNIT_POLICY_MISMATCH",
@@ -512,6 +519,7 @@ async function attestRootControlledPath(filesystem, targetPath, expectedType, { 
 export async function attestExecutionWorkerDeploymentInputs({
   workerReleaseDigest,
   runtimeBundleDigest,
+  nodeRuntimeDigest,
   filesystem = fs,
   runtimeBundleValidator = validateExecutionRuntimeBundle,
 } = {}) {
@@ -521,9 +529,10 @@ export async function attestExecutionWorkerDeploymentInputs({
   if (typeof runtimeBundleValidator !== "function") {
     throw new TypeError("runtimeBundleValidator must be a function");
   }
-  const paths = deploymentPaths({ workerReleaseDigest, runtimeBundleDigest });
+  const paths = deploymentPaths({ workerReleaseDigest, runtimeBundleDigest, nodeRuntimeDigest });
+  const nodeExecutable = paths.nodeExecutable ?? EXECUTION_WORKER_NODE_PATH;
   await Promise.all([
-    attestRootControlledPath(filesystem, EXECUTION_WORKER_NODE_PATH, "file"),
+    attestRootControlledPath(filesystem, nodeExecutable, "file"),
     attestRootControlledPath(filesystem, paths.workerReleaseDirectory, "directory", { exactMode: 0o755 }),
     attestRootControlledPath(filesystem, paths.workerEntrypoint, "file"),
     attestRootControlledPath(filesystem, paths.runtimeBundleDirectory, "directory"),
@@ -532,7 +541,7 @@ export async function attestExecutionWorkerDeploymentInputs({
     attestRootControlledPath(filesystem, EXECUTION_WORKER_CREDENTIAL_SOURCE, "file", { exactMode: 0o400 }),
   ]);
   const [nodeStat, entrypointStat] = await Promise.all([
-    filesystem.lstat(EXECUTION_WORKER_NODE_PATH),
+    filesystem.lstat(nodeExecutable),
     filesystem.lstat(paths.workerEntrypoint),
   ]);
   if ((nodeStat.mode & 0o005) !== 0o005 || (entrypointStat.mode & 0o005) !== 0o005) {
@@ -540,6 +549,12 @@ export async function attestExecutionWorkerDeploymentInputs({
       "EXECUTION_DEPLOYMENT_INPUT_UNTRUSTED",
       "worker launch files must be readable and executable by the dedicated service user."
     );
+  }
+  if (nodeRuntimeDigest !== undefined) {
+    if (!Number.isSafeInteger(nodeStat.size) || nodeStat.size < 1 || nodeStat.size > 256 * 1024 * 1024
+        || sha256(await filesystem.readFile(nodeExecutable)) !== nodeRuntimeDigest) {
+      fail("EXECUTION_NODE_RUNTIME_INVALID", "the dedicated Node executable does not match its reviewed digest.");
+    }
   }
   const credential = await readBounded(
     filesystem,
@@ -589,13 +604,14 @@ export async function attestExecutionWorkerDeploymentInputs({
 export async function attestInstalledExecutionWorkerUnits({
   workerReleaseDigest,
   runtimeBundleDigest,
+  nodeRuntimeDigest,
   filesystem = fs,
 } = {}) {
   if (!filesystem || typeof filesystem.lstat !== "function" || typeof filesystem.readFile !== "function"
       || typeof filesystem.readdir !== "function") {
     throw new TypeError("filesystem must provide lstat, readFile, and readdir");
   }
-  const expected = createExecutionWorkerSystemdUnits({ workerReleaseDigest, runtimeBundleDigest });
+  const expected = createExecutionWorkerSystemdUnits({ workerReleaseDigest, runtimeBundleDigest, nodeRuntimeDigest });
   const socketPath = path.posix.join(EXECUTION_WORKER_SYSTEMD_UNIT_DIRECTORY, EXECUTION_WORKER_SOCKET_UNIT);
   const servicePath = path.posix.join(EXECUTION_WORKER_SYSTEMD_UNIT_DIRECTORY, EXECUTION_WORKER_SERVICE_UNIT);
   await Promise.all([
@@ -642,6 +658,7 @@ export async function attestInstalledExecutionWorkerUnits({
   const validated = validateExecutionWorkerSystemdUnits({
     workerReleaseDigest,
     runtimeBundleDigest,
+    nodeRuntimeDigest,
     socketUnit: socketBytes.toString("utf8"),
     serviceUnit: serviceBytes.toString("utf8"),
   });

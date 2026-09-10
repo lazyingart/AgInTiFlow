@@ -68,6 +68,28 @@ live traffic. Preserve unrelated CLI installations and other integrations.
 Qualify durable ownership, idempotency, cancel/retry, search sources, file
 delivery and worker/tunnel outages against the actual deployed endpoints.
 
+### Tool calls and the service runtime
+
+Unknown or malformed DSML envelopes are protocol errors, not final answers.
+When tools are available, malformed text/native calls receive at most two
+formation corrections within the existing model/context budget. Each corrected
+call must pass the same exact argument and tool allowlists before execution.
+Disabled-tool turns and forbidden tools keep their original denial behavior.
+Current-turn computation requests such as "use Python to calculate" remain
+executable after prior chat; explanations, quotes and negations stay distinct.
+
+The execution-worker entrypoint requires Node22 or later and now fails at
+startup on an older runtime instead of announcing a listener that cannot
+process jobs. Do not upgrade another project's system Node to fix one service.
+The deterministic unit renderer and both deployment/unit attestors accept an
+optional `nodeRuntimeDigest`. It selects exactly
+`/opt/aginti-node/releases/<sha256>/bin/node`; install a reviewed existing
+Node22+ executable there with root-owned, non-writable parent directories and
+mode0555. Deployment attestation verifies ownership and the binary SHA-256.
+Pass the same digest to all three operations. Without this option, existing
+`/usr/bin/node` unit bytes remain unchanged. The selected system Node still
+needs to satisfy the package's Node22 requirement.
+
 ## Validation
 
 ```sh
