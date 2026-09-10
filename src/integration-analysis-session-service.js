@@ -1878,6 +1878,7 @@ function validateRun(run, scope, threadIds) {
       "authority",
       "inputMessageId",
       "search",
+      "searchInference",
       "documentCompileIntent",
       "filePublishIntent",
       "events",
@@ -1913,6 +1914,7 @@ function validateRun(run, scope, threadIds) {
     corrupt();
   }
   if (!RUN_SCHEDULING_STATES.has(run.schedulingState)) corrupt();
+  if (run.searchInference !== undefined && run.searchInference !== false) corrupt();
   if (run.search !== undefined) {
     try {
       const normalizedSearch = validateIntegrationSearch(run.search);
@@ -2055,6 +2057,7 @@ function validateRun(run, scope, threadIds) {
       runId: run.id,
       contextDigest: run.authority.contextDigest,
       ...(run.search === undefined ? {} : { search: run.search }),
+      ...(run.searchInference === false ? { searchInference: false } : {}),
     })
   ) {
     corrupt();
@@ -7008,9 +7011,13 @@ function createService(options, { testOnly }) {
         : payload.threadId
     );
     const prompt = publicText(normalizePrompt(payload.input?.text ?? ""), "analysis prompt");
-    const inferredResearch = inferIntegrationDeepResearchRequestFromPrompt(prompt);
+    if (payload.input?.searchInference !== undefined && typeof payload.input.searchInference !== "boolean") {
+      fail("INVALID_REQUEST", "Search inference control must be a boolean.", { status: 400 });
+    }
+    const inferSearch = payload.input?.searchInference !== false;
+    const inferredResearch = inferSearch ? inferIntegrationDeepResearchRequestFromPrompt(prompt) : null;
     const search = payload.input?.search === undefined
-      ? inferredResearch === null
+      ? !inferSearch ? undefined : inferredResearch === null
         ? inferIntegrationGroundedSearchRequestFromPrompt(prompt) ?? undefined
         : validateIntegrationSearch({
             mode: inferredResearch.mode,
@@ -7155,12 +7162,14 @@ function createService(options, { testOnly }) {
                   runId,
                   contextDigest: thread.authority.contextDigest,
                   ...(search === undefined ? {} : { search }),
+                  ...(!inferSearch ? { searchInference: false } : {}),
                 }),
                 runtimeRevision: thread.revision + 1,
                 contextDigest: thread.authority.contextDigest,
               },
               inputMessageId: inputMessage.id,
               ...(search === undefined ? {} : { search }),
+              ...(!inferSearch ? { searchInference: false } : {}),
               events: [],
             };
             appendEvent(record, "run.status", { status: "starting" }, createdAt);
@@ -7779,7 +7788,7 @@ function createService(options, { testOnly }) {
 
     async startRun(payload, context) {
       exact(payload, ["threadId", "input"], ["threadId", "input"], "start run request");
-      exact(payload.input, ["text", "search", "attachments"], ["text"], "start run input");
+      exact(payload.input, ["text", "search", "searchInference", "attachments"], ["text"], "start run input");
       const run = await createRun(payload, context, null);
       return Object.freeze({ run });
     },
@@ -8004,7 +8013,7 @@ function createService(options, { testOnly }) {
         fail("INVALID_REQUEST", "reuseAttachments is only valid for a retry without input.", { status: 400 });
       }
       if (payload.input !== undefined) {
-        exact(payload.input, ["text", "search", "attachments"], ["text"], "resume run input");
+        exact(payload.input, ["text", "search", "searchInference", "attachments"], ["text"], "resume run input");
       }
       const scope = normalizeScopeFromContext(context);
       const previousInput = await inspect(scope, (state) => {
@@ -8023,6 +8032,7 @@ function createService(options, { testOnly }) {
           ...(previous.search === undefined
             ? {}
             : { search: validateIntegrationSearch(previous.search) }),
+          ...(previous.searchInference === false ? { searchInference: false } : {}),
           usedAttachments: payload.input === undefined && isHead
             ? retainedAttachmentDescriptorsForRun(state, previous).length > 0
             : false,
@@ -8053,6 +8063,7 @@ function createService(options, { testOnly }) {
         nextInput = Object.freeze({
           text: previousInput.text,
           ...(previousInput.search === undefined ? {} : { search: previousInput.search }),
+          ...(previousInput.searchInference === false ? { searchInference: false } : {}),
         });
       } else {
         nextInput = Object.freeze({
@@ -8060,6 +8071,9 @@ function createService(options, { testOnly }) {
           ...(payload.input.search === undefined
             ? {}
             : { search: validateIntegrationSearch(payload.input.search) }),
+          ...(payload.input.searchInference === undefined
+            ? {}
+            : { searchInference: payload.input.searchInference }),
           ...(payload.input.attachments === undefined
             ? {}
             : { attachments: validateIntegrationImageAttachments(payload.input.attachments) }),

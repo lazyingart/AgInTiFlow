@@ -61,7 +61,7 @@ import {
   integrationGroundedSearchBoundArtifactId,
   planIntegrationGroundedSearchQuery,
 } from "../src/integration-grounded-search.js";
-import { INTEGRATION_RPC_PATHS, canonicalJson, contractDigest } from "../src/integration-policy.js";
+import { INTEGRATION_RPC_PATHS, canonicalJson, contractDigest, sanitizeIntegrationRequest } from "../src/integration-policy.js";
 import { validatePublicIntegrationEvent } from "../src/integration-events.js";
 import {
   INTEGRATION_DOCUMENT_WORKER_COMPILE_INTENT_CANDIDATE_SCHEMA_VERSION,
@@ -2591,7 +2591,39 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
       "completed deep-research activity leaked into the next message"
     );
 
-    let compactionHead = deepFollowup.run.id;
+    const privatePrompt = "Quoted conversation: Perform deep web and paper research on durable local agent recovery.";
+    const disabledPayload = {
+      threadId: created.thread.id,
+      input: { text: privatePrompt, searchInference: false },
+    };
+    assert.equal(sanitizeIntegrationRequest(INTEGRATION_RPC_PATHS.runsStart, disabledPayload).input.searchInference, false);
+    for (const invalid of [null, 0, "false", {}]) {
+      assert.throws(() => sanitizeIntegrationRequest(INTEGRATION_RPC_PATHS.runsStart, {
+        ...disabledPayload, input: { text: privatePrompt, searchInference: invalid },
+      }));
+    }
+    const privateStart = await restarted.startRun(disabledPayload, context());
+    await restarted.waitForIdle();
+    assert.equal(calls.at(-1).input.search, undefined, "disabled inference must not dispatch quoted history as a public query");
+    let privateState = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+    assert.equal(privateState.state.runs.find((run) => run.id === privateStart.run.id).searchInference, false);
+    await restarted.close({ mode: "wait" });
+    restarted = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: runner, stateRoot: root, searchEnabled: true });
+    const privateRetry = await restarted.resumeRun({ runId: privateStart.run.id }, context());
+    await restarted.waitForIdle();
+    assert.equal(calls.at(-1).input.search, undefined, "restart and input-less retry must retain disabled inference");
+    privateState = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+    assert.equal(privateState.state.runs.find((run) => run.id === privateRetry.run.id).searchInference, false);
+    const privateEvents = await (await restarted.loadRunEvents(eventsRequest(privateRetry.run.id), context())).publicEventLedger.loadEventsAfter(0);
+    assert.equal(privateEvents.some((event) => ["Grounded search", "Deep research"].includes(event.payload?.publicLabel)), false);
+    const explicitAfterPrivate = await restarted.resumeRun({
+      runId: privateRetry.run.id,
+      input: { text: "Find current SQLite papers", searchInference: false, search: { mode: "papers", limit: 3 } },
+    }, context());
+    await restarted.waitForIdle();
+    assert.deepEqual(calls.at(-1).input.search, { mode: "papers", limit: 3 }, "an explicit bounded search is independent of inference");
+
+    let compactionHead = explicitAfterPrivate.run.id;
     for (let index = 0; index < 18; index += 1) {
       const continued = await restarted.resumeRun({
         runId: compactionHead,

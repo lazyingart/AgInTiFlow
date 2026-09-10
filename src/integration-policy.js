@@ -421,15 +421,19 @@ export function validateIntegrationImageAttachments(value) {
 
 function validateInput(value, { optional = false } = {}) {
   if (optional && value === undefined) return undefined;
-  const input = integrationExactKeys(value, ["text", "search", "attachments"], "input", ["text"]);
+  const input = integrationExactKeys(value, ["text", "search", "searchInference", "attachments"], "input", ["text"]);
   const text = integrationBoundedText(input.text, "input.text", 32_000, { minimum: 1 }).trim();
   if (!text) integrationInvalid("input.text must contain a non-whitespace character");
   if (Buffer.byteLength(text, "utf8") > 32 * 1024) {
     integrationInvalid("input.text exceeds the UTF-8 byte limit");
   }
+  if (input.searchInference !== undefined && typeof input.searchInference !== "boolean") {
+    integrationInvalid("input.searchInference must be a boolean");
+  }
   return Object.freeze({
     text,
     ...(input.search === undefined ? {} : { search: validateIntegrationSearch(input.search) }),
+    ...(input.searchInference === undefined ? {} : { searchInference: input.searchInference }),
     ...(input.attachments === undefined
       ? {}
       : { attachments: validateIntegrationImageAttachments(input.attachments) }),
