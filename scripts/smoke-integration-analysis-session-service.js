@@ -1696,10 +1696,13 @@ async function optionalDocumentCommitRecoveryErrorPreservesState(temporaryRoot) 
 async function optionalDocumentDeletionProbeOutagePreservesState(temporaryRoot) {
   const root = path.join(temporaryRoot, "optional-document-delete-probe-outage");
   let contentProbeCount = 0;
+  let probeOutage = true;
   const worker = createDocumentWorkerFixture({
     contentResponseTransform(response) {
       contentProbeCount += 1;
-      if (contentProbeCount === 2) return documentWorkerErrorResponse(503, "WORKER_UNAVAILABLE");
+      if (probeOutage && contentProbeCount % 2 === 0) {
+        return documentWorkerErrorResponse(503, "WORKER_UNAVAILABLE");
+      }
       return response;
     },
   });
@@ -1724,7 +1727,9 @@ async function optionalDocumentDeletionProbeOutagePreservesState(temporaryRoot) 
     const persistedFile = await stateFile(root);
     const beforeDelete = await fs.readFile(persistedFile);
 
-    worker.failNextDelete("ARTIFACT_CONTENT_GONE");
+    // Reconciliation may retry across the mutation and the subsequent inspect.
+    // Keep the simulated worker outage active until the recovery assertion.
+    worker.setDeleteError("ARTIFACT_CONTENT_GONE");
     await expectCode(
       service.deleteThread({ threadId: created.thread.id }, context()),
       "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE"
@@ -1742,7 +1747,6 @@ async function optionalDocumentDeletionProbeOutagePreservesState(temporaryRoot) 
       "creating the pending deletion intent must be durable"
     );
     const pendingSnapshot = await fs.readFile(persistedFile);
-    worker.failNextDelete("ARTIFACT_CONTENT_GONE");
     await expectCode(
       service.deleteThread({ threadId: created.thread.id }, context()),
       "ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE"
@@ -1752,6 +1756,11 @@ async function optionalDocumentDeletionProbeOutagePreservesState(temporaryRoot) 
       pendingSnapshot,
       "retryable metadata outage after generic delete 410 must not remove the pending deletion intent"
     );
+    probeOutage = false;
+    worker.setDeleteError(null);
+    const deleted = await service.deleteThread({ threadId: created.thread.id }, context());
+    assert.equal(deleted.deleted, true, "deletion did not resume after the worker recovered");
+    assert.equal(worker.tombstoned.size, artifacts.length);
   } finally {
     await service?.close({ mode: "abort" }).catch(() => {});
   }
@@ -4422,7 +4431,7 @@ async function main() {
     assert.equal(failedToolEvents.length, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS);
     assert.deepEqual(
       failedToolEvents.map(({ payload }) => payload.callId),
-      ["analysis-1", "analysis-2", "analysis-3"]
+      Array.from({ length: INTEGRATION_ANALYSIS_MAX_TOOL_CALLS }, (_, index) => `analysis-${index + 1}`)
     );
     const failedResultMessages = (
       await restarted.getThread({ threadId: failedResultThread.thread.id }, context())
@@ -4691,7 +4700,14 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+// Production drain timers are intentionally unref'ed. The smoke process must
+// remain alive until every async assertion and fixture cleanup has completed.
+const smokeKeepAlive = setInterval(() => {}, 1_000);
+try {
+  await main();
+} catch (error) {
   console.error(error);
   process.exitCode = 1;
-});
+} finally {
+  clearInterval(smokeKeepAlive);
+}

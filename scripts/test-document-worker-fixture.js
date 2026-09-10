@@ -101,6 +101,7 @@ export function createDocumentWorkerFixture(options = {}) {
   let malformedNextCommitResponse = false;
   let hangNextCommitResponse = false;
   let failNextDeleteCode = null;
+  let persistentDeleteErrorCode = null;
 
   const readinessCore = () => ({
     schemaVersion: INTEGRATION_DOCUMENT_WORKER_CAPABILITIES_SCHEMA_VERSION,
@@ -356,8 +357,8 @@ export function createDocumentWorkerFixture(options = {}) {
         : response;
     }
     if (parsed.pathname === "/artifact/v1/delete") {
-      if (failNextDeleteCode) {
-        const code = failNextDeleteCode;
+      if (failNextDeleteCode || persistentDeleteErrorCode) {
+        const code = failNextDeleteCode || persistentDeleteErrorCode;
         failNextDeleteCode = null;
         const status = code === "NOT_FOUND" ? 404
           : code === "ARTIFACT_CONTENT_GONE" ? 410
@@ -414,6 +415,7 @@ export function createDocumentWorkerFixture(options = {}) {
     malformNextCommitResponse() { malformedNextCommitResponse = true; },
     hangNextCommit() { hangNextCommitResponse = true; },
     failNextDelete(code = "WORKER_UNAVAILABLE") { failNextDeleteCode = code; },
+    setDeleteError(code = null) { persistentDeleteErrorCode = code; },
   });
 }
 
