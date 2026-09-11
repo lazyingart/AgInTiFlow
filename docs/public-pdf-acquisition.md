@@ -1,9 +1,10 @@
 # Public paper acquisition
 
-Status: credential-free acquisition, durable storage and the authenticated
-binary client/HTTP transport are implemented and tested in source. They are not
-yet an enabled EchoMind download feature: durable analysis-job/profile binding,
-the guarded role route and source-PDF retention still need integration.
+Status: credential-free acquisition, durable storage, authenticated binary
+transport and conversation artifact lifecycle are implemented and tested in
+source. They are not yet an enabled EchoMind download feature: durable
+source-selection/acquisition jobs, the guarded role route and source-PDF
+retention still need integration.
 The live analysis, execution and shared document services remain unchanged.
 
 ## Ownership and boundaries
@@ -174,16 +175,66 @@ The 445-file package dry-run includes the new protocol tests/fixture and exclude
 private state/keys. No compiler/model call, live paper GET, service restart,
 gateway/config mutation or npm registry publication occurred.
 
+### Conversation lifecycle and cancellation checkpoint — September 11
+
+The analysis session broker now explicitly recognizes `acquired-paper-v1`
+alongside generated file bundles. One shared profile predicate selects file
+commit recovery, prior-turn context, authenticated content and two-phase
+deletion. The compiled TeX/source-pair path retains its existing behavior.
+Paper content carries the explicit PDF-only 16 MiB client profile; generated
+files keep their smaller limits, and a paper receipt remains a single-file
+operation.
+
+The private persisted artifact carries the complete immutable paper receipt,
+including source identity, DOI/version and acquisition time. Validation binds
+its receipt digest, all scope digests and artifact bytes/hash/ref to the stored
+record and commit intent. Public file descriptors and follow-up model context
+do not expose the private receipt, source transport metadata or worker refs.
+Neither the PDF body nor the import authority token is stored in conversation
+JSON. A receipt is source provenance, not proof that the paper was parsed or
+that publication rights were granted.
+
+The new cancellation tests found a pre-existing shared file-store defect:
+deletion accepted a staged bundle, but its ledger validator only accepted
+committed artifacts during deletion, and cleanup targeted only committed-byte
+storage. Cancellation before commit therefore failed instead of removing the
+stage. The lifecycle now preserves whether a file was ever committed, validates
+that origin during deletion, removes bytes from the corresponding private
+directory and recovers both before and after unlink. Expired uncommitted files
+retain a null commit timestamp. This applies to generated bundles as well as
+papers; cancellation never publishes a file merely to delete it.
+
+All 72 store/frame/HTTP/session/cancellation tests pass together. The 11 new
+session cases cover a real 16 MiB HTTP import into durable conversation state,
+restart/content/ranges, account and browser-session denial, private provenance,
+prior-turn descriptors, commit recovery, cancellation through outage/restart,
+wrong-owner capture and persisted-record tampering. Eight new lifecycle cases
+cover paper and two-file generated-bundle cancellation across prepare, pre-unlink
+and post-unlink crashes, plus expiry. The original real 60-second upload-deadline
+test passed again. Tests use isolated local stores and deterministic runners,
+not live models, selected internet papers or the production gateway.
+
+Existing file client, compiled-document broker, analysis sessions, context
+compaction, startup recovery, session authority, state migration/prewrite and
+analysis API smokes pass. The 296-file syntax check and mock web API/coding-tool
+checks pass. The 448-file package dry-run includes the shared HTTP fixture and
+new tests, without private state or credentials. No archive/install, registry
+publication or live service/config change occurred.
+
+Compatibility: older readers reject paper session records and the truthful
+null-timestamp uncommitted deletion/expiry states. Qualify a compatible rollback
+for both the session and worker ledgers before deploying this checkpoint;
+preserve all existing state. Production paper creation remains disabled.
+
 ### Next integration steps
 
 1. Bind an acquired paper to the selected source identity and user intent in
    the durable analysis job, then use the separate paper issue/import operation.
    Preserve DOI/version/source metadata across recovery.
 2. Connect the tested binary client/HTTP operation through the guarded role
-   route and committed account artifact broker. Add explicit acquired-paper
-   intent/profile recovery, content dispatch and deletion dispatch. The current
-   analysis service recognizes `file-bundle-v1` only, so do not let a paper
-   receipt fall through to its compiled-document path. Reuse idempotency,
+   route and existing EchoMind account artifact adapter. The session broker's
+   paper profile, committed content and deletion dispatch are now implemented;
+   connect durable pre-acquisition/issuance intent to that lifecycle. Reuse idempotency,
    immutable receipts, ownership, cancellation and verified cleanup. Keep
    network URLs out of public artifact content requests. Storage keeps
    loopback-only networking; acquisition stays in the network-capable agent role.

@@ -63,9 +63,15 @@ import {
   digestFileWorkerPublishOperation,
   fileWorkerDeletionManifestDigest,
   fileWorkerManifestDigest,
+  fileWorkerScopeDigests,
   publicFileWorkerPublishRequest,
   validateFileWorkerPublishRequest,
 } from "./integration-file-worker-contract.js";
+import {
+  ACQUIRED_PAPER_MAXIMUM_BYTES,
+  acquiredPaperArtifactsDigest,
+  validateAcquiredPaperReceipt,
+} from "./integration-acquired-paper-contract.js";
 import {
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACT_JSON_BYTES,
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACTS,
@@ -2175,6 +2181,7 @@ function validateArtifact(artifact, scope, runsById, state) {
       "compileReceiptDigest",
       "workerProfile",
       "bundleIndex",
+      "paperReceipt",
       "documentRole",
       "companionSha256",
       "groundedSearchSourceArtifactId",
@@ -2213,14 +2220,25 @@ function validateArtifact(artifact, scope, runsById, state) {
   if (artifact.kind === "file") {
     try {
       stateDigest(artifact.compileReceiptDigest, "state artifact compileReceiptDigest");
-      if (artifact.workerProfile === "file-bundle-v1") {
+      if (isFileWorkerArtifact(artifact)) {
         if (!FILE_WORKER_PATTERNS.objectRef.test(artifact.workerRef)) corrupt();
         integrationBoundedInteger(artifact.bundleIndex, "state artifact bundleIndex", {
           maximum: FILE_WORKER_LIMITS.maximumFiles - 1,
         });
         if (artifact.documentRole !== undefined || artifact.companionSha256 !== undefined) corrupt();
+        if (artifact.workerProfile === "acquired-paper-v1") {
+          const receipt = validateAcquiredPaperReceipt(artifact.paperReceipt);
+          const digests = fileWorkerScopeDigests(scopeWithRun(scope, artifact.threadId, artifact.runId));
+          if (artifact.bundleIndex !== 0 || artifact.spec.mime !== "application/pdf" ||
+              receipt.digest !== artifact.compileReceiptDigest || receipt.totalBytes !== artifact.spec.bytes ||
+              Object.keys(digests).some(key => receipt[key] !== digests[key]) ||
+              receipt.artifactsDigest !== acquiredPaperArtifactsDigest([{
+                ref: artifact.workerRef, index: 0, filename: artifact.spec.filename,
+                mime: artifact.spec.mime, bytes: artifact.spec.bytes, sha256: artifact.spec.sha256,
+              }])) corrupt();
+        } else if (artifact.paperReceipt !== undefined) corrupt();
       } else {
-        if (artifact.workerProfile !== undefined || artifact.bundleIndex !== undefined) corrupt();
+        if (artifact.workerProfile !== undefined || artifact.bundleIndex !== undefined || artifact.paperReceipt !== undefined) corrupt();
         validateIntegrationDocumentWorkerRef(artifact.workerRef);
         stateDigest(artifact.companionSha256, "state artifact companionSha256");
         if (artifact.documentRole !== "source" && artifact.documentRole !== "pdf") corrupt();
@@ -2239,6 +2257,7 @@ function validateArtifact(artifact, scope, runsById, state) {
     artifact.compileReceiptDigest !== undefined ||
     artifact.workerProfile !== undefined ||
     artifact.bundleIndex !== undefined ||
+    artifact.paperReceipt !== undefined ||
     artifact.documentRole !== undefined ||
     artifact.companionSha256 !== undefined
   ) {
@@ -2388,7 +2407,7 @@ function committedPublicArtifactForPriorContext(state, artifact) {
     intent.eventsPublished === true &&
     intent.objects.some((object) =>
       object.ref === artifact.workerRef &&
-      (artifact.workerProfile === "file-bundle-v1"
+      (isFileWorkerArtifact(artifact)
         ? intent.schemaVersion === FILE_COMMIT_INTENT_SCHEMA_VERSION && object.index === artifact.bundleIndex
         : object.role === artifact.documentRole) &&
       object.sha256 === artifact.spec.sha256 &&
@@ -2519,6 +2538,14 @@ function fileWorkerCommitObjects(objects) {
   })));
 }
 
+// These two profiles share the same durable file-worker lifecycle, but their
+// input limits and provenance remain distinct. Compiled documents use the
+// separate paired source/PDF protocol and have no workerProfile field.
+function isFileWorkerArtifact(artifact) {
+  return artifact.kind === "file" &&
+    (artifact.workerProfile === "file-bundle-v1" || artifact.workerProfile === "acquired-paper-v1");
+}
+
 function isFileWorkerCommitIntent(intent) {
   return intent.schemaVersion === FILE_COMMIT_INTENT_SCHEMA_VERSION;
 }
@@ -2563,6 +2590,7 @@ function validateFileCommitIntent(intent, scope, runsById, artifacts) {
   const run = runsById.get(intent.runId);
   if (!run || run.threadId !== intent.threadId) corrupt();
   const workerObjects = [];
+  let bundleProfile;
   for (let index = 0; index < intent.objects.length; index += 1) {
     const object = exactState(
       intent.objects[index],
@@ -2572,17 +2600,21 @@ function validateFileCommitIntent(intent, scope, runsById, artifacts) {
     );
     if (
       object.index !== index || !FILE_WORKER_PATTERNS.objectRef.test(object.ref) ||
-      !Number.isSafeInteger(object.bytes) || object.bytes < 1 || object.bytes > FILE_WORKER_LIMITS.maximumFileBytes
+      !Number.isSafeInteger(object.bytes) || object.bytes < 1
     ) corrupt();
     stateDigest(object.sha256, "file commit object sha256");
     integrationBoundedText(object.filename, "file commit object filename", 240, { minimum: 3 });
     const artifact = artifacts.find((candidate) => candidate.workerRef === object.ref);
     if (
-      !artifact || artifact.kind !== "file" || artifact.workerProfile !== "file-bundle-v1" ||
+      !artifact || !isFileWorkerArtifact(artifact) ||
       artifact.runId !== intent.runId || artifact.bundleIndex !== index ||
       artifact.compileReceiptDigest !== intent.receiptDigest || artifact.spec.filename !== object.filename ||
       artifact.spec.bytes !== object.bytes || artifact.spec.sha256 !== object.sha256
     ) corrupt();
+    bundleProfile ??= artifact.workerProfile;
+    if (artifact.workerProfile !== bundleProfile || object.bytes > (bundleProfile === "acquired-paper-v1"
+      ? ACQUIRED_PAPER_MAXIMUM_BYTES : FILE_WORKER_LIMITS.maximumFileBytes) ||
+      (bundleProfile === "acquired-paper-v1" && intent.objects.length !== 1)) corrupt();
     workerObjects.push(Object.freeze({ ref: object.ref, index, sha256: object.sha256 }));
   }
   if (intent.manifestDigest !== fileWorkerManifestDigest(workerObjects)) corrupt();
@@ -2823,8 +2855,8 @@ function validateDocumentDeletionIntent(intent, scope, threadIds, runsById, arti
       artifact.runId !== object.runId ||
       artifact.compileReceiptDigest !== object.receiptDigest ||
       (fileWorkerIntent
-        ? artifact.workerProfile !== "file-bundle-v1"
-        : artifact.workerProfile === "file-bundle-v1")
+        ? !isFileWorkerArtifact(artifact)
+        : isFileWorkerArtifact(artifact))
     ) {
       corrupt();
     }
@@ -3104,7 +3136,7 @@ function validateState(state, expectedScope) {
     if (artifactCounts.get(artifact.runId) > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumArtifactsPerRun) corrupt();
   }
   for (const artifact of state.artifacts.filter(
-    ({ kind, workerProfile }) => kind === "file" && workerProfile !== "file-bundle-v1"
+    (artifact) => artifact.kind === "file" && !isFileWorkerArtifact(artifact)
   )) {
     if (runsById.get(artifact.runId)?.status !== "completed") continue;
     const companion = state.artifacts.find((candidate) =>
@@ -5910,7 +5942,8 @@ function createService(options, { testOnly }) {
         if (
           bundle.length !== privateBundleFile.receipt.fileCount ||
           bundle.some(({ privateFile: metadata }, index) => (
-            metadata.index !== index || metadata.receipt.digest !== privateBundleFile.receipt.digest
+            metadata.index !== index || metadata.receipt.digest !== privateBundleFile.receipt.digest ||
+            metadata.profile !== privateBundleFile.profile
           ))
         ) {
           fail("ANALYSIS_FILE_ARTIFACT_INVALID", "File worker artifacts are not one receipt-bound bundle.", {
@@ -5937,8 +5970,9 @@ function createService(options, { testOnly }) {
             ...candidate,
             workerRef: metadata.workerRef,
             compileReceiptDigest: metadata.receipt.digest,
-            workerProfile: "file-bundle-v1",
+            workerProfile: metadata.profile,
             bundleIndex: metadata.index,
+            ...(metadata.profile === "acquired-paper-v1" ? { paperReceipt: metadata.receipt } : {}),
             principalId: scope.principalId,
             browserSessionId: scope.browserSessionId,
             browserSessionPolicy: "same-browser-session",
@@ -7728,7 +7762,7 @@ function createService(options, { testOnly }) {
           const artifactObjects = state.artifacts
             .filter((artifact) => runIds.has(artifact.runId) && artifact.kind === "file")
             .map((artifact) => Object.freeze({
-              profile: artifact.workerProfile === "file-bundle-v1" ? "file" : "document",
+              profile: isFileWorkerArtifact(artifact) ? "file" : "document",
               ref: artifact.workerRef,
               runId: artifact.runId,
               receiptDigest: artifact.compileReceiptDigest,
@@ -7989,7 +8023,7 @@ function createService(options, { testOnly }) {
           const artifactObjects = state.artifacts
             .filter((artifact) => artifact.runId === run.id && artifact.kind === "file")
             .map((artifact) => Object.freeze({
-              profile: artifact.workerProfile === "file-bundle-v1" ? "file" : "document",
+              profile: isFileWorkerArtifact(artifact) ? "file" : "document",
               ref: artifact.workerRef,
               runId: run.id,
               receiptDigest: artifact.compileReceiptDigest,
@@ -8249,7 +8283,7 @@ function createService(options, { testOnly }) {
           intent.receiptDigest === artifact.compileReceiptDigest && intent.runId === artifact.runId
         );
         if (!commit || commit.status !== "committed" || commit.eventsPublished !== true) notFound("Artifact");
-        const fileProfile = artifact.workerProfile === "file-bundle-v1";
+        const fileProfile = isFileWorkerArtifact(artifact);
         const deletion = state.documentDeletionIntents.find((intent) =>
           intent.threadId === artifact.threadId &&
           isFileWorkerDeletionIntent(intent) === fileProfile &&
@@ -8270,7 +8304,8 @@ function createService(options, { testOnly }) {
           workerProfile: artifact.workerProfile,
         });
       });
-      const workerClient = record.workerProfile === "file-bundle-v1" ? fileWorkerClient : documentWorkerClient;
+      const workerClient = isFileWorkerArtifact({ kind: "file", workerProfile: record.workerProfile })
+        ? fileWorkerClient : documentWorkerClient;
       if (!workerClient) {
         fail("ANALYSIS_DOCUMENT_WORKER_UNAVAILABLE", "The private workstation artifact worker is unavailable.", {
           status: 503,
@@ -8302,6 +8337,7 @@ function createService(options, { testOnly }) {
             bytes: record.bytes,
             sha256: record.sha256,
             metadataOnly: payload.metadataOnly === true,
+            ...(record.workerProfile === "acquired-paper-v1" ? { profile: record.workerProfile } : {}),
             ...(range === undefined ? {} : { range }),
           },
           { signal: context?.abortSignal }

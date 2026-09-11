@@ -1,39 +1,18 @@
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
 import http from "node:http";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 import { ACQUIRED_PAPER_MAXIMUM_BYTES, ACQUIRED_PAPER_ROUTES as ROUTES, ACQUIRED_PAPER_SCHEMA_VERSIONS as PAPER, validateAcquiredPaperReceipt } from "../src/integration-acquired-paper-contract.js";
 import { ACQUIRED_PAPER_CONTENT_TYPE, ACQUIRED_PAPER_MAXIMUM_FRAME_BYTES, ACQUIRED_PAPER_TRANSFER_TIMEOUT_MS, encodeAcquiredPaperFrame } from "../src/integration-acquired-paper-transfer.js";
 import { FILE_WORKER_ROUTES as FILE_ROUTES, FILE_WORKER_SCHEMA_VERSIONS as FILE } from "../src/integration-file-worker-contract.js";
-import { openIntegrationFileWorkerStore } from "../src/integration-file-worker-store.js";
-import { openIntegrationDocumentWorkerStore } from "../src/integration-document-worker-store.js";
 import { validateIntegrationDocumentWorkerConfig } from "../src/integration-document-worker-config.js";
-import { createTestOnlyIntegrationDocumentWorkerService } from "../src/integration-document-worker-service.js";
-import { createIntegrationDocumentWorkerServer } from "../src/integration-document-worker-server.js";
-import { createTestOnlyIntegrationFileWorkerClient, inspectIntegrationFileWorkerArtifact } from "../src/integration-file-worker-client.js";
+import { inspectIntegrationFileWorkerArtifact } from "../src/integration-file-worker-client.js";
 import { contractDigest } from "../src/integration-policy.js";
 import { testDocumentWorkerConfig, TEST_BEARER_TOKEN } from "../scripts/fixtures/integration-document-worker-smoke-fixture.js";
 import { scope, pdf, sha256, issueRequest, importRequest, commitRequest, contentRequest } from "./fixtures/acquired-paper.js";
+import { createPaperHttpWorker } from "./fixtures/paper-worker.js";
 
-async function fixture(t, { paperImport = true, creation = true, omitted = false } = {}) {
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-paper-http-"));
-  const store = await openIntegrationDocumentWorkerStore({ stateRoot: path.join(parent, "documents") });
-  const fileStore = await openIntegrationFileWorkerStore({ stateRoot: path.join(parent, "files") });
-  const config = { ...testDocumentWorkerConfig(creation), ...(omitted ? {} : { paperImport: { enabled: paperImport } }) };
-  const service = createTestOnlyIntegrationDocumentWorkerService({
-    config, store, fileStore,
-    inspectRuntimeImpl: async () => ({ ready: true, networkNone: true, shellEscape: false, runtimeDigest: "1".repeat(64), activationProbeDigest: "2".repeat(64) }),
-    compileImpl() { throw new Error("paper transport must not invoke a compiler"); },
-  });
-  await service.activate();
-  const server = createIntegrationDocumentWorkerServer({ config, service, bearerToken: TEST_BEARER_TOKEN });
-  // Test the actual handler over an ephemeral loopback socket. Production
-  // start()/address checks stay fixed; the shared live 18102 is never touched.
-  await new Promise((resolve, reject) => { server.server.once("error", reject); server.server.listen(0, "127.0.0.1", resolve); });
-  const port = server.server.address().port;
-  t.after(async () => { await server.close(); await fs.rm(parent, { recursive: true, force: true }); });
+async function fixture(t, options = {}) {
+  const { server, port, fileStore, client } = await createPaperHttpWorker(t, options);
   function send(route, body, { headers = {}, token = TEST_BEARER_TOKEN, method = "POST" } = {}) {
     return new Promise((resolve, reject) => {
       const request = http.request({ host: "127.0.0.1", port, path: route, method, agent: false,
@@ -59,9 +38,6 @@ async function fixture(t, { paperImport = true, creation = true, omitted = false
     const frame = encodeAcquiredPaperFrame(metadata, bytes);
     try { return await send(ROUTES.import, Buffer.concat(frame.chunks), { ...options, headers: { "content-type": ACQUIRED_PAPER_CONTENT_TYPE, ...options.headers } }); }
     finally { frame.dispose(); }
-  }
-  function client(fetchImpl = globalThis.fetch) {
-    return createTestOnlyIntegrationFileWorkerClient({ endpoint: `http://127.0.0.1:${port}`, credential: TEST_BEARER_TOKEN, fetchImpl });
   }
   return { server, port, fileStore, send, json, issue, upload, client };
 }

@@ -262,7 +262,8 @@ function validateStoredGroup(group) {
   if (group.state === "committed" && states.some((state) => !new Set(["committed", "gone"]).has(state))) {
     failStop(new Error("stored committed file lifecycle is invalid"));
   }
-  if (new Set(["delete-prepared", "deleting"]).has(group.state) && states.some((state) => state !== "committed")) {
+  if (new Set(["delete-prepared", "deleting"]).has(group.state) &&
+      states.some((state) => state !== (group.committedAt === null ? "staged" : "committed"))) {
     failStop(new Error("stored deleting file lifecycle is invalid"));
   }
   if (group.state === "tombstoned" && states.some((state) => state !== "tombstoned")) {
@@ -281,7 +282,8 @@ function validateStoredGroup(group) {
   if ((group.state === "committing") !== (group.pendingCommit !== null)) {
     failStop(new Error("stored file pending commit lifecycle is invalid"));
   }
-  if ((group.committedAt === null) !== new Set(["staged", "committing"]).has(group.state)) {
+  if ((new Set(["staged", "committing"]).has(group.state) && group.committedAt !== null) ||
+      (group.state === "committed" && group.committedAt === null)) {
     failStop(new Error("stored file committed timestamp lifecycle is invalid"));
   }
   if ((group.deletionId === null) !== new Set(["staged", "committing", "committed"]).has(group.state)) {
@@ -654,12 +656,17 @@ export async function openIntegrationFileWorkerStore(options = {}) {
       await closeRef(object.ref);
       const found = findArtifact(object.ref);
       if (!found) failStop(new Error("file deletion object disappeared"));
-      await fs.unlink(path.join(paths.objects, object.ref)).catch((error) => {
+      // Cancellation can delete a sealed but never committed file. Keep that
+      // origin truthful and remove its staged bytes, without publishing it first.
+      const directory = found.group.committedAt === null ? paths.stages : paths.objects;
+      await fs.unlink(path.join(directory, object.ref)).catch((error) => {
         if (error?.code !== "ENOENT") unavailable("File artifact deletion failed.", error);
       });
       found.artifact.state = "tombstoned";
     }
     await syncDirectory(paths.objects);
+    await syncDirectory(paths.stages);
+    await checkpoint("file-after-delete-unlink-before-ledger", { deletionId: deletion.deletionId });
     for (const group of new Set(deletion.objects.map(({ ref }) => findArtifact(ref)?.group).filter(Boolean))) {
       group.state = "tombstoned";
     }
@@ -682,7 +689,6 @@ export async function openIntegrationFileWorkerStore(options = {}) {
       for (const artifact of group.artifacts) await fs.unlink(path.join(paths.stages, artifact.ref)).catch(() => {});
       for (const artifact of group.artifacts) artifact.state = "tombstoned";
       group.state = "tombstoned";
-      group.committedAt = group.createdAt;
       group.deletionId = `fdel_${contractDigest({ schemaVersion: "aginti-file-worker-expiry-v1", groupId: group.groupId })}`;
       changed = true;
     }
@@ -698,7 +704,7 @@ export async function openIntegrationFileWorkerStore(options = {}) {
   }
 
   async function reconcile() {
-    const stageRefs = new Set(ledger.groups.filter(({ state }) => new Set(["staged", "committing"]).has(state)).flatMap(
+    const stageRefs = new Set(ledger.groups.filter(({ state }) => new Set(["staged", "committing", "delete-prepared", "deleting"]).has(state)).flatMap(
       ({ artifacts }) => artifacts.filter(({ state }) => state === "staged").map(({ ref }) => ref)
     ));
     const objectRefs = new Set(ledger.groups.filter(({ state }) => !new Set(["staged", "committing", "tombstoned"]).has(state)).flatMap(
