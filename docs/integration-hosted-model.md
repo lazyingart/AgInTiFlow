@@ -79,6 +79,14 @@ in the actual service, not in JSON, argv or the shell environment. The key must
 be distinct from the text-provider, BFF, execution, search and document keys.
 No credential is created, copied or rotated by configuration validation.
 
+Local readiness authenticates both `GET /healthz` and `GET /v1/models` at the
+same configured loopback origin. This supports a completely token-gated private
+gateway; no unauthenticated health exception is needed. Both requests reject
+redirects, and a health authentication failure stops before model discovery.
+The gateway may expose just those two GET paths and
+`POST /v1/chat/completions` for the independent vision role. Keep management,
+other model APIs, search and document routes outside that credential's scope.
+
 Missing optional vision credentials or a failed vision readiness probe leave
 image capability unavailable while ordinary text remains operational. Invalid
 credential files, unexpected credentials and cross-role reuse fail closed.
@@ -135,6 +143,7 @@ needs to satisfy the package's Node22 requirement.
 npm run smoke:integration-model-binding
 node --test test/integration-independent-vision.test.js
 node --test test/integration-vision-inference.test.js
+node --test test/provider-runtime-private-health.test.js
 npm run smoke:integration-analysis-planner
 npm run smoke:integration-analysis-session-service
 npm run smoke:integration-analysis-api-server

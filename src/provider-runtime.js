@@ -205,10 +205,10 @@ async function fetchJson({ fetchImpl, url, headers = {}, signal, didTimeOut, tim
   }
 
   if (!response.ok) {
-    if (stage === "models" && (response.status === 401 || response.status === 403)) {
+    if (response.status === 401 || response.status === 403) {
       throw readinessError({
         code: "AUTHENTICATION_FAILED",
-        message: `LocalLLM model discovery rejected bearer authentication with HTTP ${response.status}.`,
+        message: `LocalLLM ${stage === "models" ? "model discovery" : "health check"} rejected bearer authentication with HTTP ${response.status}.`,
         action: "Set LOCALLLM_API_KEY to the key accepted by the loopback LocalLLM API, then retry.",
         provider,
         stage,
@@ -383,6 +383,7 @@ export async function probeProviderRuntime({
     const health = await fetchJson({
       fetchImpl,
       url: endpoints.healthURL,
+      headers: { authorization: `Bearer ${bearerToken}` },
       signal: probeSignal.signal,
       didTimeOut: probeSignal.didTimeOut,
       timeoutMs: boundedTimeoutMs,
