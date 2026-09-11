@@ -15,12 +15,19 @@ import { hasCompletePublicPdfEnvelope } from "./public-pdf-download.js";
 
 export const ACQUIRED_PAPER_MAXIMUM_BYTES = MAX_INTEGRATION_FILE_ARTIFACT_BYTES;
 export const ACQUIRED_PAPER_SCHEMA_VERSIONS = Object.freeze({
+  readinessRequest: "aginti-acquired-paper-readiness-request-v1",
+  readinessResponse: "aginti-acquired-paper-readiness-response-v1",
   issueRequest: "aginti-acquired-paper-issue-request-v1",
   issueResponse: "aginti-acquired-paper-issue-response-v1",
   importRequest: "aginti-acquired-paper-import-request-v1",
   importResponse: "aginti-acquired-paper-import-response-v1",
   receipt: "aginti-acquired-paper-receipt-v1",
   artifacts: "aginti-acquired-paper-artifacts-v1",
+});
+export const ACQUIRED_PAPER_ROUTES = Object.freeze({
+  readiness: "/artifact/v1/papers/readiness",
+  issue: "/artifact/v1/papers/issue",
+  import: "/artifact/v1/papers/import",
 });
 const NORMALIZED_IMPORTS = new WeakSet();
 
@@ -115,6 +122,11 @@ function request(value, importing) {
 
 export function validateAcquiredPaperIssueRequest(value) { return request(value, false); }
 export function validateAcquiredPaperImportRequest(value) { return request(value, true); }
+export function validateAcquiredPaperReadinessRequest(value) {
+  const input = exact(value, ["schemaVersion"], "readiness request");
+  if (input.schemaVersion !== ACQUIRED_PAPER_SCHEMA_VERSIONS.readinessRequest) invalid("readiness schema");
+  return Object.freeze({ schemaVersion: input.schemaVersion });
+}
 
 export function digestAcquiredPaperContent(value) {
   return contractDigest({
@@ -144,10 +156,13 @@ export function normalizeAcquiredPaperImport(value, bytes) {
 
 export function digestAcquiredPaperImportOperation(value) {
   if (!NORMALIZED_IMPORTS.has(value)) invalid("normalized import");
-  const metadata = validateAcquiredPaperImportRequest({
+  return digestAcquiredPaperImportMetadata({
     ...value, files: value.files.map(({ bytesValue: _bytes, ...file }) => file),
   });
-  return contractDigest({ schemaVersion: "aginti-acquired-paper-import-operation-v1", request: metadata });
+}
+
+export function digestAcquiredPaperImportMetadata(value) {
+  return contractDigest({ schemaVersion: "aginti-acquired-paper-import-operation-v1", request: validateAcquiredPaperImportRequest(value) });
 }
 
 export function validateAcquiredPaperArtifacts(value) {

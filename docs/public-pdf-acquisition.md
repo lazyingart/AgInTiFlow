@@ -1,8 +1,9 @@
 # Public paper acquisition
 
-Status: credential-free acquisition and durable binary storage primitives are
-implemented and tested. They are not yet an enabled integration tool or an
-EchoMind download feature; the authenticated transport still needs integration.
+Status: credential-free acquisition, durable storage and the authenticated
+binary client/HTTP transport are implemented and tested in source. They are not
+yet an enabled EchoMind download feature: durable analysis-job/profile binding,
+the guarded role route and source-PDF retention still need integration.
 The live analysis, execution and shared document services remain unchanged.
 
 ## Ownership and boundaries
@@ -112,16 +113,80 @@ broker together. Older packages reject new paper receipts in a shared ledger:
 plan a compatible rollback before the first live paper import; do not downgrade
 a ledger containing these receipts to an old reader or delete it to recover.
 
+### Binary client and HTTP checkpoint — September 11
+
+The existing document/file worker now has an explicit optional root-owned
+configuration field, `paperImport: {"enabled": true}`. Omission and false both
+keep paper creation disabled. It also requires the existing creation master
+switch; no model argument can enable it or change limits, origins or paths.
+No live configuration or service was changed for this source checkpoint.
+
+All routes use the existing private bearer authentication and exact POST paths:
+
+| Route | Payload | Purpose |
+| --- | --- | --- |
+| `/artifact/v1/papers/readiness` | Small JSON | Versioned capability and creation state |
+| `/artifact/v1/papers/issue` | Small JSON | Persist caller-owned issuance identity and content/source binding |
+| `/artifact/v1/papers/import` | Bounded binary frame | Stage the exact previously issued PDF |
+| `/artifact/v1/files/commit`, `/content`, `/delete` | Existing JSON | Reuse receipt-bound lifecycle and streamed content |
+
+The binary frame has eight magic bytes `AGIPDF1\n`, a 4-byte unsigned big-endian
+metadata length, canonical UTF-8 import metadata (at most 16 KiB), then exactly
+the declared PDF bytes (at most 16 MiB). The distinct content type is
+`application/vnd.aginti.acquired-paper`. No base64 or multipart parser is used.
+The reader validates the bounded prefix/metadata before allocating the PDF,
+rejects duplicate/ambiguous JSON, invalid UTF-8/BOM, compression, inconsistent
+lengths and trailing/truncated bytes, and wipes partial private buffers.
+Storage rechecks the SHA-256 and complete-envelope predicate before staging.
+
+One binary import is admitted at a time, with a fixed 60-second total deadline.
+An occupied slot returns 503 before consuming another large body. Disconnect,
+cancellation, shutdown and the deadline abort the read and release the slot.
+Existing generated-file requests retain the 1 MiB JSON transport limit and their
+smaller file/bundle limits. Storage continues to have loopback-only networking.
+
+The fixed-endpoint file-worker client adds `paperReadiness`, `issuePaper` and
+`importPaper`. The durable caller supplies/persists the issuance identity and
+then the issued request metadata; the client does not create a new operation
+after an uncertain response. It streams owned binary chunks, validates all
+scope/source/content receipt bindings, and attaches internal profile
+`acquired-paper-v1` to the normal small public file artifact. Commit and deletion
+use the existing client functions. Content requests must explicitly select that
+PDF-only profile for the 16 MiB bound; the default remains the 512 KiB generated-file
+profile. JSON responses are now stream-bounded to 128 KiB even without a length
+header. No public artifact exposes source URLs, worker refs or bearer material.
+
+Actual loopback HTTP/client tests cover 775,166-byte and 16 MiB synthetic fixtures,
+creation-off/auth/account checks, staging/commit/content/range/delete, malformed
+and oversized frames, cancellation/admission, lost-response reconciliation,
+tampered scope receipts and response-stream bounds. The tests use the real
+handler on temporary loopback sockets with isolated state and test credentials;
+production `start()` retains its fixed 18102 address verification. The shared
+live listener and guarded role are untouched. No scientific-paper semantics,
+production gateway, app-level delivery or source-PDF retention is implied.
+
+Verification: all 53 store/frame/HTTP/client cases pass in the combined command,
+including a real 60-second deadline (60,052 ms) that verifies disconnection and
+successful slot reuse. Existing file-store/client, document-service,
+document-session-broker, 99 acquisition/synthesis cases and planner smokes pass,
+as do 296-file syntax, mock web API and coding-tool checks.
+The 445-file package dry-run includes the new protocol tests/fixture and excludes
+private state/keys. No compiler/model call, live paper GET, service restart,
+gateway/config mutation or npm registry publication occurred.
+
 ### Next integration steps
 
 1. Bind an acquired paper to the selected source identity and user intent in
    the durable analysis job, then use the separate paper issue/import operation.
    Preserve DOI/version/source metadata across recovery.
-2. Connect the new store operation to an authenticated, bounded binary transport
-   and the committed account artifact broker. Reuse idempotency, immutable
-   receipts, ownership, cancellation and verified cleanup. Keep network URLs
-   out of public artifact content requests. The storage worker keeps loopback-only
-   networking; acquisition stays in the existing network-capable agent role.
+2. Connect the tested binary client/HTTP operation through the guarded role
+   route and committed account artifact broker. Add explicit acquired-paper
+   intent/profile recovery, content dispatch and deletion dispatch. The current
+   analysis service recognizes `file-bundle-v1` only, so do not let a paper
+   receipt fall through to its compiled-document path. Reuse idempotency,
+   immutable receipts, ownership, cancellation and verified cleanup. Keep
+   network URLs out of public artifact content requests. Storage keeps
+   loopback-only networking; acquisition stays in the network-capable agent role.
 3. Carry realistic PDF sizes through that dedicated path. The existing generated
    file publisher has a512KiB per-file limit,768KiB bundle limit and1MiB JSON
    transport limit; the real775,166-byte paper already exceeds the per-file cap.

@@ -29,6 +29,10 @@ import {
   validateFileWorkerReadinessRequest,
 } from "./integration-file-worker-contract.js";
 import { assertIntegrationFileWorkerStore } from "./integration-file-worker-store.js";
+import {
+  ACQUIRED_PAPER_MAXIMUM_BYTES, ACQUIRED_PAPER_SCHEMA_VERSIONS,
+  validateAcquiredPaperIssueRequest, validateAcquiredPaperReadinessRequest,
+} from "./integration-acquired-paper-contract.js";
 
 export const DOCUMENT_WORKER_SERVICE_SCHEMA_VERSION = "aginti-document-worker-service-v1";
 export const DOCUMENT_WORKER_MAXIMUM_QUEUED_COMPILES = 4;
@@ -117,6 +121,36 @@ function createService({ config, store, fileStore, compileImpl, inspectRuntimeIm
   let compilerRuntimePromise = null;
   const compileWaiters = [];
   const inFlight = new Map();
+
+  function assertPaperImportEnabled() {
+    assertActive();
+    if (!fileStore || !normalizedConfig.creation.enabled || normalizedConfig.paperImport?.enabled !== true) {
+      documentWorkerFail("WORKER_CREATION_DISABLED", "Paper artifact import is disabled.", { status: 503 });
+    }
+  }
+
+  async function paperReadiness(requestInput) {
+    assertActive();
+    validateAcquiredPaperReadinessRequest(requestInput);
+    if (!fileStore) documentWorkerFail("WORKER_UNAVAILABLE", "Paper artifact storage is unavailable.", { status: 503 });
+    const inventory = await fileStore.inspect();
+    const unsigned = Object.freeze({
+      schemaVersion: ACQUIRED_PAPER_SCHEMA_VERSIONS.readinessResponse,
+      ready: true,
+      creationEnabled: normalizedConfig.creation.enabled && normalizedConfig.paperImport?.enabled === true,
+      authorityEpoch: inventory.authorityEpoch,
+      protocols: Object.freeze({
+        issue: ACQUIRED_PAPER_SCHEMA_VERSIONS.issueRequest,
+        import: ACQUIRED_PAPER_SCHEMA_VERSIONS.importRequest,
+        commit: FILE_WORKER_SCHEMA_VERSIONS.commitRequest,
+        content: FILE_WORKER_SCHEMA_VERSIONS.contentRequest,
+        delete: FILE_WORKER_SCHEMA_VERSIONS.deleteRequest,
+      }),
+      limits: Object.freeze({ maximumFiles: 1, maximumFileBytes: ACQUIRED_PAPER_MAXIMUM_BYTES }),
+      storage: Object.freeze({ durable: true, restartStableRefs: true, rangeReads: true, twoPhaseDelete: true }),
+    });
+    return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+  }
 
   async function fileReadiness(requestInput) {
     assertActive();
@@ -345,6 +379,16 @@ function createService({ config, store, fileStore, compileImpl, inspectRuntimeIm
       return activateInternal(false);
     },
     fileReadiness,
+    paperReadiness,
+    assertPaperImportEnabled,
+    issuePaper(requestInput) {
+      assertPaperImportEnabled();
+      return fileStore.issueAcquiredPaper(validateAcquiredPaperIssueRequest(requestInput));
+    },
+    importPaper(requestInput, bytes, options) {
+      assertPaperImportEnabled();
+      return fileStore.importAcquiredPaper(requestInput, bytes, options);
+    },
     issueFiles(requestInput) {
       assertActive();
       if (!fileStore || !normalizedConfig.creation.enabled) {

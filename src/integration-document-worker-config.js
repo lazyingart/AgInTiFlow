@@ -76,7 +76,7 @@ function exact(value, allowedKeys, requiredKeys, label) {
 }
 
 export function validateIntegrationDocumentWorkerConfig(value) {
-  const config = exact(value, CONFIG_KEYS, CONFIG_KEYS, "document worker config");
+  const config = exact(value, [...CONFIG_KEYS, "paperImport"], CONFIG_KEYS, "document worker config");
   if (config.schemaVersion !== DOCUMENT_WORKER_SERVICE_CONFIG_SCHEMA_VERSION) {
     fail("DOCUMENT_WORKER_CONFIG_INVALID", "Document worker config schemaVersion is unsupported.");
   }
@@ -105,6 +105,12 @@ export function validateIntegrationDocumentWorkerConfig(value) {
       `creation.maximumConcurrentCompiles must be ${DOCUMENT_WORKER_LIMITS.maximumConcurrentCompiles}.`
     );
   }
+  let paperImport;
+  if (Object.hasOwn(config, "paperImport")) {
+    const paper = exact(config.paperImport, ["enabled"], ["enabled"], "paper import config");
+    if (typeof paper.enabled !== "boolean") fail("DOCUMENT_WORKER_CONFIG_INVALID", "paperImport.enabled must be a boolean.");
+    paperImport = Object.freeze({ enabled: paper.enabled });
+  }
   return Object.freeze({
     schemaVersion: DOCUMENT_WORKER_SERVICE_CONFIG_SCHEMA_VERSION,
     listen: Object.freeze({ host: DOCUMENT_WORKER_LISTEN_HOST, port: DOCUMENT_WORKER_LISTEN_PORT }),
@@ -113,6 +119,7 @@ export function validateIntegrationDocumentWorkerConfig(value) {
       enabled: creation.enabled,
       maximumConcurrentCompiles: DOCUMENT_WORKER_LIMITS.maximumConcurrentCompiles,
     }),
+    ...(paperImport === undefined ? {} : { paperImport }),
   });
 }
 

@@ -18,13 +18,17 @@ import {
 } from "./integration-document-worker-config.js";
 import { assertIntegrationDocumentWorkerService } from "./integration-document-worker-service.js";
 import { FILE_WORKER_ROUTE_LIST, FILE_WORKER_ROUTES } from "./integration-file-worker-contract.js";
+import { ACQUIRED_PAPER_ROUTES } from "./integration-acquired-paper-contract.js";
+import {
+  ACQUIRED_PAPER_CONTENT_TYPE, ACQUIRED_PAPER_TRANSFER_TIMEOUT_MS, readAcquiredPaperFrame,
+} from "./integration-acquired-paper-transfer.js";
 
 export const DOCUMENT_WORKER_SERVER_SCHEMA_VERSION = "aginti-document-worker-server-v1";
 export const DOCUMENT_WORKER_FAIL_STOP_SCHEMA_VERSION = "aginti-document-worker-fail-stop-v1";
 
 const SERVER_BRAND = new WeakSet();
 const CONTENT_TYPE = /^application\/json(?:\s*;\s*charset=utf-8)?$/iu;
-const ROUTES = new Set([...DOCUMENT_WORKER_ROUTE_LIST, ...FILE_WORKER_ROUTE_LIST]);
+const ROUTES = new Set([...DOCUMENT_WORKER_ROUTE_LIST, ...FILE_WORKER_ROUTE_LIST, ...Object.values(ACQUIRED_PAPER_ROUTES)]);
 
 function rawHeaderCount(req, expected) {
   let count = 0;
@@ -362,6 +366,7 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
   let failStopPromise = null;
   let startGeneration = 0;
   const controllers = new Set();
+  let activePaperImports = 0;
 
   function triggerFailStop(error, res) {
     if (failStopPromise) return;
@@ -405,15 +410,41 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
         target.includes("%")
       ) throw badRequest("NOT_FOUND", 404);
       if (!authenticate(req, bearerToken)) throw badRequest("UNAUTHORIZED", 401);
+      if (target === ACQUIRED_PAPER_ROUTES.import) {
+        service.assertPaperImportEnabled();
+        if (activePaperImports >= 1) throw badRequest("WORKER_UNAVAILABLE", 503);
+        if (rawHeaderCount(req, "content-type") !== 1 || req.headers["content-type"] !== ACQUIRED_PAPER_CONTENT_TYPE ||
+            rawHeaderCount(req, "content-encoding") > 0) throw badRequest();
+        activePaperImports += 1;
+        let frame;
+        const detach = () => req.destroy();
+        controller.signal.addEventListener("abort", detach, { once: true });
+        const timeout = setTimeout(() => controller.abort(new Error("paper import deadline")), ACQUIRED_PAPER_TRANSFER_TIMEOUT_MS);
+        try {
+          frame = await readAcquiredPaperFrame(req, { signal: controller.signal, declaredBytes: declaredLength(req) });
+          if (!req.complete) throw badRequest();
+          writeJson(res, 200, await service.importPaper(frame.metadata, frame.bytes, { signal: controller.signal }));
+        } finally {
+          clearTimeout(timeout);
+          controller.signal.removeEventListener("abort", detach);
+          frame?.bytes.fill(0);
+          activePaperImports -= 1;
+        }
+        return;
+      }
       const body = await readJson(req);
       if (target === DOCUMENT_WORKER_ROUTES.readiness) {
         writeJson(res, 200, await service.readiness(body));
       } else if (target === FILE_WORKER_ROUTES.readiness) {
         writeJson(res, 200, await service.fileReadiness(body));
+      } else if (target === ACQUIRED_PAPER_ROUTES.readiness) {
+        writeJson(res, 200, await service.paperReadiness(body));
       } else if (target === DOCUMENT_WORKER_ROUTES.compileIssue) {
         writeJson(res, 200, await service.issueCompile(body));
       } else if (target === FILE_WORKER_ROUTES.issue) {
         writeJson(res, 200, await service.issueFiles(body));
+      } else if (target === ACQUIRED_PAPER_ROUTES.issue) {
+        writeJson(res, 200, await service.issuePaper(body));
       } else if (target === DOCUMENT_WORKER_ROUTES.compile) {
         writeJson(res, 200, await service.compile(body, { signal: controller.signal }));
       } else if (target === FILE_WORKER_ROUTES.publish) {

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { Readable } from "node:stream";
 import { types as utilTypes } from "node:util";
 
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
@@ -18,6 +19,7 @@ import {
   fileWorkerArtifactsDigest,
   fileWorkerDeletionManifestDigest,
   fileWorkerManifestDigest,
+  fileWorkerScopeDigests,
   normalizeFileWorkerFilename,
   validateFileWorkerArtifacts,
   validateFileWorkerCommitRequest,
@@ -35,6 +37,12 @@ import {
   validateIntegrationRunId,
   validateIntegrationThreadId,
 } from "./integration-policy.js";
+import {
+  ACQUIRED_PAPER_MAXIMUM_BYTES, ACQUIRED_PAPER_ROUTES, ACQUIRED_PAPER_SCHEMA_VERSIONS,
+  acquiredPaperArtifactsDigest, digestAcquiredPaperContent, digestAcquiredPaperImportMetadata, validateAcquiredPaperArtifacts,
+  validateAcquiredPaperImportRequest, validateAcquiredPaperIssueRequest, validateAcquiredPaperReceipt,
+} from "./integration-acquired-paper-contract.js";
+import { ACQUIRED_PAPER_CONTENT_TYPE, encodeAcquiredPaperFrame } from "./integration-acquired-paper-transfer.js";
 
 export const INTEGRATION_FILE_WORKER_SCHEMA_VERSION = "aginti-file-worker-client-v1";
 export const INTEGRATION_FILE_WORKER_ACTIVATION_SCHEMA_VERSION = "aginti-file-worker-client-activation-v1";
@@ -215,8 +223,29 @@ async function readJson(response, signal) {
     fail("FILE_WORKER_PROTOCOL_INVALID", "File worker JSON length is invalid.", { status: 502 });
   }
   if (signal?.aborted) throw signal.reason;
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > MAXIMUM_JSON_BYTES) fail("FILE_WORKER_PROTOCOL_INVALID", "File worker JSON is too large.", { status: 502 });
+  if (!response.body || typeof response.body.getReader !== "function") {
+    fail("FILE_WORKER_PROTOCOL_INVALID", "File worker JSON stream is unavailable.", { status: 502 });
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  let complete = false;
+  try {
+    while (true) {
+      if (signal?.aborted) throw signal.reason;
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.byteLength;
+      if (size > MAXIMUM_JSON_BYTES) fail("FILE_WORKER_PROTOCOL_INVALID", "File worker JSON is too large.", { status: 502 });
+      chunks.push(Buffer.from(next.value));
+    }
+    if (declared !== null && Number(declared) !== size) fail("FILE_WORKER_PROTOCOL_INVALID", "File worker JSON length is inconsistent.", { status: 502 });
+    complete = true;
+  } finally {
+    if (!complete) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  const text = Buffer.concat(chunks, size).toString("utf8");
   try { return JSON.parse(text); } catch (cause) {
     fail("FILE_WORKER_PROTOCOL_INVALID", "File worker JSON is invalid.", { status: 502, cause });
   }
@@ -295,6 +324,98 @@ function createClient(optionsValue, { testOnly }) {
       if (signal?.aborted) fail("ANALYSIS_CANCELLED", "File worker request was cancelled.", { status: 499, cause });
       fail("ANALYSIS_FILE_WORKER_UNAVAILABLE", "The private workstation file worker is unavailable.", { status: 503, cause });
     }
+  }
+
+  async function paperReadiness(optionsValue = {}) {
+    const options = exact(optionsValue, ["signal"], [], "paper readiness options", { code: "FILE_WORKER_INVALID", status: 400 });
+    const call = await post(ACQUIRED_PAPER_ROUTES.readiness, {
+      schemaVersion: ACQUIRED_PAPER_SCHEMA_VERSIONS.readinessRequest,
+    }, { signal: options.signal });
+    try {
+      if (call.response.status !== 200) throw translate(await workerError(call.response, call.abort.signal), call.response.status);
+      const keys = ["schemaVersion", "ready", "creationEnabled", "authorityEpoch", "protocols", "limits", "storage", "digest"];
+      const value = exact(await readJson(call.response, call.abort.signal), keys, keys, "paper capabilities");
+      const { digest, ...unsigned } = value;
+      if (value.schemaVersion !== ACQUIRED_PAPER_SCHEMA_VERSIONS.readinessResponse || value.ready !== true ||
+          typeof value.creationEnabled !== "boolean" || !Number.isSafeInteger(value.authorityEpoch) || value.authorityEpoch < 1 ||
+          canonicalJson(value.protocols) !== canonicalJson({
+            issue: ACQUIRED_PAPER_SCHEMA_VERSIONS.issueRequest, import: ACQUIRED_PAPER_SCHEMA_VERSIONS.importRequest,
+            commit: FILE_WORKER_SCHEMA_VERSIONS.commitRequest, content: FILE_WORKER_SCHEMA_VERSIONS.contentRequest,
+            delete: FILE_WORKER_SCHEMA_VERSIONS.deleteRequest,
+          }) || canonicalJson(value.limits) !== canonicalJson({ maximumFiles: 1, maximumFileBytes: ACQUIRED_PAPER_MAXIMUM_BYTES }) ||
+          canonicalJson(value.storage) !== canonicalJson({ durable: true, restartStableRefs: true, rangeReads: true, twoPhaseDelete: true }) ||
+          contractDigest(unsigned) !== digest) fail("FILE_WORKER_PROTOCOL_INVALID", "Paper capabilities are invalid.", { status: 502 });
+      return Object.freeze({ ...unsigned, digest });
+    } finally { call.abort.cleanup(); }
+  }
+
+  // The durable analysis broker owns issuance IDs and records these metadata
+  // phases before dispatch. Transport never invents a replacement after a lost
+  // response, selects a source URL, or gives network policy to a model.
+  async function issuePaper(requestInput, optionsValue = {}) {
+    const options = exact(optionsValue, ["signal"], [], "paper issue options", { code: "FILE_WORKER_INVALID", status: 400 });
+    const request = validateAcquiredPaperIssueRequest(requestInput);
+    const call = await post(ACQUIRED_PAPER_ROUTES.issue, request, { signal: options.signal });
+    try {
+      if (call.response.status !== 200) throw translate(await workerError(call.response, call.abort.signal), call.response.status);
+      const keys = ["schemaVersion", "issuanceId", "requestId", "authorityEpoch", "authorityToken", "contentDigest", "digest"];
+      const value = exact(await readJson(call.response, call.abort.signal), keys, keys, "paper issue response");
+      const { digest, ...unsigned } = value;
+      if (value.schemaVersion !== ACQUIRED_PAPER_SCHEMA_VERSIONS.issueResponse || value.issuanceId !== request.issuanceId ||
+          value.authorityEpoch !== request.authorityEpoch || !FILE_WORKER_PATTERNS.requestId.test(value.requestId) ||
+          !FILE_WORKER_PATTERNS.authorityToken.test(value.authorityToken) ||
+          value.contentDigest !== digestAcquiredPaperContent(request) || contractDigest(unsigned) !== digest) {
+        fail("FILE_WORKER_PROTOCOL_INVALID", "Paper issuance binding is invalid.", { status: 502 });
+      }
+      return Object.freeze({ ...unsigned, digest });
+    } finally { call.abort.cleanup(); }
+  }
+
+  async function importPaper(requestInput, bytes, optionsValue = {}) {
+    const options = exact(optionsValue, ["signal"], [], "paper import options", { code: "FILE_WORKER_INVALID", status: 400 });
+    const request = validateAcquiredPaperImportRequest(requestInput);
+    const frame = encodeAcquiredPaperFrame(request, bytes);
+    let abort;
+    try {
+      abort = abortFor(options.signal, timeoutMs);
+      let response;
+      try {
+        response = await fetchImpl(`${endpoint}${ACQUIRED_PAPER_ROUTES.import}`, {
+          method: "POST",
+          headers: { ...headers(), "Content-Type": ACQUIRED_PAPER_CONTENT_TYPE, "Content-Length": String(frame.byteLength) },
+          body: Readable.from(frame.chunks), duplex: "half",
+          cache: "no-store", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", signal: abort.signal,
+        });
+      } catch (cause) {
+        if (options.signal?.aborted) fail("ANALYSIS_CANCELLED", "Paper import was cancelled.", { status: 499, cause });
+        fail("ANALYSIS_FILE_WORKER_UNAVAILABLE", "Paper import response is unavailable; reconcile the same request.", { status: 503, cause });
+      }
+      if (response.status !== 200) throw translate(await workerError(response, abort.signal), response.status);
+      const keys = ["schemaVersion", "requestId", "receipt", "artifacts"];
+      const value = exact(await readJson(response, abort.signal), keys, keys, "paper import response");
+      const receipt = validateAcquiredPaperReceipt(value.receipt);
+      const artifacts = validateAcquiredPaperArtifacts(value.artifacts);
+      const scopeDigests = fileWorkerScopeDigests(request.scope);
+      const requestDigest = digestAcquiredPaperImportMetadata(request);
+      if (value.schemaVersion !== ACQUIRED_PAPER_SCHEMA_VERSIONS.importResponse || value.requestId !== request.requestId ||
+          receipt.requestId !== request.requestId || receipt.requestDigest !== requestDigest ||
+          receipt.artifactsDigest !== acquiredPaperArtifactsDigest(artifacts) || receipt.totalBytes !== request.files[0].bytes ||
+          canonicalJson(receipt.source) !== canonicalJson(request.source) ||
+          Object.keys(scopeDigests).some(key => receipt[key] !== scopeDigests[key]) ||
+          canonicalJson(artifacts.map(({ ref: _ref, ...file }) => file)) !== canonicalJson(request.files)) {
+        fail("FILE_WORKER_PROTOCOL_INVALID", "Paper import receipt binding is invalid.", { status: 502 });
+      }
+      const publicArtifacts = artifacts.map(artifact => {
+        const result = sanitizeIntegrationArtifact({
+          id: `art_${contractDigest({ schemaVersion: "aginti-acquired-paper-public-artifact-v1", receiptDigest: receipt.digest, ref: artifact.ref })}`,
+          title: artifact.filename, kind: "file",
+          spec: { schemaVersion: AGENT_WORKER_SCHEMA_VERSION, filename: artifact.filename, mime: artifact.mime, bytes: artifact.bytes, sha256: artifact.sha256 },
+        });
+        FILE_METADATA.set(result, Object.freeze({ profile: "acquired-paper-v1", workerRef: artifact.ref, index: artifact.index, receipt, scope: request.scope }));
+        return result;
+      });
+      return Object.freeze({ schemaVersion: value.schemaVersion, requestId: request.requestId, requestDigest, receipt, artifacts: Object.freeze(publicArtifacts) });
+    } finally { abort?.cleanup(); frame.dispose(); }
   }
 
   function validateCapabilities(value) {
@@ -557,13 +678,17 @@ function createClient(optionsValue, { testOnly }) {
 
   async function content(scopeValue, inputValue, options = {}) {
     const scope = normalizeScope(scopeValue);
-    const input = exact(inputValue, ["ref", "receiptDigest", "filename", "mime", "bytes", "sha256", "metadataOnly", "range"], [
+    const input = exact(inputValue, ["ref", "receiptDigest", "filename", "mime", "bytes", "sha256", "metadataOnly", "range", "profile"], [
       "ref", "receiptDigest", "filename", "mime", "bytes", "sha256", "metadataOnly",
     ], "file content input", { code: "FILE_WORKER_INVALID", status: 400 });
     const presentation = validateFileWorkerMimeAndFilename(input.mime, input.filename);
+    const paper = input.profile === "acquired-paper-v1";
+    if ((input.profile !== undefined && !paper) || (paper && presentation.mime !== "application/pdf")) {
+      fail("FILE_WORKER_INVALID", "File content profile is invalid.", { status: 400 });
+    }
     if (
       !FILE_WORKER_PATTERNS.objectRef.test(input.ref) || !FILE_WORKER_PATTERNS.digest.test(input.receiptDigest) ||
-      !Number.isSafeInteger(input.bytes) || input.bytes < 1 || input.bytes > FILE_WORKER_LIMITS.maximumFileBytes ||
+      !Number.isSafeInteger(input.bytes) || input.bytes < 1 || input.bytes > (paper ? ACQUIRED_PAPER_MAXIMUM_BYTES : FILE_WORKER_LIMITS.maximumFileBytes) ||
       !FILE_WORKER_PATTERNS.digest.test(input.sha256) || typeof input.metadataOnly !== "boolean"
     ) fail("FILE_WORKER_INVALID", "File content metadata is invalid.", { status: 400 });
     const request = validateFileWorkerContentRequest({
@@ -675,6 +800,9 @@ function createClient(optionsValue, { testOnly }) {
     attestation,
     activate,
     publish,
+    paperReadiness,
+    issuePaper,
+    importPaper,
     commitArtifacts,
     content,
     deleteObjects,
