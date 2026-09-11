@@ -1027,6 +1027,17 @@ assert.throws(
 assert.equal(planIntegrationGroundedSearchQuery("🙂🙂a", "web").query, "🙂🙂a");
 assert.equal(planIntegrationGroundedSearchQuery("Cafe\u0301   evidence", "web").query, "Café evidence");
 assert.equal(
+  planIntegrationGroundedSearchQuery("Research numerical methods.\r\nThen\tuse Python to compare the results.", "both").query,
+  "Research numerical methods. Then use Python to compare the results."
+);
+for (const control of ["\u0000", "\u000b", "\u000c", "\u001b", "\u007f"]) {
+  assert.throws(
+    () => planIntegrationGroundedSearchQuery(`Research${control}methods`, "both"),
+    (error) => error.code === "GROUNDED_SEARCH_QUERY_INVALID",
+    "chat whitespace normalization does not relax forbidden query controls"
+  );
+}
+assert.equal(
   planIntegrationGroundedSearchQuery("Search https://example.com/private?token=secret", "web").query,
   "Search example.com"
 );
@@ -1361,6 +1372,24 @@ assert.deepEqual(
   inferIntegrationDeepResearchRequestFromPrompt("Do a quick comprehensive web research review."),
   { mode: "web", depth: "quick" }
 );
+for (const prompt of [
+  "Perform deep web and paper research. Then use Python to simulate a short sequence.",
+  "Perform deep research on standard numerical methods.",
+  "Perform deep research on brief visual stimuli and short-term memory.",
+  "深入研究快速排序与标准算法。",
+]) {
+  assert.equal(inferIntegrationDeepResearchRequestFromPrompt(prompt).depth, "deep",
+    "research topics and later tasks do not change the requested research depth");
+}
+for (const [prompt, depth] of [
+  ["Perform standard deep paper research on numerical methods.", "standard"],
+  ["Do brief comprehensive research on the result.", "quick"],
+  ["请快速深入研究这个主题。", "quick"],
+  ["请标准深度研究这个主题。", "standard"],
+]) {
+  assert.equal(inferIntegrationDeepResearchRequestFromPrompt(prompt).depth, depth,
+    "an explicit modifier of the research directive selects the depth");
+}
 assert.deepEqual(
   inferIntegrationDeepResearchRequestFromPrompt(
     "Run quick deep research on the official SQLite documentation about WAL versus rollback journaling."

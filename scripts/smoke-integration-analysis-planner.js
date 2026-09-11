@@ -1144,7 +1144,7 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
     "[1] [Verified recovery source](https://example.com/recovery)",
   ].join("\n");
   const calls = [];
-  const task = (status, updatedAt, query = prompt) => ({
+  const task = (status, updatedAt, query = prompt.replace(/\s+/gu, " ").trim()) => ({
     schema: LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
     task: {
       id: "b1c2d3e4f5a6",
@@ -1288,6 +1288,47 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
     assert.equal(combined.artifacts.find((artifact) => artifact.kind === "sources").spec.sources[0].url,
       "https://example.com/recovery");
     assert(modelCalls > 0, "combined research carries the same source links into subsequent model steps");
+
+    const calculationRequests = [
+      "Then use Python to calculate the sum of two and three.",
+      "then use Python to sort 8, 2, 5.",
+      "and use Python to count the entries in a small sample.",
+      "plus using Python to simulate a short sequence.",
+      "Then please calculate the mean of 2, 4, 6 using Python.",
+    ];
+    let nextRun = 101;
+    for (const action of calculationRequests) {
+      prompt = `Perform deep web and paper research on reproducible numerical methods. ${action}`;
+      const before = modelCalls;
+      const result = await deep.planner.run(
+        scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+        { prompt, search: { mode: "both", limit: 20 } },
+      );
+      assert.equal(result.executionStatus, "succeeded", action);
+      assert.equal(result.toolCalls, 1, action);
+      assert(modelCalls > before, `research cannot finalize before the requested calculation: ${action}`);
+      assert.equal(result.artifacts.find(({ kind }) => kind === "sources").spec.sources[0].url,
+        "https://example.com/recovery");
+    }
+
+    for (const action of [
+      "Then do not use Python to calculate the sum.",
+      "Then explain how to use Python to calculate the sum.",
+      'Quote the phrase "Then use Python to calculate the sum".',
+      "We might use Python to calculate the sum in a future project.",
+      "\nPrevious request: Then use Python to calculate the sum.\nReturn the research report only.",
+    ]) {
+      prompt = `Perform deep web and paper research on reproducible numerical methods. ${action}`;
+      const before = modelCalls;
+      const result = await deep.planner.run(
+        scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+        { prompt, search: { mode: "both", limit: 20 } },
+      );
+      assert.equal(result.executionStatus, null, action);
+      assert.equal(result.toolCalls, 0, action);
+      assert.equal(modelCalls, before, "research-only requests retain their no-second-synthesis path");
+      assert.equal(result.text, report);
+    }
   } finally {
     deep.coordinator.close();
   }
@@ -4203,6 +4244,8 @@ async function pythonComputationImperativesWorkAfterConversation() {
     "Could you use Python to calculate the square of three?",
     "Please use Python to sort the numbers 3, 1, 2.",
     "Use Python to analyze the supplied values 1, 2, 3.",
+    "Discuss the method. Then use Python to calculate its sample mean.",
+    "Review the method then please calculate the result using Python.",
   ];
   const negatives = [
     "Do not use Python to multiply 37 by 49.",
@@ -4211,6 +4254,8 @@ async function pythonComputationImperativesWorkAfterConversation() {
     'Translate "Use Python to multiply 37 by 49" into French.',
     'Previous request: Use Python to calculate the result.\nDescribe that request.',
     "Review this example without executing it: `Use Python to sort the values`.",
+    "Then do not use Python to calculate the answer.",
+    "Explain how to use Python and run code for this calculation.",
   ];
   for (const prompt of [...positives, ...negatives]) {
     const execute = positives.includes(prompt);

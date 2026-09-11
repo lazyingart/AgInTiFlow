@@ -308,11 +308,12 @@ export function inferIntegrationGroundedSearchRequestFromPrompt(prompt) {
 export function inferIntegrationDeepResearchRequestFromPrompt(prompt) {
   if (typeof prompt !== "string") return null;
   const text = prompt.replace(/\s+/gu, " ").trim();
+  const directive = EXPLICIT_DEEP_RESEARCH_DIRECTIVE.exec(text);
   if (
     !text ||
     EXPLICIT_SEARCH_NEGATION.test(text) ||
     EXPLICIT_DEEP_RESEARCH_NEGATION.test(text) ||
-    !EXPLICIT_DEEP_RESEARCH_DIRECTIVE.test(text)
+    directive === null
   ) {
     return null;
   }
@@ -325,9 +326,12 @@ export function inferIntegrationDeepResearchRequestFromPrompt(prompt) {
       : web
         ? "web"
         : "both";
-  const depth = /\b(?:quick|brief|short)\b|(?:快速|简短|簡短)/iu.test(text)
+  // Depth modifies the research directive, not an unrelated topic or a later
+  // task (for example, a short simulation after comprehensive research).
+  const directivePrefix = text.slice(0, directive.index);
+  const depth = /(?:\b(?:quick|brief|short)|(?:快速|简短|簡短))\s*$/iu.test(directivePrefix)
     ? "quick"
-    : /\bstandard\b|(?:标准|標準)/iu.test(text)
+    : /(?:\bstandard|(?:标准|標準))\s*$/iu.test(directivePrefix)
       ? "standard"
       : "deep";
   return Object.freeze({ mode, depth });
@@ -584,6 +588,9 @@ export function planIntegrationGroundedSearchQuery(prompt, mode, domainConstrain
     strategy = "exact";
     query = [...arxivIdentifiers, ...doiIdentifiers].join(" ");
   }
+  // A chat request may span lines; its derived provider query is one line.
+  // Keep all other control-character checks and the query length bound intact.
+  if (typeof query === "string") query = query.replace(/[\t\r\n]+/gu, " ");
   query = integrationGroundedSearchConstrainedQuery(query, domainConstraint);
   const allowedDomains = Object.freeze([...(domainConstraint?.domains || [])]);
   const exactIdentifiers = canonicalExactIdentifiers(arxivIdentifiers, doiIdentifiers);

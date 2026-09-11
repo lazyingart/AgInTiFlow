@@ -6,6 +6,18 @@ An eligible run uses the private LazyEdge-bound LocalLLM task protocol at the ex
 
 The completed report is accepted only with at least one safe source and valid one-based citations. Every source is preserved in one authority-bound `sources` artifact. A pure research request returns that validated report directly; a combined document, file, or execution request carries it forward as untrusted evidence for the remaining agent work.
 
+Coordinated computation requests use the same action matcher as standalone
+requests. For example, research followed by “Then use Python to calculate…”
+retains an execution obligation, including after earlier conversation. Quoted,
+historical, explanatory and negated clauses remain non-executing. The research
+report cannot finalize such a compound run before the requested execution.
+
+Research depth comes from a modifier immediately before the research directive:
+“quick deep research” is quick, whereas research about short sequences or
+standard algorithms remains deep. Multiline chat whitespace is normalized when
+deriving the one-line provider query; other control characters, length bounds,
+exact identifiers and source/domain constraints retain their existing checks.
+
 Search/research intent, task activity, artifacts, failures, and terminal state use the same durable session ledger as other Agent work. The next message in the thread does not inherit stale research authority or completed activity. Public capabilities advertise the optional `localllm/research-task/v2` protocol while retaining the original Search contract for older Web clients.
 
 ## Explicit application search policy

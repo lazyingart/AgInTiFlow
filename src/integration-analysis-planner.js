@@ -217,10 +217,16 @@ const NEGATED_MARKDOWN_ARTIFACT_ACTION =
   /(?:\b(?:do\s+not|don't|never|avoid|no\s+need\s+to)\b.{0,48}\bmarkdown\b|\b(?:not|no|without)\s+(?:(?:a|any)\s+)?markdown\b|\bwithout\s+(?:making|creating|generating|showing|displaying|rendering|producing|returning|including|emitting)\s+(?:(?:a|any)\s+)?markdown\b)/iu;
 const NEGATED_PYTHON_EXECUTION_LEAD =
   /^(?:(?:do\s+not|don't|dont|never|avoid|no\s+need\s+to|without)\s+(?:(?:re-?running|rerun(?:ning)?|running|run|executing|execute)\b|(?:use|using)\s+python\b)|(?:不要|不用|无需|無需|不需要|避免)(?:重新)?(?:运行|運行|执行|執行))/iu;
-const PYTHON_COMPUTATION_IMPERATIVE =
-  /^(?:use|using)\s+python\s+to\s+(?:compute|calculate|multiply|divide|add|subtract|analy[sz]e|count|sort|simulate|estimate|evaluate|process)\b/iu;
-const PYTHON_EXECUTION_OCCURRENCE =
-  /(?:^|\b(?:and|then|also|plus)\s+)(?:(?:please|kindly)\s+)?(?:(?:run|execute)\s+(?:(?:this|the|some|my)\s+)?(?:python|code|script)\b|(?:(?:real|actual|bounded)\s+){1,3}python\s+execution\b|(?:use|using|with|via)\s+(?:(?:the|a|real|actual|bounded)\s+){0,4}python\s+execution\b|(?:use|using)\s+(?:(?:the|a)\s+)?(?:[a-z][a-z-]*\s+){0,3}python(?:\s+(?:execution|analysis))?(?:\s+and\s+artifact)?\s+tools?\s+to\s+(?:compute|calculate)\b|(?:compute|calculate)\b[^.!?;\r\n]{0,80}\b(?:with|using)\s+python\b|(?:运行|执行).{0,8}(?:代码|脚本|python))/giu;
+const PYTHON_COMPUTATION_ACTION =
+  /(?:use|using)\s+python\s+to\s+(?:compute|calculate|multiply|divide|add|subtract|analy[sz]e|count|sort|simulate|estimate|evaluate|process)\b/iu;
+// One action matcher covers standalone and coordinated computation requests.
+// The caller still excludes quoted, explanatory and negated clauses first.
+const PYTHON_EXECUTION_OCCURRENCE = new RegExp(
+  String.raw`(?:^|\b(?:and|then|also|plus)\s+)(?:(?:please|kindly)\s+)?(?:` +
+    PYTHON_COMPUTATION_ACTION.source + "|" +
+    String.raw`(?:run|execute)\s+(?:(?:this|the|some|my)\s+)?(?:python|code|script)\b|(?:(?:real|actual|bounded)\s+){1,3}python\s+execution\b|(?:use|using|with|via)\s+(?:(?:the|a|real|actual|bounded)\s+){0,4}python\s+execution\b|(?:use|using)\s+(?:(?:the|a)\s+)?(?:[a-z][a-z-]*\s+){0,3}python(?:\s+(?:execution|analysis))?(?:\s+and\s+artifact)?\s+tools?\s+to\s+(?:compute|calculate)\b|(?:compute|calculate)\b[^.!?;\r\n]{0,80}\b(?:with|using)\s+python\b|(?:运行|执行).{0,8}(?:代码|脚本|python))`,
+  "giu"
+);
 const EXPLICIT_EXECUTION_COUNT = Object.freeze({
   one: 1,
   two: 2,
@@ -640,7 +646,7 @@ function unquotedImperativeClauses(value) {
     .replace(/^\s*(?:context|quoted\s+(?:request|prompt|instruction|phrase)|previous\s+(?:request|prompt|instruction)|message\s*\d*)\s*:\s*.*$/gimu, " ");
   return unquoted
     .split(/(?:[!?。！？;；\r\n]+|\.(?=\s|$))/u)
-    .flatMap((clause) => clause.split(/(?:,\s*)?\b(?:and\s+then|then|but)\b\s+(?=(?:(?:please|kindly)\s+)?(?:do\s+not|don't|dont|never|avoid|run|execute|make|create|generate|draw|show|expose|render|plot|visuali[sz]e|install|uninstall|upgrade|add|search|browse|google|visit|fetch|open|read|look\s+up|find|save|export|upload|download|deploy|publish|push|email|post|submit|send|change|update|delete|remove|explain|describe|discuss|summari[sz]e|define|write|produce|prepare)\b)/giu))
+    .flatMap((clause) => clause.split(/(?:,\s*)?\b(?:and\s+then|then|but)\b\s+(?=(?:(?:please|kindly)\s+)?(?:do\s+not|don't|dont|never|avoid|run|execute|use|using|compute|calculate|make|create|generate|draw|show|expose|render|plot|visuali[sz]e|install|uninstall|upgrade|add|search|browse|google|visit|fetch|open|read|look\s+up|find|save|export|upload|download|deploy|publish|push|email|post|submit|send|change|update|delete|remove|explain|describe|discuss|summari[sz]e|define|write|produce|prepare)\b)/giu))
     .map((clause) => imperativeActionText(clause))
     .filter(Boolean);
 }
@@ -707,10 +713,7 @@ function classifyCurrentTurnExecutionObligations(value) {
     tableArtifact ||= clauseTableArtifact;
     markdownArtifact ||= clauseMarkdownArtifact;
     const negatedPythonExecution = NEGATED_PYTHON_EXECUTION_LEAD.test(clause);
-    const separateActions = negatedPythonExecution ? 0 : Math.max(
-      pythonExecutionActionCount(clause),
-      PYTHON_COMPUTATION_IMPERATIVE.test(clause) ? 1 : 0
-    );
+    const separateActions = negatedPythonExecution ? 0 : pythonExecutionActionCount(clause);
     const explicitMultiplicity = negatedPythonExecution ? 0 : explicitExecutionMultiplicity(clause);
     minimumSuccessfulExecutions += Math.max(separateActions, explicitMultiplicity);
   }
