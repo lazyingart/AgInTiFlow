@@ -63,7 +63,7 @@ inspect git status and prepare a safe commit summary
 
 ## Provider Keys
 
-On first use, AgInTiFlow asks for a main provider key. DeepSeek is the normal default, with Venice and OpenAI available as alternatives. For image tools, enable GRS AI or Venice image models.
+The default runtime uses the sibling LocalLLM gateway at `http://127.0.0.1:8008/v1`, so it does not require a hosted-provider key. Use the auth wizard only when you explicitly choose DeepSeek, OpenAI, OpenRouter, Qwen, Venice, or another hosted route. For image tools, enable GRS AI or Venice image models.
 
 ```bash
 aginti auth
@@ -71,7 +71,7 @@ aginti auth deepseek
 aginti keys status
 ```
 
-Keys are saved to `.aginti/.env` with local file permissions. The CLI and web API report only boolean availability and masked previews.
+Account-wide hosted-provider keys are saved to `~/.agintiflow/.env` with restricted permissions. Use `aginti auth --project <provider>` for an explicit project override in `.aginti/.env`. The CLI and web API report only boolean availability and masked previews.
 
 Useful registration and API pages:
 

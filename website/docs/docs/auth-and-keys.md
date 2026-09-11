@@ -30,17 +30,17 @@ The existing key is selected. Type to replace it, press Enter or Esc to keep it.
 | Qwen / DashScope | [https://bailian.console.aliyun.com/](https://bailian.console.aliyun.com/) | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
 | GRS AI image tools | [https://grsai.ai/dashboard/api-keys](https://grsai.ai/dashboard/api-keys) | Configure with `/auxiliary grsai` or `aginti login grsai`. |
 
-DeepSeek is the default low-cost text route. Venice is useful for optional uncensored text routes and Venice image routes. OpenAI is useful as a spare, wrapper, or explicit main provider. GRS AI is auxiliary-only in AgInTiFlow and is mainly used for image generation.
+LocalLLM Fast and Deep are the default local text lanes. DeepSeek, Venice, OpenAI, OpenRouter, and Qwen are optional explicit hosted routes; a saved key authenticates a route but never selects it or creates a fallback. GRS AI is auxiliary-only in AgInTiFlow and is mainly used for image generation.
 
 ## Storage
 
-Keys are saved in:
+Account-wide hosted-provider keys are saved in:
 
 ```text
-.aginti/.env
+~/.agintiflow/.env
 ```
 
-The file is ignored by git and written with local-only permissions where the platform supports it.
+An explicit `aginti auth --project <provider>` override is saved in `.aginti/.env`. Both files are ignored by git and written with local-only permissions where the platform supports it.
 
 ## Safe Status
 

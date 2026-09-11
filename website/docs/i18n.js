@@ -527,7 +527,7 @@ const docs = {
       "- Agent runner：规划、调用工具、记录事件并恢复会话。",
       "- Workspace tools：`inspect_project`、`read_file`、`search_files`、`write_file`、`apply_patch`。",
       "- Runtime modes：host、Docker read-only、Docker workspace 和 tmux。",
-      "- Model routing：DeepSeek v4 flash 处理快速任务，DeepSeek v4 pro 处理复杂任务，mock mode 用于测试。",
+      "- Model routing：LocalLLM Fast 处理快速任务，LocalLLM Deep 处理复杂任务，mock mode 用于测试。",
       "",
       "## 核心原则",
       "",
