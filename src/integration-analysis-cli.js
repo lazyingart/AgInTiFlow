@@ -8,6 +8,7 @@ import {
   loadIntegrationAnalysisGroundedSearchCredential,
   loadIntegrationAnalysisLocalModelCredential,
   loadIntegrationAnalysisHostedModelCredential,
+  loadIntegrationAnalysisVisionCredential,
   loadIntegrationAnalysisServiceConfig,
   isMissingIntegrationAnalysisDocumentWorkerCredentialError,
   isMissingIntegrationAnalysisOptionalCredentialError,
@@ -38,6 +39,14 @@ const FORBIDDEN_SECRET_ENVIRONMENT = Object.freeze([
   "AGINTI_GROUNDED_SEARCH_TOKEN",
   "AGINTI_GROUNDED_SEARCH_TOKEN_FILE",
   "LOCALLLM_API_KEY",
+  "AGINTI_LOCALLLM_VISION_API_KEY",
+  "AGINTI_LOCALLLM_VISION_API_KEY_FILE",
+  "AGINTI_LOCALLLM_VISION_TOKEN",
+  "AGINTI_LOCALLLM_VISION_TOKEN_FILE",
+  "LOCALLLM_VISION_API_KEY",
+  "LOCALLLM_VISION_API_KEY_FILE",
+  "LOCALLLM_VISION_TOKEN",
+  "LOCALLLM_VISION_TOKEN_FILE",
   "LOCALLLM_SEARCH_API_KEY",
   "LOCALLLM_SEARCH_API_KEY_FILE",
   "LOCALLLM_SEARCH_TOKEN",
@@ -173,7 +182,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const env = options.env || process.env;
   assertCredentialEnvironment(env);
   const config = await loadIntegrationAnalysisServiceConfig(parsed.configPath, options.filePolicy || {});
-  const [proxyToken, localModelApiKey, groundedSearchApiKey, documentWorkerCredential, executionWorkerCredential] = await Promise.all([
+  const [proxyToken, localModelApiKey, groundedSearchApiKey, documentWorkerCredential, executionWorkerCredential, visionApiKey] = await Promise.all([
     loadTrustedPrincipalProxyCredential(),
     config.model === undefined
       ? loadIntegrationAnalysisLocalModelCredential()
@@ -191,6 +200,12 @@ export async function main(argv = process.argv.slice(2), options = {}) {
         })
       : Promise.resolve(undefined),
     loadExecutionWorkerSystemdCredential(),
+    config.vision?.localModel !== undefined
+      ? loadIntegrationAnalysisVisionCredential().catch((error) => {
+          if (isMissingIntegrationAnalysisOptionalCredentialError(error)) return undefined;
+          throw error;
+        })
+      : Promise.resolve(undefined),
   ]);
   assertDistinctIntegrationAnalysisCredentials({
     model: localModelApiKey,
@@ -198,6 +213,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     executionWorker: executionWorkerCredential,
     ...(groundedSearchApiKey === undefined ? {} : { groundedSearch: groundedSearchApiKey }),
     ...(documentWorkerCredential === undefined ? {} : { documentEdge: documentWorkerCredential }),
+    ...(visionApiKey === undefined ? {} : { vision: visionApiKey }),
   });
   const trustedPrincipalProxyClient = createIntegrationAnalysisTrustedProxyClient(config, proxyToken);
   const stdout = options.stdout || process.stdout;
@@ -209,6 +225,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
       executionWorkerCredential,
       ...(groundedSearchApiKey === undefined ? {} : { groundedSearchApiKey }),
       ...(documentWorkerCredential === undefined ? {} : { documentWorkerCredential }),
+      ...(visionApiKey === undefined ? {} : { visionApiKey }),
     });
     try {
       const result = integrationAnalysisCliSummary(
@@ -230,6 +247,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
     executionWorkerCredential,
     ...(groundedSearchApiKey === undefined ? {} : { groundedSearchApiKey }),
     ...(documentWorkerCredential === undefined ? {} : { documentWorkerCredential }),
+    ...(visionApiKey === undefined ? {} : { visionApiKey }),
   });
   await integrationServer.start();
   let handedOff = false;

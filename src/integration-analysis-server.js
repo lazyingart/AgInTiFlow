@@ -46,7 +46,7 @@ export const DEFAULT_INTEGRATION_ANALYSIS_CLOSE_TIMEOUT_MS = 5_000;
 export const DEFAULT_INTEGRATION_ANALYSIS_PRELISTEN_RECOVERY_TIMEOUT_MS = 180_000;
 
 const INTEGRATION_CREDENTIAL_ROLES = Object.freeze([
-  "model", "trustedBff", "groundedSearch", "documentEdge", "executionWorker",
+  "model", "trustedBff", "groundedSearch", "documentEdge", "executionWorker", "vision",
 ]);
 
 export function assertDistinctIntegrationAnalysisCredentials(value) {
@@ -619,6 +619,28 @@ export function createConfiguredIntegrationPaperAcquisitionClient(configInput, f
     downloader: createPublicPdfDownloader({ allowedOrigins, maximumBytes, timeoutMs }) });
 }
 
+// Private options only: the independent vision key is never a text-provider
+// fallback and never appears in public configuration/capabilities.
+export function resolveIntegrationAnalysisVisionClientOptions(configInput, credentials = {}) {
+  const config = validateIntegrationAnalysisServiceConfig(configInput);
+  exactOptions(credentials, ["localModelApiKey", "visionApiKey"], ["localModelApiKey"], "vision provider credentials");
+  const explicit = config.vision?.localModel !== undefined;
+  const present = Object.hasOwn(credentials, "visionApiKey");
+  if (present && !explicit) {
+    fail("ANALYSIS_CREDENTIAL_INVALID", "An independent vision credential requires an explicit vision binding.");
+  }
+  if (!integrationAnalysisVisionEligibleForStatePersistenceMode(
+    config.statePersistence.mode, config.vision?.enabled === true
+  )) return undefined;
+  if (explicit && !present) return undefined; // Optional role unavailable; text stays operational.
+  const binding = explicit ? config.vision.localModel : config.localModel;
+  return Object.freeze({
+    baseURL: binding.baseURL,
+    modelTimeoutMs: binding.modelTimeoutMs,
+    apiKey: explicit ? credentials.visionApiKey : credentials.localModelApiKey,
+  });
+}
+
 export async function composeProductionIntegrationAnalysisServer(options = {}) {
   exactOptions(
     options,
@@ -629,11 +651,16 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
       "groundedSearchApiKey",
       "documentWorkerCredential",
       "executionWorkerCredential",
+      "visionApiKey",
     ],
     ["config", "trustedPrincipalProxyClient", "localModelApiKey", "executionWorkerCredential"],
     "analysis production composition options"
   );
   const config = validateIntegrationAnalysisServiceConfig(options.config);
+  const visionOptions = resolveIntegrationAnalysisVisionClientOptions(config, {
+    localModelApiKey: options.localModelApiKey,
+    ...(Object.hasOwn(options, "visionApiKey") ? { visionApiKey: options.visionApiKey } : {}),
+  });
   const searchEnabled = config.groundedSearch?.enabled === true;
   const searchCredentialPresent = Object.prototype.hasOwnProperty.call(options, "groundedSearchApiKey");
   if (!searchEnabled && searchCredentialPresent) {
@@ -659,6 +686,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
     executionWorker: options.executionWorkerCredential,
     ...(searchCredentialPresent ? { groundedSearch: options.groundedSearchApiKey } : {}),
     ...(documentCredentialPresent ? { documentEdge: options.documentWorkerCredential } : {}),
+    ...(Object.hasOwn(options, "visionApiKey") ? { vision: options.visionApiKey } : {}),
   });
   let coordinator;
   let sessionService;
@@ -714,16 +742,8 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
       ? undefined
       : fileWorkerClient;
     const startupProof = plannerActivation.readinessProof;
-    const visionEligible = integrationAnalysisVisionEligibleForStatePersistenceMode(
-      config.statePersistence.mode,
-      config.vision?.enabled === true
-    );
-    const visionClientCandidate = visionEligible
-      ? createIntegrationAnalysisVisionClient({
-          baseURL: config.localModel.baseURL,
-          apiKey: options.localModelApiKey,
-          modelTimeoutMs: config.localModel.modelTimeoutMs,
-        })
+    const visionClientCandidate = visionOptions !== undefined
+      ? createIntegrationAnalysisVisionClient(visionOptions)
       : undefined;
     let visionActivation;
     if (visionClientCandidate !== undefined) {

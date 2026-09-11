@@ -48,6 +48,7 @@ export const INTEGRATION_ANALYSIS_LOCALLLM_CONTEXT_TOKENS = 32_768;
 export const INTEGRATION_ANALYSIS_LOCALLLM_OUTPUT_TOKENS = 4_096;
 export const INTEGRATION_ANALYSIS_LOCALLLM_TIMEOUT_MS = 180_000;
 export const INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_NAME = "localllm-token";
+export const INTEGRATION_ANALYSIS_VISION_CREDENTIAL_NAME = "localllm-vision-token";
 export const INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME = "localllm-search-token";
 export const INTEGRATION_ANALYSIS_DOCUMENT_WORKER_CREDENTIAL_NAME = "document-artifact-edge-token";
 export const INTEGRATION_ANALYSIS_TRUSTED_CLIENT_ID = "aginti-bff";
@@ -86,7 +87,8 @@ const MODEL_KEYS = Object.freeze([
   "modelTimeoutMs",
 ]);
 const STATE_PERSISTENCE_KEYS = Object.freeze(["mode"]);
-const VISION_KEYS = Object.freeze(["enabled"]);
+const VISION_KEYS = Object.freeze(["enabled", "localModel"]);
+const VISION_MODEL_KEYS = Object.freeze(["baseURL", "modelTimeoutMs"]);
 const SEARCH_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs", "maximumSources"]);
 const DOCUMENT_WORKER_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs"]);
 const PAPER_ACQUISITION_KEYS = Object.freeze(["enabled", "allowedOrigins", "maximumBytes", "timeoutMs"]);
@@ -188,7 +190,7 @@ export function validateIntegrationAnalysisServiceConfig(value) {
 
   let vision;
   if (config.vision !== undefined) {
-    const candidate = exactObject(config.vision, VISION_KEYS, VISION_KEYS, "vision");
+    const candidate = exactObject(config.vision, VISION_KEYS, ["enabled"], "vision");
     if (typeof candidate.enabled !== "boolean") {
       fail("ANALYSIS_CONFIG_INVALID", "vision.enabled must be a boolean.");
     }
@@ -198,7 +200,20 @@ export function validateIntegrationAnalysisServiceConfig(value) {
     ) {
       fail("ANALYSIS_CONFIG_INVALID", "Enabled vision requires native-v3 state persistence.");
     }
-    vision = Object.freeze({ enabled: candidate.enabled });
+    let localModel;
+    if (candidate.localModel !== undefined) {
+      if (!candidate.enabled) fail("ANALYSIS_CONFIG_INVALID", "Disabled vision cannot configure a provider.");
+      const binding = exactObject(candidate.localModel, VISION_MODEL_KEYS, VISION_MODEL_KEYS, "vision.localModel");
+      fixed(binding.baseURL, INTEGRATION_ANALYSIS_LOCALLLM_BASE_URL, "vision.localModel.baseURL");
+      if (
+        !Number.isSafeInteger(binding.modelTimeoutMs) ||
+        binding.modelTimeoutMs < 1_000 || binding.modelTimeoutMs > 600_000
+      ) {
+        fail("ANALYSIS_CONFIG_INVALID", "Vision model timeout exceeds its bound.");
+      }
+      localModel = Object.freeze({ ...binding });
+    }
+    vision = Object.freeze({ enabled: candidate.enabled, ...(localModel === undefined ? {} : { localModel }) });
   }
 
   let selectedModel;
@@ -211,7 +226,7 @@ export function validateIntegrationAnalysisServiceConfig(value) {
     } catch {
       fail("ANALYSIS_CONFIG_INVALID", "Hosted model configuration is invalid.");
     }
-    if (vision?.enabled === true) {
+    if (vision?.enabled === true && vision.localModel === undefined) {
       fail("ANALYSIS_CONFIG_INVALID", "Hosted inference requires an independent local vision binding before image activation.");
     }
   } else {
@@ -599,6 +614,17 @@ export async function loadIntegrationAnalysisHostedModelCredential(...args) {
   });
 }
 
+export async function loadIntegrationAnalysisVisionCredential(...args) {
+  if (args.length !== 0) {
+    fail("ANALYSIS_CREDENTIAL_SOURCE_FORBIDDEN", "Vision credential source is fixed by systemd LoadCredential.");
+  }
+  return loadIntegrationAnalysisCredential({
+    credentialPath: `${INTEGRATION_SYSTEMD_CREDENTIALS_DIRECTORY}/${INTEGRATION_ANALYSIS_VISION_CREDENTIAL_NAME}`,
+    label: "LocalLLM vision credential",
+    parse: (raw) => parseIntegrationAnalysisCredential(raw, "LocalLLM vision credential"),
+  });
+}
+
 export async function loadIntegrationAnalysisGroundedSearchCredential(...args) {
   if (args.length !== 0) {
     fail(
@@ -665,6 +691,7 @@ export function publicIntegrationAnalysisServiceConfig(configInput) {
     ...(config.model === undefined
       ? { localModelCredentialName: INTEGRATION_ANALYSIS_LOCALLLM_CREDENTIAL_NAME }
       : { modelCredentialName: INTEGRATION_ANALYSIS_HOSTED_CREDENTIAL_NAME }),
+    ...(config.vision?.localModel === undefined ? {} : { visionCredentialName: INTEGRATION_ANALYSIS_VISION_CREDENTIAL_NAME }),
     ...(config.groundedSearch?.enabled === true
       ? { groundedSearchCredentialName: INTEGRATION_ANALYSIS_GROUNDED_SEARCH_CREDENTIAL_NAME }
       : {}),

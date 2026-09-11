@@ -57,11 +57,43 @@ roles. A text or tool-call model canary does not prove those end-to-end paths.
 Keep private loopback RPC behind the authenticated application/edge boundary;
 do not expose the Studio management API as an application backend.
 
-The initial v3 profile rejects `vision.enabled=true`: the existing vision path
-uses a separate LocalLLM image model and needs its own explicit binding before
-hosted-planner image activation. Text, structured research and document tools
-retain their own independent capability checks. Report partial availability
-accurately instead of silently ignoring attachments.
+Vision is an independent optional LocalLLM role. A hosted planner may enable it
+only with an explicit local binding and a separate credential:
+
+```json
+{
+  "vision": {
+    "enabled": true,
+    "localModel": {
+      "baseURL": "http://127.0.0.1:18080/v1",
+      "modelTimeoutMs": 180000
+    }
+  }
+}
+```
+
+The endpoint is the existing reviewed loopback LocalLLM route; the vision client
+uses its fixed `localllm-vision` alias. The timeout is bounded to 1–600 seconds.
+Provision `LoadCredential=localllm-vision-token:/private/operator/vision-token`
+in the actual service, not in JSON, argv or the shell environment. The key must
+be distinct from the text-provider, BFF, execution, search and document keys.
+No credential is created, copied or rotated by configuration validation.
+
+Missing optional vision credentials or a failed vision readiness probe leave
+image capability unavailable while ordinary text remains operational. Invalid
+credential files, unexpected credentials and cross-role reuse fail closed.
+Images never fall back to the DeepSeek text endpoint. Public capabilities enable
+attachments only after the existing local vision activation succeeds; desired
+configuration alone is not proof of availability. Native-v3 persistence is
+required for retained image ownership, retry and conversation isolation.
+
+Existing v2 `vision: {"enabled":true}` services retain their previous local-model
+binding and key. They may opt into the independent binding as well; no existing
+service changes implicitly. Existing hosted text-only profiles remain identical,
+and hosted `vision: {"enabled":true}` without a binding remains invalid. Text,
+structured research and document tools retain their own checks. An app adapter
+must still supply valid bounded images; this configuration does not implement
+its upload transport or authorize activation on an unqualified live route.
 
 Stage a separately pinned package/service and synthetic account before routing
 live traffic. Preserve unrelated CLI installations and other integrations.
@@ -101,6 +133,7 @@ needs to satisfy the package's Node22 requirement.
 
 ```sh
 npm run smoke:integration-model-binding
+node --test test/integration-independent-vision.test.js
 npm run smoke:integration-analysis-planner
 npm run smoke:integration-analysis-session-service
 npm run smoke:integration-analysis-api-server
