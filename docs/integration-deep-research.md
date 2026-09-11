@@ -103,10 +103,32 @@ Structured tool-call responses are rejected; quoted tool instructions and code
 examples remain text. JSON output must be a complete object. Applications still
 validate their own response schema.
 
-Inference cannot be combined with search, attachments or enabled search
-inference. It has no retained artifact/image inputs or document lineage, and
+Text-only inference cannot be combined with search, attachments or enabled
+search inference. It has no retained artifact/image inputs or document lineage, and
 session callbacks cannot issue or commit files. The immutable choice survives
 restart and input-less retry; a new input selects its own policy. Normal runs
 without this field keep their existing tool capabilities. The chosen hosted
 model receives the inference input, so this is tool isolation, not an on-device
 privacy promise.
+
+### Explicit image-aware inference
+
+An application may opt a private routing step into local perception with
+`input.inference: {responseFormat: "json_object", vision: true}` and the normal
+bounded `input.attachments` image descriptors. Require the live
+`attachments.inferenceVision === true` capability before using this extension.
+Old capabilities remain readable and do not imply support. The flag appears
+only while the independent local vision role and retained-image store are ready.
+
+Pixels go to the local vision role. Its validated observations are passed to
+the configured text model as untrusted data, with tools, search, execution and
+file access still disabled. Returned tool calls are protocol errors. This does
+not promise that image-derived observations remain on-device when the text
+provider is hosted. Applications validate their own JSON decision schema.
+
+The choice is durable. Input-less retry of an image-aware run requires
+`reuseAttachments: true` and reuses the same immutable image references. A new
+text-only inference ignores retained images and remains available without the
+optional vision role. Vision opt-in without any current/reused image fails
+before inference. Explicit/inferred public search and artifact/document lineage
+remain separate, and session callbacks cannot create or commit files.

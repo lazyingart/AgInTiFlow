@@ -2212,7 +2212,7 @@ function assertPublicCapabilityResponse(value = {}) {
   ];
   const attachments = integrationExactKeys(
     response.attachments,
-    attachmentFields,
+    [...attachmentFields, "inferenceVision"],
     "agent capabilities attachments",
     ["enabled"]
   );
@@ -2288,7 +2288,7 @@ function assertPublicCapabilityResponse(value = {}) {
   if (attachments.enabled) {
     integrationExactKeys(
       attachments,
-      attachmentFields,
+      [...attachmentFields, "inferenceVision"],
       "agent capabilities attachments",
       attachmentFields
     );
@@ -2302,7 +2302,8 @@ function assertPublicCapabilityResponse(value = {}) {
       attachments.maximumBytesTotal !== INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_TOTAL_BYTES_LIMIT ||
       attachments.requestTimeoutMs !== INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS ||
       attachments.model !== "localllm-vision" ||
-      attachments.persistence !== "retained-reference-v1"
+      attachments.persistence !== "retained-reference-v1" ||
+      (attachments.inferenceVision !== undefined && attachments.inferenceVision !== true)
     ) {
       integrationInvalid("agent attachment capabilities are invalid");
     }
@@ -2316,6 +2317,7 @@ function assertPublicCapabilityResponse(value = {}) {
       requestTimeoutMs: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
       model: "localllm-vision",
       persistence: "retained-reference-v1",
+      ...(attachments.inferenceVision === true ? { inferenceVision: true } : {}),
     });
   } else {
     integrationExactKeys(attachments, ["enabled"], "agent capabilities attachments", ["enabled"]);

@@ -1396,7 +1396,17 @@ assert.deepEqual(imageCapabilities.attachments, {
   requestTimeoutMs: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
   model: "localllm-vision",
   persistence: "retained-reference-v1",
+  inferenceVision: true,
 });
+const legacyImageCapabilities = structuredClone(imageCapabilities);
+delete legacyImageCapabilities.attachments.inferenceVision;
+assert.equal(validateAgentRpcResponse(AGENT_RPC_PATHS.capabilities,
+  legacyImageCapabilities).attachments.inferenceVision, undefined);
+for (const invalid of [false, 1, "true", null]) {
+  const changed = structuredClone(imageCapabilities);
+  changed.attachments.inferenceVision = invalid;
+  assert.throws(() => validateAgentRpcResponse(AGENT_RPC_PATHS.capabilities, changed));
+}
 const ordinaryCapabilities = validateAgentRpcResponse(
   AGENT_RPC_PATHS.capabilities,
   integrationCapabilitiesResponse({ enabled: true, cancel: true, resume: true, retry: true })

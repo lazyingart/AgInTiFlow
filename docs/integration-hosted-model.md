@@ -134,6 +134,7 @@ needs to satisfy the package's Node22 requirement.
 ```sh
 npm run smoke:integration-model-binding
 node --test test/integration-independent-vision.test.js
+node --test test/integration-vision-inference.test.js
 npm run smoke:integration-analysis-planner
 npm run smoke:integration-analysis-session-service
 npm run smoke:integration-analysis-api-server

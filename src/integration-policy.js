@@ -430,12 +430,14 @@ function validateInput(value, { optional = false } = {}) {
   if (input.searchInference !== undefined && typeof input.searchInference !== "boolean") {
     integrationInvalid("input.searchInference must be a boolean");
   }
-  if (input.inference !== undefined && (input.search !== undefined || input.attachments !== undefined || input.searchInference === true)) {
-    integrationInvalid("Inference-only input cannot request search or attachments");
+  const inference = input.inference === undefined ? undefined : validateIntegrationInference(input.inference);
+  if (inference !== undefined && (input.search !== undefined || input.searchInference === true ||
+      (input.attachments !== undefined && inference.vision !== true))) {
+    integrationInvalid("Inference-only input requires explicit local perception for images and cannot request search");
   }
   return Object.freeze({
     text,
-    ...(input.inference === undefined ? {} : { inference: validateIntegrationInference(input.inference) }),
+    ...(inference === undefined ? {} : { inference }),
     ...(input.search === undefined ? {} : { search: validateIntegrationSearch(input.search) }),
     ...(input.searchInference === undefined ? {} : { searchInference: input.searchInference }),
     ...(input.attachments === undefined
@@ -445,11 +447,15 @@ function validateInput(value, { optional = false } = {}) {
 }
 
 export function validateIntegrationInference(value) {
-  const inference = integrationExactKeys(value, ["responseFormat"], "input.inference", ["responseFormat"]);
+  const inference = integrationExactKeys(value, ["responseFormat", "vision"], "input.inference", ["responseFormat"]);
   if (!["text", "json_object"].includes(inference.responseFormat)) {
     integrationInvalid("input.inference.responseFormat must be text or json_object");
   }
-  return Object.freeze({ responseFormat: inference.responseFormat });
+  if (inference.vision !== undefined && inference.vision !== true) {
+    integrationInvalid("input.inference.vision must be exactly true when present");
+  }
+  return Object.freeze({ responseFormat: inference.responseFormat,
+    ...(inference.vision === true ? { vision: true } : {}) });
 }
 
 export function validateIntegrationSearch(value) {
@@ -922,6 +928,7 @@ export function integrationCapabilitiesResponse({
           requestTimeoutMs: INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_REQUEST_TIMEOUT_MS,
           model: "localllm-vision",
           persistence: "retained-reference-v1",
+          inferenceVision: true,
         })
       : Object.freeze({ enabled: false }),
     ...(searchEnabled

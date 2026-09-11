@@ -5575,7 +5575,8 @@ function createService(options, { testOnly }) {
       selected.unshift(Object.freeze({ role: message.role, content }));
       totalBytes += bytes;
     }
-    const retainedAttachments = run.inference === undefined ? retainedAttachmentDescriptorsForRun(state, run) : [];
+    const retainedAttachments = run.inference === undefined || run.inference.vision === true
+      ? retainedAttachmentDescriptorsForRun(state, run) : [];
     return Object.freeze({
       prompt,
       conversation: Object.freeze(selected),
@@ -7419,8 +7420,9 @@ function createService(options, { testOnly }) {
       fail("INVALID_REQUEST", "Search inference control must be a boolean.", { status: 400 });
     }
     const inference = payload.input?.inference === undefined ? undefined : validateIntegrationInference(payload.input.inference);
-    if (inference !== undefined && (payload.input.search !== undefined || payload.input.attachments !== undefined || payload.input.searchInference === true)) {
-      fail("INVALID_REQUEST", "Inference-only input cannot request search or attachments.", { status: 400 });
+    if (inference !== undefined && (payload.input.search !== undefined || payload.input.searchInference === true ||
+        (payload.input.attachments !== undefined && inference.vision !== true))) {
+      fail("INVALID_REQUEST", "Inference-only input requires explicit local perception for images and cannot request search.", { status: 400 });
     }
     const inferSearch = inference === undefined && payload.input?.searchInference !== false;
     const inferredResearch = inferSearch ? inferIntegrationDeepResearchRequestFromPrompt(prompt) : null;
@@ -7453,7 +7455,7 @@ function createService(options, { testOnly }) {
               runId,
               attachmentBufferLifecycle
             );
-            if (stagedAttachments.length > 0 && visionClient === undefined) {
+            if ((stagedAttachments.length > 0 || inference?.vision === true) && visionClient === undefined) {
               conflict(
                 "ANALYSIS_VISION_NOT_READY",
                 "The downloaded local vision model is not enabled for this Agent runtime."
@@ -7492,6 +7494,13 @@ function createService(options, { testOnly }) {
               }
             }
             if (
+              inference?.vision === true && stagedAttachments.length === 0 &&
+              !lineageHasRetainedImageContext(state, thread, lineagePreviousRunId)
+            ) {
+              fail("ANALYSIS_IMAGE_INPUT_REQUIRED", "Local perception requires current or explicitly reused images.", { status: 400 });
+            }
+            if (
+              inference === undefined &&
               stagedAttachments.length === 0 && visionClient === undefined &&
               lineageHasRetainedImageContext(state, thread, lineagePreviousRunId)
             ) {
@@ -8454,7 +8463,8 @@ function createService(options, { testOnly }) {
             : { search: validateIntegrationSearch(previous.search) }),
           ...(previous.searchInference === false ? { searchInference: false } : {}),
           ...(previous.inference === undefined ? {} : { inference: validateIntegrationInference(previous.inference) }),
-          usedAttachments: payload.input === undefined && isHead
+          usedAttachments: payload.input === undefined && isHead &&
+            (previous.inference === undefined || previous.inference.vision === true)
             ? retainedAttachmentDescriptorsForRun(state, previous).length > 0
             : false,
           isHead,
