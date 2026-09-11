@@ -391,7 +391,7 @@ function validateArxivLegacyStyle(identifier) {
   return Number(identifier.split("/")[1].replace(/v[1-9][0-9]*$/u, "")) > 0;
 }
 
-function normalizeArxivIdentifier(value) {
+export function normalizeArxivIdentifier(value) {
   if (typeof value !== "string") {
     fail("GROUNDED_SEARCH_QUERY_INVALID", "Grounded search arXiv identifier is invalid.", { status: 400 });
   }

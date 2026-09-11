@@ -1,10 +1,10 @@
 # Public paper acquisition
 
 Status: credential-free acquisition, durable storage, authenticated binary
-transport and conversation artifact lifecycle are implemented and tested in
-source. They are not yet an enabled EchoMind download feature: durable
-source-selection/acquisition jobs, the guarded role route and source-PDF
-retention still need integration.
+transport, conversation artifact lifecycle and durable acquisition metadata
+are implemented and tested in source. They are not yet an enabled EchoMind
+download feature: planner routing, pre-import background recovery, the guarded
+role route and source-PDF retention still need integration.
 The live analysis, execution and shared document services remain unchanged.
 
 ## Ownership and boundaries
@@ -226,15 +226,81 @@ null-timestamp uncommitted deletion/expiry states. Qualify a compatible rollback
 for both the session and worker ledgers before deploying this checkpoint;
 preserve all existing state. Production paper creation remains disabled.
 
+### Source-bound acquisition checkpoint — September 11
+
+`integration-paper-acquisition.js` joins the branded credential-free downloader
+to the existing authenticated file client. Its only selection argument is a
+recorded source-artifact ID and row index. The real analysis session broker
+resolves that row within the account, browser session and conversation, from
+the current search or its immediately preceding completed result. Current-run
+raw search IDs are resolved to the canonical owned artifact ID. Other users,
+threads, old hidden context, invented rows and extra URL arguments are rejected.
+
+The broker persists `paperAcquisitionIntent` before DNS/download, including
+the selected row digest, source identity, DOI/version and fixed PDF candidate.
+After acquisition it persists exact file/source metadata and one issuance ID
+before contacting the issue route. It records the issued request identity,
+operation digest and token hash before binary import. Raw tokens and PDF bytes
+remain outside conversation JSON and public descriptors. The coordinator wipes
+its acquired byte buffer on success or failure and checks the creation switch
+before downloading. Its trusted downloader must fit the existing 16 MiB bound.
+
+A retry with identical bytes reuses the original acquisition timestamp,
+issuance and import request. Changed file hashes, redirect destinations,
+DOI/version, owner scope or authority epochs are not silently rebound. The
+outer scheduler decides retries; this client makes one acquisition attempt.
+Actual HTTP tests simulate responses lost after successful issuance/import
+and verify exactly one stored group, then committed content and normal deletion.
+
+The narrow source adapter accepts recorded direct HTTPS PDF paths and arXiv
+abstract/PDF citations. It preserves explicit versions and legacy identifier
+case. An unversioned citation remains unversioned (latest at acquisition), with
+exact bytes fixed by hash; no version is invented. See the official
+[arXiv identifier definition](https://info.arxiv.org/help/arxiv_identifier.html).
+The operator's origin allowlist and downloader DNS/TLS checks still determine
+network access. No page scraping, alternate-source probing or rights claim is
+added by converting a recorded citation into a candidate PDF path.
+
+Paper artifact capture/readback now requires its matching persisted operation
+and selected source. Completion/recovery/cancellation races share a check that
+the selected paper was actually committed: an unrelated generated file or a
+textual claim cannot satisfy paper delivery. Existing generated files and TeX
+pairs retain their own contracts. The source-only pre-selection paper fixtures
+were updated to exercise this authority rather than introducing a test bypass.
+
+All 96 combined store/frame/HTTP/acquisition/session/cancellation cases pass,
+including 21 coordinator/source cases and three additional intent-tampering
+cases. Existing file client, compiled-document broker, session/context/startup,
+authority/migration/prewrite/API, grounded search and planner checks pass,
+alongside the 99 acquisition/synthesis cases, 298-file syntax, mock web API and
+coding tools. The 60-second real deadline was exercised again. Tests use
+synthetic offline source responses and actual private HTTP handlers, not a live
+paper/model request or production account record.
+The 452-file npm dry-run includes the coordinator/contract and their fixtures,
+with no private state/keys or generated archive. Repository profile checks still
+report pre-existing README/citation/translation differences; those unrelated
+branding files were preserved. This is a source-branch checkpoint, not a registry
+release or an update to the public default branch.
+
+Durability here means persisted selection/issuance, explicit same-run replay,
+and the existing post-capture commit recovery. Pre-import process termination
+still follows the existing interrupted-run policy; automatic durable job
+rescheduling and planner tool selection are the next integration step. An
+import accepted just before a lost response remains private until the same
+operation is reconciled or the worker's existing staged expiry removes it.
+No live service/configuration, npm registry or public app change occurred.
+
 ### Next integration steps
 
-1. Bind an acquired paper to the selected source identity and user intent in
-   the durable analysis job, then use the separate paper issue/import operation.
-   Preserve DOI/version/source metadata across recovery.
+1. Connect planner paper-selection routing to the source-bound coordinator and
+   persist/recover its scheduling phase before import. Reuse the implemented
+   selection/issuance metadata and callbacks; keep original run ownership,
+   DOI/version/hash and bounded retry/cancellation policy through process restart.
 2. Connect the tested binary client/HTTP operation through the guarded role
    route and existing EchoMind account artifact adapter. The session broker's
    paper profile, committed content and deletion dispatch are now implemented;
-   connect durable pre-acquisition/issuance intent to that lifecycle. Reuse idempotency,
+   connect the implemented pre-acquisition/issuance intent and job scheduler to
+   that lifecycle. Reuse idempotency,
    immutable receipts, ownership, cancellation and verified cleanup. Keep
    network URLs out of public artifact content requests. Storage keeps
    loopback-only networking; acquisition stays in the network-capable agent role.

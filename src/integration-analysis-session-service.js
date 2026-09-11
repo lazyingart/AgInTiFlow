@@ -73,6 +73,15 @@ import {
   validateAcquiredPaperReceipt,
 } from "./integration-acquired-paper-contract.js";
 import {
+  PAPER_ACQUISITION_SCHEMA,
+  validatePaperSelectionRequest,
+  paperSelectionFromArtifact,
+  createPaperAcquisitionIntent,
+  validatePaperAcquisitionIntent,
+  advancePaperAcquisitionIntent,
+  paperReceiptMatchesIntent,
+} from "./integration-paper-acquisition-contract.js";
+import {
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACT_JSON_BYTES,
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACTS,
   INTEGRATION_ANALYSIS_MAX_PRIOR_CONTEXT_BYTES,
@@ -1901,6 +1910,7 @@ function validateRun(run, scope, threadIds, state) {
       "inference",
       "documentCompileIntent",
       "filePublishIntent",
+      "paperAcquisitionIntent",
       "events",
     ],
     [
@@ -2057,6 +2067,17 @@ function validateRun(run, scope, threadIds, state) {
     } catch (error) {
       corrupt(error);
     }
+  }
+  if (run.paperAcquisitionIntent !== undefined) {
+    try {
+      if (run.inference !== undefined) corrupt();
+      const selection = resolvePaperSelection(state, run, {
+        schemaVersion: PAPER_ACQUISITION_SCHEMA.select,
+        sourceArtifactId: run.paperAcquisitionIntent.selection.sourceArtifactId,
+        sourceIndex: run.paperAcquisitionIntent.selection.sourceIndex,
+      });
+      validatePaperAcquisitionIntent(run.paperAcquisitionIntent, selection, scopeWithRun(scope, run.threadId, run.id));
+    } catch (error) { corrupt(error); }
   }
   if (typeof run.inputMessageId !== "string" || !/^msg_[A-Za-z0-9_-]{16,96}$/u.test(run.inputMessageId)) corrupt();
   if (!Array.isArray(run.events) || run.events.length < 1 || run.events.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumEventsPerRun) corrupt();
@@ -2230,6 +2251,10 @@ function validateArtifact(artifact, scope, runsById, state) {
           const receipt = validateAcquiredPaperReceipt(artifact.paperReceipt);
           const digests = fileWorkerScopeDigests(scopeWithRun(scope, artifact.threadId, artifact.runId));
           if (artifact.bundleIndex !== 0 || artifact.spec.mime !== "application/pdf" ||
+              !paperReceiptMatchesIntent(receipt, run.paperAcquisitionIntent) ||
+              canonicalJson({ index: 0, filename: artifact.spec.filename, mime: artifact.spec.mime,
+                bytes: artifact.spec.bytes, sha256: artifact.spec.sha256 }) !==
+                canonicalJson(run.paperAcquisitionIntent.issue.files[0]) ||
               receipt.digest !== artifact.compileReceiptDigest || receipt.totalBytes !== artifact.spec.bytes ||
               Object.keys(digests).some(key => receipt[key] !== digests[key]) ||
               receipt.artifactsDigest !== acquiredPaperArtifactsDigest([{
@@ -2451,6 +2476,27 @@ function priorArtifactsForRun(state, targetRun) {
     artifacts,
     messageBytes: integrationAnalysisPriorArtifactMessageBytes(artifacts),
   });
+}
+
+function resolvePaperSelection(state, run, proposed) {
+  const request = validatePaperSelectionRequest(proposed);
+  const prior = new Set(priorArtifactsForRun(state, run).artifacts.map(artifact => artifact.id));
+  const source = state.artifacts.find(artifact => artifact.kind === "sources" &&
+    artifact.threadId === run.threadId && artifact.principalId === run.principalId &&
+    artifact.browserSessionId === run.browserSessionId && artifact.groundedSearchAuthority &&
+    (artifact.runId === run.id || prior.has(artifact.id)) &&
+    (artifact.id === request.sourceArtifactId ||
+      (artifact.runId === run.id && artifact.groundedSearchSourceArtifactId === request.sourceArtifactId)));
+  if (!source) fail("ANALYSIS_PAPER_SOURCE_UNAVAILABLE", "Select a paper from this conversation's current search results.", { status: 409 });
+  return paperSelectionFromArtifact({ id: source.id, title: source.title, kind: source.kind, spec: source.spec }, request.sourceIndex);
+}
+
+function paperAcquisitionSatisfied(state, run) {
+  if (run.paperAcquisitionIntent === undefined) return true;
+  return state.artifacts.some(artifact => artifact.runId === run.id && artifact.workerProfile === "acquired-paper-v1" &&
+    paperReceiptMatchesIntent(artifact.paperReceipt, run.paperAcquisitionIntent) &&
+    state.documentCommitIntents.some(intent => intent.runId === run.id &&
+      intent.receiptDigest === artifact.compileReceiptDigest && intent.status === "committed" && intent.eventsPublished === true));
 }
 
 function latestCommittedDocumentSourceLineage(state, targetRun) {
@@ -4955,6 +5001,7 @@ function createService(options, { testOnly }) {
       const documentIntents = state.documentCommitIntents.filter((intent) => intent.runId === run.id);
       if (
         documentIntents.length > 0 &&
+        paperAcquisitionSatisfied(state, run) &&
         documentIntents.every((intent) => intent.status === "committed" && intent.eventsPublished === true)
       ) {
         completeRecoveredDocumentRun(state, run, recoveredAt);
@@ -5956,6 +6003,10 @@ function createService(options, { testOnly }) {
           if (TERMINAL_RUN_STATUSES.has(run.status)) {
             fail("ANALYSIS_CANCELLED", "File capture lost its active run authority.", { status: 499 });
           }
+          if (privateBundleFile.profile === "acquired-paper-v1" &&
+              !paperReceiptMatchesIntent(privateBundleFile.receipt, run.paperAcquisitionIntent)) {
+            fail("ANALYSIS_PAPER_AUTHORITY_INVALID", "Paper capture lacks its durable selected-source operation.", { status: 409 });
+          }
           const existing = bundle.map(({ artifact: candidate }) => state.artifacts.find((item) => item.id === candidate.id));
           if (existing.every(Boolean)) return { changed: false, result: ownedArtifact(existing.at(-1)) };
           if (existing.some(Boolean)) corrupt();
@@ -6512,6 +6563,35 @@ function createService(options, { testOnly }) {
     return result;
   }
 
+  async function authorizePaperAcquisition(scope, threadId, runId, proposed) {
+    if (!fileCreationEnabled || !fileWorkerClient) {
+      fail("ANALYSIS_PAPER_DISABLED", "Paper acquisition requires the enabled file worker.", { status: 503 });
+    }
+    return mutate(scope, (state) => {
+      const run = findRun(state, runId);
+      if (run.threadId !== threadId || TERMINAL_RUN_STATUSES.has(run.status) || run.cancelRequestedAt !== null) {
+        fail("ANALYSIS_CANCELLED", "Paper acquisition lost its active run authority.", { status: 499 });
+      }
+      if (proposed?.schemaVersion === PAPER_ACQUISITION_SCHEMA.select) {
+        const selection = resolvePaperSelection(state, run, proposed);
+        if (run.paperAcquisitionIntent !== undefined) {
+          validatePaperAcquisitionIntent(run.paperAcquisitionIntent, selection, scopeWithRun(scope, threadId, runId));
+          return { changed: false, result: selection };
+        }
+        run.paperAcquisitionIntent = createPaperAcquisitionIntent(selection, timestamp());
+        return { changed: true, result: selection };
+      }
+      if (!run.paperAcquisitionIntent) {
+        fail("ANALYSIS_PAPER_AUTHORITY_INVALID", "Select and persist a source before paper acquisition.", { status: 409 });
+      }
+      const selection = run.paperAcquisitionIntent.selection;
+      const next = advancePaperAcquisitionIntent(run.paperAcquisitionIntent, proposed, selection, scopeWithRun(scope, threadId, runId));
+      const changed = canonicalJson(next.intent) !== canonicalJson(run.paperAcquisitionIntent);
+      run.paperAcquisitionIntent = next.intent;
+      return { changed, result: next.result };
+    });
+  }
+
   async function authorizeFilePublish(scope, threadId, runId, proposedRequest) {
     let candidate = null;
     let request = null;
@@ -6784,6 +6864,9 @@ function createService(options, { testOnly }) {
           status: 502,
         });
       }
+      if (!paperAcquisitionSatisfied(state, run)) {
+        fail("ANALYSIS_PAPER_ARTIFACT_REQUIRED", "The selected paper has not been durably delivered.", { status: 502 });
+      }
       const thread = findThread(state, run.threadId);
       const completedAt = timestamp();
       closeOpenTools(run, completedAt, "Bounded Python analysis completed.", "tool.completed");
@@ -6817,6 +6900,7 @@ function createService(options, { testOnly }) {
       if (
         !cancelled &&
         documentIntents.length > 0 &&
+        paperAcquisitionSatisfied(state, run) &&
         documentIntents.every((intent) => intent.status === "committed" && intent.eventsPublished === true)
       ) {
         completeRecoveredDocumentRun(state, run, timestamp());
@@ -6973,6 +7057,10 @@ function createService(options, { testOnly }) {
           onFilePublishIntent: async (request) => {
             requireToolRun();
             return authorizeFilePublish(scope, threadId, runId, request);
+          },
+          onPaperAcquireIntent: async (request) => {
+            requireToolRun();
+            return authorizePaperAcquisition(scope, threadId, runId, request);
           },
           onFileCommitIntent: async (fileArtifacts) => {
             requireToolRun();
@@ -8004,6 +8092,7 @@ function createService(options, { testOnly }) {
           const committedDocuments = state.documentCommitIntents.filter((intent) => intent.runId === run.id);
           if (
             committedDocuments.length > 0 &&
+            paperAcquisitionSatisfied(state, run) &&
             committedDocuments.every(
               (intent) => intent.status === "committed" && intent.eventsPublished === true
             )

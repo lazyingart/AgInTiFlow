@@ -1023,6 +1023,7 @@ function normalizeRunOptions(value = {}) {
       "onDocumentCompileIntent",
       "onDocumentCommitIntent",
       "onFilePublishIntent",
+      "onPaperAcquireIntent",
       "onFileCommitIntent",
       "onFinal",
     ],
@@ -1039,6 +1040,7 @@ function normalizeRunOptions(value = {}) {
     "onDocumentCompileIntent",
     "onDocumentCommitIntent",
     "onFilePublishIntent",
+    "onPaperAcquireIntent",
     "onFileCommitIntent",
     "onFinal",
   ]) {

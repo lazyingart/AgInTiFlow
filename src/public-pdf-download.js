@@ -124,6 +124,7 @@ function createDownloader(config, transport, testOnly) {
   let nextRequestAt = 0;
   const downloader = Object.freeze({
     testOnly,
+    maximumBytes,
     async download(value, { signal: callerSignal } = {}) {
       let url = publicUrl(value, origins);
       if (callerSignal !== undefined && !(callerSignal instanceof AbortSignal)) {
