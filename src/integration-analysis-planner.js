@@ -46,6 +46,7 @@ import {
   deriveIntegrationGroundedSearchDomainConstraint,
   inferIntegrationDeepResearchRequestFromPrompt,
   planIntegrationGroundedSearchQuery,
+  validateIntegrationSearchQueryFragments,
 } from "./integration-grounded-search.js";
 import {
   INTEGRATION_FILE_WORKER_TOOL_NAME,
@@ -490,6 +491,15 @@ const TEX_TOOL_RETRY_INSTRUCTIONS = Object.freeze({
   compile:
     `The previous source was rejected by the bounded TeX compiler. Correct the self-contained LaTeX and return exactly one new ${INTEGRATION_DOCUMENT_WORKER_TOOL_NAME} call. Do not discuss or guess compiler diagnostics.`,
 });
+
+const SEARCH_QUERY_SELECTION_PROMPT = [
+  "Select the subject to search for, using only the current request. Return only JSON {\"fragments\":[\"verbatim excerpt\"]} with one to six short exact substrings, or an empty array if no faithful shortening is possible.",
+  "Separate SUBJECT/FILTERS from OUTPUT INSTRUCTIONS. Include the topic or named work and any explicitly supplied author, date or other substantive filter. For a named work, its complete title is normally the best query.",
+  "Exclude requested answer fields and actions: asking to provide a title, year, authors, source link, PDF, summary or citations does not make those labels search terms. A supplied literal date is a filter; asking what year something appeared is an output instruction. Likewise, a supplied author name is a filter; asking who wrote it is not.",
+  "Example request: 'Find research on ocean microplastics published in 2024. Give titles and real links.' Output: {\"fragments\":[\"ocean microplastics\",\"2024\"]}",
+  "Example request: '找一下城市热岛效应的论文并给出作者和年份。' Output: {\"fragments\":[\"城市热岛效应\"]}",
+  "Preserve the language and exact spelling of excerpts. Never invent or translate words, identifiers or facts. This is term selection, not answering or executing the request. No tools are available.",
+].join("\n");
 
 const SYSTEM_PROMPT = [
   "You are AgInTi's bounded analysis planner for a public Agent chat.",
@@ -953,11 +963,14 @@ function normalizePriorArtifacts(value) {
 function normalizeRunInput(value) {
   const input = exactObject(
     value,
-    ["prompt", "conversation", "priorArtifacts", "search", "inference", "visionEvidence"],
+    ["prompt", "conversation", "priorArtifacts", "search", "searchQueryFragments", "inference", "visionEvidence"],
     ["prompt"],
     "analysis request"
   );
   const conversation = normalizeConversation(input.conversation);
+  if (input.searchQueryFragments !== undefined && input.search === undefined) {
+    fail("ANALYSIS_REQUEST_INVALID", "Search terms require a search request.", { status: 400 });
+  }
   const priorArtifacts = normalizePriorArtifacts(input.priorArtifacts);
   if (input.inference !== undefined && (input.search !== undefined || input.visionEvidence !== undefined || priorArtifacts.length > 0)) {
     fail("ANALYSIS_REQUEST_INVALID", "Inference-only input cannot request search, vision or artifacts.", { status: 400 });
@@ -984,6 +997,9 @@ function normalizeRunInput(value) {
     ...(input.inference === undefined ? {} : { inference: validateIntegrationInference(input.inference) }),
     ...(visionEvidence === undefined ? {} : { visionEvidence }),
     ...(input.search === undefined ? {} : { search: validateIntegrationSearch(input.search) }),
+    ...(input.searchQueryFragments === undefined ? {} : {
+      searchQueryFragments: validateIntegrationSearchQueryFragments(input.prompt, input.searchQueryFragments),
+    }),
   });
 }
 
@@ -994,6 +1010,7 @@ function normalizeRunOptions(value = {}) {
       "signal",
       "priorDocument",
       "onProgress",
+      "onSearchQueryPlan",
       "onArtifact",
       "onDocumentCompileIntent",
       "onDocumentCommitIntent",
@@ -1009,6 +1026,7 @@ function normalizeRunOptions(value = {}) {
   }
   for (const key of [
     "onProgress",
+    "onSearchQueryPlan",
     "onArtifact",
     "onDocumentCompileIntent",
     "onDocumentCommitIntent",
@@ -3490,7 +3508,45 @@ function createPlanner({
         }
         const deepResearchRequest = inferIntegrationDeepResearchRequestFromPrompt(input.prompt);
         const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(input.prompt);
-        const queryPlan = planIntegrationGroundedSearchQuery(input.prompt, input.search.mode, domainConstraint);
+        let queryPlan = planIntegrationGroundedSearchQuery(input.prompt, input.search.mode, domainConstraint);
+        if (queryPlan.strategy === "ranked" && deepResearchRequest === null) {
+          let fragments = input.searchQueryFragments;
+          if (fragments === undefined) {
+            const queryPayload = Object.freeze({
+              ...completionPayload([
+                { role: "system", content: SEARCH_QUERY_SELECTION_PROMPT },
+                { role: "user", content: input.prompt },
+              ], modelConfig, { disableTools: true }),
+              max_tokens: Math.min(modelConfig.maxOutputTokens, 512),
+              response_format: { type: "json_object" },
+            });
+            assertWithinModelContext(queryPayload, modelConfig);
+            assertNotAborted(signal);
+            try {
+              const response = await invokeModel(modelClient, queryPayload,
+                { ...config, modelTimeoutMs: Math.min(config.modelTimeoutMs || 60_000, 15_000) },
+                "bounded search query selection");
+              const choice = response?.choices?.[0];
+              const message = choice?.message;
+              if (typeof message?.content !== "string" || message.function_call != null
+                  || (message.tool_calls !== undefined && (!Array.isArray(message.tool_calls) || message.tool_calls.length))
+                  || (choice.finish_reason !== undefined && choice.finish_reason !== "stop")) throw new Error("Invalid query selection");
+              const selected = exactObject(JSON.parse(message.content), ["fragments"], ["fragments"], "search term selection");
+              fragments = validateIntegrationSearchQueryFragments(input.prompt, selected.fragments);
+            } catch {
+              assertNotAborted(signal);
+              // Term selection is optional. A malformed draft cannot introduce
+              // invented terms or disable the original bounded public search.
+              fragments = Object.freeze([]);
+            }
+            assertNotAborted(signal);
+            if (options.onSearchQueryPlan) {
+              fragments = validateIntegrationSearchQueryFragments(input.prompt,
+                await options.onSearchQueryPlan(fragments));
+            }
+          }
+          queryPlan = planIntegrationGroundedSearchQuery(input.prompt, input.search.mode, domainConstraint, fragments);
+        }
         const deepResearchEligible =
           deepResearchRequest !== null &&
           domainConstraint === null &&

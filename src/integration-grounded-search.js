@@ -554,7 +554,19 @@ function extractGroundedSearchArxivIdentifiers(prompt) {
   return uniqueBoundedIdentifiers([...explicit, ...bareArxivList], "Grounded search arXiv identifier set");
 }
 
-export function planIntegrationGroundedSearchQuery(prompt, mode, domainConstraint = null) {
+export function validateIntegrationSearchQueryFragments(prompt, value) {
+  const fragments = denseArray(value, "search query fragments", { minimum: 0, maximum: 6 });
+  if (typeof prompt !== "string" || fragments.some((fragment) =>
+    typeof fragment !== "string" || !fragment || fragment !== fragment.trim()
+    || !prompt.includes(fragment) || /[\u0000-\u001f\u007f]/u.test(fragment)
+  ) || new Set(fragments).size !== fragments.length
+      || Array.from(fragments.join(" ")).length > 300) {
+    fail("GROUNDED_SEARCH_QUERY_INVALID", "Search terms must be bounded verbatim excerpts of the current request.", { status: 400 });
+  }
+  return Object.freeze([...fragments]);
+}
+
+export function planIntegrationGroundedSearchQuery(prompt, mode, domainConstraint = null, queryFragments) {
   if (!new Set(["web", "papers", "both"]).has(mode)) {
     fail("GROUNDED_SEARCH_QUERY_INVALID", "Grounded search mode is invalid.", { status: 400 });
   }
@@ -566,6 +578,8 @@ export function planIntegrationGroundedSearchQuery(prompt, mode, domainConstrain
   }
   let strategy = "ranked";
   let query = prompt;
+  const fragments = queryFragments === undefined ? [] : validateIntegrationSearchQueryFragments(prompt, queryFragments);
+  if (fragments.length > 0) query = fragments.join(" ");
   if (new Set(["papers", "both"]).has(mode) && arxivIdentifiers.length + doiIdentifiers.length > 0) {
     strategy = "exact";
     query = [...arxivIdentifiers, ...doiIdentifiers].join(" ");

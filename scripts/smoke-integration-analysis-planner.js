@@ -533,8 +533,10 @@ function fixture(complete, {
   localModelConfig,
   requireConfiguredCapabilities,
   configuredRoles,
+  selectSearchQuery,
 } = {}) {
   const rpcCalls = [];
+  const queryPlanningPayloads = [];
   const manager = createExecutionJobManager({ worker: worker || fakeWorker() });
   const client = createTestOnlyExecutionWorkerClient(rpcForManager(manager, rpcCalls));
   const coordinator = createTestOnlyIntegrationAnalysisCoordinator(client, { pollMs: 25 });
@@ -547,6 +549,10 @@ function fixture(complete, {
         assert.deepEqual(args[1].thinking, { type: "disabled" });
         assert.equal(args[1].reasoning_effort, undefined);
       }
+      if (args[3] === "bounded search query selection") {
+        queryPlanningPayloads.push(args[1]);
+        return selectSearchQuery ? selectSearchQuery(...args) : textResponse('{"fragments":[]}');
+      }
       return complete(...args);
     },
     ...(groundedSearchClient === undefined ? {} : { groundedSearchClient }),
@@ -554,7 +560,7 @@ function fixture(complete, {
     ...(requireConfiguredCapabilities === undefined ? {} : { requireConfiguredCapabilities }),
     ...(configuredRoles === undefined ? {} : { configuredRoles }),
   });
-  return Object.freeze({ planner, coordinator, rpcCalls });
+  return Object.freeze({ planner, coordinator, rpcCalls, queryPlanningPayloads });
 }
 
 function localllmDigest(value) {
@@ -1038,6 +1044,86 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
   } finally {
     grounded.coordinator.close();
   }
+}
+
+async function focusedSearchQuerySelection() {
+  const calls = [];
+  const order = [];
+  const search = createTestOnlyIntegrationGroundedSearchClient({
+    endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
+    apiKey: "test-grounded-search-private-token",
+    fetchImpl: async (url, init) => {
+      if (url !== INTEGRATION_GROUNDED_SEARCH_ENDPOINT) return new Response(JSON.stringify({ detail: "Research task not found" }), {
+        status: 404, headers: { "cache-control": "no-store", "content-type": "application/json" },
+      });
+      const request = JSON.parse(init.body);
+      calls.push(request);
+      order.push("search");
+      return groundedSearchResponse(request);
+    },
+  });
+  let response = textResponse('{"fragments":["multilingual speech recognition","2025"]}');
+  const prompt = "Please find studies about multilingual speech recognition in 2025. Give titles and links.";
+  const current = fixture(async () => textResponse("The retrieved evidence is available [1]."), {
+    groundedSearchClient: search,
+    selectSearchQuery: async (_client, payload, config) => {
+      order.push("selection");
+      assert.equal(payload.messages.length, 2);
+      assert.equal(payload.messages[1].content, prompt);
+      assert.doesNotMatch(JSON.stringify(payload), /PRIVATE_PREVIOUS_TURN/u);
+      assert.equal(payload.tools, undefined);
+      assert.equal(payload.tool_choice, undefined);
+      assert(payload.max_tokens <= 512);
+      assert(config.modelTimeoutMs <= 15_000);
+      assert.deepEqual(payload.response_format, { type: "json_object" });
+      return response;
+    },
+  });
+  try {
+    await current.planner.activate();
+    order.length = 0;
+    let accepted;
+    await current.planner.run(scope(), {
+      prompt, conversation: [{ role: "user", content: "PRIVATE_PREVIOUS_TURN" }],
+      search: { mode: "both", limit: 5 },
+    }, { onSearchQueryPlan: async (fragments) => {
+      order.push("checkpoint"); accepted = fragments; return fragments;
+    } });
+    assert.deepEqual(order, ["selection", "checkpoint", "search"]);
+    assert.equal(calls.at(-1).query, "multilingual speech recognition 2025");
+    assert.deepEqual(accepted, ["multilingual speech recognition", "2025"]);
+    assert.equal(current.queryPlanningPayloads.length, 1);
+    await current.planner.run(scope(), { prompt, search: { mode: "both", limit: 5 }, searchQueryFragments: accepted });
+    assert.equal(current.queryPlanningPayloads.length, 1, "persisted selection must not invoke the model again");
+    for (const invalid of [
+      textResponse('{"fragments":["invented author or identifier"]}'),
+      textResponse('{"fragments":[],"unexpected":true}'),
+      textResponse("not JSON"),
+      toolResponse("print('must not execute')"),
+      { choices: [{ finish_reason: "length", message: { content: '{"fragments":[]}' } }] },
+    ]) {
+      response = invalid;
+      await current.planner.run(scope(), { prompt, search: { mode: "both", limit: 5 } });
+      assert.equal(calls.at(-1).query, prompt, "invalid selection preserves the original bounded query");
+    }
+    const beforeFailure = calls.length;
+    await assert.rejects(() => current.planner.run(scope(), { prompt, search: { mode: "both", limit: 5 } }, {
+      onSearchQueryPlan: async () => { throw new Error("checkpoint failed"); },
+    }));
+    assert.equal(calls.length, beforeFailure, "checkpoint failure prevents a search");
+    const abort = new AbortController();
+    await assert.rejects(() => current.planner.run(scope(), { prompt, search: { mode: "both", limit: 5 } }, {
+      signal: abort.signal,
+      onSearchQueryPlan: async (fragments) => { abort.abort(); return fragments; },
+    }));
+    assert.equal(calls.length, beforeFailure, "cancellation after planning prevents dispatch");
+    const beforeExact = current.queryPlanningPayloads.length;
+    await current.planner.run(scope(), {
+      prompt: "Find arxiv:2005.11401 and arxiv:2309.01431",
+      search: { mode: "papers", limit: 5 },
+    });
+    assert.equal(current.queryPlanningPayloads.length, beforeExact, "exact identifiers do not need model query selection");
+  } finally { current.coordinator.close(); }
 }
 
 async function deepResearchCompletesWithoutSecondModelSynthesis() {
@@ -5609,6 +5695,7 @@ await deterministicExpressionPlotExecutesWithoutModel();
 await deterministicExpressionPlotFailuresStayTruthful();
 await unsupportedSafeExpressionPlotFallsBackToBoundedModelExecution();
 await groundsWithPrivateSearchBeforeModelSynthesis();
+await focusedSearchQuerySelection();
 await deepResearchCompletesWithoutSecondModelSynthesis();
 await executesAndSynthesizesPlot();
 await executesAndSynthesizesPlot(DEEPSEEK_MODEL);

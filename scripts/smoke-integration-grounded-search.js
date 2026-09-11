@@ -28,6 +28,7 @@ import {
   integrationGroundedSearchBoundArtifactId,
   integrationGroundedSearchConstrainedQuery,
   planIntegrationGroundedSearchQuery,
+  validateIntegrationSearchQueryFragments,
 } from "../src/integration-grounded-search.js";
 import { assertPublicIntegrationResponse } from "../src/integration-api.js";
 import {
@@ -39,6 +40,28 @@ import {
 } from "../src/integration-policy.js";
 
 const TOKEN = `search_${"S".repeat(48)}`;
+for (const [prompt, fragments, query] of [
+  ["Find the original Attention Is All You Need research paper. Give its title and year.", ["Attention Is All You Need"], "Attention Is All You Need"],
+  ["Find papers about multilingual speech recognition published in 2025.", ["multilingual speech recognition", "2025"], "multilingual speech recognition 2025"],
+  ["请帮我搜索多语言语音识别的研究论文，并给出来源。", ["多语言语音识别"], "多语言语音识别"],
+  ["多言語音声認識について論文を探してください。", ["多言語音声認識"], "多言語音声認識"],
+  ["ابحث عن التعرف على الكلام متعدد اللغات", ["التعرف على الكلام متعدد اللغات"], "التعرف على الكلام متعدد اللغات"],
+]) {
+  const plan = planIntegrationGroundedSearchQuery(prompt, "both", null, fragments);
+  assert.equal(plan.query, query);
+  assert.notEqual(plan.digest, planIntegrationGroundedSearchQuery(prompt, "both").digest);
+  assert.deepEqual(validateIntegrationSearchQueryFragments(prompt, fragments), fragments);
+}
+for (const fragments of [["invented paper"], ["speech", "speech"], [" speech"], [42], "speech", Array(7).fill("speech")]) {
+  assert.throws(() => validateIntegrationSearchQueryFragments("speech", fragments));
+}
+const exactPrompt = "Find arxiv:1706.03762 and summarize the paper";
+assert.equal(planIntegrationGroundedSearchQuery(exactPrompt, "papers", null, ["summarize"]).query, "1706.03762");
+const domainPrompt = "Find Python generators; use only sources from docs.python.org and give links";
+const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(domainPrompt);
+const domainPlan = planIntegrationGroundedSearchQuery(domainPrompt, "web", domainConstraint, ["Python generators"]);
+assert.deepEqual(domainPlan.allowedDomains, ["docs.python.org"]);
+assert.equal(domainPlan.domainConstraintDigest, domainConstraint.digest);
 const THREAD_ID = "thr_12345678-1234-4123-8123-123456789abc";
 const QUERY_PLAN_DIGEST_VECTOR = `sha256:${"1".repeat(64)}`;
 const POLICY_VECTOR_DIGEST = "sha256:ccf5b13b08f247de0033a2c1d4c9bd3866ae0a8ce2b9cf411907080f39ec629c";

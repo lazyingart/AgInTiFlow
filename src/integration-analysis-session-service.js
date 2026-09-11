@@ -43,6 +43,7 @@ import {
   integrationGroundedSearchBoundArtifactId,
   planIntegrationGroundedSearchQuery,
   validateIntegrationGroundedSearchArtifactAuthority,
+  validateIntegrationSearchQueryFragments,
 } from "./integration-grounded-search.js";
 import {
   INTEGRATION_FILE_WORKER_INTENT_CANDIDATE_SCHEMA_VERSION,
@@ -1191,7 +1192,8 @@ function compactThreadForNextRun(state, thread, prompt, statePersistenceMode) {
         const queryPlan = planIntegrationGroundedSearchQuery(
           message.content,
           run.search.mode,
-          domainConstraint
+          domainConstraint,
+          run.searchQueryFragments
         );
         const authority = createIntegrationGroundedSearchArtifactAuthority({
           query: queryPlan.query,
@@ -1248,6 +1250,14 @@ function compactThreadForNextRun(state, thread, prompt, statePersistenceMode) {
   thread.replay.anchorDigest = anchorDigest;
   thread.authority.lastCompaction = { ...lastCompaction };
   thread.compaction = compaction;
+  // The compacted proof retains the accepted query and authority. Drop its
+  // source excerpts together with the pruned original message.
+  for (const message of pruned) {
+    if (message.role === "user") {
+      const run = state.runs.find((item) => item.id === message.runId);
+      if (run) delete run.searchQueryFragments;
+    }
+  }
   return Object.freeze({ compactedMessages: pruned.length, tokensBefore, tokensAfter });
 }
 
@@ -1858,7 +1868,7 @@ function validateThread(thread, scope, runsById) {
   }
 }
 
-function validateRun(run, scope, threadIds) {
+function validateRun(run, scope, threadIds, state) {
   exactState(
     run,
     [
@@ -1881,6 +1891,7 @@ function validateRun(run, scope, threadIds) {
       "inputMessageId",
       "search",
       "searchInference",
+      "searchQueryFragments",
       "inference",
       "documentCompileIntent",
       "filePublishIntent",
@@ -1918,6 +1929,15 @@ function validateRun(run, scope, threadIds) {
   }
   if (!RUN_SCHEDULING_STATES.has(run.schedulingState)) corrupt();
   if (run.searchInference !== undefined && run.searchInference !== false) corrupt();
+  if (run.searchQueryFragments !== undefined) {
+    try {
+      if (run.search === undefined) corrupt();
+      const thread = state.threads.find((item) => item.id === run.threadId);
+      const message = thread?.messages.find((item) => item.id === run.inputMessageId);
+      if (!message) corrupt();
+      validateIntegrationSearchQueryFragments(message.content, run.searchQueryFragments);
+    } catch (error) { corrupt(error); }
+  }
   if (run.inference !== undefined) {
     try {
       if (canonicalJson(validateIntegrationInference(run.inference)) !== canonicalJson(run.inference)
@@ -2252,7 +2272,7 @@ function validateArtifact(artifact, scope, runsById, state) {
       if (!thread || run.search === undefined) corrupt();
       if (inputMessage) {
         const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(inputMessage.content);
-        const queryPlan = planIntegrationGroundedSearchQuery(inputMessage.content, run.search.mode, domainConstraint);
+        const queryPlan = planIntegrationGroundedSearchQuery(inputMessage.content, run.search.mode, domainConstraint, run.searchQueryFragments);
         const expectedAuthority = createIntegrationGroundedSearchArtifactAuthority({
           query: queryPlan.query,
           mode: run.search.mode,
@@ -3018,7 +3038,7 @@ function validateState(state, expectedScope) {
   for (const run of state.runs) {
     if (runsById.has(run.id)) corrupt();
     runsById.set(run.id, run);
-    validateRun(run, expectedScope, threadIds);
+    validateRun(run, expectedScope, threadIds, state);
   }
   for (const run of state.runs) {
     if (run.previousRunId !== null) {
@@ -5379,6 +5399,7 @@ function createService(options, { testOnly }) {
         ? {}
         : { retainedAttachments }),
       ...(run.search === undefined ? {} : { search: validateIntegrationSearch(run.search) }),
+      ...(run.searchQueryFragments === undefined ? {} : { searchQueryFragments: run.searchQueryFragments }),
     });
   }
 
@@ -6088,7 +6109,7 @@ function createService(options, { testOnly }) {
         const inputMessage = thread.messages.find((message) => message.id === run.inputMessageId);
         if (!inputMessage) corrupt();
         const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(inputMessage.content);
-        const queryPlan = planIntegrationGroundedSearchQuery(inputMessage.content, run.search.mode, domainConstraint);
+        const queryPlan = planIntegrationGroundedSearchQuery(inputMessage.content, run.search.mode, domainConstraint, run.searchQueryFragments);
         groundedSearchAuthority = createIntegrationGroundedSearchArtifactAuthority({
           query: queryPlan.query,
           mode: run.search.mode,
@@ -6869,6 +6890,7 @@ function createService(options, { testOnly }) {
         priorArtifacts: input.priorArtifacts,
         ...(input.inference === undefined ? {} : { inference: input.inference }),
         ...(input.search === undefined ? {} : { search: input.search }),
+        ...(input.searchQueryFragments === undefined ? {} : { searchQueryFragments: input.searchQueryFragments }),
         ...(visionEvidence === undefined ? {} : { visionEvidence }),
       });
       const requireToolRun = () => {
@@ -6883,6 +6905,24 @@ function createService(options, { testOnly }) {
           signal: active.controller.signal,
           ...(revisionMaterial === null ? {} : { priorDocument: revisionMaterial.priorDocument }),
           onProgress: async (progress) => recordProgress(scope, runId, progress),
+          onSearchQueryPlan: async (fragments) => {
+            requireToolRun();
+            return await mutate(scope, (state) => {
+              const run = findRun(state, runId);
+              if (TERMINAL_RUN_STATUSES.has(run.status) || run.cancelRequestedAt !== null || run.search === undefined) {
+                fail("ANALYSIS_CANCELLED", "Search planning is no longer active.", { status: 499 });
+              }
+              if (run.searchQueryFragments !== undefined) return { changed: false, result: run.searchQueryFragments };
+              const thread = findThread(state, threadId);
+              const message = thread.messages.find((item) => item.id === run.inputMessageId);
+              if (!message) corrupt();
+              const selected = validateIntegrationSearchQueryFragments(message.content, fragments);
+              // Persist the accepted plan before any search leaves the service.
+              // Readback/recovery use this exact selection, not a new model call.
+              run.searchQueryFragments = [...selected];
+              return { changed: true, result: selected };
+            });
+          },
           onArtifact: async (artifact) => {
             requireToolRun();
             if (inspectIntegrationDocumentWorkerFileArtifact(artifact)) privateDocumentEvidence.push(artifact);
@@ -7220,6 +7260,14 @@ function createService(options, { testOnly }) {
               ...(inference === undefined ? {} : { inference }),
               events: [],
             };
+            if (previousRunId !== null) {
+              const previous = findRun(state, previousRunId);
+              const previousInput = thread.messages.find((item) => item.id === previous.inputMessageId);
+              if (previousInput?.content === prompt && previous.searchQueryFragments !== undefined
+                  && canonicalJson(previous.search) === canonicalJson(search)) {
+                record.searchQueryFragments = [...previous.searchQueryFragments];
+              }
+            }
             appendEvent(record, "run.status", { status: "starting" }, createdAt);
             if (compactionEvent !== null) {
               appendEvent(record, "context.compacted", compactionEvent, createdAt);

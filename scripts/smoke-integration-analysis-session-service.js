@@ -2329,7 +2329,7 @@ async function inferenceOnlyDurabilityRoundTrip(temporaryRoot) {
   const runner = { async run(_scope, input, options) {
     calls.push(input);
     if (input.inference) {
-      for (const name of ["onArtifact", "onDocumentCompileIntent", "onDocumentCommitIntent", "onFilePublishIntent", "onFileCommitIntent"]) {
+      for (const name of ["onArtifact", "onSearchQueryPlan", "onDocumentCompileIntent", "onDocumentCommitIntent", "onFilePublishIntent", "onFileCommitIntent"]) {
         await assert.rejects(options[name]({}), error => error.code === "ANALYSIS_RUNNER_PROTOCOL_INVALID");
       }
     }
@@ -2400,6 +2400,16 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
       const searchToolName = inferIntegrationDeepResearchRequestFromPrompt(input.prompt) === null
         ? INTEGRATION_GROUNDED_SEARCH_TOOL_NAME
         : INTEGRATION_DEEP_RESEARCH_TOOL_NAME;
+      let queryFragments = input.searchQueryFragments;
+      if (input.prompt === "Compare current evidence") {
+        queryFragments = await options.onSearchQueryPlan(["current evidence"]);
+        assert.deepEqual(queryFragments, ["current evidence"]);
+        assert.deepEqual(await options.onSearchQueryPlan(["Compare"]), queryFragments,
+          "an already accepted plan is immutable within the run");
+        const checkpoint = JSON.parse(await fs.readFile(await stateFile(root), "utf8"));
+        assert.deepEqual(checkpoint.state.runs.find((run) => run.id === scope.runId).searchQueryFragments,
+          queryFragments, "selected terms must be durable before dispatching a search");
+      }
       if (input.search !== undefined) {
         await options.onProgress?.(Object.freeze({
           phase: "executing",
@@ -2424,7 +2434,7 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
       let artifacts = [];
       if (input.search !== undefined) {
         const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(input.prompt);
-        const queryPlan = planIntegrationGroundedSearchQuery(input.prompt, input.search.mode, domainConstraint);
+        const queryPlan = planIntegrationGroundedSearchQuery(input.prompt, input.search.mode, domainConstraint, queryFragments);
         const queryAuthority = createIntegrationGroundedSearchArtifactAuthority({
           query: queryPlan.query,
           mode: input.search.mode,
@@ -2508,6 +2518,7 @@ async function groundedSearchDurabilityRoundTrip(temporaryRoot) {
     const sameInput = await restarted.resumeRun({ runId: first.run.id }, context());
     await restarted.waitForIdle();
     assert.deepEqual(calls[1].input.search, firstSearch, "same-input Resume must reuse durable search intent");
+    assert.deepEqual(calls[1].input.searchQueryFragments, ["current evidence"], "same-input Resume reuses accepted search terms");
 
     const correctedSearch = Object.freeze({ mode: "papers", limit: 4 });
     const corrected = await restarted.resumeRun({
