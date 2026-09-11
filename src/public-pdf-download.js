@@ -46,6 +46,12 @@ export function isPublicPdfAddress(address) {
   return family === 6 && PUBLIC_V6.check(address, "ipv6") && !RESERVED.check(address, "ipv6");
 }
 
+export function hasCompletePublicPdfEnvelope(bytes) {
+  return Buffer.isBuffer(bytes) &&
+    /^%PDF-[12]\.[0-9]/u.test(bytes.subarray(0, 8).toString("latin1")) &&
+    /%%EOF[\t\n\f\r ]*$/u.test(bytes.subarray(-1024).toString("latin1"));
+}
+
 function publicUrl(value, origins) {
   if (typeof value !== "string" || !value.isWellFormed() || value.length > 2048 ||
       /[\s\\\p{C}]/u.test(value)) fail("URL_DENIED", "A reviewed public HTTPS PDF URL is required.");
@@ -177,8 +183,7 @@ function createDownloader(config, transport, testOnly) {
               fail("INCOMPLETE", "PDF transfer did not complete.");
             }
             const bytes = Buffer.concat(chunks, size);
-            if (!/^%PDF-[12]\.[0-9]/u.test(bytes.subarray(0, 8).toString("latin1")) ||
-                !/%%EOF[\t\n\f\r ]*$/u.test(bytes.subarray(-1024).toString("latin1"))) {
+            if (!hasCompletePublicPdfEnvelope(bytes)) {
               fail("NOT_PDF", "Source bytes do not have a complete PDF envelope.");
             }
             return Object.freeze({

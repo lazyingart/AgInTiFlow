@@ -12,7 +12,6 @@ import {
   digestFileWorkerPublishOperation,
   fileWorkerArtifactsDigest,
   fileWorkerDeletionManifestDigest,
-  fileWorkerCommitManifest,
   fileWorkerManifestDigest,
   fileWorkerScopeDigests,
   fileWorkerThreadDigests,
@@ -30,6 +29,16 @@ import {
   documentWorkerFail,
 } from "./integration-document-worker-contract.js";
 import { canonicalJson, contractDigest } from "./integration-policy.js";
+import {
+  ACQUIRED_PAPER_SCHEMA_VERSIONS,
+  acquiredPaperArtifactsDigest,
+  digestAcquiredPaperContent,
+  digestAcquiredPaperImportOperation,
+  normalizeAcquiredPaperImport,
+  validateAcquiredPaperArtifacts,
+  validateAcquiredPaperIssueRequest,
+  validateAcquiredPaperReceipt,
+} from "./integration-acquired-paper-contract.js";
 
 export const FILE_WORKER_LEDGER_SCHEMA_VERSION = "aginti-file-worker-ledger-v1";
 export const FILE_WORKER_LEDGER_ENVELOPE_SCHEMA_VERSION = "aginti-file-worker-ledger-envelope-v1";
@@ -138,11 +147,22 @@ function publicArtifact(record) {
   });
 }
 
+function isAcquiredPaperGroup(group) {
+  return group.receipt?.schemaVersion === ACQUIRED_PAPER_SCHEMA_VERSIONS.receipt;
+}
+
+function groupArtifacts(group) {
+  const validate = isAcquiredPaperGroup(group) ? validateAcquiredPaperArtifacts : validateFileWorkerArtifacts;
+  return validate(group.artifacts.map(publicArtifact));
+}
+
 function publishResponse(group) {
   return Object.freeze({
-    schemaVersion: FILE_WORKER_SCHEMA_VERSIONS.publishResponse,
+    schemaVersion: isAcquiredPaperGroup(group)
+      ? ACQUIRED_PAPER_SCHEMA_VERSIONS.importResponse : FILE_WORKER_SCHEMA_VERSIONS.publishResponse,
     requestId: group.requestId,
-    receipt: Object.freeze({ ...group.receipt }),
+    receipt: isAcquiredPaperGroup(group)
+      ? validateAcquiredPaperReceipt(group.receipt) : Object.freeze({ ...group.receipt }),
     artifacts: Object.freeze(group.artifacts.map(publicArtifact)),
   });
 }
@@ -157,16 +177,16 @@ function publishReplay(group) {
   return publishResponse(group);
 }
 
-function validateStoredArtifact(record, index) {
+function validateStoredArtifact(record, index, acquiredPaper = false) {
   exact(record, ["ref", "index", "filename", "mime", "bytes", "sha256", "state"], `stored file ${index}`);
   if (!new Set(["staged", "committed", "gone", "tombstoned"]).has(record.state)) {
     failStop(new Error("stored file state is invalid"));
   }
   let artifact;
   try {
-    artifact = validateFileWorkerArtifacts([publicArtifact(record)])[0];
+    artifact = (acquiredPaper ? validateAcquiredPaperArtifacts : validateFileWorkerArtifacts)([publicArtifact(record)])[0];
   } catch (error) {
-    if (index !== 0) {
+    if (index !== 0 && !acquiredPaper) {
       try {
         artifact = validateFileWorkerArtifacts(Array.from({ length: index + 1 }, (_, candidateIndex) => (
           candidateIndex === index
@@ -219,7 +239,8 @@ function validateStoredGroup(group) {
     stateDigest(group[key], `file group ${key}`);
   }
   let receipt;
-  try { receipt = validateFileWorkerReceipt(group.receipt); } catch (error) { failStop(error); }
+  const paper = isAcquiredPaperGroup(group);
+  try { receipt = (paper ? validateAcquiredPaperReceipt : validateFileWorkerReceipt)(group.receipt); } catch (error) { failStop(error); }
   if (
     receipt.groupId !== group.groupId || receipt.requestId !== group.requestId ||
     receipt.ownerDigest !== group.ownerDigest || receipt.threadDigest !== group.threadDigest ||
@@ -228,11 +249,11 @@ function validateStoredGroup(group) {
   ) failStop(new Error("stored file receipt binding is invalid"));
   const artifacts = list(group.artifacts, FILE_WORKER_LIMITS.maximumFiles, "stored group files");
   if (artifacts.length < 1) failStop(new Error("stored file group is empty"));
-  artifacts.forEach(validateStoredArtifact);
+  artifacts.forEach((artifact, index) => validateStoredArtifact(artifact, index, paper));
   if (
     receipt.fileCount !== artifacts.length ||
     receipt.totalBytes !== artifacts.reduce((sum, artifact) => sum + artifact.bytes, 0) ||
-    receipt.artifactsDigest !== fileWorkerArtifactsDigest(artifacts.map(publicArtifact))
+    receipt.artifactsDigest !== (paper ? acquiredPaperArtifactsDigest : fileWorkerArtifactsDigest)(artifacts.map(publicArtifact))
   ) failStop(new Error("stored file receipt metadata is inconsistent"));
   const states = artifacts.map(({ state }) => state);
   if (new Set(["staged", "committing"]).has(group.state) && states.some((state) => state !== "staged")) {
@@ -721,162 +742,185 @@ export async function openIntegrationFileWorkerStore(options = {}) {
   await reapExpired();
   await reconcile();
 
-  const store = {
-    schemaVersion: FILE_WORKER_LEDGER_SCHEMA_VERSION,
-
-    issue(requestInput) {
-      return runSerialized(async () => {
-        const request = validateFileWorkerIssueRequest(requestInput);
-        await reapExpired();
-        const requestDigest = contractDigest(request);
-        const replay = ledger.reservations.find(({ issuanceId }) => issuanceId === request.issuanceId);
-        if (replay) {
-          if (replay.issueRequestDigest !== requestDigest) {
-            documentWorkerFail("IDEMPOTENCY_CONFLICT", "File issuance id was already used.", { status: 409 });
-          }
-          const unsigned = {
-            schemaVersion: FILE_WORKER_SCHEMA_VERSIONS.issueResponse,
-            issuanceId: replay.issuanceId,
-            requestId: replay.requestId,
-            authorityEpoch: replay.authorityEpoch,
-            authorityToken: replay.authorityToken,
-            contentDigest: replay.contentDigest,
-          };
-          return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+  function issue(requestInput, paper = false) {
+    return runSerialized(async () => {
+      const request = (paper ? validateAcquiredPaperIssueRequest : validateFileWorkerIssueRequest)(requestInput);
+      const schemaVersion = paper ? ACQUIRED_PAPER_SCHEMA_VERSIONS.issueResponse : FILE_WORKER_SCHEMA_VERSIONS.issueResponse;
+      await reapExpired();
+      const requestDigest = contractDigest(request);
+      const replay = ledger.reservations.find(({ issuanceId }) => issuanceId === request.issuanceId);
+      if (replay) {
+        if (replay.issueRequestDigest !== requestDigest) {
+          documentWorkerFail("IDEMPOTENCY_CONFLICT", "File issuance id was already used.", { status: 409 });
         }
-        if (request.authorityEpoch !== ledger.authorityEpoch) {
-          documentWorkerFail(
-            request.authorityEpoch < ledger.authorityEpoch ? "ARTIFACT_CONTENT_GONE" : "INVALID_REQUEST",
-            "File issuance authority is invalid.",
-            { status: request.authorityEpoch < ledger.authorityEpoch ? 410 : 400 }
-          );
-        }
-        const digests = fileWorkerScopeDigests(request.scope);
-        const ownerCount = ledger.reservations.filter(({ ownerDigest, requestId }) => (
-          ownerDigest === digests.ownerDigest && !findGroupByRequest(requestId)
-        )).length;
-        if (ledger.reservations.length >= MAXIMUM_RESERVATIONS || ownerCount >= MAXIMUM_RESERVATIONS_PER_OWNER) {
-          unavailable("File worker issuance capacity is exhausted.");
-        }
-        const requestId = `fpub_${crypto.randomBytes(32).toString("hex")}`;
-        const authorityToken = randomFileWorkerId("wpa_", 32);
-        const reservation = {
-          issuanceId: request.issuanceId,
-          issueRequestDigest: requestDigest,
-          requestId,
-          authorityEpoch: request.authorityEpoch,
-          authorityToken,
-          authorityTokenDigest: crypto.createHash("sha256").update(authorityToken, "utf8").digest("hex"),
-          contentDigest: digestFileWorkerContent(request),
-          ...digests,
-          createdAt: currentTimestamp(now),
-        };
-        ledger.reservations.push(reservation);
-        await saveLedger();
         const unsigned = {
-          schemaVersion: FILE_WORKER_SCHEMA_VERSIONS.issueResponse,
-          issuanceId: reservation.issuanceId,
-          requestId,
-          authorityEpoch: reservation.authorityEpoch,
-          authorityToken,
-          contentDigest: reservation.contentDigest,
+          schemaVersion,
+          issuanceId: replay.issuanceId,
+          requestId: replay.requestId,
+          authorityEpoch: replay.authorityEpoch,
+          authorityToken: replay.authorityToken,
+          contentDigest: replay.contentDigest,
         };
         return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
-      });
-    },
+      }
+      if (request.authorityEpoch !== ledger.authorityEpoch) {
+        documentWorkerFail(
+          request.authorityEpoch < ledger.authorityEpoch ? "ARTIFACT_CONTENT_GONE" : "INVALID_REQUEST",
+          "File issuance authority is invalid.",
+          { status: request.authorityEpoch < ledger.authorityEpoch ? 410 : 400 }
+        );
+      }
+      const digests = fileWorkerScopeDigests(request.scope);
+      const ownerCount = ledger.reservations.filter(({ ownerDigest, requestId }) => (
+        ownerDigest === digests.ownerDigest && !findGroupByRequest(requestId)
+      )).length;
+      if (ledger.reservations.length >= MAXIMUM_RESERVATIONS || ownerCount >= MAXIMUM_RESERVATIONS_PER_OWNER) {
+        unavailable("File worker issuance capacity is exhausted.");
+      }
+      const requestId = `fpub_${crypto.randomBytes(32).toString("hex")}`;
+      const authorityToken = randomFileWorkerId("wpa_", 32);
+      const reservation = {
+        issuanceId: request.issuanceId,
+        issueRequestDigest: requestDigest,
+        requestId,
+        authorityEpoch: request.authorityEpoch,
+        authorityToken,
+        authorityTokenDigest: crypto.createHash("sha256").update(authorityToken, "utf8").digest("hex"),
+        contentDigest: (paper ? digestAcquiredPaperContent : digestFileWorkerContent)(request),
+        ...digests,
+        createdAt: currentTimestamp(now),
+      };
+      ledger.reservations.push(reservation);
+      await saveLedger();
+      const unsigned = {
+        schemaVersion,
+        issuanceId: reservation.issuanceId,
+        requestId,
+        authorityEpoch: reservation.authorityEpoch,
+        authorityToken,
+        contentDigest: reservation.contentDigest,
+      };
+      return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
+    });
+  }
 
-    publish(requestInput) {
-      return runSerialized(async () => {
-        const requestDigest = digestFileWorkerPublishOperation(requestInput);
-        const request = isNormalizedFileWorkerPublishRequest(requestInput)
-          ? requestInput
-          : validateFileWorkerPublishRequest(requestInput);
+  function publish(requestInput, paper = false, signal) {
+    return runSerialized(async () => {
+      signal?.throwIfAborted();
+      const requestDigest = (paper ? digestAcquiredPaperImportOperation : digestFileWorkerPublishOperation)(requestInput);
+      const request = paper || isNormalizedFileWorkerPublishRequest(requestInput)
+        ? requestInput
+        : validateFileWorkerPublishRequest(requestInput);
+      try {
+        await reapExpired();
+        signal?.throwIfAborted();
+        const existing = findGroupByRequest(request.requestId);
+        if (existing) {
+          if (existing.requestDigest !== requestDigest || !scopeMatches(request.scope, existing)) {
+            documentWorkerFail("IDEMPOTENCY_CONFLICT", "File publish request id was already used.", { status: 409 });
+          }
+          return publishReplay(existing);
+        }
+        const reservation = ledger.reservations.find(({ requestId }) => requestId === request.requestId);
+        const candidateFiles = request.files.map(({ bytesValue: _bytesValue, encoding: _encoding, content: _content, ...file }) => file);
+        const tokenDigest = crypto.createHash("sha256").update(request.authorityToken, "utf8").digest("hex");
+        const digests = fileWorkerScopeDigests(request.scope);
+        if (
+          !reservation || reservation.issuanceId !== request.issuanceId ||
+          reservation.authorityEpoch !== request.authorityEpoch || reservation.authorityTokenDigest !== tokenDigest ||
+          reservation.contentDigest !== (paper ? digestAcquiredPaperContent : digestFileWorkerContent)({
+            scope: request.scope, files: candidateFiles, ...(paper ? { source: request.source } : {}),
+          }) ||
+          ["ownerDigest", "threadDigest", "runDigest", "scopeDigest"].some((key) => reservation[key] !== digests[key])
+        ) {
+          documentWorkerFail("ARTIFACT_CONTENT_GONE", "File publish authority is absent or expired.", { status: 410 });
+        }
+        if (ledger.groups.length >= MAXIMUM_GROUPS) unavailable("File worker group capacity is exhausted.");
+        const requestedBytes = request.files.reduce((sum, file) => sum + file.bytes, 0);
+        if (requestedBytes > FILE_WORKER_LIMITS.maximumStoredBytes - retainedBytes()) {
+          unavailable("File worker private object quota is exhausted.");
+        }
+        const artifacts = Object.freeze(request.files.map((file, index) => Object.freeze({
+          ref: randomFileWorkerId("fobj_", 32),
+          index,
+          filename: file.filename,
+          mime: file.mime,
+          bytes: file.bytes,
+          sha256: file.sha256,
+        })));
+        (paper ? validateAcquiredPaperArtifacts : validateFileWorkerArtifacts)(artifacts);
+        const groupId = randomFileWorkerId("fgrp_", 32);
+        const receiptUnsigned = {
+          schemaVersion: paper ? ACQUIRED_PAPER_SCHEMA_VERSIONS.receipt : FILE_WORKER_SCHEMA_VERSIONS.receipt,
+          receiptId: randomFileWorkerId("frcp_", 24),
+          groupId,
+          ...digests,
+          requestId: request.requestId,
+          requestDigest,
+          artifactsDigest: (paper ? acquiredPaperArtifactsDigest : fileWorkerArtifactsDigest)(artifacts),
+          fileCount: artifacts.length,
+          totalBytes: requestedBytes,
+          networkNone: true,
+          issuedAt: currentTimestamp(now),
+          // networkNone describes storage, not the earlier acquisition.
+          ...(paper ? { source: request.source } : {}),
+        };
+        const receipt = Object.freeze({ ...receiptUnsigned, digest: contractDigest(receiptUnsigned) });
+        (paper ? validateAcquiredPaperReceipt : validateFileWorkerReceipt)(receipt);
+        const stagePaths = artifacts.map(({ ref }) => path.join(paths.stages, ref));
+        let group = null;
         try {
-          await reapExpired();
-          const existing = findGroupByRequest(request.requestId);
-          if (existing) {
-            if (existing.requestDigest !== requestDigest || !scopeMatches(request.scope, existing)) {
-              documentWorkerFail("IDEMPOTENCY_CONFLICT", "File publish request id was already used.", { status: 409 });
-            }
-            return publishReplay(existing);
+          for (let index = 0; index < artifacts.length; index += 1) {
+            signal?.throwIfAborted();
+            await writeStage(stagePaths[index], request.files[index].bytesValue, artifacts[index].sha256);
           }
-          const reservation = ledger.reservations.find(({ requestId }) => requestId === request.requestId);
-          const candidateFiles = request.files.map(({ bytesValue: _bytesValue, encoding: _encoding, content: _content, ...file }) => file);
-          const tokenDigest = crypto.createHash("sha256").update(request.authorityToken, "utf8").digest("hex");
-          const digests = fileWorkerScopeDigests(request.scope);
-          if (
-            !reservation || reservation.issuanceId !== request.issuanceId ||
-            reservation.authorityEpoch !== request.authorityEpoch || reservation.authorityTokenDigest !== tokenDigest ||
-            reservation.contentDigest !== digestFileWorkerContent({ scope: request.scope, files: candidateFiles }) ||
-            ["ownerDigest", "threadDigest", "runDigest", "scopeDigest"].some((key) => reservation[key] !== digests[key])
-          ) {
-            documentWorkerFail("ARTIFACT_CONTENT_GONE", "File publish authority is absent or expired.", { status: 410 });
-          }
-          if (ledger.groups.length >= MAXIMUM_GROUPS) unavailable("File worker group capacity is exhausted.");
-          const requestedBytes = request.files.reduce((sum, file) => sum + file.bytes, 0);
-          if (requestedBytes > FILE_WORKER_LIMITS.maximumStoredBytes - retainedBytes()) {
-            unavailable("File worker private object quota is exhausted.");
-          }
-          const artifacts = Object.freeze(request.files.map((file, index) => Object.freeze({
-            ref: randomFileWorkerId("fobj_", 32),
-            index,
-            filename: file.filename,
-            mime: file.mime,
-            bytes: file.bytes,
-            sha256: file.sha256,
-          })));
-          validateFileWorkerArtifacts(artifacts);
-          const groupId = randomFileWorkerId("fgrp_", 32);
-          const receiptUnsigned = {
-            schemaVersion: FILE_WORKER_SCHEMA_VERSIONS.receipt,
-            receiptId: randomFileWorkerId("frcp_", 24),
+          await syncDirectory(paths.stages);
+          await checkpoint("file-after-stage-before-ledger", { requestId: request.requestId });
+          signal?.throwIfAborted();
+          group = {
             groupId,
+            state: "staged",
             ...digests,
             requestId: request.requestId,
+            authorityEpoch: request.authorityEpoch,
             requestDigest,
-            artifactsDigest: fileWorkerArtifactsDigest(artifacts),
-            fileCount: artifacts.length,
-            totalBytes: requestedBytes,
-            networkNone: true,
-            issuedAt: currentTimestamp(now),
+            receipt: { ...receipt },
+            artifacts: artifacts.map((artifact) => ({ ...artifact, state: "staged" })),
+            createdAt: receipt.issuedAt,
+            committedAt: null,
+            deletionId: null,
+            pendingCommit: null,
           };
-          const receipt = Object.freeze({ ...receiptUnsigned, digest: contractDigest(receiptUnsigned) });
-          validateFileWorkerReceipt(receipt);
-          const stagePaths = artifacts.map(({ ref }) => path.join(paths.stages, ref));
-          let group = null;
-          try {
-            for (let index = 0; index < artifacts.length; index += 1) {
-              await writeStage(stagePaths[index], request.files[index].bytesValue, artifacts[index].sha256);
-            }
-            await syncDirectory(paths.stages);
-            await checkpoint("file-after-stage-before-ledger", { requestId: request.requestId });
-            group = {
-              groupId,
-              state: "staged",
-              ...digests,
-              requestId: request.requestId,
-              authorityEpoch: request.authorityEpoch,
-              requestDigest,
-              receipt: { ...receipt },
-              artifacts: artifacts.map((artifact) => ({ ...artifact, state: "staged" })),
-              createdAt: receipt.issuedAt,
-              committedAt: null,
-              deletionId: null,
-              pendingCommit: null,
-            };
-            ledger.groups.push(group);
-            await saveLedger();
-            return publishResponse(group);
-          } catch (error) {
-            if (group && ledger.groups.at(-1) === group) ledger.groups.pop();
-            await Promise.allSettled(stagePaths.map((filename) => fs.unlink(filename)));
-            await syncDirectory(paths.stages).catch(() => {});
-            throw error;
-          }
-        } finally {
-          for (const file of request.files) file.bytesValue.fill(0);
+          ledger.groups.push(group);
+          await saveLedger();
+          return publishResponse(group);
+        } catch (error) {
+          if (group && ledger.groups.at(-1) === group) ledger.groups.pop();
+          await Promise.allSettled(stagePaths.map((filename) => fs.unlink(filename)));
+          await syncDirectory(paths.stages).catch(() => {});
+          throw error;
         }
-      });
+      } finally {
+        for (const file of request.files) file.bytesValue.fill(0);
+      }
+    });
+  }
+
+  const store = {
+    schemaVersion: FILE_WORKER_LEDGER_SCHEMA_VERSION,
+    issue(requestInput) { return issue(requestInput); },
+    publish(requestInput) { return publish(requestInput); },
+    async issueAcquiredPaper(requestInput) {
+      return issue(validateAcquiredPaperIssueRequest(requestInput), true);
+    },
+    async importAcquiredPaper(requestInput, bytes, { signal } = {}) {
+      if (signal !== undefined && !(signal instanceof AbortSignal)) {
+        documentWorkerFail("INVALID_REQUEST", "Paper import cancellation is invalid.", { status: 400 });
+      }
+      signal?.throwIfAborted();
+      const normalized = normalizeAcquiredPaperImport(requestInput, bytes);
+      try { return await publish(normalized, true, signal); }
+      finally { normalized.files[0].bytesValue.fill(0); }
     },
 
     commit(requestInput) {
@@ -893,7 +937,7 @@ export async function openIntegrationFileWorkerStore(options = {}) {
         }
         const group = findGroupByReceipt(request.receiptDigest);
         if (!group || !scopeMatches(request.scope, group)) notFound();
-        if (canonicalJson(fileWorkerCommitManifest(group.artifacts.map(publicArtifact))) !== canonicalJson(request.objects)) notFound();
+        if (canonicalJson(groupArtifacts(group).map(({ ref, index, sha256 }) => ({ ref, index, sha256 }))) !== canonicalJson(request.objects)) notFound();
         if (group.state === "tombstoned") documentWorkerFail("ARTIFACT_CONTENT_GONE", "File group was deleted.", { status: 410 });
         if (new Set(["delete-prepared", "deleting"]).has(group.state)) {
           documentWorkerFail("ARTIFACT_DELETE_PENDING", "File group is being deleted.", { status: 503 });

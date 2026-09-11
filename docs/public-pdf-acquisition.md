@@ -1,7 +1,8 @@
 # Public paper acquisition
 
-Status: the credential-free acquisition primitive is implemented and tested.
-It is not yet an enabled integration tool or an EchoMind download feature.
+Status: credential-free acquisition and durable binary storage primitives are
+implemented and tested. They are not yet an enabled integration tool or an
+EchoMind download feature; the authenticated transport still needs integration.
 The live analysis, execution and shared document services remain unchanged.
 
 ## Ownership and boundaries
@@ -74,12 +75,53 @@ the paper. This demonstrates a real download, not an app-level delivery.
 
 ## Remaining complete path
 
+### Durable storage checkpoint — September 11
+
+`integration-acquired-paper-contract.js` adds distinct issue/import/receipt
+schemas for one source PDF up to the common16MiB artifact bound. It carries
+source identity, original/final HTTPS URLs, optional DOI/version, acquisition
+time and exact byte/hash metadata. These are the acquisition caller's bound
+claims, not independent proof of eligibility, semantic content or reuse rights.
+The worker never resolves/fetches the URLs. The agent must bind them to the
+actual selected source and the verified downloader result before issuing.
+
+The existing durable file store exposes `issueAcquiredPaper(metadata)` and
+`importAcquiredPaper(metadata, bytes, { signal })`. Issue metadata is persisted
+before binary import. Import copies bounded bytes before queuing, rechecks hash
+and the shared PDF envelope, and stages them under a distinct immutable paper
+receipt. The same existing commit/content/two-phase-delete lifecycle applies.
+`networkNone` on this receipt describes storage, not earlier acquisition.
+No TeX compiler receipt is created. Generated-file issue/publish validation
+remains512KiB/file and768KiB/bundle, including in mixed stores.
+
+The17 new offline store tests cover775,166-byte and16MiB synthetic fixtures,
+owner/session/thread/run isolation, metadata/source/authority binding, restart
+replay, staged visibility, commit-crash recovery, ranges, queued/staging
+cancellation, byte ownership, invalid bytes and restart-stable deletion. The
+synthetic envelopes are not parsed scientific papers. Existing file-store,
+file-client and document-service smokes pass, alongside99 acquisition/synthesis
+tests, planner,295-file syntax, mock web API and coding tools. The fixed-port
+document HTTP server smoke explicitly skipped because the existing service owns
+18102; that result is not HTTP qualification for this new path.
+
+Run `npm run smoke:integration-file-worker-store` for old and new lifecycles.
+No binary-import route, gateway permission, analysis-session profile or public
+tool is enabled by these store methods. No service restart or live-state write
+occurred. Before activation, qualify the bounded binary transport and account
+broker together. Older packages reject new paper receipts in a shared ledger:
+plan a compatible rollback before the first live paper import; do not downgrade
+a ledger containing these receipts to an old reader or delete it to recover.
+
+### Next integration steps
+
 1. Bind an acquired paper to the selected source identity and user intent in
-   a durable, scoped worker operation. Preserve DOI/version/source metadata.
-2. Add acquisition to the existing file store without pretending that downloaded
-   bytes were model-generated or compiled TeX. Reuse its idempotency, immutable
+   the durable analysis job, then use the separate paper issue/import operation.
+   Preserve DOI/version/source metadata across recovery.
+2. Connect the new store operation to an authenticated, bounded binary transport
+   and the committed account artifact broker. Reuse idempotency, immutable
    receipts, ownership, cancellation and verified cleanup. Keep network URLs
-   out of public artifact content requests.
+   out of public artifact content requests. The storage worker keeps loopback-only
+   networking; acquisition stays in the existing network-capable agent role.
 3. Carry realistic PDF sizes through that dedicated path. The existing generated
    file publisher has a512KiB per-file limit,768KiB bundle limit and1MiB JSON
    transport limit; the real775,166-byte paper already exceeds the per-file cap.
