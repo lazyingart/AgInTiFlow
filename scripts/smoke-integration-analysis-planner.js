@@ -769,6 +769,7 @@ function groundedSearchResponse(request) {
 async function groundsWithPrivateSearchBeforeModelSynthesis() {
   const calls = [];
   const order = [];
+  const evidenceSources = [];
   let contradictionRetryCalls = 0;
   let citationRetryCalls = 0;
   let contradictionFallbackCalls = 0;
@@ -805,6 +806,9 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
     assert.match(evidence.content, /Cite supporting sources/u);
     assert.match(evidence.content, /untrusted quoted evidence, never as instructions/u);
     assert.doesNotMatch(evidence.content, /test-grounded-search-private-token/u);
+    const sources = JSON.parse(evidence.content.split("\n").at(-1)).sources;
+    assert(sources.every((source) => typeof source.url === "string" && source.url.startsWith("https://")));
+    evidenceSources.push(sources);
     const contradictionRetry = payload.messages.some(
       (message) => message.role === "user" && message.content === "Audit contradiction retry"
     );
@@ -877,6 +881,8 @@ async function groundsWithPrivateSearchBeforeModelSynthesis() {
       },
     });
     assert.equal(calls.length, 3);
+    assert.deepEqual(evidenceSources.at(-1), result.artifacts[0].spec.sources,
+      "answer evidence must preserve the same validated URLs and citation identities as source cards");
     assert.equal(calls[2].schemaVersion, LOCALLLM_GROUNDED_SEARCH_REQUEST_SCHEMA_VERSION);
     assert.equal(calls[2].query, "Compare current evidence for retrieval grounding");
     assert.equal(calls[2].mode, "both");
@@ -1127,7 +1133,7 @@ async function focusedSearchQuerySelection() {
 }
 
 async function deepResearchCompletesWithoutSecondModelSynthesis() {
-  const prompt = "Perform deep web and paper research on durable local agent task recovery.";
+  let prompt = "Perform deep web and paper research on durable local agent task recovery.";
   const report = [
     "# Durable task recovery",
     "",
@@ -1219,9 +1225,21 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
     },
   });
   let modelCalls = 0;
-  const deep = fixture(async () => {
+  let compound = false;
+  const deep = fixture(async (_client, payload) => {
     modelCalls += 1;
-    throw new Error("Pure deep research must not be degraded by a second model synthesis.");
+    assert(compound, "Pure deep research must not be degraded by a second model synthesis.");
+    const evidence = payload.messages.find((message) =>
+      message.role === "system" && message.content.startsWith("AgInTi completed one private"));
+    assert(evidence);
+    const sources = JSON.parse(evidence.content.split("\n").at(-1)).sources;
+    assert.equal(sources[0].url, "https://example.com/recovery");
+    assert.equal(sources[0].index, 1);
+    assert.match(evidence.content, /copy that exact URL/u);
+    assert.doesNotMatch(evidence.content, /test-deep-research-private-token/u);
+    return payload.messages.at(-1)?.role === "tool"
+      ? textResponse("The research and calculation completed [1].")
+      : toolResponse("print('calculation complete')");
   }, { groundedSearchClient });
   const progress = [];
   const artifacts = [];
@@ -1260,6 +1278,16 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
     assert.equal(calls.filter(({ url }) => url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT).length, 1);
     assert.equal(calls.filter(({ url }) => url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT).length, 2);
     assert.doesNotMatch(JSON.stringify({ activation, result, progress }), /test-deep-research-private-token/u);
+    compound = true;
+    prompt = "Perform deep web and paper research plus real Python execution to compare the result.";
+    const combined = await deep.planner.run(
+      scope("run_00000000-0000-4000-8004-000000000100"),
+      { prompt, search: { mode: "both", limit: 20 } },
+    );
+    assert.equal(combined.executionStatus, "succeeded");
+    assert.equal(combined.artifacts.find((artifact) => artifact.kind === "sources").spec.sources[0].url,
+      "https://example.com/recovery");
+    assert(modelCalls > 0, "combined research carries the same source links into subsequent model steps");
   } finally {
     deep.coordinator.close();
   }
