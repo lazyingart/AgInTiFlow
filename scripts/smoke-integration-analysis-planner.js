@@ -1144,6 +1144,7 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
     "[1] [Verified recovery source](https://example.com/recovery)",
   ].join("\n");
   const calls = [];
+  let sourceSnippet = "Durable execution records preserve task state across interruption. Operators: /, /; /: /. /! /? + and -. Private location: /home/private/recovery.";
   const task = (status, updatedAt, query = prompt.replace(/\s+/gu, " ").trim()) => ({
     schema: LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
     task: {
@@ -1160,7 +1161,7 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
       sources: status === "complete" ? [{
         title: "Verified recovery source",
         url: "https://example.com/recovery",
-        snippet: "Durable execution records preserve task state across interruption.",
+        snippet: sourceSnippet,
         provider: "crossref",
         providers: ["crossref"],
         kind: "paper",
@@ -1273,6 +1274,8 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
     assert.deepEqual(finals, [result]);
     assert.deepEqual(artifacts.map(({ kind }) => kind), ["sources"]);
     assert.equal(artifacts[0].spec.sources.length, 1);
+    assert.match(artifacts[0].spec.sources[0].snippet, /Operators: \/, \/; \/: \/\. \/! \/\?/u);
+    assert.doesNotMatch(artifacts[0].spec.sources[0].snippet, /\/home\/private/u);
     assert(progress.some(({ toolName, executionState }) =>
       toolName === INTEGRATION_DEEP_RESEARCH_TOOL_NAME && executionState === "starting"
     ));
@@ -1373,6 +1376,14 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
       assert.equal(result.toolCalls, 0, action);
       assert.equal(modelCalls, before, "research-only requests retain their no-second-synthesis path");
       assert.equal(result.text, report);
+    }
+    for (const privatePath of ["/private-note", "/,private-note", "/;private-note", "/.private-note"]) {
+      sourceSnippet = `Retrieved content mentions ${privatePath}`;
+      prompt = "Perform deep web and paper research on task recovery.";
+      await assert.rejects(deep.planner.run(
+        scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+        { prompt, search: { mode: "both", limit: 20 } }
+      ), (error) => error.code === "ANALYSIS_ARTIFACT_UNSAFE", privatePath);
     }
     plainFollowup = true;
     const followup = await deep.planner.run(

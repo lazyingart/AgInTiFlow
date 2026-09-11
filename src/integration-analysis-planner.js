@@ -201,8 +201,11 @@ const REQUESTED_PLOT_ELEMENT_RULES = Object.freeze([
     series: /\boutliers?\b/iu,
   }),
 ]);
+// A standalone slash with sentence punctuation is an operator token, not a
+// path. Keep actual path-like tokens (including punctuation-prefixed names),
+// file URLs, drive paths and UNC paths under the existing privacy boundary.
 const ABSOLUTE_PATH_PATTERN =
-  /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
+  /(?:^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/|[.,;:!?]*(?:[\s"'`<>)\]}]|$))[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\\/\s"'`<>)\]}]+\\[^\s"'`<>)\]}]+)/giu;
 const PLOT_ARTIFACT_ACTION =
   /(?:^plot\s+(?!(?:is|means?|refers?|describes?|if|whether|would|could|might|may|should|can)\b)\S|^visuali[sz]e\b|\b(?:make|create|generate|draw|show|expose|render|produce|return|include|output|emit|add|prepare)\s+(?:me\s+)?(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,3}(?:plot|chart|graph)\b|\b(?:make|create|generate|draw|show|display|expose|render|produce|return|include|output|emit|add|prepare)\b[^.!?;\r\n]{0,120}\b(?:(?:a|an|the|one)\s+)?(?:[a-z][a-z-]*\s+){0,2}(?:(?:line|bar|scatter|area)[-\s]+)?(?:plot|chart|graph)\s+artifact\b|(?:画图|绘图|生成图表|显示图表))/iu;
 const NEGATED_PLOT_ARTIFACT_ACTION =

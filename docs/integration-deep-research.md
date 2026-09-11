@@ -34,6 +34,12 @@ is explicitly marked as shortened. This is a chat presentation, not a promise
 of full-length document retention or proof that every research claim is correct.
 Long-form document delivery and source-relevance qualification remain separate.
 
+Artifact privacy checks distinguish standalone slash operators followed only by
+sentence punctuation from actual path-like tokens. Public mathematical prose
+such as an operator list may contain the former. Unix paths with filename text,
+file URLs, Windows drive paths and UNC paths retain their existing treatment;
+this lexical correction does not authorize filesystem access or expose a path.
+
 Search/research intent, task activity, artifacts, failures, and terminal state use the same durable session ledger as other Agent work. The next message in the thread does not inherit stale research authority or completed activity. Public capabilities advertise the optional `localllm/research-task/v2` protocol while retaining the original Search contract for older Web clients.
 
 ## Explicit application search policy
