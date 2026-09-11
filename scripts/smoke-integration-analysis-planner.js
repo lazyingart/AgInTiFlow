@@ -1438,6 +1438,7 @@ async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig
     sourceSnippet = "Durable execution records preserve task state across interruption.";
     const finding = "Durable records support recovery after interruption.";
     const recoveredResponse = { choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
+      answerLanguage: "English",
       claims: [{ text: finding, evidence: [{ source: 1, quote: sourceSnippet }] }],
     }) } }] };
     prompt = "Perform deep web and paper research on task recovery.";
