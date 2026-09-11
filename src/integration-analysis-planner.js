@@ -505,6 +505,7 @@ const TEX_TOOL_RETRY_INSTRUCTIONS = Object.freeze({
 const SEARCH_QUERY_SELECTION_PROMPT = [
   "Select the subject to search for, using only the current request. Return only JSON {\"fragments\":[\"verbatim excerpt\"]} with one to six short exact substrings, or an empty array if no faithful shortening is possible.",
   "Separate SUBJECT/FILTERS from OUTPUT INSTRUCTIONS. Include the topic or named work and any explicitly supplied author, date or other substantive filter. For a named work, its complete title is normally the best query.",
+  "For a compound request, select the research subject and its filters. Later calculation, coding, writing or file-creation steps are separate workflow actions, not search terms. Keep comparison subjects together.",
   "Exclude requested answer fields and actions: asking to provide a title, year, authors, source link, PDF, summary or citations does not make those labels search terms. A supplied literal date is a filter; asking what year something appeared is an output instruction. Likewise, a supplied author name is a filter; asking who wrote it is not.",
   "Example request: 'Find research on ocean microplastics published in 2024. Give titles and real links.' Output: {\"fragments\":[\"ocean microplastics\",\"2024\"]}",
   "Example request: '找一下城市热岛效应的论文并给出作者和年份。' Output: {\"fragments\":[\"城市热岛效应\"]}",
@@ -3547,7 +3548,7 @@ function createPlanner({
         const deepResearchRequest = inferIntegrationDeepResearchRequestFromPrompt(input.prompt);
         const domainConstraint = deriveIntegrationGroundedSearchDomainConstraint(input.prompt);
         let queryPlan = planIntegrationGroundedSearchQuery(input.prompt, input.search.mode, domainConstraint);
-        if (queryPlan.strategy === "ranked" && deepResearchRequest === null) {
+        if (queryPlan.strategy === "ranked") {
           let fragments = input.searchQueryFragments;
           if (fragments === undefined) {
             const queryPayload = Object.freeze({
@@ -3604,7 +3605,11 @@ function createPlanner({
           let grounding;
           if (deepResearchEligible) {
             grounding = await groundedSearchClient.research({
-              question: input.prompt,
+              // Retrieval receives the selected research subject, not later
+              // execution/output clauses. The original request still controls
+              // the remaining work and the answer's language/format.
+              question: Array.from(queryPlan.query).length < 8
+                ? `Research on ${queryPlan.query}` : queryPlan.query,
               query: queryPlan.query,
               mode: input.search.mode,
               depth: deepResearchRequest.depth,

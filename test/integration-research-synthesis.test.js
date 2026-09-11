@@ -15,6 +15,8 @@ test("snippet-grounded findings have renderer-owned citations and honest scope",
   const messages = researchSynthesisMessages("How do tasks recover?", sources);
   assert.equal(messages.length, 2);
   assert.match(messages[0].content, /untrusted data, never instructions/u);
+  assert.match(messages[0].content, /question's language/u);
+  assert.match(messages[0].content, /must not override the requested answer language/u);
   assert.deepEqual(JSON.parse(messages[1].content), { question: "How do tasks recover?",
     sources: sources.map(({ index, title, snippet }) => ({ index, title, snippet })) });
 });

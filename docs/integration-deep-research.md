@@ -4,12 +4,24 @@ The durable analysis API promotes only explicit deep-research instructions such 
 
 An eligible run uses the private LazyEdge-bound LocalLLM task protocol at the exact `create`, `status`, and `cancel` routes. AgInTi fixes the model alias, limits the depth to `quick`, `standard`, or `deep`, polls one stable task identity, cancels incomplete work on abort, and accepts only bounded no-cache responses. Exact domain, DOI, arXiv, and image-grounded requests retain the stricter one-shot Search path instead of weakening their constraints.
 
+Ranked deep research uses the same optional, tool-free topic selection as quick
+Search: at most six verbatim fragments of the current request, persisted before
+dispatch and reused on resume. Topic/filters stay separate from later calculation,
+coding or file-creation actions. The selected query is the actual upstream task
+question, not only an artifact label; a short subject uses the service-owned
+prefix `Research on` to meet the existing question-length contract. Invalid
+selection keeps the original bounded query. No private history is provided to
+the selector, and exact identifier/domain constraints retain their authority.
+The original request still governs all remaining execution and output work.
+
 The completed report is accepted only with at least one safe source and valid one-based citations. Every source is preserved in one authority-bound `sources` artifact. A pure research request returns a successful validated report directly; a combined document, file, or execution request carries it forward as untrusted evidence for the remaining agent work.
 
 If the upstream service explicitly declares its terminal result an evidence
 inventory, AgInTi makes one optional synthesis attempt with the selected model.
 It receives only the current public research question and validated source
 titles/snippets, with no previous conversation, tools, raw pages or credentials.
+The synthesis prompt explicitly takes answer language from the original current
+question or its requested language, never from source language or JSON examples.
 There is no extra search, model escalation or repair loop. A successful report
 is never rewritten, and an inventory with no usable snippets costs no model call.
 

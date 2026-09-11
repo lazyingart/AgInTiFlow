@@ -1134,6 +1134,11 @@ async function focusedSearchQuerySelection() {
 
 async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig = LOCAL_MODEL) {
   let prompt = "Perform deep web and paper research on durable local agent task recovery.";
+  let selectedFragments = [];
+  const selectedTopic = () => (selectedFragments.length ? selectedFragments.join(" ") : prompt)
+    .replace(/\s+/gu, " ").trim();
+  const selectedQuestion = () => Array.from(selectedTopic()).length < 8
+    ? `Research on ${selectedTopic()}` : selectedTopic();
   let report = [
     "# Durable task recovery",
     "",
@@ -1147,11 +1152,11 @@ async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig
   let inventoryOnly = false;
   let inventoryResponse;
   let sourceSnippet = "Durable execution records preserve task state across interruption. Operators: /, /; /: /. /! /? + and -. Private location: /home/private/recovery.";
-  const task = (status, updatedAt, query = prompt.replace(/\s+/gu, " ").trim()) => ({
+  const task = (status, updatedAt, query = selectedTopic()) => ({
     schema: LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
     task: {
       id: "b1c2d3e4f5a6",
-      question: prompt,
+      question: selectedQuestion(),
       model: "qwen3:30b-a3b-instruct-2507-q4_K_M",
       status,
       stage: status === "complete"
@@ -1215,7 +1220,7 @@ async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig
       }
       if (url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT) {
         assert.deepEqual(request, {
-          question: prompt,
+          question: selectedQuestion(),
           model: "localllm-deep",
           mode: "both",
           depth: "deep",
@@ -1262,7 +1267,14 @@ async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig
     return payload.tools === undefined
       ? textResponse(synthesis)
       : toolResponse("print('calculation complete')");
-  }, { groundedSearchClient, localModelConfig });
+  }, { groundedSearchClient, localModelConfig,
+    selectSearchQuery: async (_client, payload) => {
+      assert.equal(payload.messages[1].content, prompt);
+      assert.equal(payload.tools, undefined);
+      assert.doesNotMatch(JSON.stringify(payload.messages), /PRIVATE_CHAT_MARKER/u);
+      return textResponse(JSON.stringify({ fragments: selectedFragments }));
+    },
+  });
   const progress = [];
   const artifacts = [];
   const finals = [];
@@ -1357,6 +1369,37 @@ async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig
       assert.equal(result.toolCalls, 1, "a rejected summary cannot repeat execution");
     }
     synthesis = "The calculation completed.";
+
+    prompt = "Perform deep web and paper research on durable local agent task recovery. Then use Python to calculate the sum of two and three.";
+    selectedFragments = ["durable local agent task recovery"];
+    let checkpoint;
+    const selected = await deep.planner.run(
+      scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+      { prompt, search: { mode: "both", limit: 20 },
+        conversation: [{ role: "user", content: "PRIVATE_CHAT_MARKER" }] },
+      { onSearchQueryPlan: async (fragments) => { checkpoint = fragments; return fragments; } }
+    );
+    assert.deepEqual(checkpoint, selectedFragments, "deep research persists topic selection before retrieval");
+    assert.equal(calls.findLast(({ url }) => url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT).request.question,
+      "durable local agent task recovery", "later execution must not contaminate the actual research request");
+    assert.equal(selected.executionStatus, "succeeded", "topic selection preserves the original execution obligation");
+    assert(selected.text.startsWith(report));
+    const selectionsBeforeResume = deep.queryPlanningPayloads.length;
+    await deep.planner.run(
+      scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+      { prompt, search: { mode: "both", limit: 20 }, searchQueryFragments: checkpoint }
+    );
+    assert.equal(deep.queryPlanningPayloads.length, selectionsBeforeResume, "deep research reuses the persisted topic");
+    prompt = "Perform deep web and paper research on BERT.";
+    selectedFragments = ["BERT"];
+    const shortTopic = await deep.planner.run(
+      scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+      { prompt, search: { mode: "both", limit: 20 } }
+    );
+    assert.equal(calls.findLast(({ url }) => url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT).request.question,
+      "Research on BERT", "short named subjects satisfy the provider's question bound without unrelated terms");
+    assert.equal(shortTopic.text, report);
+    selectedFragments = [];
 
     const originalReport = report;
     report = originalReport + "\n\n" + "研究結果 [1]。".repeat(1000);
