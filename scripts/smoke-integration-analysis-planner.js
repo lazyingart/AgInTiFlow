@@ -1132,7 +1132,7 @@ async function focusedSearchQuerySelection() {
   } finally { current.coordinator.close(); }
 }
 
-async function deepResearchCompletesWithoutSecondModelSynthesis() {
+async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig = LOCAL_MODEL) {
   let prompt = "Perform deep web and paper research on durable local agent task recovery.";
   let report = [
     "# Durable task recovery",
@@ -1144,6 +1144,8 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
     "[1] [Verified recovery source](https://example.com/recovery)",
   ].join("\n");
   const calls = [];
+  let inventoryOnly = false;
+  let inventoryResponse;
   let sourceSnippet = "Durable execution records preserve task state across interruption. Operators: /, /; /: /. /! /? + and -. Private location: /home/private/recovery.";
   const task = (status, updatedAt, query = prompt.replace(/\s+/gu, " ").trim()) => ({
     schema: LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION,
@@ -1152,7 +1154,9 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
       question: prompt,
       model: "qwen3:30b-a3b-instruct-2507-q4_K_M",
       status,
-      stage: status === "complete" ? "Research complete" : "Preparing research plan",
+      stage: status === "complete"
+        ? (inventoryOnly ? "Research complete — evidence inventory only" : "Research complete")
+        : "Preparing research plan",
       progress: status === "complete" ? 100 : 0,
       mode: "both",
       depth: "deep",
@@ -1229,8 +1233,18 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
   let compound = false;
   let synthesis = "The calculation completed.";
   let plainFollowup = false;
-  const deep = fixture(async (_client, payload) => {
+  const deep = fixture(async (_client, payload, _config, label) => {
     modelCalls += 1;
+    if (label === "research inventory synthesis") {
+      assert(inventoryOnly);
+      assert.equal(payload.tools, undefined);
+      assert.deepEqual(payload.response_format, { type: "json_object" });
+      assert.equal(payload.messages.length, 2);
+      assert.equal(JSON.parse(payload.messages[1].content).question, prompt);
+      assert.doesNotMatch(JSON.stringify(payload.messages), /PRIVATE_CHAT_MARKER/u);
+      if (inventoryResponse instanceof Error) throw inventoryResponse;
+      return inventoryResponse;
+    }
     assert(compound, "Pure deep research must not be degraded by a second model synthesis.");
     const evidence = payload.messages.find((message) =>
       message.role === "system" && message.content.startsWith("AgInTi completed one private"));
@@ -1248,7 +1262,7 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
     return payload.tools === undefined
       ? textResponse(synthesis)
       : toolResponse("print('calculation complete')");
-  }, { groundedSearchClient });
+  }, { groundedSearchClient, localModelConfig });
   const progress = [];
   const artifacts = [];
   const finals = [];
@@ -1377,6 +1391,51 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
       assert.equal(modelCalls, before, "research-only requests retain their no-second-synthesis path");
       assert.equal(result.text, report);
     }
+    inventoryOnly = true;
+    sourceSnippet = "Durable execution records preserve task state across interruption.";
+    const finding = "Durable records support recovery after interruption.";
+    const recoveredResponse = { choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
+      claims: [{ text: finding, evidence: [{ source: 1, quote: sourceSnippet }] }],
+    }) } }] };
+    prompt = "Perform deep web and paper research on task recovery.";
+    for (const draft of [recoveredResponse, textResponse("invented summary [99]"),
+      new Error("model quota unavailable")]) {
+      inventoryResponse = draft;
+      const before = modelCalls;
+      const searchBefore = calls.filter(({ url }) => url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT).length;
+      const recovered = await deep.planner.run(
+        scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+        { prompt, search: { mode: "both", limit: 20 },
+          conversation: [{ role: "user", content: "PRIVATE_CHAT_MARKER" }] }
+      );
+      assert.equal(modelCalls, before + 1, "inventory recovery has one attempt and no repair loop");
+      assert.equal(calls.filter(({ url }) => url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT).length,
+        searchBefore + 1, "synthesis failure never repeats retrieval");
+      if (draft === recoveredResponse) {
+        assert(recovered.text.includes(finding + " [1]"));
+        assert.match(recovered.text, /full papers have not been reviewed/u);
+      } else assert.equal(recovered.text, report, "original report survives optional synthesis failure");
+      assert.equal(recovered.artifacts[0].spec.sources[0].url, "https://example.com/recovery");
+    }
+    inventoryResponse = recoveredResponse;
+    prompt += " Then use Python to calculate the sum of two and three.";
+    const recoveredCompound = await deep.planner.run(
+      scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+      { prompt, search: { mode: "both", limit: 20 } }
+    );
+    assert.match(recoveredCompound.text, /Retrieved-evidence summary/u);
+    assert.match(recoveredCompound.text, /Additional results/u);
+    assert.equal(recoveredCompound.executionStatus, "succeeded");
+    sourceSnippet = "";
+    prompt = "Perform deep web and paper research on task recovery.";
+    const beforeEmpty = modelCalls;
+    const noSnippet = await deep.planner.run(
+      scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+      { prompt, search: { mode: "both", limit: 20 } }
+    );
+    assert.equal(modelCalls, beforeEmpty, "no snippet evidence means no synthesis cost");
+    assert.equal(noSnippet.text, report);
+    inventoryOnly = false;
     for (const privatePath of ["/private-note", "/,private-note", "/;private-note", "/.private-note"]) {
       sourceSnippet = `Retrieved content mentions ${privatePath}`;
       prompt = "Perform deep web and paper research on task recovery.";
@@ -5833,6 +5892,7 @@ await unsupportedSafeExpressionPlotFallsBackToBoundedModelExecution();
 await groundsWithPrivateSearchBeforeModelSynthesis();
 await focusedSearchQuerySelection();
 await deepResearchCompletesWithoutSecondModelSynthesis();
+await deepResearchCompletesWithoutSecondModelSynthesis(DEEPSEEK_MODEL);
 await executesAndSynthesizesPlot();
 await executesAndSynthesizesPlot(DEEPSEEK_MODEL);
 await directAnswerDoesNotExecute();

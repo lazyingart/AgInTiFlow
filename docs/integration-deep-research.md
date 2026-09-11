@@ -4,7 +4,26 @@ The durable analysis API promotes only explicit deep-research instructions such 
 
 An eligible run uses the private LazyEdge-bound LocalLLM task protocol at the exact `create`, `status`, and `cancel` routes. AgInTi fixes the model alias, limits the depth to `quick`, `standard`, or `deep`, polls one stable task identity, cancels incomplete work on abort, and accepts only bounded no-cache responses. Exact domain, DOI, arXiv, and image-grounded requests retain the stricter one-shot Search path instead of weakening their constraints.
 
-The completed report is accepted only with at least one safe source and valid one-based citations. Every source is preserved in one authority-bound `sources` artifact. A pure research request returns that validated report directly; a combined document, file, or execution request carries it forward as untrusted evidence for the remaining agent work.
+The completed report is accepted only with at least one safe source and valid one-based citations. Every source is preserved in one authority-bound `sources` artifact. A pure research request returns a successful validated report directly; a combined document, file, or execution request carries it forward as untrusted evidence for the remaining agent work.
+
+If the upstream service explicitly declares its terminal result an evidence
+inventory, AgInTi makes one optional synthesis attempt with the selected model.
+It receives only the current public research question and validated source
+titles/snippets, with no previous conversation, tools, raw pages or credentials.
+There is no extra search, model escalation or repair loop. A successful report
+is never rewritten, and an inventory with no usable snippets costs no model call.
+
+The recovery reply uses a small JSON claim/evidence schema. Every finding must
+cite a current source with a verbatim supporting snippet excerpt; indices,
+quote containment, output size and plain-text presentation are checked before
+the application renders citation markers. The result is explicitly labeled a
+retrieved-evidence summary, not a full-paper review. These are provenance and
+structure checks, not entailment verification. Source text stays untrusted.
+Model quota, timeout, malformed/truncated output, context overflow, or rejected
+evidence leaves the original inventory and all source cards intact; cancellation
+still cancels the run. Compound tasks retain the accepted summary alongside
+their separately verified results. Other providers and shared LocalLLM services
+keep their configured defaults.
 
 Coordinated computation requests use the same action matcher as standalone
 requests. For example, research followed by “Then use Python to calculate…”

@@ -1276,6 +1276,7 @@ const researchTask = (status, updatedAt) => ({
 });
 const researchCalls = [];
 const researchProgress = [];
+let inventoryOnly = false;
 const researchClient = createTestOnlyIntegrationGroundedSearchClient({
   endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
   apiKey: TOKEN,
@@ -1306,6 +1307,7 @@ const researchClient = createTestOnlyIntegrationGroundedSearchClient({
     if (url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT) {
       assert.deepEqual(request, { task_id: "a1b2c3d4e5f6" });
       const completed = researchTask("complete", 2);
+      if (inventoryOnly) completed.task.stage = "Research complete — evidence inventory only";
       completed.task.sources[0].snippet = "Details at https://example.com/report";
       return privateJsonResponse(completed);
     }
@@ -1346,6 +1348,7 @@ assert.deepEqual(researchProgress.map(({ status, progress }) => ({ status, progr
 ]);
 assert.equal(researchResult.schemaVersion, LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION);
 assert.equal(researchResult.taskId, "a1b2c3d4e5f6");
+assert.equal(researchResult.evidenceInventoryOnly, false);
 assert.equal(researchResult.artifact.kind, "sources");
 assert.equal(researchResult.artifact.spec.sources.length, 1);
 assert.equal(researchResult.artifact.spec.sources[0].snippet, "");
@@ -1363,6 +1366,13 @@ assert.equal(
 assert.equal(researchCalls.filter(({ url }) => url === INTEGRATION_DEEP_RESEARCH_CREATE_ENDPOINT).length, 1);
 assert.equal(researchCalls.filter(({ url }) => url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT).length, 2);
 assert.doesNotMatch(JSON.stringify({ researchActivation, researchResult }), new RegExp(TOKEN, "u"));
+inventoryOnly = true;
+const inventory = await researchClient.research({
+  question: researchQuestion, query: researchQuery, mode: "both", depth: "deep",
+  queryPlanDigest: researchPlanDigest, domainConstraintDigest: null,
+});
+assert.equal(inventory.evidenceInventoryOnly, true);
+assert.equal(inventory.report, researchResult.report, "classification uses upstream stage, not model-authored prose");
 
 assert.deepEqual(
   inferIntegrationDeepResearchRequestFromPrompt("Perform deep web and paper research before answering."),

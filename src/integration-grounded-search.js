@@ -1,4 +1,5 @@
 import { TextDecoder, types as utilTypes } from "node:util";
+import { RESEARCH_INVENTORY_STAGE } from "./integration-research-synthesis.js";
 
 import { parse as parseDomainName } from "tldts";
 
@@ -2376,6 +2377,7 @@ function createClient(optionsValue, { testOnly }) {
         mode: task.mode,
         depth: task.depth,
         report: task.report,
+        evidenceInventoryOnly: task.stage === RESEARCH_INVENTORY_STAGE,
         artifact,
         sources: artifact.spec.sources,
         providers: task.providers,
