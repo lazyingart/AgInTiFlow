@@ -62,8 +62,10 @@ export function renderResearchSynthesis(response, sources) {
       const source = sourceByIndex.get(evidence.source);
       const quote = normalizedQuote(evidence.quote);
       if (!source || quote.replace(/\s/gu, "").length < 12 ||
-          !normalizedQuote(source.snippet).includes(quote) || indices.includes(evidence.source)) return null;
-      indices.push(evidence.source);
+          !normalizedQuote(source.snippet).includes(quote)) return null;
+      // A finding can be supported by several excerpts from the same source.
+      // Validate every excerpt, then render that source's citation just once.
+      if (!indices.includes(evidence.source)) indices.push(evidence.source);
     }
     // Keep model prose inert; only this renderer can introduce citation syntax.
     const prose = claim.text.trim().replace(/[!*_#|~]/gu, "\\$&");

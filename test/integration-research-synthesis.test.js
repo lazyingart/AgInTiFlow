@@ -37,7 +37,6 @@ for (const [name, mutate] of [
   ["title only", (v) => { v.claims[0].evidence[0].quote = sources[0].title; }],
   ["tiny quote", (v) => { v.claims[0].evidence[0].quote = "Durable"; }],
   ["uncited claim", (v) => { v.claims[0].evidence = []; }],
-  ["duplicate citation", (v) => { v.claims[0].evidence.push(v.claims[0].evidence[0]); }],
   ["invented citation", (v) => { v.claims[0].text += " [20]"; }],
   ["invented URL", (v) => { v.claims[0].text += " https://example.com/invented.pdf"; }],
   ["HTML", (v) => { v.claims[0].text += " <img src=x>"; }],
@@ -57,6 +56,43 @@ for (const [name, mutate] of [
     assert.equal(renderResearchSynthesis(response(value), sources), null);
   });
 }
+
+test("multiple verified excerpts from one source share one rendered citation", () => {
+  const evidenceSources = [{ ...sources[0], snippet:
+    "Durable records preserve task state. Recovery resumes accepted work without a new task." }];
+  const value = draft();
+  value.claims[0].evidence = [
+    { source: 1, quote: "Durable records preserve task state." },
+    { source: 1, quote: "Recovery resumes accepted work without a new task." },
+  ];
+  const report = renderResearchSynthesis(response(value), evidenceSources);
+  assert(report);
+  assert.equal((report.match(/\[1\]/gu) || []).length, 1);
+  // Coalescing citations must never bypass validation of a later excerpt.
+  value.claims[0].evidence[1].quote = "An unsupported sentence absent from the snippet.";
+  assert.equal(renderResearchSynthesis(response(value), evidenceSources), null);
+});
+
+test("citation coalescing preserves first-seen order and the evidence-entry bound", () => {
+  const evidenceSources = [...sources, { ...sources[0], index: 2 }];
+  const value = draft();
+  const first = value.claims[0].evidence[0];
+  value.claims[0].evidence = [first, { ...first, source: 2 }, { ...first }];
+  const report = renderResearchSynthesis(response(value), evidenceSources);
+  assert.match(report, /\[1\]\[2\]/u);
+  assert.equal((report.match(/\[1\]/gu) || []).length, 1);
+  assert.equal((report.match(/\[2\]/gu) || []).length, 1);
+  value.claims[0].evidence.push({ ...first });
+  assert.equal(renderResearchSynthesis(response(value), evidenceSources), null);
+});
+
+test("identical supporting excerpts are inert and produce one citation", () => {
+  const value = draft();
+  value.claims[0].evidence.push({ ...value.claims[0].evidence[0] });
+  const report = renderResearchSynthesis(response(value), sources);
+  assert(report);
+  assert.equal((report.match(/\[1\]/gu) || []).length, 1);
+});
 
 test("unfinished, tool-shaped and malformed replies are never accepted", () => {
   for (const reason of [undefined, "length", "tool_calls", "content_filter"]) {

@@ -1457,7 +1457,10 @@ async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig
     const finding = "Durable records support recovery after interruption.";
     const recoveredResponse = { choices: [{ finish_reason: "stop", message: { content: JSON.stringify({
       answerLanguage: "English",
-      claims: [{ text: finding, evidence: [{ source: 1, quote: sourceSnippet }] }],
+      claims: [{ text: finding, evidence: [
+        { source: 1, quote: "Durable execution records preserve task state" },
+        { source: 1, quote: "preserve task state across interruption." },
+      ] }],
     }) } }] };
     prompt = "Perform deep web and paper research on task recovery.";
     for (const draft of [recoveredResponse, textResponse("invented summary [99]"),
@@ -1475,6 +1478,8 @@ async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig
         searchBefore + 1, "synthesis failure never repeats retrieval");
       if (draft === recoveredResponse) {
         assert(recovered.text.includes(finding + " [1]"));
+        assert.equal((recovered.text.match(/\[1\]/gu) || []).length, 1,
+          "several supported excerpts from one source render one citation");
         assert.match(recovered.text, /full papers have not been reviewed/u);
       } else assert.equal(recovered.text, report, "original report survives optional synthesis failure");
       assert.equal(recovered.artifacts[0].spec.sources[0].url, "https://example.com/recovery");
