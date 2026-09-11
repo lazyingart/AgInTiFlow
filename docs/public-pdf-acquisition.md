@@ -2,11 +2,48 @@
 
 Status: credential-free acquisition, durable storage, authenticated binary
 transport, conversation artifact lifecycle, durable acquisition metadata and
-opt-in planner routing are implemented and tested in source. They are not yet
-an enabled EchoMind download feature: operator/server configuration, pre-import
-background recovery, the guarded role route and source-PDF retention still need
-integration.
+opt-in planner routing and bounded process recovery are implemented and tested
+in source. They are not yet an enabled EchoMind download feature: operator/server
+configuration, the guarded role route and source-PDF retention still need integration.
 The live analysis, execution and shared document services remain unchanged.
+
+## Process recovery checkpoint — September 11
+
+The planner persists its selected source, current source evidence, completed
+research report and remaining-output flag before acquisition. The private
+session checkpoint contains no PDF bytes or bearer token. Recovery uses the
+same account, browser, thread, run, selection and issuance. It replays import
+and commit through the actual worker and skips search/model selection. Source
+identity and content conflicts still fail instead of silently selecting another
+paper. The original start time is retained; progress distinguishes recovery
+attempts from the interrupted attempt.
+
+At most two automatic process restarts are admitted. They use the existing
+two-executor, 16-queued-run limits and four-per-scope queue limit. Overflow stays
+durable and is admitted when a slot becomes available. Queued cancellation is
+honored. Startup reports queued/deferred work separately from recovered terminal
+work and dispatches no new planner until the bounded pre-listen audit succeeds.
+HTTP/provider failures are not an automatic retry loop. The existing private
+state lock's dead-owner and age checks remain unchanged.
+
+Once follow-on work begins, an interruption is reported as incomplete rather
+than replaying potentially side-effecting work. A committed paper alone cannot
+complete a compound request. A final success checkpoint is saved only after
+the runner callback/result agree, execution succeeds, requested document output
+is verified and all file receipts are acknowledged. Recovery preserves this
+validated final text rather than substituting a generic file-success message.
+
+Eleven new tests cover real child-process loss before download, after issuance,
+import, commit and final callback; continuation failure; callback disagreement;
+the durable restart budget; schema bounds; 20-owner queue overflow/cancellation;
+and failed pre-listen dispatch. Only the dead fixture lock's age is accelerated;
+run and worker state remain unchanged. The four added actual-planner replay
+scenarios cover English, Japanese, prior sources and paper-plus-notes without
+another source-selection call. Combined lifecycle tests: 121; actual planner/
+session/HTTP scenarios: 16. Existing planner, session/context/startup/authority,
+migration/prewrite/API, file-client/broker, 300-file syntax and mock web/coding
+checks pass. Package dry-run: 459 files, required files present, private state
+and credentials absent. No npm release or live deployment is claimed.
 
 ## Planner routing checkpoint — September 11
 
@@ -53,8 +90,8 @@ upload deadline. Existing planner, file-client, document broker, session,
 startup/prewrite/API, 99 downloader/synthesis, syntax and mock web/coding checks
 also pass. Isolated test data/listeners are cleaned by their fixtures.
 
-Activation still requires the operator/server binding, process-resumable
-pre-import scheduling, guarded gateway, account adapter and 30-day source-PDF
+Activation still requires the operator/server binding, guarded gateway,
+account adapter and 30-day source-PDF
 retention together. Do not advertise the source checkpoint as a live download,
 PDF converter or npm release. Preserve compatible rollback before writing new
 paper state to shared production ledgers.

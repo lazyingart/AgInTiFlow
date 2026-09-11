@@ -7,6 +7,7 @@ import { createPaperHttpWorker } from "../test/fixtures/paper-worker.js";
 import { paperDownloadFixture } from "../test/fixtures/paper-download.js";
 import { createTestOnlyIntegrationPaperAcquisitionClient } from "../src/integration-paper-acquisition.js";
 import { createTestOnlyIntegrationAnalysisSessionService } from "../src/integration-analysis-session-service.js";
+import { INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES } from "../src/integration-analysis-state-persistence.js";
 import { INTEGRATION_FILE_WORKER_TOOL_NAME } from "../src/integration-file-worker-client.js";
 
 import {
@@ -5953,6 +5954,10 @@ async function sourcePaperRoutingUsesActualSessionAndFileWorker() {
     { prompt: "Find the source paper and send its PDF.", files: 0, disabled: true, failure: "ANALYSIS_PAPER_DISABLED" },
     { prompt: "Find the source paper and send its PDF.", files: 0, invalidPdf: true, failure: "ANALYSIS_PAPER_DOWNLOAD_FAILED" },
     { prompt: "Find the source paper and send its PDF.", files: 1, prior: true },
+    { prompt: "Find the source paper and send its PDF.", files: 1, restart: true },
+    { prompt: "論文を探して、そのPDFを送ってください。", files: 1, restart: true },
+    { prompt: "Find the source paper and send its PDF.", files: 1, prior: true, restart: true },
+    { prompt: "Find the source paper and send its PDF. Also create notes.txt containing notes.", files: 2, additionalOutputs: true, restart: true },
   ]) {
     const cleanup = [];
     try {
@@ -6011,9 +6016,27 @@ async function sourcePaperRoutingUsesActualSessionAndFileWorker() {
       cleanup.push(() => model.coordinator.close());
       await model.planner.activate();
       activating = false;
-      const stateRoot = path.join(worker.parent, "analysis");
-      const service = createTestOnlyIntegrationAnalysisSessionService({ stateRoot,
-        analysisRunner: model.planner, fileWorkerClient, fileWorkerEnabled: true, searchEnabled: true });
+      let stateRoot = path.join(worker.parent, "analysis");
+      const recoveryRoot = path.join(worker.parent, "recovery");
+      let copiedCheckpoint = false;
+      const analysisRunner = !scenario.restart ? model.planner : {
+        attestation: model.planner.attestation,
+        run(runScope, input, options) {
+          return model.planner.run(runScope, input, { ...options,
+            onPaperCheckpoint: async value => {
+              await options.onPaperCheckpoint(value);
+              if (copiedCheckpoint) return;
+              copiedCheckpoint = true;
+              await fs.cp(stateRoot, recoveryRoot, { recursive: true,
+                filter: source => path.basename(source) !== ".analysis-session-owner.lock" });
+              throw new Error("fixture captures durable pre-download state for actual planner replay");
+            } });
+        },
+      };
+      const openService = () => createTestOnlyIntegrationAnalysisSessionService({ stateRoot,
+        analysisRunner, fileWorkerClient, fileWorkerEnabled: true, searchEnabled: true,
+        statePersistenceMode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3 });
+      let service = openService();
       cleanup.push(() => service.close({ mode: "abort" }));
       const owner = { principalId: PRINCIPAL_ID, browserSessionId: BROWSER_SESSION_ID };
       const thread = (await service.createThread({ title: "Paper routing" }, owner)).thread;
@@ -6029,6 +6052,15 @@ async function sourcePaperRoutingUsesActualSessionAndFileWorker() {
         ...(scenario.prior || scenario.ordinary ? {} : { search: { mode: "papers", limit: 2 } }),
       } }, owner);
       await service.waitForIdle();
+      if (scenario.restart) {
+        assert.equal(copiedCheckpoint, true);
+        await service.close({ mode: "wait" });
+        stateRoot = recoveryRoot;
+        service = openService();
+        const proof = await service.recoverBeforeListen();
+        assert.equal(proof.rescheduledPaperRuns, 1);
+        await service.waitForIdle();
+      }
       const result = (await service.getRunStatus({ runId: started.run.id }, owner)).run;
       assert.equal(result.status, scenario.failure ? "failed" : "completed", JSON.stringify({ scenario, result }));
       if (scenario.failure) assert.equal(result.error?.code, scenario.failure);

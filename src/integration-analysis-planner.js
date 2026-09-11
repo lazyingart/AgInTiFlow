@@ -61,6 +61,7 @@ import { assertIntegrationPaperAcquisitionClient, INTEGRATION_PAPER_ACQUISITION_
 import { paperSelectionCandidates, paperSelectionMessages, parsePaperSelection, paperSelectionRequest } from "./integration-paper-selection.js";
 import { IntegrationDocumentWorkerError as IntegrationDocumentContractError } from "./integration-document-worker-contract.js";
 import { PublicPdfDownloadError } from "./public-pdf-download.js";
+import { validatePaperResume } from "./integration-paper-checkpoint.js";
 import {
   AGENT_WORKER_SCHEMA_VERSION,
   canonicalJson,
@@ -1021,6 +1022,7 @@ function normalizeRunOptions(value = {}) {
     [
       "signal",
       "priorDocument",
+      "paperResume",
       "onProgress",
       "onSearchQueryPlan",
       "onArtifact",
@@ -1028,6 +1030,8 @@ function normalizeRunOptions(value = {}) {
       "onDocumentCommitIntent",
       "onFilePublishIntent",
       "onPaperAcquireIntent",
+      "onPaperCheckpoint",
+      "onPaperContinuation",
       "onFileCommitIntent",
       "onFinal",
     ],
@@ -1045,6 +1049,8 @@ function normalizeRunOptions(value = {}) {
     "onDocumentCommitIntent",
     "onFilePublishIntent",
     "onPaperAcquireIntent",
+    "onPaperCheckpoint",
+    "onPaperContinuation",
     "onFileCommitIntent",
     "onFinal",
   ]) {
@@ -1054,6 +1060,7 @@ function normalizeRunOptions(value = {}) {
   }
   return Object.freeze({
     ...options,
+    ...(options.paperResume === undefined ? {} : { paperResume: validatePaperResume(options.paperResume) }),
     ...(options.priorDocument === undefined
       ? {}
       : { priorDocument: normalizePriorDocument(options.priorDocument) }),
@@ -3172,7 +3179,7 @@ function createPlanner({
     const signal = options.signal;
     const config = Object.freeze({ ...modelConfig, abortSignal: signal });
     if (input.inference !== undefined) {
-      if (options.priorDocument !== undefined) {
+      if (options.priorDocument !== undefined || options.paperResume !== undefined) {
         fail("ANALYSIS_REQUEST_INVALID", "Inference-only input cannot read a prior document.", { status: 400 });
       }
       const json = input.inference.responseFormat === "json_object";
@@ -3304,6 +3311,11 @@ function createPlanner({
     let finalGroundingRetries = 0;
     let groundedSearchNarrationRetries = 0;
     let completedResearchReport = null;
+    const paperResume = options.paperResume;
+    if (paperResume !== undefined && (paperAcquisitionClient === undefined ||
+        (input.search !== undefined) !== (paperResume.sourceArtifact !== null))) {
+      fail("ANALYSIS_PAPER_CHECKPOINT_INVALID", "Paper resume does not match this planner request.", { status: 409 });
+    }
     let requiredToolFormationRetries = 0;
     let pendingRequiredToolFormationCorrection = null;
     let executionObligations = classifyCurrentTurnExecutionObligations(input.prompt);
@@ -3567,7 +3579,16 @@ function createPlanner({
           { status: 400 }
         );
       }
-      if (input.search !== undefined) {
+      if (paperResume !== undefined) {
+        completedResearchReport = paperResume.report;
+        if (paperResume.sourceArtifact !== null) {
+          await captureArtifact(paperResume.sourceArtifact);
+          const grounding = { sources: paperResume.sourceArtifact.spec.sources, report: paperResume.report };
+          messages.splice(messages.length - 1, 0, paperResume.report === null
+            ? groundedEvidenceMessage(grounding) : deepResearchEvidenceMessage(grounding));
+        }
+      }
+      if (input.search !== undefined && paperResume === undefined) {
         if (groundedSearchClient === undefined) {
           fail("GROUNDED_SEARCH_NOT_READY", "Grounded search is not operational.", { status: 503 });
         }
@@ -3734,17 +3755,22 @@ function createPlanner({
       // URL. Ordinary chats without source context do not pay for this step.
       if (paperAcquisitionClient !== undefined) {
         const candidates = paperSelectionCandidates([...artifacts, ...input.priorArtifacts]);
-        if (candidates.length > 0 || input.search !== undefined || fileArtifactRequired) {
-          const payload = Object.freeze({
-            ...completionPayload(paperSelectionMessages(input.prompt, input.conversation, candidates), modelConfig, { disableTools: true }),
-            max_tokens: Math.min(modelConfig.maxOutputTokens, 512),
-            response_format: { type: "json_object" },
-          });
-          assertWithinModelContext(payload, modelConfig);
-          assertNotAborted(signal);
-          const selection = parsePaperSelection(await invokeModel(modelClient, payload,
-            { ...config, modelTimeoutMs: Math.min(config.modelTimeoutMs || 60_000, 15_000) },
-            "bounded source paper selection"), candidates);
+        if (paperResume !== undefined || candidates.length > 0 || input.search !== undefined || fileArtifactRequired) {
+          let selection;
+          if (paperResume !== undefined) {
+            selection = { action: "download", ...paperResume.selection, additionalOutputs: paperResume.additionalOutputs };
+          } else {
+            const payload = Object.freeze({
+              ...completionPayload(paperSelectionMessages(input.prompt, input.conversation, candidates), modelConfig, { disableTools: true }),
+              max_tokens: Math.min(modelConfig.maxOutputTokens, 512),
+              response_format: { type: "json_object" },
+            });
+            assertWithinModelContext(payload, modelConfig);
+            assertNotAborted(signal);
+            selection = parsePaperSelection(await invokeModel(modelClient, payload,
+              { ...config, modelTimeoutMs: Math.min(config.modelTimeoutMs || 60_000, 15_000) },
+              "bounded source paper selection"), candidates);
+          }
           assertNotAborted(signal);
           if (selection.action === "unavailable") {
             fail("ANALYSIS_PAPER_SOURCE_UNAVAILABLE", "The requested original PDF is not available from one eligible recorded source. Select a source with an available PDF.", { status: 409 });
@@ -3753,7 +3779,7 @@ function createPlanner({
             if (paperCreationActivationState === false || fileCreationActivationState === false) {
               fail("ANALYSIS_PAPER_DISABLED", "Paper downloads are not enabled on this worker.", { status: 503 });
             }
-            if (!options.onPaperAcquireIntent || !options.onFileCommitIntent) {
+            if (!options.onPaperAcquireIntent || !options.onFileCommitIntent || !options.onPaperCheckpoint || !options.onPaperContinuation) {
               fail("ANALYSIS_PAPER_AUTHORITY_INVALID", "Paper acquisition lacks durable conversation authority.", { status: 503 });
             }
             // A request for the original PDF is not a request to manufacture
@@ -3762,6 +3788,8 @@ function createPlanner({
             if (executionObligations.minimumSuccessfulExecutions + 1 + Number(documentArtifactIntent.required || fileArtifactRequired) > INTEGRATION_ANALYSIS_MAX_TOOL_CALLS) {
               fail("ANALYSIS_TOOL_LIMIT", "This request exceeds the bounded paper and analysis tool budget.", { status: 400 });
             }
+            await options.onPaperCheckpoint({ selection: paperSelectionRequest(selection),
+              additionalOutputs: selection.additionalOutputs, report: completedResearchReport });
             await emitProgress("executing", { toolName: INTEGRATION_PAPER_ACQUISITION_TOOL_NAME, toolCallNumber: 1, executionState: "starting" });
             try {
               const acquired = await paperAcquisitionClient.acquire(paperSelectionRequest(selection), {
@@ -3789,6 +3817,7 @@ function createPlanner({
             if (!documentArtifactIntent.required && !fileArtifactRequired && !selection.additionalOutputs && !explicitExecution) {
               return await finalize({ text: "The original source PDF is ready below.", toolCalls, executionStatus });
             }
+            await options.onPaperContinuation();
           }
         }
       }

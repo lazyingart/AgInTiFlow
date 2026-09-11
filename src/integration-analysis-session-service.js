@@ -82,6 +82,7 @@ import {
   paperReceiptMatchesIntent,
 } from "./integration-paper-acquisition-contract.js";
 import { INTEGRATION_PAPER_ACQUISITION_TOOL_NAME } from "./integration-paper-acquisition.js";
+import { PAPER_CHECKPOINT_SCHEMA, PAPER_RECOVERY_ATTEMPTS, validatePaperCheckpointCandidate, validatePaperCheckpoint } from "./integration-paper-checkpoint.js";
 import {
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACT_JSON_BYTES,
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACTS,
@@ -1912,6 +1913,7 @@ function validateRun(run, scope, threadIds, state) {
       "documentCompileIntent",
       "filePublishIntent",
       "paperAcquisitionIntent",
+      "paperPlannerCheckpoint",
       "events",
     ],
     [
@@ -2080,6 +2082,20 @@ function validateRun(run, scope, threadIds, state) {
       validatePaperAcquisitionIntent(run.paperAcquisitionIntent, selection, scopeWithRun(scope, run.threadId, run.id));
     } catch (error) { corrupt(error); }
   }
+  if (run.paperPlannerCheckpoint !== undefined) {
+    try {
+      const checkpoint = validatePaperCheckpoint(run.paperPlannerCheckpoint);
+      const selection = resolvePaperSelection(state, run, checkpoint.selection);
+      if (!run.paperAcquisitionIntent || canonicalJson(selection) !== canonicalJson(run.paperAcquisitionIntent.selection)) corrupt();
+      const currentSource = state.artifacts.find(artifact => artifact.id === checkpoint.currentSourceId &&
+        artifact.kind === "sources" && artifact.runId === run.id);
+      if (checkpoint.currentSourceId !== null && !currentSource) corrupt();
+      if ((run.search !== undefined) !== (checkpoint.currentSourceId !== null)) corrupt();
+      if (checkpoint.report !== null && checkpoint.currentSourceId === null) corrupt();
+      if (checkpoint.report !== null && publicText(checkpoint.report, "paper checkpoint report") !== checkpoint.report) corrupt();
+      if (checkpoint.completionText !== null && publicText(checkpoint.completionText, "paper checkpoint completion") !== checkpoint.completionText) corrupt();
+    } catch (error) { corrupt(error); }
+  }
   if (typeof run.inputMessageId !== "string" || !/^msg_[A-Za-z0-9_-]{16,96}$/u.test(run.inputMessageId)) corrupt();
   if (!Array.isArray(run.events) || run.events.length < 1 || run.events.length > INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumEventsPerRun) corrupt();
   try {
@@ -2152,9 +2168,12 @@ function validateRun(run, scope, threadIds, state) {
   );
   if ((run.status === "running" || run.status === "completed") && (!declaredRunning || run.startedAt === null)) corrupt();
   if (run.status === "starting" && (declaredRunning || run.startedAt !== null)) corrupt();
+  const queuedPaperRecovery = run.schedulingState === "queued" && run.paperPlannerCheckpoint !== undefined &&
+    run.paperPlannerCheckpoint.recoveryAttempts > 0 && !run.paperPlannerCheckpoint.continuationStarted &&
+    run.paperPlannerCheckpoint.completionText === null && run.cancelRequestedAt === null;
   if (
     (run.status === "starting" && !new Set(["starting", "queued"]).has(run.schedulingState)) ||
-    (run.status === "running" && run.schedulingState !== "running") ||
+    (run.status === "running" && run.schedulingState !== "running" && !queuedPaperRecovery) ||
     (TERMINAL_RUN_STATUSES.has(run.status) && run.schedulingState !== "terminal")
   ) {
     corrupt();
@@ -2498,6 +2517,10 @@ function paperAcquisitionSatisfied(state, run) {
     paperReceiptMatchesIntent(artifact.paperReceipt, run.paperAcquisitionIntent) &&
     state.documentCommitIntents.some(intent => intent.runId === run.id &&
       intent.receiptDigest === artifact.compileReceiptDigest && intent.status === "committed" && intent.eventsPublished === true));
+}
+
+function paperContinuationSatisfied(run) {
+  return run.paperPlannerCheckpoint === undefined || run.paperPlannerCheckpoint.completionText !== null;
 }
 
 function latestCommittedDocumentSourceLineage(state, targetRun) {
@@ -4381,6 +4404,9 @@ function createService(options, { testOnly }) {
   const fixedMutationRecoveryAuthority = mutationRecoveryAuthority();
   const fixedAttachmentAuthority = attachmentAuthority(visionActivation, stateRoot);
   const activeRuns = new Map();
+  // Durable runs waiting for the existing bounded queue, not a second executor.
+  const deferredPaperScopes = new Map();
+  let paperRecoveryScanScheduled = false;
   const pendingDocumentArtifacts = new Map();
   const runQueue = [];
   const ownershipLockPath = path.join(stateRoot, ".analysis-session-owner.lock");
@@ -4398,6 +4424,7 @@ function createService(options, { testOnly }) {
   let closed = false;
   let startupRecoveryProof = null;
   let startupRecoveryPromise = null;
+  let startupRecoveryInProgress = false;
 
   function timestamp() {
     const value = now();
@@ -4655,6 +4682,9 @@ function createService(options, { testOnly }) {
           scope,
           nonterminalRuns: state.runs.filter((run) => !TERMINAL_RUN_STATUSES.has(run.status)).length,
           pendingDocumentIntents: pendingOptionalDocumentRunCount(state),
+          recoverablePaperRuns: state.runs.filter(run => !TERMINAL_RUN_STATUSES.has(run.status) &&
+            !hasPendingDocumentCommitIntent(state, run.id) &&
+            (activeRuns.get(run.id)?.recoveringPaper || canRecoverPaper(run))).length,
         }));
       } catch (error) {
         if (error instanceof IntegrationAnalysisSessionError) throw error;
@@ -4689,6 +4719,8 @@ function createService(options, { testOnly }) {
         });
       }
       const native = statePersistenceMode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3;
+      const existingRuns = new Set(activeRuns.keys());
+      startupRecoveryInProgress = true;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(new Error("analysis startup recovery deadline")), timeoutMs);
       timer.unref?.();
@@ -4717,6 +4749,8 @@ function createService(options, { testOnly }) {
         const before = await startupScopeInventory(controller.signal);
         let recoveredRuns = 0;
         let deferredOptionalDocumentRuns = 0;
+        let rescheduledPaperRuns = 0;
+        let deferredPaperRuns = 0;
         const recoveryScopeDigests = [];
         for (let index = 0; index < before.length; index += 1) {
           throwIfStartupRecoveryExpired(controller.signal);
@@ -4736,10 +4770,17 @@ function createService(options, { testOnly }) {
           if (!state) corrupt();
           let remaining = 0;
           let deferred = 0;
+          let papers = 0;
           for (const run of state.runs) {
             if (TERMINAL_RUN_STATUSES.has(run.status)) continue;
             if (isPendingOptionalDocumentRun(state, run)) {
               deferred += 1;
+            } else if (activeRuns.get(run.id)?.recoveringPaper) {
+              rescheduledPaperRuns += 1;
+              papers += 1;
+            } else if (canRecoverPaper(run) && !hasPendingDocumentCommitIntent(state, run.id)) {
+              deferredPaperRuns += 1;
+              papers += 1;
             } else {
               remaining += 1;
             }
@@ -4754,7 +4795,7 @@ function createService(options, { testOnly }) {
           if (item.nonterminalRuns > 0 || item.pendingDocumentIntents > 0) {
             recoveryScopeDigests.push(item.digest);
           }
-          recoveredRuns += item.nonterminalRuns - deferred;
+          recoveredRuns += item.nonterminalRuns - deferred - papers;
           deferredOptionalDocumentRuns += deferred;
         }
         const after = await startupScopeInventory(controller.signal);
@@ -4762,7 +4803,7 @@ function createService(options, { testOnly }) {
           after.length !== before.length ||
           after.some((item, index) => item.digest !== before[index].digest) ||
           after.some((item) =>
-            item.nonterminalRuns !== 0 && item.pendingDocumentIntents === 0
+            item.nonterminalRuns !== item.pendingDocumentIntents + item.recoverablePaperRuns
           )
         ) {
           fail(
@@ -4780,8 +4821,9 @@ function createService(options, { testOnly }) {
           scopeCount: before.length,
           nonterminalRunsObserved: before.reduce((total, item) => total + item.nonterminalRuns, 0),
           nonterminalRunsRecovered: recoveredRuns,
-          nonterminalRunsRemaining: deferredOptionalDocumentRuns,
+          nonterminalRunsRemaining: deferredOptionalDocumentRuns + rescheduledPaperRuns + deferredPaperRuns,
           deferredOptionalDocumentRuns,
+          ...(rescheduledPaperRuns + deferredPaperRuns === 0 ? {} : { rescheduledPaperRuns, deferredPaperRuns }),
           pendingDocumentIntentsObserved: before.reduce(
             (total, item) => total + item.pendingDocumentIntents,
             0
@@ -4797,6 +4839,16 @@ function createService(options, { testOnly }) {
         throw error;
       } finally {
         clearTimeout(timer);
+        startupRecoveryInProgress = false;
+        if (startupRecoveryProof) pumpQueue();
+        else {
+          // A failed pre-listen audit must not dispatch model/network work.
+          // The persisted checkpoint remains recoverable by a later startup.
+          for (const entry of [...activeRuns.values()]) {
+            if (entry.recoveringPaper && !existingRuns.has(entry.runId)) settleQueuedEntry(entry);
+          }
+          deferredPaperScopes.clear();
+        }
       }
     });
     startupRecoveryPromise = operation.catch((error) => {
@@ -4945,7 +4997,7 @@ function createService(options, { testOnly }) {
       (intent) => intent.runId === run.id && isFileWorkerCommitIntent(intent)
     );
     const publicSummary = fileBundle ? "Verified files committed." : "TeX source and PDF compiled.";
-    const successText = fileBundle ? RECOVERED_FILE_SUCCESS_TEXT : RECOVERED_DOCUMENT_SUCCESS_TEXT;
+    const successText = run.paperPlannerCheckpoint?.completionText ?? (fileBundle ? RECOVERED_FILE_SUCCESS_TEXT : RECOVERED_DOCUMENT_SUCCESS_TEXT);
     closeOpenTools(run, completedAt, publicSummary, "tool.completed");
     appendEvent(
       run,
@@ -4994,7 +5046,33 @@ function createService(options, { testOnly }) {
     );
   }
 
-  function recoverInterruptedRuns(state) {
+  function canRecoverPaper(run) {
+    const checkpoint = run.paperPlannerCheckpoint;
+    return fileCreationEnabled && analysisRunner.attestation?.sourcePaperAcquisitionConfigured === true &&
+      checkpoint !== undefined && checkpoint.completionText === null && !checkpoint.continuationStarted &&
+      checkpoint.recoveryAttempts < PAPER_RECOVERY_ATTEMPTS && run.cancelRequestedAt === null &&
+      run.documentCompileIntent === undefined && run.filePublishIntent === undefined;
+  }
+
+  function paperResumeForRun(state, run) {
+    const checkpoint = validatePaperCheckpoint(run.paperPlannerCheckpoint);
+    resolvePaperSelection(state, run, checkpoint.selection);
+    const source = checkpoint.currentSourceId === null ? null : state.artifacts.find(item =>
+      item.id === checkpoint.currentSourceId && item.runId === run.id && item.kind === "sources");
+    if (checkpoint.currentSourceId !== null && !source) corrupt();
+    return Object.freeze({ selection: checkpoint.selection, additionalOutputs: checkpoint.additionalOutputs,
+      report: checkpoint.report, sourceArtifact: source === null ? null : sanitizeIntegrationArtifact({
+        id: source.groundedSearchSourceArtifactId, title: source.title, kind: source.kind, spec: source.spec,
+      }) });
+  }
+
+  function paperQueueHasSpace(scopeKey) {
+    return runQueue.length < INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumQueuedPlannerRuns &&
+      (scopeKey === undefined || runQueue.filter(entry => entry.scopeKey === scopeKey).length <
+        INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumQueuedPlannerRunsPerScope);
+  }
+
+  function recoverInterruptedRuns(state, scheduled) {
     let changed = false;
     const recoveredAt = timestamp();
     for (const run of state.runs) {
@@ -5003,6 +5081,7 @@ function createService(options, { testOnly }) {
       if (
         documentIntents.length > 0 &&
         paperAcquisitionSatisfied(state, run) &&
+        paperContinuationSatisfied(run) &&
         documentIntents.every((intent) => intent.status === "committed" && intent.eventsPublished === true)
       ) {
         completeRecoveredDocumentRun(state, run, recoveredAt);
@@ -5013,6 +5092,26 @@ function createService(options, { testOnly }) {
         // Do not terminalize a crash-replayable paired document while its
         // workstation commit ACK is temporarily unavailable.
         // Scoped polling will retry reconciliation.
+        continue;
+      }
+      if (canRecoverPaper(run)) {
+        const scopeKey = scopeDigest(state.scope);
+        if (closed || drainMode === "abort" || !paperQueueHasSpace(scopeKey)) {
+          deferredPaperScopes.set(scopeKey, state.scope);
+          continue;
+        }
+        paperResumeForRun(state, run); // Validate before reserving any executor.
+        const entry = newScheduledEntry(state.scope, run.threadId, run.id, new AbortController());
+        entry.recoveringPaper = true;
+        entry.phase = "persisting-queued";
+        activeRuns.set(run.id, entry);
+        runQueue.push(entry);
+        scheduled.push(entry);
+        run.paperPlannerCheckpoint = { ...run.paperPlannerCheckpoint,
+          recoveryAttempts: run.paperPlannerCheckpoint.recoveryAttempts + 1 };
+        run.schedulingState = "queued";
+        closeOpenTools(run, recoveredAt, "Paper download was interrupted and is queued to resume.");
+        changed = true;
         continue;
       }
       closeOpenTools(run, recoveredAt, "Analysis execution was interrupted.");
@@ -5312,21 +5411,28 @@ function createService(options, { testOnly }) {
   }
 
   async function loadRecoveredState(scope, { create = false, recoverySignal } = {}) {
+    deferredPaperScopes.delete(scopeDigest(scope));
     const state = await readState(scope, { create });
     if (!state) return null;
     const reconciledDocuments = await reconcileDocumentCommitIntents(scope, state, {
       signal: recoverySignal,
     });
-    const recoveredRuns = recoverInterruptedRuns(state);
-    const reconciledDeletions = await reconcileDocumentDeletionIntents(scope, state, {
-      signal: recoverySignal,
-    });
-    if (recoveredRuns || reconciledDocuments || reconciledDeletions) {
-      state.revision += 1;
-      await writeState(scope, state);
-    } else {
-      await pruneUnreferencedAttachmentBlobs(scope, state, stateRoot, { testOnly });
+    const scheduled = [];
+    try {
+      const recoveredRuns = recoverInterruptedRuns(state, scheduled);
+      const reconciledDeletions = await reconcileDocumentDeletionIntents(scope, state, { signal: recoverySignal });
+      if (recoveredRuns || reconciledDocuments || reconciledDeletions) {
+        state.revision += 1;
+        await writeState(scope, state);
+      } else {
+        await pruneUnreferencedAttachmentBlobs(scope, state, stateRoot, { testOnly });
+      }
+    } catch (error) {
+      for (const entry of scheduled) settleQueuedEntry(entry);
+      throw error;
     }
+    for (const entry of scheduled) entry.phase = "queued";
+    pumpQueue();
     return state;
   }
 
@@ -5873,7 +5979,9 @@ function createService(options, { testOnly }) {
         return { changed: false, result: null };
       }
       if (progress.phase === "executing") {
-        const callId = callIdForProgress(progress);
+        const recoveryAttempt = progress.toolName === INTEGRATION_PAPER_ACQUISITION_TOOL_NAME
+          ? run.paperPlannerCheckpoint?.recoveryAttempts ?? 0 : 0;
+        const callId = callIdForProgress(progress) + (recoveryAttempt > 0 ? `-recovery-${recoveryAttempt}` : "");
         const existing = toolEventState(run, callId);
         const executionState = String(progress.executionState || "running");
         const presentation = toolPresentation(progress.toolName, executionState);
@@ -6603,6 +6711,34 @@ function createService(options, { testOnly }) {
     });
   }
 
+  async function recordPaperCheckpoint(scope, threadId, runId, value) {
+    if (!fileCreationEnabled || !fileWorkerClient) fail("ANALYSIS_PAPER_DISABLED", "Paper acquisition requires the enabled file worker.", { status: 503 });
+    const candidate = validatePaperCheckpointCandidate(value);
+    return mutate(scope, state => {
+      const run = findRun(state, runId);
+      if (run.threadId !== threadId || TERMINAL_RUN_STATUSES.has(run.status) || run.cancelRequestedAt !== null || run.inference !== undefined) {
+        fail("ANALYSIS_CANCELLED", "Paper checkpoint lost its active conversation.", { status: 499 });
+      }
+      const selected = resolvePaperSelection(state, run, candidate.selection);
+      const current = state.artifacts.find(artifact => artifact.runId === runId && artifact.kind === "sources");
+      const checkpoint = validatePaperCheckpoint({ schemaVersion: PAPER_CHECKPOINT_SCHEMA,
+        selection: { schemaVersion: PAPER_ACQUISITION_SCHEMA.select, sourceArtifactId: selected.sourceArtifactId, sourceIndex: selected.sourceIndex },
+        additionalOutputs: candidate.additionalOutputs, report: candidate.report === null ? null : publicText(candidate.report, "paper report"),
+        currentSourceId: current?.id ?? null, continuationStarted: false, completionText: null, recoveryAttempts: 0 });
+      if (run.paperPlannerCheckpoint !== undefined) {
+        const previous = run.paperPlannerCheckpoint;
+        if (canonicalJson({ ...previous, continuationStarted: false, completionText: null, recoveryAttempts: 0 }) !== canonicalJson(checkpoint)) {
+          fail("ANALYSIS_PAPER_CHECKPOINT_INVALID", "Paper checkpoint conflicts with this conversation.", { status: 409 });
+        }
+        return { changed: false, result: true };
+      }
+      if (run.paperAcquisitionIntent !== undefined) validatePaperAcquisitionIntent(run.paperAcquisitionIntent, selected, scopeWithRun(scope, threadId, runId));
+      else run.paperAcquisitionIntent = createPaperAcquisitionIntent(selected, timestamp());
+      run.paperPlannerCheckpoint = checkpoint;
+      return { changed: true, result: true };
+    });
+  }
+
   async function authorizeFilePublish(scope, threadId, runId, proposedRequest) {
     let candidate = null;
     let request = null;
@@ -6740,7 +6876,7 @@ function createService(options, { testOnly }) {
         bytes: artifact.spec.bytes,
         sha256: artifact.spec.sha256,
       }));
-      if (!intent || intent.threadId !== threadId || intent.status !== "pending" || canonicalJson(intent.objects) !== canonicalJson(expected)) {
+      if (!intent || intent.threadId !== threadId || !["pending", "committed"].includes(intent.status) || canonicalJson(intent.objects) !== canonicalJson(expected)) {
         fail("ANALYSIS_FILE_COMMIT_AUTHORITY_REQUIRED", "File commit intent is unavailable.", { status: 503 });
       }
       return { changed: false, result: true };
@@ -6889,7 +7025,7 @@ function createService(options, { testOnly }) {
           status: 502,
         });
       }
-      if (!paperAcquisitionSatisfied(state, run)) {
+      if (!paperAcquisitionSatisfied(state, run) || !paperContinuationSatisfied(run)) {
         fail("ANALYSIS_PAPER_ARTIFACT_REQUIRED", "The selected paper has not been durably delivered.", { status: 502 });
       }
       const thread = findThread(state, run.threadId);
@@ -6926,6 +7062,7 @@ function createService(options, { testOnly }) {
         !cancelled &&
         documentIntents.length > 0 &&
         paperAcquisitionSatisfied(state, run) &&
+        paperContinuationSatisfied(run) &&
         documentIntents.every((intent) => intent.status === "committed" && intent.eventsPublished === true)
       ) {
         completeRecoveredDocumentRun(state, run, timestamp());
@@ -6982,16 +7119,17 @@ function createService(options, { testOnly }) {
         const startedAt = timestamp();
         run.status = "running";
         run.schedulingState = "running";
-        run.startedAt = startedAt;
+        run.startedAt ||= startedAt;
         appendEvent(run, "run.status", { status: "running" }, startedAt);
         touchThread(thread, startedAt, { status: "running", lastRunId: runId });
         return {
           changed: true,
-          result: Object.freeze({ input, revisionLineage }),
+          result: Object.freeze({ input, revisionLineage,
+            ...(activeRuns.get(runId)?.recoveringPaper ? { paperResume: paperResumeForRun(state, run) } : {}) }),
         };
       });
       if (!prepared) return;
-      const { input, revisionLineage } = prepared;
+      const { input, revisionLineage, paperResume } = prepared;
       const active = activeRuns.get(runId);
       if (!active) fail("ANALYSIS_RUNNER_UNAVAILABLE", "Analysis run ownership was lost.", { status: 503 });
       let visionEvidence;
@@ -7046,6 +7184,7 @@ function createService(options, { testOnly }) {
         runnerInput,
         Object.freeze({
           signal: active.controller.signal,
+          ...(paperResume === undefined ? {} : { paperResume }),
           ...(revisionMaterial === null ? {} : { priorDocument: revisionMaterial.priorDocument }),
           onProgress: async (progress) => recordProgress(scope, runId, progress),
           onSearchQueryPlan: async (fragments) => {
@@ -7086,6 +7225,22 @@ function createService(options, { testOnly }) {
           onPaperAcquireIntent: async (request) => {
             requireToolRun();
             return authorizePaperAcquisition(scope, threadId, runId, request);
+          },
+          onPaperCheckpoint: async (checkpoint) => {
+            requireToolRun();
+            return recordPaperCheckpoint(scope, threadId, runId, checkpoint);
+          },
+          onPaperContinuation: async () => {
+            requireToolRun();
+            return mutate(scope, state => {
+              const run = findRun(state, runId);
+              if (!run.paperPlannerCheckpoint || TERMINAL_RUN_STATUSES.has(run.status) || run.cancelRequestedAt !== null) {
+                fail("ANALYSIS_CANCELLED", "Paper continuation lost its active conversation.", { status: 499 });
+              }
+              if (run.paperPlannerCheckpoint.continuationStarted) return { changed: false, result: true };
+              run.paperPlannerCheckpoint = { ...run.paperPlannerCheckpoint, continuationStarted: true };
+              return { changed: true, result: true };
+            });
           },
           onFileCommitIntent: async (fileArtifacts) => {
             requireToolRun();
@@ -7142,6 +7297,17 @@ function createService(options, { testOnly }) {
       if (!documentGate.ok) {
         fail("ANALYSIS_DOCUMENT_ARTIFACT_REQUIRED", documentGate.reason, { status: 502 });
       }
+      // Only checkpoint success after the callback/result, execution, and all
+      // requested document outputs agree. A committed paper alone is not completion.
+      await mutate(scope, state => {
+        const run = findRun(state, runId);
+        if (!run.paperPlannerCheckpoint) return { changed: false, result: null };
+        if (TERMINAL_RUN_STATUSES.has(run.status) || run.cancelRequestedAt !== null || !paperAcquisitionSatisfied(state, run)) {
+          fail("ANALYSIS_PAPER_CHECKPOINT_INVALID", "Paper continuation has not completed.", { status: 502 });
+        }
+        run.paperPlannerCheckpoint = { ...run.paperPlannerCheckpoint, completionText: result.text };
+        return { changed: true, result: null };
+      });
       await completeRun(scope, runId, result);
     } catch (error) {
       await failRun(scope, runId, error).catch(() => {});
@@ -7204,16 +7370,25 @@ function createService(options, { testOnly }) {
   }
 
   function pumpQueue() {
-    if (drainMode === "abort" || closed) return;
+    if (drainMode === "abort" || closed || startupRecoveryInProgress) return;
     while (plannerRunsInFlight < INTEGRATION_ANALYSIS_SESSION_LIMITS.maximumConcurrentPlannerRuns) {
       const entry = runQueue[0];
-      if (!entry || entry.phase === "persisting-queued") return;
+      if (!entry || entry.phase === "persisting-queued") break;
       runQueue.shift();
       if (activeRuns.get(entry.runId) !== entry || entry.phase !== "queued") continue;
       entry.phase = "starting";
       entry.slotReserved = true;
       plannerRunsInFlight += 1;
       launchScheduledRun(entry);
+    }
+    if (!paperRecoveryScanScheduled && deferredPaperScopes.size > 0 && paperQueueHasSpace()) {
+      paperRecoveryScanScheduled = true;
+      serialized(async () => {
+        for (const [scopeKey, scope] of [...deferredPaperScopes]) {
+          if (closed || drainMode === "abort") break;
+          if (paperQueueHasSpace(scopeKey)) await loadRecoveredState(scope);
+        }
+      }).catch(() => {}).finally(() => { paperRecoveryScanScheduled = false; });
     }
   }
 
@@ -8118,6 +8293,7 @@ function createService(options, { testOnly }) {
           if (
             committedDocuments.length > 0 &&
             paperAcquisitionSatisfied(state, run) &&
+            paperContinuationSatisfied(run) &&
             committedDocuments.every(
               (intent) => intent.status === "committed" && intent.eventsPublished === true
             )
