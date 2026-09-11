@@ -548,6 +548,28 @@ assert.throws(
 );
 
 const calls = [];
+for (const snippet of [
+  "Details at https://example.com/paper",
+  "<b>Evidence</b>",
+  "A result with x < y and y > z",
+  "javascript:alert(1)",
+]) {
+  const excerptClient = testClient(requestAwareFetch([], (payload) => ({
+    ...payload,
+    sources: payload.sources.map((item) => ({ ...item, snippet })),
+  })));
+  await excerptClient.activate();
+  const excerpt = await excerptClient.search({ query: "safe citation", mode: "both", limit: 1 });
+  assert.equal(excerpt.sources[0].snippet, "");
+  assert.equal(excerpt.sources[0].url, "https://example.com/report");
+  assert.equal(excerpt.sources[0].title, "Verified source");
+  // The shared artifact boundary still rejects unsafe snippets submitted
+  // directly; only this search adapter projects the optional excerpt.
+  assert.throws(() => validateIntegrationSourcesSpec({
+    schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+    sources: [publicSource({ snippet })],
+  }), (error) => error.code === "UNSAFE_PRESENTATION");
+}
 const client = testClient(requestAwareFetch(calls));
 await assert.rejects(
   () => client.search({ query: "not activated", mode: "both", limit: 1 }),
@@ -1249,7 +1271,9 @@ const researchClient = createTestOnlyIntegrationGroundedSearchClient({
     }
     if (url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT) {
       assert.deepEqual(request, { task_id: "a1b2c3d4e5f6" });
-      return privateJsonResponse(researchTask("complete", 2));
+      const completed = researchTask("complete", 2);
+      completed.task.sources[0].snippet = "Details at https://example.com/report";
+      return privateJsonResponse(completed);
     }
     throw new Error(`unexpected research smoke route: ${url}`);
   },
@@ -1290,6 +1314,7 @@ assert.equal(researchResult.schemaVersion, LOCALLLM_DEEP_RESEARCH_SCHEMA_VERSION
 assert.equal(researchResult.taskId, "a1b2c3d4e5f6");
 assert.equal(researchResult.artifact.kind, "sources");
 assert.equal(researchResult.artifact.spec.sources.length, 1);
+assert.equal(researchResult.artifact.spec.sources[0].snippet, "");
 assert.match(researchResult.report, /Durable task recovery/u);
 const researchAuthority = createIntegrationGroundedSearchArtifactAuthority({
   query: researchQuery,

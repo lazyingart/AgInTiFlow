@@ -1442,10 +1442,7 @@ function publicSource(raw, index, wireRequest) {
     publishedDate: raw.published_date === null ? null : raw.published_date,
     doi: raw.doi === null ? null : raw.doi,
   });
-  const validated = validateIntegrationSourcesSpec({
-    schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
-    sources: [candidate],
-  }).sources[0];
+  const validated = projectSearchSource(candidate);
   return Object.freeze({
     source: Object.freeze({ ...validated, index }),
     identifiers,
@@ -1456,6 +1453,24 @@ function publicSource(raw, index, wireRequest) {
       matchedExactIdentifiers: matchedIdentifiers,
     }),
   });
+}
+
+function projectSearchSource(candidate) {
+  const validate = (source) => validateIntegrationSourcesSpec({
+    schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
+    sources: [source],
+  }).sources[0];
+  // Snippets are optional presentation, not citation identity. A real search
+  // excerpt can contain a URL, HTML or mathematical angle brackets. Keep the
+  // verified title/link when that excerpt cannot enter the plain-text contract.
+  // Validate all mandatory fields first; never hide a bad URL or identity.
+  const citation = validate({ ...candidate, snippet: "" });
+  try {
+    return validate(candidate);
+  } catch (error) {
+    if (error?.code !== "UNSAFE_PRESENTATION") throw error;
+    return citation;
+  }
 }
 
 function sourceArtifact(response, limit, request) {
@@ -1644,20 +1659,17 @@ function validateResearchSource(value, index, snippetLimit) {
     .map((provider) => clippedText(provider.trim(), 100))
     .filter(Boolean)
     .slice(0, 12);
-  const spec = validateIntegrationSourcesSpec({
-    schemaVersion: AGENT_WORKER_SCHEMA_VERSION,
-    sources: [{
-      index: 1,
-      title: clippedText(raw.title, 500),
-      url: raw.url,
-      snippet: clippedText(raw.snippet, snippetLimit),
-      providers: providerNames,
-      kind: raw.kind,
-      publishedDate: raw.published_date,
-      doi: raw.doi,
-    }],
+  const source = projectSearchSource({
+    index: 1,
+    title: clippedText(raw.title, 500),
+    url: raw.url,
+    snippet: clippedText(raw.snippet, snippetLimit),
+    providers: providerNames,
+    kind: raw.kind,
+    publishedDate: raw.published_date,
+    doi: raw.doi,
   });
-  return Object.freeze({ ...spec.sources[0], index });
+  return Object.freeze({ ...source, index });
 }
 
 function parseResearchTaskEnvelope(bytes, request, expectedTask = null) {
