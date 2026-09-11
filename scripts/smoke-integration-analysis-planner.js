@@ -1134,7 +1134,7 @@ async function focusedSearchQuerySelection() {
 
 async function deepResearchCompletesWithoutSecondModelSynthesis() {
   let prompt = "Perform deep web and paper research on durable local agent task recovery.";
-  const report = [
+  let report = [
     "# Durable task recovery",
     "",
     "Durable recovery requires an explicit terminal-state ledger [1].",
@@ -1226,19 +1226,26 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
   });
   let modelCalls = 0;
   let compound = false;
+  let synthesis = "The calculation completed.";
+  let plainFollowup = false;
   const deep = fixture(async (_client, payload) => {
     modelCalls += 1;
     assert(compound, "Pure deep research must not be degraded by a second model synthesis.");
     const evidence = payload.messages.find((message) =>
       message.role === "system" && message.content.startsWith("AgInTi completed one private"));
+    if (plainFollowup) {
+      assert.equal(evidence, undefined, "a later turn cannot inherit the earlier research report");
+      return textResponse("Hello.");
+    }
     assert(evidence);
     const sources = JSON.parse(evidence.content.split("\n").at(-1)).sources;
     assert.equal(sources[0].url, "https://example.com/recovery");
     assert.equal(sources[0].index, 1);
     assert.match(evidence.content, /copy that exact URL/u);
+    assert.match(evidence.content, /include this completed report separately/u);
     assert.doesNotMatch(evidence.content, /test-deep-research-private-token/u);
-    return payload.messages.at(-1)?.role === "tool"
-      ? textResponse("The research and calculation completed [1].")
+    return payload.tools === undefined
+      ? textResponse(synthesis)
       : toolResponse("print('calculation complete')");
   }, { groundedSearchClient });
   const progress = [];
@@ -1285,6 +1292,8 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
       { prompt, search: { mode: "both", limit: 20 } },
     );
     assert.equal(combined.executionStatus, "succeeded");
+    assert.equal(combined.text, `${report}\n\n---\n\n## Additional results\n\n${synthesis}`);
+    assert.equal(modelCalls, 2, "calculation-only synthesis needs no artificial citation or second draft");
     assert.equal(combined.artifacts.find((artifact) => artifact.kind === "sources").spec.sources[0].url,
       "https://example.com/recovery");
     assert(modelCalls > 0, "combined research carries the same source links into subsequent model steps");
@@ -1306,10 +1315,46 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
       );
       assert.equal(result.executionStatus, "succeeded", action);
       assert.equal(result.toolCalls, 1, action);
+      assert(result.text.startsWith(report), "completed research remains in the compound answer");
       assert(modelCalls > before, `research cannot finalize before the requested calculation: ${action}`);
       assert.equal(result.artifacts.find(({ kind }) => kind === "sources").spec.sources[0].url,
         "https://example.com/recovery");
     }
+
+    for (const draft of [
+      "The calculated result is 987654321 [1].",
+      "No sources were retrieved [99].",
+    ]) {
+      synthesis = draft;
+      prompt = "Perform deep web and paper research on reproducible methods. Then use Python to calculate a sum.";
+      const finals = [];
+      const result = await deep.planner.run(
+        scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+        { prompt, search: { mode: "both", limit: 20 } },
+        { onFinal: (value) => finals.push(value) }
+      );
+      assert(result.text.startsWith(report), "research survives later synthesis rejection");
+      assert.match(result.text, /answer=9/u, "verified execution survives later synthesis rejection");
+      assert.doesNotMatch(result.text, /987654321|\[99\]|No sources were retrieved/u);
+      assert.deepEqual(finals, [result], "the durable final callback receives both results");
+      assert.equal(result.toolCalls, 1, "a rejected summary cannot repeat execution");
+    }
+    synthesis = "The calculation completed.";
+
+    const originalReport = report;
+    report = originalReport + "\n\n" + "研究結果 [1]。".repeat(1000);
+    prompt = "Perform deep web and paper research. Then use Python to calculate a sum. Then email the answer.";
+    const bounded = await deep.planner.run(
+      scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+      { prompt, search: { mode: "both", limit: 20 } }
+    );
+    assert(bounded.text.includes(originalReport));
+    assert.match(bounded.text, /external actions/u);
+    assert.match(bounded.text, /Research report shortened to fit the chat display limit/u);
+    assert(bounded.text.endsWith(synthesis), "long research cannot crowd out the completed calculation");
+    assert(Buffer.byteLength(bounded.text, "utf8") <= 16 * 1024);
+    assert.doesNotMatch(bounded.text, /\uFFFD/u);
+    report = originalReport;
 
     for (const action of [
       "Then do not use Python to calculate the sum.",
@@ -1329,6 +1374,13 @@ async function deepResearchCompletesWithoutSecondModelSynthesis() {
       assert.equal(modelCalls, before, "research-only requests retain their no-second-synthesis path");
       assert.equal(result.text, report);
     }
+    plainFollowup = true;
+    const followup = await deep.planner.run(
+      scope(`run_00000000-0000-4000-8004-${String(nextRun++).padStart(12, "0")}`),
+      { prompt: "Say hello." }
+    );
+    assert.equal(followup.text, "Hello.");
+    assert.deepEqual(followup.artifacts, []);
   } finally {
     deep.coordinator.close();
   }

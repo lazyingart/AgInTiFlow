@@ -18,6 +18,22 @@ standard algorithms remains deep. Multiline chat whitespace is normalized when
 deriving the one-line provider query; other control characters, length bounds,
 exact identifiers and source/domain constraints retain their existing checks.
 
+Completed compound requests preserve the validated research report as a distinct
+part of the final answer, followed by the remaining task results. The report is
+not disposable synthesis context: numeric/citation repair and tight-context
+fallbacks retain both research and verified execution output. A calculation-only
+summary needs no artificial research citation; any supplied citation must still
+refer to a current source, and evidence-denial/numeric checks remain enforced.
+This uses the existing final-response and durable callback contract, with no
+extra model call or new artifact kind. The report remains untrusted text, never
+tool authorization, and is scoped to this run only.
+
+The existing bounded chat response reserves space for both result sections and
+capability notices. If a section exceeds its allocation, the UTF-8-safe excerpt
+is explicitly marked as shortened. This is a chat presentation, not a promise
+of full-length document retention or proof that every research claim is correct.
+Long-form document delivery and source-relevance qualification remain separate.
+
 Search/research intent, task activity, artifacts, failures, and terminal state use the same durable session ledger as other Agent work. The next message in the thread does not inherit stale research authority or completed activity. Public capabilities advertise the optional `localllm/research-task/v2` protocol while retaining the original Search contract for older Web clients.
 
 ## Explicit application search policy
