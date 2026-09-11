@@ -46,7 +46,10 @@ import {
   integrationAnalysisVisionEligibleForStatePersistenceMode,
   assertDistinctIntegrationAnalysisCredentials,
   composeProductionIntegrationAnalysisServer,
+  createConfiguredIntegrationPaperAcquisitionClient,
 } from "../src/integration-analysis-server.js";
+import { createIntegrationFileWorkerClient } from "../src/integration-file-worker-client.js";
+import { assertIntegrationPaperAcquisitionClient } from "../src/integration-paper-acquisition.js";
 import {
   INTEGRATION_GROUNDED_SEARCH_ENDPOINT,
   INTEGRATION_GROUNDED_SEARCH_TIMEOUT_MS,
@@ -398,6 +401,34 @@ async function streamedImageBodyReachesConfiguredServer() {
 }
 
 const checkedConfig = validateIntegrationAnalysisServiceConfig(validConfig());
+const configuredPaper = { enabled: true, allowedOrigins: ["https://arxiv.org"], maximumBytes: 16 * 1024 * 1024, timeoutMs: 60000 };
+const paperWorker = { enabled: true, endpoint: INTEGRATION_DOCUMENT_WORKER_ENDPOINT, timeoutMs: INTEGRATION_DOCUMENT_WORKER_TIMEOUT_MS };
+const paperConfig = validConfig({ documentWorker: paperWorker, paperAcquisition: configuredPaper });
+assert.deepEqual(validateIntegrationAnalysisServiceConfig(paperConfig).paperAcquisition, configuredPaper);
+assert.deepEqual(publicIntegrationAnalysisServiceConfig(paperConfig).paperAcquisition, configuredPaper);
+assert.equal(validateIntegrationAnalysisServiceConfig(validConfig()).paperAcquisition, undefined);
+assert.deepEqual(validateIntegrationAnalysisServiceConfig(validConfig({ paperAcquisition: { enabled: false } })).paperAcquisition, { enabled: false });
+assert.equal(createConfiguredIntegrationPaperAcquisitionClient(paperConfig, undefined), undefined,
+  "a missing optional file credential must not manufacture a client");
+const configuredFileClient = createIntegrationFileWorkerClient({ endpoint: INTEGRATION_DOCUMENT_WORKER_ENDPOINT, credential: TOKEN });
+assert.equal(createConfiguredIntegrationPaperAcquisitionClient(validConfig(), configuredFileClient), undefined);
+assert.equal(createConfiguredIntegrationPaperAcquisitionClient(validConfig({ paperAcquisition: { enabled: false } }), configuredFileClient), undefined);
+assertIntegrationPaperAcquisitionClient(createConfiguredIntegrationPaperAcquisitionClient(paperConfig, configuredFileClient), { fileWorkerClient: configuredFileClient });
+for (const override of [
+  { paperAcquisition: { enabled: true } },
+  { paperAcquisition: { ...configuredPaper, enabled: "true" } },
+  { paperAcquisition: { ...configuredPaper, credential: TOKEN } },
+  { paperAcquisition: { enabled: false, allowedOrigins: [] } },
+  { paperAcquisition: { ...configuredPaper, allowedOrigins: [] } },
+  { paperAcquisition: { ...configuredPaper, allowedOrigins: ["http://arxiv.org"] } },
+  { paperAcquisition: { ...configuredPaper, allowedOrigins: ["https://127.0.0.1"] } },
+  { paperAcquisition: { ...configuredPaper, allowedOrigins: ["https://arxiv.org/path"] } },
+  { paperAcquisition: { ...configuredPaper, maximumBytes: 16 * 1024 * 1024 + 1 } },
+  { paperAcquisition: { ...configuredPaper, timeoutMs: 90001 } },
+  { documentWorker: { enabled: false } },
+  { statePersistence: { mode: INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 } },
+]) assert.throws(() => validateIntegrationAnalysisServiceConfig({ ...paperConfig, ...override }),
+  error => error.code === "ANALYSIS_CONFIG_INVALID");
 assert.equal(checkedConfig.capability.enabled, true);
 assert.equal(checkedConfig.statePersistence.mode, INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3);
 assert.equal(checkedConfig.trustedPrincipalProxy.clientId, "aginti-bff");

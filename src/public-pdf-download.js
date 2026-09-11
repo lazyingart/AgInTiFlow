@@ -102,7 +102,7 @@ function sameAddress(actual, expected) {
   return match.check(actual, isIP(actual) === 4 ? "ipv4" : "ipv6");
 }
 
-function createDownloader(config, transport, testOnly) {
+export function validatePublicPdfDownloadConfig(config) {
   if (!config || Object.keys(config).some(key => !["allowedOrigins", "maximumBytes", "timeoutMs"].includes(key))) {
     fail("CONFIGURATION_INVALID", "PDF acquisition configuration is invalid.");
   }
@@ -120,6 +120,12 @@ function createDownloader(config, transport, testOnly) {
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 90_000) {
     fail("CONFIGURATION_INVALID", "PDF acquisition limits are outside their bounds.");
   }
+  return Object.freeze({ allowedOrigins: Object.freeze([...origins]), maximumBytes, timeoutMs });
+}
+
+function createDownloader(config, transport, testOnly) {
+  const { allowedOrigins, maximumBytes, timeoutMs } = validatePublicPdfDownloadConfig(config);
+  const origins = new Set(allowedOrigins);
   let busy = false;
   let nextRequestAt = 0;
   const downloader = Object.freeze({

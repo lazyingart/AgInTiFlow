@@ -12,7 +12,7 @@ import {
   FILE_WORKER_LIMITS, FILE_WORKER_SCHEMA_VERSIONS as FILE, createFileWorkerIssuanceId,
   validateFileWorkerCandidates, validateFileWorkerReceipt,
 } from "../src/integration-file-worker-contract.js";
-import { openIntegrationFileWorkerStore } from "../src/integration-file-worker-store.js";
+import { ACQUIRED_PAPER_RETENTION_MS, openIntegrationFileWorkerStore } from "../src/integration-file-worker-store.js";
 import { contractDigest } from "../src/integration-policy.js";
 
 const hash = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
@@ -53,7 +53,7 @@ async function fixture(t, options = {}) {
   t.after(async () => { await store.close().catch(() => {}); await fs.rm(parent, { recursive: true, force: true }); });
   return {
     get store() { return store; }, stateRoot,
-    async reopen() { await store.close().catch(() => {}); store = await openIntegrationFileWorkerStore({ stateRoot }); },
+    async reopen() { await store.close().catch(() => {}); store = await openIntegrationFileWorkerStore({ stateRoot, now: options.now }); },
   };
 }
 async function issued(store, bytes = pdf()) {
@@ -289,6 +289,63 @@ test("two-phase deletion survives restart and refuses resurrection", async t => 
   assert.deepEqual(await fs.readdir(path.join(f.stateRoot, "objects")), []);
   await f.reopen();
   assert.equal((await f.store.delete({ ...deletion, phase: "status" })).status, "committed");
+});
+
+test("paper bytes expire at 30 days without extending on access, while Markdown remains", async t => {
+  let clock = Date.parse("2026-09-11T12:00:00.000Z");
+  const f = await fixture(t, { now: () => new Date(clock) });
+  const { request, bytes } = await issued(f.store);
+  const paper = await f.store.importAcquiredPaper(request, bytes);
+  await f.store.commit(commitRequest(paper));
+  const file = { index: 0, filename: "notes.md", mime: "text/markdown", bytes: 5, sha256: hash("notes") };
+  const issue = { schemaVersion: FILE.issueRequest, issuanceId: createFileWorkerIssuanceId(1), authorityEpoch: 1, scope, files: [file] };
+  const authority = await f.store.issue(issue);
+  const notes = await f.store.publish({ ...issue, requestId: authority.requestId,
+    authorityToken: authority.authorityToken, schemaVersion: FILE.publishRequest,
+    files: [{ ...file, encoding: "utf8", content: "notes" }] });
+  await f.store.commit(commitRequest(notes));
+  clock += ACQUIRED_PAPER_RETENTION_MS - 1;
+  await f.store.maintain();
+  assert.deepEqual(await read(await f.store.openContent(contentRequest(paper))), bytes);
+  clock += 1;
+  await fails(f.store.openContent(contentRequest(paper)), "ARTIFACT_CONTENT_GONE");
+  assert.equal((await read(await f.store.openContent(contentRequest(notes)))).toString(), "notes");
+  await f.reopen();
+  await fails(f.store.openContent(contentRequest(paper)), "ARTIFACT_CONTENT_GONE");
+  await fails(f.store.importAcquiredPaper(request, bytes), "ARTIFACT_CONTENT_GONE");
+  await fails(f.store.openContent(contentRequest(paper, { scope: { ...scope, principalId: "principal.other-owner" } })), "NOT_FOUND");
+  const { runId, ...threadScope } = scope;
+  const deletion = { schemaVersion: FILE.deleteRequest, deletionId: `fdel_${hash("delete-expired-paper")}`,
+    phase: "prepare", scope: threadScope,
+    objects: [{ ref: paper.artifacts[0].ref, runId, receiptDigest: paper.receipt.digest }] };
+  await f.store.delete(deletion);
+  await f.reopen();
+  assert.equal((await f.store.delete({ ...deletion, phase: "commit" })).status, "committed");
+  await f.reopen();
+  assert.equal((await f.store.delete({ ...deletion, phase: "status" })).status, "committed");
+  assert.equal((await read(await f.store.openContent(contentRequest(notes)))).toString(), "notes");
+});
+
+test("idle maintenance expires paper and closes open reads, recovering an interrupted unlink", async t => {
+  let clock = Date.parse("2026-09-11T12:00:00.000Z");
+  let interrupt = true;
+  const f = await fixture(t, { now: () => new Date(clock), checkpoint(name) {
+    if (interrupt && name === "paper-after-expiry-unlink-before-ledger") throw new Error("expiry crash");
+  } });
+  const { request, bytes } = await issued(f.store);
+  const paper = await f.store.importAcquiredPaper(request, bytes);
+  await f.store.commit(commitRequest(paper));
+  const opened = await f.store.openContent(contentRequest(paper));
+  opened.stream.on("error", () => {});
+  clock += ACQUIRED_PAPER_RETENTION_MS;
+  await assert.rejects(f.store.maintain(), /expiry crash/);
+  assert.equal(opened.stream.destroyed, true);
+  await opened.release();
+  assert.deepEqual(await fs.readdir(path.join(f.stateRoot, "objects")), []);
+  interrupt = false;
+  await f.reopen();
+  await fails(f.store.openContent(contentRequest(paper)), "ARTIFACT_CONTENT_GONE");
+  await f.store.maintain();
 });
 
 test("source metadata rejects credentials, private URLs and extra network policy", () => {

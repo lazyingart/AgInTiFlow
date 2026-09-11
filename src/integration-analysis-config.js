@@ -23,6 +23,8 @@ import {
   validateIntegrationDocumentWorkerEndpoint,
 } from "./integration-document-worker-client.js";
 import { INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES } from "./integration-analysis-state-persistence.js";
+import { validatePublicPdfDownloadConfig } from "./public-pdf-download.js";
+import { ACQUIRED_PAPER_MAXIMUM_BYTES } from "./integration-acquired-paper-contract.js";
 import { INTEGRATION_RPC_PATH_LIST, INTEGRATION_RPC_PATHS } from "./integration-policy.js";
 import {
   normalizeIntegrationModelBinding,
@@ -68,10 +70,11 @@ const CONFIG_KEYS = Object.freeze([
   "localModel",
   "groundedSearch",
   "documentWorker",
+  "paperAcquisition",
   "trustedPrincipalProxy",
 ]);
 const REQUIRED_CONFIG_KEYS = Object.freeze(
-  CONFIG_KEYS.filter((key) => !new Set(["vision", "groundedSearch", "documentWorker"]).has(key))
+  CONFIG_KEYS.filter((key) => !new Set(["vision", "groundedSearch", "documentWorker", "paperAcquisition"]).has(key))
 );
 const CAPABILITY_KEYS = Object.freeze(["enabled", "mode"]);
 const LISTEN_KEYS = Object.freeze(["host", "port"]);
@@ -86,6 +89,7 @@ const STATE_PERSISTENCE_KEYS = Object.freeze(["mode"]);
 const VISION_KEYS = Object.freeze(["enabled"]);
 const SEARCH_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs", "maximumSources"]);
 const DOCUMENT_WORKER_KEYS = Object.freeze(["enabled", "endpoint", "timeoutMs"]);
+const PAPER_ACQUISITION_KEYS = Object.freeze(["enabled", "allowedOrigins", "maximumBytes", "timeoutMs"]);
 const TRUSTED_PROXY_KEYS = Object.freeze(["clientId", "label", "scopes"]);
 const RPC_PATH_SET = new Set(INTEGRATION_RPC_PATH_LIST);
 
@@ -278,6 +282,32 @@ export function validateIntegrationAnalysisServiceConfig(value) {
     }
   }
 
+  let paperAcquisition;
+  if (config.paperAcquisition !== undefined) {
+    const paper = exactObject(config.paperAcquisition, PAPER_ACQUISITION_KEYS, ["enabled"], "paperAcquisition");
+    if (typeof paper.enabled !== "boolean") fail("ANALYSIS_CONFIG_INVALID", "paperAcquisition.enabled must be a boolean.");
+    if (!paper.enabled) {
+      if (Reflect.ownKeys(paper).length !== 1) fail("ANALYSIS_CONFIG_INVALID", "Disabled paperAcquisition may contain only enabled=false.");
+      paperAcquisition = Object.freeze({ enabled: false });
+    } else {
+      exactObject(paper, PAPER_ACQUISITION_KEYS, PAPER_ACQUISITION_KEYS, "paperAcquisition");
+      if (documentWorker?.enabled !== true || statePersistence.mode !== INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.nativeV3) {
+        fail("ANALYSIS_CONFIG_INVALID", "Paper acquisition requires its private document worker and native-v3 durable state.");
+      }
+      let download;
+      try {
+        download = validatePublicPdfDownloadConfig({ allowedOrigins: paper.allowedOrigins,
+          maximumBytes: paper.maximumBytes, timeoutMs: paper.timeoutMs });
+      } catch {
+        fail("ANALYSIS_CONFIG_INVALID", "Paper acquisition requires reviewed public HTTPS origins and bounded limits.");
+      }
+      if (download.maximumBytes > ACQUIRED_PAPER_MAXIMUM_BYTES) {
+        fail("ANALYSIS_CONFIG_INVALID", "Paper acquisition exceeds the private file worker's PDF size limit.");
+      }
+      paperAcquisition = Object.freeze({ enabled: true, ...download });
+    }
+  }
+
   if (
     statePersistence.mode === INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES.r67CompatibleV2 &&
     (groundedSearch?.enabled === true || documentWorker?.enabled === true)
@@ -313,6 +343,7 @@ export function validateIntegrationAnalysisServiceConfig(value) {
     ...(hosted ? { model: selectedModel } : { localModel: selectedModel }),
     ...(groundedSearch === undefined ? {} : { groundedSearch }),
     ...(documentWorker === undefined ? {} : { documentWorker }),
+    ...(paperAcquisition === undefined ? {} : { paperAcquisition }),
     trustedPrincipalProxy: Object.freeze({
       clientId,
       label: boundedLabel(proxy.label),
@@ -624,6 +655,7 @@ export function publicIntegrationAnalysisServiceConfig(configInput) {
     ...(config.model === undefined ? { localModel: config.localModel } : { model: config.model }),
     ...(config.groundedSearch === undefined ? {} : { groundedSearch: config.groundedSearch }),
     ...(config.documentWorker === undefined ? {} : { documentWorker: config.documentWorker }),
+    ...(config.paperAcquisition === undefined ? {} : { paperAcquisition: config.paperAcquisition }),
     trustedPrincipalProxy: Object.freeze({
       clientId: config.trustedPrincipalProxy.clientId,
       label: config.trustedPrincipalProxy.label,

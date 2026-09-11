@@ -43,6 +43,7 @@ import {
 export const FILE_WORKER_LEDGER_SCHEMA_VERSION = "aginti-file-worker-ledger-v1";
 export const FILE_WORKER_LEDGER_ENVELOPE_SCHEMA_VERSION = "aginti-file-worker-ledger-envelope-v1";
 export const FILE_WORKER_STAGED_GROUP_TTL_MS = 24 * 60 * 60 * 1000;
+export const ACQUIRED_PAPER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const LEDGER_FILENAME = "ledger.json";
 const STAGES_DIRECTORY = "stages";
@@ -263,7 +264,7 @@ function validateStoredGroup(group) {
     failStop(new Error("stored committed file lifecycle is invalid"));
   }
   if (new Set(["delete-prepared", "deleting"]).has(group.state) &&
-      states.some((state) => state !== (group.committedAt === null ? "staged" : "committed"))) {
+      states.some((state) => !(group.committedAt === null ? ["staged"] : ["committed", "gone"]).includes(state))) {
     failStop(new Error("stored deleting file lifecycle is invalid"));
   }
   if (group.state === "tombstoned" && states.some((state) => state !== "tombstoned")) {
@@ -683,7 +684,25 @@ export async function openIntegrationFileWorkerStore(options = {}) {
 
   async function reapExpired() {
     const threshold = now().getTime() - FILE_WORKER_STAGED_GROUP_TTL_MS;
+    const paperThreshold = now().getTime() - ACQUIRED_PAPER_RETENTION_MS;
     let changed = false;
+    // The worker's own durable creation time controls retention, not a
+    // caller-supplied source timestamp. Retain receipts and scope identities so
+    // content returns 410 and later owner/account deletion remains idempotent.
+    for (const group of ledger.groups) {
+      if (!isAcquiredPaperGroup(group) || group.state !== "committed" ||
+          Date.parse(group.createdAt) > paperThreshold) continue;
+      for (const artifact of group.artifacts) {
+        if (artifact.state !== "committed") continue;
+        await closeRef(artifact.ref);
+        await fs.unlink(path.join(paths.objects, artifact.ref)).catch((error) => {
+          if (error?.code !== "ENOENT") unavailable("Expired paper cleanup failed.", error);
+        });
+        await checkpoint("paper-after-expiry-unlink-before-ledger", { ref: artifact.ref });
+        artifact.state = "gone";
+        changed = true;
+      }
+    }
     for (const group of ledger.groups) {
       if (group.state !== "staged" || Date.parse(group.createdAt) > threshold) continue;
       for (const artifact of group.artifacts) await fs.unlink(path.join(paths.stages, artifact.ref)).catch(() => {});
@@ -699,6 +718,7 @@ export async function openIntegrationFileWorkerStore(options = {}) {
     ));
     if (changed || before !== ledger.reservations.length) {
       await syncDirectory(paths.stages);
+      await syncDirectory(paths.objects);
       await saveLedger();
     }
   }
@@ -975,6 +995,7 @@ export async function openIntegrationFileWorkerStore(options = {}) {
 
     openContent(request) {
       return runSerialized(async () => {
+        await reapExpired();
         const found = findArtifact(request.ref);
         if (!found || !scopeMatches(request.scope, found.group) || found.group.receipt.digest !== request.receiptDigest ||
           new Set(["staged", "committing"]).has(found.group.state)) notFound();
@@ -1111,6 +1132,10 @@ export async function openIntegrationFileWorkerStore(options = {}) {
         };
         return Object.freeze({ ...unsigned, digest: contractDigest(unsigned) });
       });
+    },
+
+    maintain() {
+      return runSerialized(reapExpired);
     },
 
     inspect() {

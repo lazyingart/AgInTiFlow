@@ -1,5 +1,46 @@
 # Public paper acquisition
 
+## Operator binding and retention checkpoint — September 11
+
+The production analysis-server composition now constructs the branded paper
+client from optional `paperAcquisition` configuration, using the same private
+file worker as generated files. Enabled configuration requires native-v3 state,
+enabled document access, explicit reviewed public HTTPS origins, a maximum of
+16MiB and a bounded download deadline. Absent/disabled configuration preserves
+ordinary chat. A missing optional document credential leaves acquisition
+unavailable; it is not an implicit fallback to another service or credential.
+The shared downloader validator performs no network activity at configuration.
+
+Acquired-paper bytes expire 30 days after the worker's durable creation time.
+Caller-provided source timestamps cannot extend retention. Cleanup runs at
+startup, on relevant operations/content access and hourly in the existing
+document HTTP process. The timer is non-overlapping and cleared at shutdown.
+Expiry closes an existing source read, unlinks only its owned object, then
+records content as gone. Receipts, owner scope and source metadata remain;
+content/re-import returns410, and subsequent owner/account deletion still works.
+An interruption between unlink and ledger persistence recovers on reopening.
+Generated Markdown and other generated-file groups are outside this policy.
+
+Offline validation passes for downloader, paper store/transfer/HTTP, recovery
+and selection suites. The real fixed-port document HTTP server, service,
+file store and analysis API smokes pass inside a network-isolated disposable
+container, without occupying the live shared listener. New retention cases
+cover the exact boundary, unchanged Markdown, active reads, interrupted cleanup,
+restart, owner isolation, anti-resurrection and later two-phase deletion.
+The configuration checks cover explicit disable/missing credentials, valid
+production binding and malformed/unsafe configurations. Syntax:300 files.
+Package dry-run:459 files; required runtime modules present, private state absent.
+
+This is source qualification, not activation or npm publication. The shared
+LocalLLM document deployment and private LazyEdge document role still need the
+compatible worker package, opt-in paper routes/token scope and binary body
+bound. Preserve its existing consumers and ledger. EchoMind also applies
+30-day retention to newly imported Agent PDF outputs in its existing lifecycle;
+durable Markdown and conversation metadata remain. PDF delivery does not claim
+reading, main-text conversion, translation or permission to republish.
+
+## Earlier checkpoints
+
 Status: credential-free acquisition, durable storage, authenticated binary
 transport, conversation artifact lifecycle, durable acquisition metadata and
 opt-in planner routing and bounded process recovery are implemented and tested

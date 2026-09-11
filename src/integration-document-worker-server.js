@@ -367,6 +367,8 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
   let startGeneration = 0;
   const controllers = new Set();
   let activePaperImports = 0;
+  let maintenanceTimer = null;
+  let maintenancePending = false;
 
   function triggerFailStop(error, res) {
     if (failStopPromise) return;
@@ -383,7 +385,7 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
       })();
       failStopPromise.catch(() => {});
     };
-    if (res.writableEnded || res.destroyed) {
+    if (!res || res.writableEnded || res.destroyed) {
       setImmediate(schedule);
     } else {
       res.once("finish", schedule);
@@ -513,6 +515,16 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
             }
             const address = verifyAddress(server);
             lifecycle = "listening";
+            // One small sweep in the existing process; the store serializes it
+            // with requests. No overlap, additional listener or cleanup daemon.
+            maintenanceTimer = setInterval(() => {
+              if (maintenancePending || lifecycle !== "listening") return;
+              maintenancePending = true;
+              Promise.resolve().then(() => service.maintain())
+                .catch(error => triggerFailStop(error))
+                .finally(() => { maintenancePending = false; });
+            }, 60 * 60 * 1000);
+            maintenanceTimer.unref?.();
             finish();
             resolve(address);
           } catch (error) {
@@ -544,6 +556,8 @@ export function createIntegrationDocumentWorkerServer(options = {}) {
     if (closePromise) return closePromise;
     startGeneration += 1;
     lifecycle = "closing";
+    clearInterval(maintenanceTimer);
+    maintenanceTimer = null;
     for (const controller of controllers) controller.abort(new Error("document worker shutting down"));
     closePromise = new Promise((resolve) => {
       if (!server.listening) {

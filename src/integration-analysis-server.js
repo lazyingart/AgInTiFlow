@@ -26,6 +26,8 @@ import { IntegrationServiceConfigError } from "./integration-config.js";
 import { createFileIntegrationIdempotencyStore } from "./integration-idempotency-store.js";
 import { createIntegrationDocumentWorkerClient } from "./integration-document-worker-client.js";
 import { createIntegrationFileWorkerClient } from "./integration-file-worker-client.js";
+import { createPublicPdfDownloader } from "./public-pdf-download.js";
+import { createIntegrationPaperAcquisitionClient } from "./integration-paper-acquisition.js";
 import { INTEGRATION_ANALYSIS_STATE_PERSISTENCE_MODES } from "./integration-analysis-state-persistence.js";
 import {
   INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BODY_RECEIVE_TIMEOUT_MS,
@@ -609,6 +611,14 @@ export function createIntegrationAnalysisServer(options = {}) {
   });
 }
 
+export function createConfiguredIntegrationPaperAcquisitionClient(configInput, fileWorkerClient) {
+  const config = validateIntegrationAnalysisServiceConfig(configInput);
+  if (config.paperAcquisition?.enabled !== true || fileWorkerClient === undefined) return undefined;
+  const { allowedOrigins, maximumBytes, timeoutMs } = config.paperAcquisition;
+  return createIntegrationPaperAcquisitionClient({ fileWorkerClient,
+    downloader: createPublicPdfDownloader({ allowedOrigins, maximumBytes, timeoutMs }) });
+}
+
 export async function composeProductionIntegrationAnalysisServer(options = {}) {
   exactOptions(
     options,
@@ -671,6 +681,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
           timeoutMs: config.documentWorker.timeoutMs,
         })
       : undefined;
+    const paperAcquisitionClient = createConfiguredIntegrationPaperAcquisitionClient(config, fileWorkerClient);
     const planner = createIntegrationAnalysisPlanner({
       coordinator,
       localModelConfig: {
@@ -689,6 +700,7 @@ export async function composeProductionIntegrationAnalysisServer(options = {}) {
         : {}),
       ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
       ...(fileWorkerClient === undefined ? {} : { fileWorkerClient }),
+      ...(paperAcquisitionClient === undefined ? {} : { paperAcquisitionClient }),
       configuredRoles: {
         groundedSearch: searchEnabled,
         documentWorker: documentWorkerEnabled,

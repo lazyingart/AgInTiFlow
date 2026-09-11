@@ -418,6 +418,10 @@ function createService({ config, store, fileStore, compileImpl, inspectRuntimeIm
       if (!fileStore) documentWorkerFail("WORKER_UNAVAILABLE", "File artifact broker is unavailable.", { status: 503 });
       return fileStore.delete(validateFileWorkerDeleteRequest(requestInput));
     },
+    maintain() {
+      assertActive();
+      return fileStore?.maintain();
+    },
     issueCompile,
     compile,
     commit(requestInput) {
