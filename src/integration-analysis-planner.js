@@ -57,6 +57,10 @@ import {
   inspectIntegrationFileWorkerArtifact,
 } from "./integration-file-worker-client.js";
 import { FILE_WORKER_LIMITS } from "./integration-file-worker-contract.js";
+import { assertIntegrationPaperAcquisitionClient, INTEGRATION_PAPER_ACQUISITION_TOOL_NAME } from "./integration-paper-acquisition.js";
+import { paperSelectionCandidates, paperSelectionMessages, parsePaperSelection, paperSelectionRequest } from "./integration-paper-selection.js";
+import { IntegrationDocumentWorkerError as IntegrationDocumentContractError } from "./integration-document-worker-contract.js";
+import { PublicPdfDownloadError } from "./public-pdf-download.js";
 import {
   AGENT_WORKER_SCHEMA_VERSION,
   canonicalJson,
@@ -2712,7 +2716,7 @@ function deepResearchEvidenceMessage(result) {
 }
 
 function completedResearchResultText(report, continuation, maximumBytes) {
-  if (report === null) return continuation;
+  if (report === null || report === continuation) return continuation;
   // A completed task result is not merely disposable model context. Preserve
   // research across every later completion path, including literal execution
   // and context/numeric-repair fallbacks, without another synthesis call.
@@ -2759,7 +2763,10 @@ function translateError(error, signal) {
       cause: error,
     });
   }
-  if (error instanceof IntegrationDocumentWorkerError) {
+  if (error instanceof PublicPdfDownloadError) {
+    return new IntegrationAnalysisPlannerError("ANALYSIS_PAPER_DOWNLOAD_FAILED", "The selected source PDF could not be retrieved and verified.", { status: 502, cause: error });
+  }
+  if (error instanceof IntegrationDocumentWorkerError || error instanceof IntegrationDocumentContractError) {
     return new IntegrationAnalysisPlannerError(error.code, error.message, {
       status: error.status,
       cause: error,
@@ -2812,6 +2819,7 @@ function createPlanner({
   groundedSearchClient,
   documentWorkerClient,
   fileWorkerClient,
+  paperAcquisitionClient,
   requireSystemdCredential,
   requireConfiguredCapabilities,
   roleConfiguration,
@@ -2860,6 +2868,12 @@ function createPlanner({
         cause: error,
       });
     }
+  }
+  if (paperAcquisitionClient !== undefined) {
+    if (fileWorkerClient === undefined) fail("ANALYSIS_CONFIGURATION_INVALID", "Paper acquisition requires the same fixed file worker.");
+    assertIntegrationPaperAcquisitionClient(paperAcquisitionClient, {
+      allowTestOnly: !requireSystemdCredential, fileWorkerClient,
+    });
   }
   const proofUnsigned = Object.freeze({
     schemaVersion: INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
@@ -2923,6 +2937,7 @@ function createPlanner({
     fileArtifactsBrokeredToWorkstation: true,
     fileArtifactCloudBlobStorage: false,
     fileArtifactPrivateBytesInPublicJson: false,
+    ...(paperAcquisitionClient === undefined ? {} : { sourcePaperAcquisitionConfigured: true }),
     ...(documentWorkerClient === undefined
       ? {}
       : {
@@ -2977,6 +2992,7 @@ function createPlanner({
   // explicitly activates again (or builds a fresh planner).
   let documentCreationActivationState = requireSystemdCredential ? false : null;
   let fileCreationActivationState = requireSystemdCredential ? false : null;
+  let paperCreationActivationState = requireSystemdCredential ? false : null;
 
   async function activate(optionsValue = {}) {
     const options = exactObject(optionsValue, ["signal"], [], "analysis planner activation options", {
@@ -3065,6 +3081,14 @@ function createPlanner({
       }
     } else {
       fileCreationActivationState = false;
+    }
+    paperCreationActivationState = false;
+    if (paperAcquisitionClient !== undefined && fileCreationActivationState) {
+      try {
+        paperCreationActivationState = (await paperAcquisitionClient.readiness({ signal: options.signal })).creationEnabled === true;
+      } catch (error) {
+        if (options.signal?.aborted || requireConfiguredCapabilities || optionalFileWorkerActivationErrorIsFatal(error)) throw error;
+      }
     }
     let groundedSearchActivation;
     let groundedSearchRole = roleState("groundedSearch", {
@@ -3251,10 +3275,10 @@ function createPlanner({
     const exactDocumentSource = documentArtifactIntent.required
       ? extractIntegrationExactFencedTeXSource(input.prompt)
       : null;
-    const fileArtifactRequired = requiresGeneralFileCreation(input.prompt, {
+    let fileArtifactRequired = requiresGeneralFileCreation(input.prompt, {
       texPdfEnabled: documentArtifactIntent.required,
     });
-    const unsupportedCapabilities = unsupportedCapabilityRequests(input.prompt, {
+    let unsupportedCapabilities = unsupportedCapabilityRequests(input.prompt, {
       searchEnabled: input.search !== undefined,
       texPdfEnabled: documentArtifactIntent.required,
       fileCreationEnabled: fileArtifactRequired,
@@ -3682,6 +3706,7 @@ function createPlanner({
             if (
               !documentArtifactIntent.required &&
               !fileArtifactRequired &&
+              paperAcquisitionClient === undefined &&
               executionObligations.minimumSuccessfulExecutions === 0
             ) {
               await emitProgress("synthesizing", { artifactCount: artifacts.length });
@@ -3704,6 +3729,72 @@ function createPlanner({
           }).catch(() => {});
           throw error;
         }
+      }
+      // Source selection sees only recorded search rows, never a model-chosen
+      // URL. Ordinary chats without source context do not pay for this step.
+      if (paperAcquisitionClient !== undefined) {
+        const candidates = paperSelectionCandidates([...artifacts, ...input.priorArtifacts]);
+        if (candidates.length > 0 || input.search !== undefined || fileArtifactRequired) {
+          const payload = Object.freeze({
+            ...completionPayload(paperSelectionMessages(input.prompt, input.conversation, candidates), modelConfig, { disableTools: true }),
+            max_tokens: Math.min(modelConfig.maxOutputTokens, 512),
+            response_format: { type: "json_object" },
+          });
+          assertWithinModelContext(payload, modelConfig);
+          assertNotAborted(signal);
+          const selection = parsePaperSelection(await invokeModel(modelClient, payload,
+            { ...config, modelTimeoutMs: Math.min(config.modelTimeoutMs || 60_000, 15_000) },
+            "bounded source paper selection"), candidates);
+          assertNotAborted(signal);
+          if (selection.action === "unavailable") {
+            fail("ANALYSIS_PAPER_SOURCE_UNAVAILABLE", "The requested original PDF is not available from one eligible recorded source. Select a source with an available PDF.", { status: 409 });
+          }
+          if (selection.action === "download") {
+            if (paperCreationActivationState === false || fileCreationActivationState === false) {
+              fail("ANALYSIS_PAPER_DISABLED", "Paper downloads are not enabled on this worker.", { status: 503 });
+            }
+            if (!options.onPaperAcquireIntent || !options.onFileCommitIntent) {
+              fail("ANALYSIS_PAPER_AUTHORITY_INVALID", "Paper acquisition lacks durable conversation authority.", { status: 503 });
+            }
+            // A request for the original PDF is not a request to manufacture
+            // a replacement file. Independent requested outputs remain intact.
+            if (!selection.additionalOutputs) fileArtifactRequired = false;
+            if (executionObligations.minimumSuccessfulExecutions + 1 + Number(documentArtifactIntent.required || fileArtifactRequired) > INTEGRATION_ANALYSIS_MAX_TOOL_CALLS) {
+              fail("ANALYSIS_TOOL_LIMIT", "This request exceeds the bounded paper and analysis tool budget.", { status: 400 });
+            }
+            await emitProgress("executing", { toolName: INTEGRATION_PAPER_ACQUISITION_TOOL_NAME, toolCallNumber: 1, executionState: "starting" });
+            try {
+              const acquired = await paperAcquisitionClient.acquire(paperSelectionRequest(selection), {
+                signal, onPaperAcquireIntent: options.onPaperAcquireIntent,
+              });
+              for (const artifact of acquired.artifacts) await captureArtifact(artifact);
+              if (await options.onFileCommitIntent(acquired.artifacts) !== true) {
+                fail("ANALYSIS_FILE_COMMIT_AUTHORITY_REQUIRED", "Paper commit was not durably authorized.", { status: 503 });
+              }
+              assertNotAborted(signal);
+              await fileWorkerClient.commitArtifacts(scope,
+                { receiptDigest: acquired.receipt.digest, artifacts: acquired.artifacts }, { signal });
+              toolCalls += 1;
+              executionStatus = "succeeded";
+              await emitProgress("executing", { toolName: INTEGRATION_PAPER_ACQUISITION_TOOL_NAME, toolCallNumber: 1, executionState: "succeeded", artifactCount: artifacts.length });
+            } catch (error) {
+              await emitProgress("executing", { toolName: INTEGRATION_PAPER_ACQUISITION_TOOL_NAME, toolCallNumber: 1, executionState: "failed" }).catch(() => {});
+              throw error;
+            }
+            // Remove only the fulfilled single-output PDF/file limitation. Keep
+            // unrelated web/host/shell restrictions and all compound obligations.
+            if (!selection.additionalOutputs) unsupportedCapabilities = unsupportedCapabilities.filter(category => category !== "file");
+            messages.splice(messages.length - 1, 0, Object.freeze({ role: "system", content:
+              "The selected original source PDF has been retrieved and committed as a download below. This is not generated content. Its full text has not been read or converted. Complete any remaining user request using the available evidence; do not create a substitute PDF." }));
+            if (!documentArtifactIntent.required && !fileArtifactRequired && !selection.additionalOutputs && !explicitExecution) {
+              return await finalize({ text: "The original source PDF is ready below.", toolCalls, executionStatus });
+            }
+          }
+        }
+      }
+      if (completedResearchReport !== null && !documentArtifactIntent.required && !fileArtifactRequired && !explicitExecution && toolCalls === 0) {
+        await emitProgress("synthesizing", { artifactCount: artifacts.length });
+        return await finalize({ text: completedResearchReport, toolCalls: 0, executionStatus: null });
       }
       const isolateNewDocumentFromPriorConversation =
         documentArtifactIntent.required &&
@@ -3907,7 +3998,7 @@ function createPlanner({
         let compiled;
         let toolCall;
         let successfulAttempt = 0;
-        for (let attempt = 1; attempt <= 2; attempt += 1) {
+        for (let attempt = 1; attempt <= Math.min(2, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS - documentToolCallOffset); attempt += 1) {
           const compilePayload = Object.freeze({
             model: modelConfig.model,
             temperature: 0,
@@ -4094,7 +4185,8 @@ function createPlanner({
         let published;
         let toolCall;
         let successfulAttempt = 0;
-        for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const fileToolCallOffset = toolCalls;
+        for (let attempt = 1; attempt <= Math.min(2, INTEGRATION_ANALYSIS_MAX_TOOL_CALLS - fileToolCallOffset); attempt += 1) {
           const payload = Object.freeze({
             model: modelConfig.model,
             temperature: 0,
@@ -4117,7 +4209,7 @@ function createPlanner({
           } catch (error) {
             await emitProgress("executing", {
               toolName: INTEGRATION_FILE_WORKER_TOOL_NAME,
-              toolCallNumber: attempt,
+              toolCallNumber: fileToolCallOffset + attempt,
               executionState: "failed",
             });
             if (attempt === 1 && new Set(["ANALYSIS_FILE_TOOL_CALL_INVALID", "ANALYSIS_FILE_TOOL_REQUIRED"]).has(error?.code)) {
@@ -4132,7 +4224,7 @@ function createPlanner({
           }
           await emitProgress("executing", {
             toolName: INTEGRATION_FILE_WORKER_TOOL_NAME,
-            toolCallNumber: attempt,
+            toolCallNumber: fileToolCallOffset + attempt,
             executionState: "running",
           });
           try {
@@ -4143,7 +4235,7 @@ function createPlanner({
           } catch (error) {
             await emitProgress("executing", {
               toolName: INTEGRATION_FILE_WORKER_TOOL_NAME,
-              toolCallNumber: attempt,
+              toolCallNumber: fileToolCallOffset + attempt,
               executionState: "failed",
             });
             if (attempt === 1 && error?.code === "FILE_WORKER_INVALID") {
@@ -4178,10 +4270,10 @@ function createPlanner({
         );
         await emitProgress("executing", {
           toolName: INTEGRATION_FILE_WORKER_TOOL_NAME,
-          toolCallNumber: successfulAttempt,
+          toolCallNumber: fileToolCallOffset + successfulAttempt,
           executionState: "succeeded",
         });
-        toolCalls = successfulAttempt;
+        toolCalls += successfulAttempt;
         executionStatus = "succeeded";
         await emitProgress("synthesizing", { executionSucceeded: true, artifactCount: artifacts.length });
         return await finalize({
@@ -4198,10 +4290,11 @@ function createPlanner({
       if (explicitPython.kind === "execute") {
         let execution = null;
         for (
-          let toolCallNumber = 1;
-          toolCallNumber <= executionObligations.minimumSuccessfulExecutions;
-          toolCallNumber += 1
+          let executionNumber = 1;
+          executionNumber <= executionObligations.minimumSuccessfulExecutions;
+          executionNumber += 1
         ) {
+          const toolCallNumber = toolCalls + 1;
           execution = await executeOnce(explicitPython.execution, toolCallNumber);
           toolCalls = toolCallNumber;
           executionStatus = execution.status;
@@ -4278,8 +4371,8 @@ function createPlanner({
           source: expressionPlot.source,
           stdin: "",
           timeoutMs: Math.min(10_000, EXECUTION_LIMITS.maximumWallTimeMs),
-        }), 1);
-        toolCalls = 1;
+        }), toolCalls + 1);
+        toolCalls += 1;
         executionStatus = execution.status;
         recordSuccessfulExecution(execution);
         await emitProgress("synthesizing", {
@@ -4755,6 +4848,7 @@ export function createIntegrationAnalysisPlanner(value = {}) {
       "documentWorkerClient",
       "fileWorkerConfig",
       "fileWorkerClient",
+      "paperAcquisitionClient",
       "configuredRoles",
     ],
     ["coordinator", "localModelConfig"],
@@ -4804,6 +4898,7 @@ export function createIntegrationAnalysisPlanner(value = {}) {
     groundedSearchClient,
     documentWorkerClient,
     fileWorkerClient,
+    paperAcquisitionClient: options.paperAcquisitionClient,
     requireSystemdCredential: true,
     requireConfiguredCapabilities: false,
     roleConfiguration: options.configuredRoles,
@@ -4822,6 +4917,7 @@ export function createTestOnlyIntegrationAnalysisPlanner(value = {}) {
       "groundedSearchClient",
       "documentWorkerClient",
       "fileWorkerClient",
+      "paperAcquisitionClient",
       "requireConfiguredCapabilities",
       "configuredRoles",
     ],
@@ -4857,6 +4953,7 @@ export function createTestOnlyIntegrationAnalysisPlanner(value = {}) {
     groundedSearchClient: options.groundedSearchClient,
     documentWorkerClient: options.documentWorkerClient,
     fileWorkerClient: options.fileWorkerClient,
+    paperAcquisitionClient: options.paperAcquisitionClient,
     requireSystemdCredential: false,
     requireConfiguredCapabilities: options.requireConfiguredCapabilities === true,
     roleConfiguration: options.configuredRoles,

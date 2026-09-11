@@ -324,6 +324,9 @@ test("test clients and an overlarge downloader cannot be used as production acqu
   assert.throws(() => assertIntegrationPaperAcquisitionClient(f.acquisition));
   assert.throws(() => assertIntegrationPaperAcquisitionClient({ ...f.acquisition }, { allowTestOnly: true }));
   assert.equal(assertIntegrationPaperAcquisitionClient(f.acquisition, { allowTestOnly: true }), f.acquisition);
+  assert.equal(assertIntegrationPaperAcquisitionClient(f.acquisition, { allowTestOnly: true, fileWorkerClient: f.client }), f.acquisition);
+  assert.throws(() => assertIntegrationPaperAcquisitionClient(f.acquisition, { allowTestOnly: true, fileWorkerClient: f.worker.client() }));
+  assert.equal((await f.acquisition.readiness()).creationEnabled, true);
   const large = createPublicPdfDownloader({ allowedOrigins: ["https://arxiv.org"] });
   assert.throws(() => createTestOnlyIntegrationPaperAcquisitionClient({ downloader: large, fileWorkerClient: f.client }));
 });

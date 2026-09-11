@@ -1,11 +1,63 @@
 # Public paper acquisition
 
 Status: credential-free acquisition, durable storage, authenticated binary
-transport, conversation artifact lifecycle and durable acquisition metadata
-are implemented and tested in source. They are not yet an enabled EchoMind
-download feature: planner routing, pre-import background recovery, the guarded
-role route and source-PDF retention still need integration.
+transport, conversation artifact lifecycle, durable acquisition metadata and
+opt-in planner routing are implemented and tested in source. They are not yet
+an enabled EchoMind download feature: operator/server configuration, pre-import
+background recovery, the guarded role route and source-PDF retention still need
+integration.
 The live analysis, execution and shared document services remain unchanged.
+
+## Planner routing checkpoint — September 11
+
+Both planner factories accept one optional, branded `paperAcquisitionClient`
+bound to the exact same `fileWorkerClient`. Startup probes its paper-creation
+state separately; a disabled paper worker leaves ordinary chat operational.
+The deployed server does not construct this client yet. No new environment
+credential, service, public route or permission is introduced by this option.
+
+The planner uses one bounded JSON selection step over current/immediately prior
+recorded search rows. It distinguishes retrieving an original paper from
+generating a new document, and treats source metadata/history as untrusted data.
+The response can select only an eligible recorded artifact/index, never supply
+a URL or PDF bytes. Invalid/unfinished responses and unavailable selections
+stop before acquisition. The step has no tools, a 512-token output ceiling and
+a 15-second model deadline; ordinary chats without source or file context skip
+it. The session still independently resolves the selected row in its own scope.
+
+One source PDF counts against the existing four-operation budget. Acquisition
+uses the durable callbacks before DNS/issue/import, then captures, authorizes
+and commits the real worker artifacts. The planner can continue a separate
+generated-file request or Python task; original-paper bytes never enter a
+generation tool. Completed deep-research reports remain intact, including when
+the decision is simply no download. Retrieval does not imply reading the PDF,
+conversion, permission to republish or scientific correctness.
+
+Final file acknowledgements now group by receipt rather than assuming every
+file in a run is one bundle. Each group must match its complete commit intent
+and real worker acknowledgement. This permits a source PDF and separate
+generated files without mixing their provenance. The durable session exposes
+distinct Paper download progress, and selection/download errors retain their
+actual category instead of looking like a model outage.
+
+Verification: 14 selection-contract cases and 12 actual planner/session/HTTP
+scenarios cover ordinary chat, disabled-paper chat, current/prior selection,
+English/Japanese input preservation, separate generated files, subsequent
+Python, no-download decisions, wrong indices, unavailable sources, disabled
+creation and invalid PDF bytes. The complete existing deep-research regression
+is also run with paper acquisition configured. Model decisions are deterministic
+fixtures using the explicit DeepSeek payload binding; this is not a live-model
+selection-quality evaluation. All 110 combined store/frame/HTTP/session/
+acquisition/selection/cancellation cases pass, including the real 60-second
+upload deadline. Existing planner, file-client, document broker, session,
+startup/prewrite/API, 99 downloader/synthesis, syntax and mock web/coding checks
+also pass. Isolated test data/listeners are cleaned by their fixtures.
+
+Activation still requires the operator/server binding, process-resumable
+pre-import scheduling, guarded gateway, account adapter and 30-day source-PDF
+retention together. Do not advertise the source checkpoint as a live download,
+PDF converter or npm release. Preserve compatible rollback before writing new
+paper state to shared production ledgers.
 
 ## Ownership and boundaries
 

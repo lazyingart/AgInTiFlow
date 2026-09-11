@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
+import path from "node:path";
+import fs from "node:fs/promises";
+import { createPaperHttpWorker } from "../test/fixtures/paper-worker.js";
+import { paperDownloadFixture } from "../test/fixtures/paper-download.js";
+import { createTestOnlyIntegrationPaperAcquisitionClient } from "../src/integration-paper-acquisition.js";
+import { createTestOnlyIntegrationAnalysisSessionService } from "../src/integration-analysis-session-service.js";
+import { INTEGRATION_FILE_WORKER_TOOL_NAME } from "../src/integration-file-worker-client.js";
 
 import {
   EXECUTION_WORKER_API_SCHEMA_VERSION,
@@ -530,6 +537,8 @@ function fixture(complete, {
   worker,
   groundedSearchClient,
   documentWorkerClient,
+  fileWorkerClient,
+  paperAcquisitionClient,
   localModelConfig,
   requireConfiguredCapabilities,
   configuredRoles,
@@ -557,6 +566,8 @@ function fixture(complete, {
     },
     ...(groundedSearchClient === undefined ? {} : { groundedSearchClient }),
     ...(documentWorkerClient === undefined ? {} : { documentWorkerClient }),
+    ...(fileWorkerClient === undefined ? {} : { fileWorkerClient }),
+    ...(paperAcquisitionClient === undefined ? {} : { paperAcquisitionClient }),
     ...(requireConfiguredCapabilities === undefined ? {} : { requireConfiguredCapabilities }),
     ...(configuredRoles === undefined ? {} : { configuredRoles }),
   });
@@ -1132,7 +1143,7 @@ async function focusedSearchQuerySelection() {
   } finally { current.coordinator.close(); }
 }
 
-async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig = LOCAL_MODEL) {
+async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig = LOCAL_MODEL, paperClients = {}) {
   let prompt = "Perform deep web and paper research on durable local agent task recovery.";
   let selectedFragments = [];
   const selectedTopic = () => (selectedFragments.length ? selectedFragments.join(" ") : prompt)
@@ -1238,7 +1249,12 @@ async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig
   let compound = false;
   let synthesis = "The calculation completed.";
   let plainFollowup = false;
+  let paperSelectionCalls = 0;
   const deep = fixture(async (_client, payload, _config, label) => {
+    if (label === "bounded source paper selection") {
+      paperSelectionCalls += 1;
+      return textResponse(JSON.stringify({ action: "none", sourceArtifactId: null, sourceIndex: null, additionalOutputs: false }));
+    }
     modelCalls += 1;
     if (label === "research inventory synthesis") {
       assert(inventoryOnly);
@@ -1267,7 +1283,7 @@ async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig
     return payload.tools === undefined
       ? textResponse(synthesis)
       : toolResponse("print('calculation complete')");
-  }, { groundedSearchClient, localModelConfig,
+  }, { groundedSearchClient, localModelConfig, ...paperClients,
     selectSearchQuery: async (_client, payload) => {
       assert.equal(payload.messages[1].content, prompt);
       assert.equal(payload.tools, undefined);
@@ -1292,6 +1308,7 @@ async function deepResearchCompletesWithoutSecondModelSynthesis(localModelConfig
       }
     );
     assert.equal(modelCalls, 0);
+    assert.equal(paperSelectionCalls, paperClients.paperAcquisitionClient ? 1 : 0);
     assert.equal(result.kind, "direct");
     assert.equal(result.text, report);
     assert.equal(result.toolCalls, 0);
@@ -5922,6 +5939,130 @@ async function successfulExecutionFallsBackWhenEvenMinimalFeedbackCannotFit() {
   bounded.coordinator.close();
 }
 
+async function sourcePaperRoutingUsesActualSessionAndFileWorker() {
+  for (const scenario of [
+    { prompt: "Hello.", files: 0, ordinary: true },
+    { prompt: "Hello.", files: 0, ordinary: true, disabled: true },
+    { prompt: "Find the source paper and provide the original PDF file.", files: 1 },
+    { prompt: "論文を探して、そのPDFを送ってください。", files: 1 },
+    { prompt: "Find the source paper and send its PDF. Also create notes.txt containing notes.", files: 2, additionalOutputs: true },
+    { prompt: "Find the source paper and send its PDF. Also run Python to calculate 2+2.", files: 1, execution: true, additionalOutputs: true },
+    { prompt: "Find the source paper and summarize it. Do not download the PDF.", files: 0, action: "none" },
+    { prompt: "Find the source paper and send its PDF.", files: 0, action: "unavailable", failure: "ANALYSIS_PAPER_SOURCE_UNAVAILABLE" },
+    { prompt: "Find the source paper and send its PDF.", files: 0, wrongIndex: true, failure: "ANALYSIS_PAPER_SELECTION_INVALID" },
+    { prompt: "Find the source paper and send its PDF.", files: 0, disabled: true, failure: "ANALYSIS_PAPER_DISABLED" },
+    { prompt: "Find the source paper and send its PDF.", files: 0, invalidPdf: true, failure: "ANALYSIS_PAPER_DOWNLOAD_FAILED" },
+    { prompt: "Find the source paper and send its PDF.", files: 1, prior: true },
+  ]) {
+    const cleanup = [];
+    try {
+      const worker = await createPaperHttpWorker({ after(fn) { cleanup.push(fn); } }, { paperImport: !scenario.disabled });
+      const fileWorkerClient = worker.client();
+      const { downloader, downloads } = paperDownloadFixture(scenario.invalidPdf ? { body: () => Buffer.from("not a PDF") } : {});
+      const paperAcquisitionClient = createTestOnlyIntegrationPaperAcquisitionClient({ downloader, fileWorkerClient });
+      let activating = true;
+      const groundedSearchClient = createTestOnlyIntegrationGroundedSearchClient({
+        endpoint: INTEGRATION_GROUNDED_SEARCH_ENDPOINT, apiKey: "fixture-source-search-token",
+        fetchImpl: async (url, init) => {
+          if (url === INTEGRATION_DEEP_RESEARCH_STATUS_ENDPOINT || url === INTEGRATION_DEEP_RESEARCH_CANCEL_ENDPOINT) {
+            return Response.json({ detail: "Research task not found" }, { status: 404, headers: { "cache-control": "no-store" } });
+          }
+          assert.equal(url, INTEGRATION_GROUNDED_SEARCH_ENDPOINT);
+          const request = JSON.parse(init.body);
+          if (activating) return groundedSearchResponse(request);
+          return Response.json(groundedSearchPayload(request, [{
+            title: "Source paper", url: "https://papers.example.org/paper.pdf", snippet: "A synthetic source for this test.",
+            provider: "fixture", providers: ["fixture"], kind: "paper", authors: [], year: 2026,
+            published_date: null, doi: null, citation_count: 0, score: 1,
+            query: request.query, provenance: [{ provider: "fixture", query: request.query }],
+          }]), { headers: { "cache-control": "no-store" } });
+        },
+      });
+      let baseline = false;
+      await groundedSearchClient.activate();
+      let selectionCalls = 0;
+      let ordinaryCalls = 0;
+      const ordinaryLabels = [];
+      const model = fixture(async (_client, payload, config, label) => {
+        if (label === "bounded source paper selection") {
+          selectionCalls += 1;
+          assert.equal(payload.max_tokens, 512);
+          assert.equal(config.modelTimeoutMs, 15000);
+          assert.equal(payload.tools, undefined);
+          const data = JSON.parse(payload.messages[1].content);
+          const source = data.untrustedSourceCandidates[0];
+          const action = baseline ? "none" : scenario.action || "download";
+          return textResponse(JSON.stringify({ action,
+            sourceArtifactId: action === "download" ? source.sourceArtifactId : null,
+            sourceIndex: action === "download" ? scenario.wrongIndex ? 99 : source.sourceIndex : null,
+            additionalOutputs: scenario.additionalOutputs === true,
+          }));
+        }
+        if (label.startsWith("bounded file artifact model step")) return { choices: [{ message: {
+          role: "assistant", content: null, tool_calls: [{ id: "call_notes", type: "function", function: {
+            name: INTEGRATION_FILE_WORKER_TOOL_NAME, arguments: JSON.stringify({ files: [{ filename: "notes.txt", mime: "text/plain", encoding: "utf8", content: "notes" }] }),
+          } }],
+        } }] };
+        ordinaryCalls += 1;
+        ordinaryLabels.push(label);
+        if (scenario.execution && !payload.messages.some(message => message.role === "tool")) return toolResponse("print(2 + 2)");
+        return textResponse("The retrieved source describes a synthetic example [1].");
+      }, { groundedSearchClient, fileWorkerClient, paperAcquisitionClient, localModelConfig: DEEPSEEK_MODEL });
+      cleanup.push(() => model.coordinator.close());
+      await model.planner.activate();
+      activating = false;
+      const stateRoot = path.join(worker.parent, "analysis");
+      const service = createTestOnlyIntegrationAnalysisSessionService({ stateRoot,
+        analysisRunner: model.planner, fileWorkerClient, fileWorkerEnabled: true, searchEnabled: true });
+      cleanup.push(() => service.close({ mode: "abort" }));
+      const owner = { principalId: PRINCIPAL_ID, browserSessionId: BROWSER_SESSION_ID };
+      const thread = (await service.createThread({ title: "Paper routing" }, owner)).thread;
+      if (scenario.prior) {
+        baseline = true;
+        const first = await service.startRun({ threadId: thread.id, input: { text: "Find the source paper.", search: { mode: "papers", limit: 2 } } }, owner);
+        await service.waitForIdle();
+        assert.equal((await service.getRunStatus({ runId: first.run.id }, owner)).run.status, "completed");
+        baseline = false;
+      }
+      const started = await service.startRun({ threadId: thread.id, input: {
+        text: scenario.prior ? "Send the original PDF from the previous source." : scenario.prompt,
+        ...(scenario.prior || scenario.ordinary ? {} : { search: { mode: "papers", limit: 2 } }),
+      } }, owner);
+      await service.waitForIdle();
+      const result = (await service.getRunStatus({ runId: started.run.id }, owner)).run;
+      assert.equal(result.status, scenario.failure ? "failed" : "completed", JSON.stringify({ scenario, result }));
+      if (scenario.failure) assert.equal(result.error?.code, scenario.failure);
+      const artifacts = (await service.listArtifacts({ runId: started.run.id }, owner)).artifacts;
+      assert.equal(artifacts.filter(item => item.kind === "file").length, scenario.files, JSON.stringify({ scenario, result }));
+      assert.equal(downloads.length, scenario.files > 0 || scenario.invalidPdf ? 1 : 0);
+      assert.equal(selectionCalls, scenario.ordinary ? 0 : scenario.prior ? 2 : 1);
+      if (scenario.files > 0 && !scenario.prior && !scenario.execution) assert.equal(ordinaryCalls, 0, JSON.stringify({ scenario, ordinaryLabels }));
+      if (scenario.execution) assert(model.rpcCalls.some(call => call.pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart));
+      if (scenario.files === 2) {
+        const dirs = await fs.readdir(path.join(stateRoot, "scopes"));
+        const saved = JSON.parse(await fs.readFile(path.join(stateRoot, "scopes", dirs[0], "state.json"), "utf8"));
+        const intents = saved.state.documentCommitIntents;
+        assert.equal(intents.length, 2);
+        assert(intents.every(intent => intent.status === "committed" && intent.eventsPublished));
+        assert.notEqual(intents[0].receiptDigest, intents[1].receiptDigest);
+      }
+      await service.deleteThread({ threadId: thread.id }, owner);
+    } finally {
+      for (const close of cleanup.reverse()) await close();
+    }
+  }
+  const cleanup = [];
+  try {
+    const worker = await createPaperHttpWorker({ after(fn) { cleanup.push(fn); } });
+    const fileWorkerClient = worker.client();
+    const { downloader, downloads } = paperDownloadFixture();
+    const paperAcquisitionClient = createTestOnlyIntegrationPaperAcquisitionClient({ downloader, fileWorkerClient });
+    await deepResearchCompletesWithoutSecondModelSynthesis(DEEPSEEK_MODEL, { fileWorkerClient, paperAcquisitionClient });
+    assert.equal(downloads.length, 0);
+  } finally { for (const close of cleanup.reverse()) await close(); }
+}
+
+await sourcePaperRoutingUsesActualSessionAndFileWorker();
 expressionPlotCompilerIsStrict();
 explicitPythonCompilerIsStrict();
 await deterministicExplicitPythonExecutesWithoutModel();

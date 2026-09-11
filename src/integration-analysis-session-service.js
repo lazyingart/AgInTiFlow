@@ -81,6 +81,7 @@ import {
   advancePaperAcquisitionIntent,
   paperReceiptMatchesIntent,
 } from "./integration-paper-acquisition-contract.js";
+import { INTEGRATION_PAPER_ACQUISITION_TOOL_NAME } from "./integration-paper-acquisition.js";
 import {
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACT_JSON_BYTES,
   INTEGRATION_ANALYSIS_MAX_PRIOR_ARTIFACTS,
@@ -5773,6 +5774,7 @@ function createService(options, { testOnly }) {
         "execute_python_analysis",
         INTEGRATION_DOCUMENT_WORKER_TOOL_NAME,
         INTEGRATION_FILE_WORKER_TOOL_NAME,
+        INTEGRATION_PAPER_ACQUISITION_TOOL_NAME,
         INTEGRATION_GROUNDED_SEARCH_TOOL_NAME,
         INTEGRATION_DEEP_RESEARCH_TOOL_NAME,
       ]).has(progress.toolName)
@@ -5799,6 +5801,8 @@ function createService(options, { testOnly }) {
       ? "tex-document"
       : progress.toolName === INTEGRATION_FILE_WORKER_TOOL_NAME
         ? "file-artifact"
+      : progress.toolName === INTEGRATION_PAPER_ACQUISITION_TOOL_NAME
+        ? "source-paper"
       : progress.toolName === INTEGRATION_GROUNDED_SEARCH_TOOL_NAME
         ? "grounded-search"
       : progress.toolName === INTEGRATION_DEEP_RESEARCH_TOOL_NAME
@@ -5808,6 +5812,13 @@ function createService(options, { testOnly }) {
   }
 
   function toolPresentation(toolName, executionState = "running") {
+    if (toolName === INTEGRATION_PAPER_ACQUISITION_TOOL_NAME) {
+      const terminalSuccess = ["succeeded", "completed"].includes(executionState);
+      const terminalFailure = ["failed", "timed_out", "cancelled", "worker_error", "artifact_invalid"].includes(executionState);
+      return Object.freeze({ label: "Paper download", terminalSuccess, terminalFailure,
+        summary: terminalSuccess ? "Original source PDF retrieved and committed."
+          : terminalFailure ? "Paper download did not complete." : "Retrieving the selected source PDF." });
+    }
     const tex = toolName === INTEGRATION_DOCUMENT_WORKER_TOOL_NAME;
     const file = toolName === INTEGRATION_FILE_WORKER_TOOL_NAME;
     const search = toolName === INTEGRATION_GROUNDED_SEARCH_TOOL_NAME;
@@ -6741,27 +6752,41 @@ function createService(options, { testOnly }) {
       ? rawArtifacts.filter((artifact) => inspectIntegrationFileWorkerArtifact(artifact))
       : [];
     if (files.length === 0) return;
-    const commits = files.map(inspectIntegrationFileWorkerCommit);
-    if (commits.some((commit) => !commit || commit.digest !== commits[0]?.digest)) {
-      fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner returned an uncommitted file bundle.", { status: 502 });
-    }
-    const receiptDigest = inspectIntegrationFileWorkerArtifact(files[0]).receipt.digest;
-    await mutate(scope, (state) => {
-      const intent = state.documentCommitIntents.find((candidate) => (
-        candidate.schemaVersion === FILE_COMMIT_INTENT_SCHEMA_VERSION && candidate.runId === runId &&
-        candidate.receiptDigest === receiptDigest
-      ));
-      if (!intent || intent.threadId !== threadId) corrupt();
-      if (intent.status === "committed") {
-        if (intent.workerAckDigest !== commits[0].digest) corrupt();
-        return { changed: false, result: null };
+    // One run can retrieve an original paper and create a separate bundle.
+    // Acknowledge each complete receipt, never flatten distinct operations.
+    const bundles = new Map();
+    for (const file of files) {
+      const metadata = inspectIntegrationFileWorkerArtifact(file);
+      const commit = inspectIntegrationFileWorkerCommit(file);
+      const receiptDigest = metadata.receipt.digest;
+      const bundle = bundles.get(receiptDigest) || { commit, refs: new Set() };
+      if (!commit || bundle.commit.digest !== commit.digest || bundle.refs.has(metadata.workerRef)) {
+        fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner returned an uncommitted or inconsistent file bundle.", { status: 502 });
       }
-      intent.status = "committed";
-      intent.updatedAt = timestamp();
-      intent.workerAckDigest = commits[0].digest;
-      intent.committedAt = commits[0].committedAt;
-      publishCommittedDocumentEvents(state, intent, intent.updatedAt);
-      return { changed: true, result: null };
+      bundle.refs.add(metadata.workerRef);
+      bundles.set(receiptDigest, bundle);
+    }
+    await mutate(scope, (state) => {
+      let changed = false;
+      for (const [receiptDigest, { commit, refs }] of bundles) {
+        const intent = state.documentCommitIntents.find((candidate) => (
+          candidate.schemaVersion === FILE_COMMIT_INTENT_SCHEMA_VERSION && candidate.runId === runId &&
+          candidate.receiptDigest === receiptDigest
+        ));
+        if (!intent || intent.threadId !== threadId || intent.objects.length !== refs.size ||
+            intent.objects.some(object => !refs.has(object.ref))) corrupt();
+        if (intent.status === "committed") {
+          if (intent.workerAckDigest !== commit.digest) corrupt();
+          continue;
+        }
+        intent.status = "committed";
+        intent.updatedAt = timestamp();
+        intent.workerAckDigest = commit.digest;
+        intent.committedAt = commit.committedAt;
+        publishCommittedDocumentEvents(state, intent, intent.updatedAt);
+        changed = true;
+      }
+      return { changed, result: null };
     });
   }
 

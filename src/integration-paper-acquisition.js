@@ -11,6 +11,8 @@ import { canonicalJson } from "./integration-policy.js";
 import { exactDocumentWorkerObject, documentWorkerFail } from "./integration-document-worker-contract.js";
 
 const CLIENTS = new WeakSet();
+const WORKERS = new WeakMap();
+export const INTEGRATION_PAPER_ACQUISITION_TOOL_NAME = "acquire_source_pdf";
 function invalid() { documentWorkerFail("ANALYSIS_PAPER_AUTHORITY_INVALID", "Durable paper acquisition authority is required.", { status: 409 }); }
 
 function createClient(options, testOnly) {
@@ -20,6 +22,7 @@ function createClient(options, testOnly) {
   if (downloader.maximumBytes > ACQUIRED_PAPER_MAXIMUM_BYTES) invalid();
   const client = Object.freeze({
     testOnly,
+    readiness: options => worker.paperReadiness(options),
     async acquire(selectionRequest, optionsValue) {
       const request = validatePaperSelectionRequest(selectionRequest);
       const options = exactDocumentWorkerObject(optionsValue, ["signal", "onPaperAcquireIntent"], ["onPaperAcquireIntent"], "paper acquisition options");
@@ -58,12 +61,14 @@ function createClient(options, testOnly) {
     },
   });
   CLIENTS.add(client);
+  WORKERS.set(client, worker);
   return client;
 }
 
 export function createIntegrationPaperAcquisitionClient(options) { return createClient(options, false); }
 export function createTestOnlyIntegrationPaperAcquisitionClient(options) { return createClient(options, true); }
-export function assertIntegrationPaperAcquisitionClient(value, { allowTestOnly = false } = {}) {
-  if (!CLIENTS.has(value) || (value.testOnly && !allowTestOnly)) invalid();
+export function assertIntegrationPaperAcquisitionClient(value, { allowTestOnly = false, fileWorkerClient } = {}) {
+  if (!CLIENTS.has(value) || (value.testOnly && !allowTestOnly) ||
+      (fileWorkerClient !== undefined && WORKERS.get(value) !== fileWorkerClient)) invalid();
   return value;
 }
