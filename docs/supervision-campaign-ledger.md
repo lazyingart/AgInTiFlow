@@ -2591,3 +2591,28 @@ cover the structured Chinese response, numeric group/duration parameters,
 completed-result and named-tool negatives, and DeepSeek-to-LocalLLM handoff.
 No live provider or LocalLLM inference, LabCanvas change, queue action,
 schedule, transport, or external side effect is involved.
+
+### Model compatibility retries retain deadline and cancellation authority
+
+`provider-request-lifecycle-20260927` is an offline reproduction from the
+current integration baseline `bf9c3e0`, not a new claim about an old live session.
+A reasoning-parameter compatibility retry could outlive the original model
+deadline and return late success. Caller cancellation also relied solely on the
+SDK settling its own request. A real SDK with an offline fetch fixture confirmed
+the compatibility-retry failure during rate-limit backoff.
+
+`createChatCompletion` now applies one interruption boundary to both attempts.
+Pre-cancelled requests do not dispatch, cancellation cannot start a retry, and
+timeout or cancellation cannot become late success. Normal reasoning-parameter
+fallback, provider error annotation, and existing handoff policy are preserved.
+Parent listeners and the AgInTi deadline timer are removed on settlement.
+
+Eight deterministic regressions cover the deadline, both cancellation phases,
+pre-cancelled work, abort during compatibility failure, successful fallback,
+ordinary provider errors, and SDK Retry-After backoff. Six failed before the
+repair; all eight pass afterward. The existing same-session provider-handoff,
+local recovery, context, inbox, completion, and planner smokes also pass.
+Remote provider compute termination and live latency are not inferred from
+these tests. See `docs/general-agent-backend-research-2026-09-27.md` for the
+source comparison and proposed application integration work. The older private
+SQLite campaign was inspected read-only and was not relabeled as new evidence.

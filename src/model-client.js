@@ -214,76 +214,55 @@ export function isTransientProviderRequestError(error) {
 export async function createChatCompletion(client, payload, config, label = "model request") {
   const preparedPayload = withChatReasoningEffort(payload, config);
   const timeout = resolveModelTimeoutMs(config);
-  if (!timeout && !config.abortSignal) {
-    try {
-      return await client.chat.completions.create(preparedPayload, requestOptions(config));
-    } catch (error) {
-      if (shouldRetryWithoutReasoningEffort(error, preparedPayload)) {
-        const { reasoning_effort: _reasoningEffort, ...retryPayload } = preparedPayload;
-        try {
-          return await client.chat.completions.create(retryPayload, requestOptions(config));
-        } catch (retryError) {
-          throw annotateProviderRequestError(retryError, config, label);
-        }
-      }
-      throw annotateProviderRequestError(error, config, label);
-    }
-  }
-
   const controller = new AbortController();
-  let timedOut = false;
-  const abortFromParent = () => controller.abort(config.abortSignal?.reason || new Error("Model request aborted."));
-  if (config.abortSignal?.aborted) {
-    abortFromParent();
-  } else if (config.abortSignal) {
-    config.abortSignal.addEventListener("abort", abortFromParent, { once: true });
-  }
-  let rejectOnTimeout = null;
-  const timeoutPromise = timeout
-    ? new Promise((_, reject) => {
-        rejectOnTimeout = reject;
-      })
-    : null;
-  const timer = timeout
-    ? setTimeout(() => {
-        timedOut = true;
-        const timeoutError = new Error(`${label} timed out after ${timeout}ms`);
-        timeoutError.name = "ModelTimeoutError";
-        controller.abort(timeoutError);
-        rejectOnTimeout?.(timeoutError);
-      }, timeout)
-    : null;
+  let interruptionError = null;
+  let rejectOnInterruption;
+  const interruption = new Promise((_, reject) => { rejectOnInterruption = reject; });
+  const interrupt = (error) => {
+    if (interruptionError) return;
+    interruptionError = error;
+    rejectOnInterruption(error);
+    controller.abort(error);
+  };
+  const abortFromParent = () => {
+    const error = new Error("Model request aborted.", { cause: config.abortSignal?.reason });
+    error.name = "AbortError";
+    interrupt(error);
+  };
+
+  // One deadline covers both attempts, including SDK backoff. A transport that
+  // settles late cannot turn a cancelled or timed-out request into success.
+  const request = (body) => Promise.race([
+    interruption,
+    Promise.resolve().then(() => {
+      if (interruptionError) throw interruptionError;
+      return client.chat.completions.create(body, {
+        ...requestOptions(config),
+        signal: controller.signal,
+      });
+    }),
+  ]);
+  config.abortSignal?.addEventListener("abort", abortFromParent, { once: true });
+  if (config.abortSignal?.aborted) abortFromParent();
+  const timer = setTimeout(() => {
+    const error = new Error(`${label} timed out after ${timeout}ms`);
+    error.name = "ModelTimeoutError";
+    interrupt(error);
+  }, timeout);
 
   try {
-    const request = client.chat.completions.create(preparedPayload, {
-      ...requestOptions(config),
-      signal: controller.signal,
-    });
-    return await (timeoutPromise ? Promise.race([request, timeoutPromise]) : request);
-  } catch (error) {
-    if (shouldRetryWithoutReasoningEffort(error, preparedPayload)) {
+    try {
+      return await request(preparedPayload);
+    } catch (error) {
+      if (interruptionError || !shouldRetryWithoutReasoningEffort(error, preparedPayload)) throw error;
       const { reasoning_effort: _reasoningEffort, ...retryPayload } = preparedPayload;
-      try {
-        return await client.chat.completions.create(retryPayload, {
-          ...requestOptions(config),
-          signal: controller.signal,
-        });
-      } catch (retryError) {
-        throw annotateProviderRequestError(retryError, config, label);
-      }
+      return await request(retryPayload);
     }
-    if (timedOut && error?.name !== "ModelTimeoutError") {
-      const timeoutError = new Error(`${label} timed out after ${timeout}ms`);
-      timeoutError.name = "ModelTimeoutError";
-      timeoutError.cause = error;
-      throw annotateProviderRequestError(timeoutError, config, label);
-    }
-    throw annotateProviderRequestError(error, config, label);
+  } catch (error) {
+    throw annotateProviderRequestError(interruptionError || error, config, label);
   } finally {
-    if (timer) clearTimeout(timer);
-    if (config.abortSignal) {
-      config.abortSignal.removeEventListener("abort", abortFromParent);
-    }
+    clearTimeout(timer);
+    config.abortSignal?.removeEventListener("abort", abortFromParent);
   }
 }
 
