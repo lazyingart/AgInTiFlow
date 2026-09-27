@@ -91,6 +91,17 @@ assert.deepEqual(
   ["AGENTS.md", "configs/model-policy.json"],
   "artifact completion did not report every unread exact input"
 );
+const immutableInputsContract = deriveScsTaskContract({
+  goal: "Read notes.txt and risks.txt. Write summary.md. Do not modify notes.txt or risks.txt.",
+});
+assert.deepEqual(immutableInputsContract.exactInputPaths, ["notes.txt", "risks.txt"]);
+assert.deepEqual(immutableInputsContract.exactOutputPaths, ["summary.md"]);
+assert.deepEqual(immutableInputsContract.excludedOutputPaths, ["notes.txt", "risks.txt"]);
+assert.equal(immutableInputsContract.requiresSourceGrounding, true);
+assert.deepEqual(evaluateScsSemanticContract(immutableInputsContract, {
+  commandCwd: scopedReadThenWriteRoot,
+  events: [{ type: "tool.completed", data: { ok: true, toolName: "read_file", path: "notes.txt", content: "first input" } }],
+}).missingSourceReads, ["risks.txt"], "write protection erased an unread input requirement");
 assert.deepEqual(
   groupBriefingContract.requiredArtifactKinds.map((item) => item.id),
   ["format:.pdf"],

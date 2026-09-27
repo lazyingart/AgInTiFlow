@@ -11,6 +11,7 @@ import {
   completionRequirementCoverageInstruction,
   continuationExecutionContractDirective,
   evaluateAuthoritativeStructuredCompletionCoverage,
+  nextStepRuntimeConfig,
   removeSupersededCompletionRepairInstructions,
   repositorySourcePrecedenceInstruction,
   runAgent,
@@ -2429,6 +2430,85 @@ try {
     ) < 2_000,
     "focused runtime snapshot repeated the full capability manual"
   );
+
+  for (const [id, goal] of [
+    ["plain", "Read notes.txt and risks.txt. Write summary.md with the main issue from each. Leave the input files alone."],
+    ["explicit-exclusion", "Read notes.txt and risks.txt. Write summary.md with the main issue from each. Do not modify notes.txt or risks.txt."],
+    ["chinese", "读取 notes.txt 和 risks.txt，写入 summary.md，不要修改输入文件。"],
+    ["missing-input-repair", "Read notes.txt and risks.txt. Write summary.md with the main issue from each. Do not modify notes.txt or risks.txt."],
+  ]) {
+    const repairMissingInput = id === "missing-input-repair";
+    const requestedSourceRead = await runCase({
+      id: `read-inputs-create-separate-summary-${id}`,
+      goal,
+      allowFileTools: true,
+      setup: async (workspace) => {
+        await fs.writeFile(path.join(workspace, "notes.txt"), "The archive needs an owner.\n");
+        await fs.writeFile(path.join(workspace, "risks.txt"), "The backup has not been tested.\n");
+      },
+      responses: [
+        assistant("", [toolCall("read-notes", "read_file", { path: "notes.txt" })]),
+        ...(repairMissingInput ? [
+          assistant("", [toolCall("write-incomplete-summary", "write_file", {
+            path: "summary.md", content: "The archive needs an owner.\n",
+          })]),
+          assistant("", [toolCall("finish-with-unread-input", "finish", { result: "Created summary.md." })]),
+        ] : []),
+        assistant("", [toolCall("read-risks", "read_file", { path: "risks.txt" })]),
+        assistant("", [toolCall("write-complete-summary", "write_file", {
+          path: "summary.md", mode: repairMissingInput ? "overwrite" : "create",
+          content: "The archive needs an owner. The backup has not been tested.\n",
+        })]),
+        assistant("", [toolCall("finish-after-reading", "finish", { result: "Created summary.md from both inputs." })]),
+      ],
+    });
+    assert.equal(requestedSourceRead.calls.length, repairMissingInput ? 6 : 4, `${id}: incorrect source-read/creation routing`);
+    assert.equal(requestedSourceRead.result.stopped, undefined);
+    const summaryWorkspace = path.join(tempRoot, "workspaces", `read-inputs-create-separate-summary-${id}`);
+    assert.equal(await fs.readFile(path.join(summaryWorkspace, "summary.md"), "utf8"), "The archive needs an owner. The backup has not been tested.\n");
+    assert.equal(await fs.readFile(path.join(summaryWorkspace, "notes.txt"), "utf8"), "The archive needs an owner.\n");
+    assert.equal(await fs.readFile(path.join(summaryWorkspace, "risks.txt"), "utf8"), "The backup has not been tested.\n");
+    if (repairMissingInput) {
+      assert(requestedSourceRead.events.some((event) =>
+        event.type === "completion.evidence_rejected" &&
+        JSON.stringify(event.data).includes("risks.txt")
+      ), "missing input was not durably rejected before recovery");
+    }
+    for (const verb of ["fix", "repair", "update"]) {
+      const editGoal = `Read notes.txt and ${verb} its wording, then write review.md.`;
+      const editRuntime = nextStepRuntimeConfig({ goal: editGoal, commandCwd: summaryWorkspace }, {
+        goal: editGoal,
+        commandCwd: summaryWorkspace,
+        meta: {
+          goalContract: { revision: 1, currentRequest: editGoal, activeGoal: editGoal },
+          activeExecutionContract: { revision: 1, requiresFileMutation: true, requiresSourceGrounding: true, startedMutationRevision: 0 },
+          projectVerification: { mutationRevision: 0, mutationHistory: [] },
+        },
+      });
+      assert.equal(editRuntime.completionFreshMutationRequired, true, `${verb}: actual input correction was exempted`);
+      assert(editRuntime.completionFreshMutationPaths.includes("notes.txt"));
+    }
+  }
+
+  const summaryFollowup = await runCase({
+    id: "read-inputs-create-separate-summary-plain",
+    resume: true,
+    goal: "Read notes.txt and risks.txt. Create checklist.md with one action for each issue. Do not modify notes.txt, risks.txt or summary.md.",
+    allowFileTools: true,
+    responses: [
+      assistant("", [toolCall("followup-read-notes", "read_file", { path: "notes.txt" })]),
+      assistant("", [toolCall("followup-read-risks", "read_file", { path: "risks.txt" })]),
+      assistant("", [toolCall("write-checklist", "write_file", {
+        path: "checklist.md", content: "- Assign an archive owner.\n- Test the backup.\n",
+      })]),
+      assistant("", [toolCall("finish-checklist", "finish", { result: "Created checklist.md and preserved the inputs and summary." })]),
+    ],
+  });
+  assert.equal(summaryFollowup.calls.length, 4);
+  assert.equal(summaryFollowup.result.stopped, undefined);
+  const followupWorkspace = path.join(tempRoot, "workspaces", "read-inputs-create-separate-summary-plain");
+  assert.equal(await fs.readFile(path.join(followupWorkspace, "summary.md"), "utf8"), "The archive needs an owner. The backup has not been tested.\n");
+  assert.equal(await fs.readFile(path.join(followupWorkspace, "checklist.md"), "utf8"), "- Assign an archive owner.\n- Test the backup.\n");
 
   const crossTaskIsolationId = "scoped-artifact-cross-task-completion";
   const crossTaskWorkspace = path.join(tempRoot, "workspaces", crossTaskIsolationId);

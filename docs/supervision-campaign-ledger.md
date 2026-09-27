@@ -2616,3 +2616,59 @@ Remote provider compute termination and live latency are not inferred from
 these tests. See `docs/general-agent-backend-research-2026-09-27.md` for the
 source comparison and proposed application integration work. The older private
 SQLite campaign was inspected read-only and was not relabeled as new evidence.
+
+### Read-only inputs do not become mandatory source edits
+
+`requested-source-deliverable-20260927` uses the persisted runtime on top of
+`a5287e9`, with a scripted offline provider and real temporary workspace files.
+The ordinary request was: "Read notes.txt and risks.txt. Write summary.md with
+the main issue from each. Leave the input files alone."
+
+Before the fix, the runtime offered only `read_file`, then only `apply_patch`
+against an input. It rejected the next valid input read and output write and
+stopped with `tool_contract_violation` after three model turns. This was a core
+execution-contract/progressive-disclosure error: source inspection plus a
+separate deliverable was confused with a requirement to repair existing source.
+It was not a provider failure or an application-specific routine gap.
+
+The runtime now distinguishes separately declared inputs and outputs when
+selecting repository grounding and mandatory mutation targets. Source inputs
+are not forced edit targets without a positive edit request. Explicit output
+exclusions still apply, but do not erase a positively requested input read.
+Sentence boundaries keep unrelated absent/forbidden paths from becoming input
+requirements merely because a later sentence says "from current evidence."
+Negated English/Chinese source-edit clauses do not authorize input modification.
+
+Five new persisted-runtime scenarios cover the normal English request, explicit
+named write exclusions, Chinese wording, recovery after a missing-input finish
+attempt, and a resumed request for a separate checklist. Successful ordinary
+and resumed paths take four model turns each. Tests independently compare both
+input files and the produced artifacts, and inspect durable rejection evidence
+for the unread source. Positive fix/repair/update controls retain the genuine
+source-mutation requirement. Existing evidence, progressive-tools, dynamic-step
+budget and truthful-completion smokes pass.
+
+This is deterministic core evidence, not a live DeepSeek/LocalLLM quality or
+latency benchmark. No application routines, private task data, model inference,
+production wiring, installed package or release version was changed. The
+separate permissive shell-filename source-coverage path noticed during initial
+inspection was not repaired or certified by this slice. Natural-language
+contract inference and arbitrary model answer quality remain bounded by the
+existing runtime checks, not a claim of universal instruction compliance.
+
+Validation at this checkpoint:
+
+- `node scripts/smoke-scs-evidence-visibility.js`
+- `npm run smoke:truthful-completion`
+- `npm run smoke:progressive-tools`
+- `npm run smoke:dynamic-step-budget`
+- `npm run check` (300 JavaScript files)
+- `AGINTIFLOW_PROVIDER_ATTRIBUTION_LIVE=0 npm test` (exit 0; the document-worker
+  server and cross-boundary smokes used their existing occupied-port skips for
+  `127.0.0.1:18102`; no claim that those two live checks ran)
+- `npm pack --dry-run --ignore-scripts --json` plus a structured package-path
+  scan, and `git diff --check`
+
+The primary worktree is untouched. This checkpoint is isolated under
+`AgInTiFlow-worktrees/AgInTiFlow-instruction-following`; publication and live
+provider/application acceptance remain separate steps.

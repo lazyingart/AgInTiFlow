@@ -16991,6 +16991,10 @@ function documentSourcePathCandidate(sourcePath = "") {
 function documentSourceMutationExplicitlyRequested(state = {}, config = {}, sourcePath = "") {
   const goal = completionContractGoal(config, state);
   if (!goal) return false;
+  const contract = deriveScsTaskContract({ goal, taskProfile: config.taskProfile || "auto" });
+  if (!filterExplicitlyExcludedOutputPaths([sourcePath], contract.excludedOutputPaths).length) {
+    return false;
+  }
   const normalizedPath = String(sourcePath || "").replace(/\\/gu, "/").replace(/^\.\//u, "");
   const basename = path.posix.basename(normalizedPath);
   const escapedNames = [normalizedPath, basename]
@@ -16999,8 +17003,10 @@ function documentSourceMutationExplicitlyRequested(state = {}, config = {}, sour
   if (!escapedNames.length) return false;
   const namedPath = new RegExp(`(?:${escapedNames.join("|")})`, "iu");
   const editIntent =
-    /\b(?:change|correct|delete|edit|modify|move|normalize|patch|remove|rename|replace|rewrite|update)\b|(?:修改|改动|更新|重写|替换|删除|移动|重命名|修正|编辑)|(?:変更|編集|更新|書き換え|置換|削除|移動|名前変更|修正)/iu;
+    /\b(?:change|correct|delete|edit|fix|modify|move|normalize|patch|remove|rename|repair|replace|revise|rewrite|update)\b|(?:修改|改动|更新|重写|替换|删除|移动|重命名|修复|修正|编辑)|(?:変更|編集|更新|書き換え|置換|削除|移動|名前変更|修正)/iu;
   return goal
+    .replace(/\b(?:do not|don't|dont|must not|should not|never|without)\b[^!?;\n。！？；]*/giu, "")
+    .replace(/(?:不要|禁止|不得)[^。！？；\n]*/gu, "")
     .split(/[!?;\n。！？；]+/u)
     .some((segment) => namedPath.test(segment) && editIntent.test(segment));
 }
@@ -18137,7 +18143,16 @@ function completionFreshMutationCandidatePaths(state = {}, config = {}) {
   const eligibleCandidates = filterExplicitlyExcludedOutputPaths(
     candidates,
     currentContract.excludedOutputPaths || []
-  );
+  ).filter((candidate) => {
+    // Reading an input for a separate deliverable is not permission (or a
+    // requirement) to patch that input when the output does not exist yet.
+    if (!currentContract.exactOutputPaths?.length) return true;
+    const absoluteCandidate = path.resolve(commandCwd, candidate);
+    const isInput = (currentContract.exactInputPaths || []).some(
+      (input) => path.resolve(commandCwd, input) === absoluteCandidate
+    );
+    return !isInput || documentSourceMutationExplicitlyRequested(state, config, candidate);
+  });
   const normalizedGoalText = goalText.toLocaleLowerCase("en-US");
   const explicitlyNamed = eligibleCandidates.filter((candidate) => {
     const normalized = candidate.toLocaleLowerCase("en-US");
@@ -19321,6 +19336,13 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       ? state.meta.activeExecutionContract || {}
       : {};
   const groundingTaskContract = completionTaskContract(config, state);
+  const separateSourceDeliverable = Boolean(
+    groundingTaskContract.exactOutputPaths?.length &&
+      groundingTaskContract.exactInputPaths?.length &&
+      groundingTaskContract.exactInputPaths.every(
+        (input) => !documentSourceMutationExplicitlyRequested(state, config, input)
+      )
+  );
   const requestedArtifactEvaluation = evaluateRequestedArtifactRequirements(
     groundingTaskContract,
     {
@@ -19426,7 +19448,8 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     ) &&
     groundingTaskContract.requiresFileMutation === true &&
     !groundingFreshMutationSatisfied &&
-    !scopedArtifactTask
+    !scopedArtifactTask &&
+    !separateSourceDeliverable
   ) {
     runtimeConfig.repositoryGroundingRequired = true;
     runtimeConfig.repositoryGroundingGoalRevision = groundingGoalRevision;

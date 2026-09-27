@@ -952,7 +952,7 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
 
 function inferExactInputPaths(goal = "") {
   const paths = [];
-  const lines = String(goal || "").split(/\n/);
+  const lines = String(goal || "").split(/\n|(?<=[.!?;。！？；])\s+/u);
   const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,260}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
   const pathPattern = new RegExp(
@@ -2854,10 +2854,9 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
       !hostManagedDocumentCompilation ||
       path.extname(String(item || "")).toLocaleLowerCase("en-US") !== ".pdf"
   );
-  const exactInputPaths = filterExplicitlyExcludedOutputPaths(
-    inferExactInputPaths(positiveEvidenceGoal),
-    excludedOutputPaths
-  ).filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
+  // A prohibition on changing an input must not erase the obligation to read it.
+  const exactInputPaths = inferExactInputPaths(positiveEvidenceGoal)
+    .filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
   let requiredArtifactKinds = inferRequestedArtifactRequirements(
     positiveEvidenceGoal,
