@@ -156,7 +156,7 @@ function isReadOnlyXargsListFilter(command = "") {
   );
 }
 
-function isReadOnlyFindCommand(command = "") {
+function isReadOnlyFindCommand(command = "", { requireMaxDepth = true } = {}) {
   const normalized = stripBenignRedirections(command);
   if (!/^find\s+/.test(normalized)) return false;
   if (/(^|\s)(-delete|-exec|-execdir|-ok|-okdir|-fprint|-fprintf|-fls)\b/.test(normalized)) return false;
@@ -225,7 +225,7 @@ function isReadOnlyFindCommand(command = "") {
     }
     return false;
   }
-  return parenthesisDepth === 0 && maxDepth !== null;
+  return parenthesisDepth === 0 && (!requireMaxDepth || maxDepth !== null);
 }
 
 function isNonMutatingFindCommand(command = "") {
@@ -1851,6 +1851,16 @@ function classifySimpleCommand(normalized) {
     };
   }
 
+  if (!isReadOnlyFindCommand(normalized) && isReadOnlyFindCommand(normalized, { requireMaxDepth: false })) {
+    return {
+      category: "unbounded-discovery",
+      needsNetwork: false,
+      writesWorkspace: false,
+      reason:
+        "This read-only find command has no depth limit. Use list_files/search_files or add an explicit -maxdepth (at most 64) and a targeted workspace path. Broader host permission is not needed.",
+    };
+  }
+
   const commandForPatternMatching = stripSafeInlineEnvAssignments(benignRedirectCommand);
   if (hasActiveShellCommandSubstitution(commandForPatternMatching)) {
     return {
@@ -2055,6 +2065,8 @@ function classifyShellSequence(normalized) {
       reason: `Command sequence includes a broad shell segment and requires trusted shell policy: ${normalized}`,
     };
   }
+  const unbounded = classifications.find((classification) => classification.category === "unbounded-discovery");
+  if (unbounded) return { ...unbounded, gitOnly: false };
   const categories = new Set(classifications.map((classification) => classification.category));
   const aggregate = {
     needsNetwork: classifications.some((classification) => classification.needsNetwork),
@@ -2771,6 +2783,10 @@ function classifyPipelineSequence(normalized) {
   const classifications = parts.map((part) => classifyCdCommand(part) || classifySimpleCommand(part));
   const blocked = classifications.find((classification) => classification.category === "blocked" || classification.category === "destructive");
   if (blocked) return blocked;
+  const unbounded = classifications.find((classification) => classification.category === "unbounded-discovery");
+  if (unbounded && classifications.every((classification) => ["read-only", "unbounded-discovery"].includes(classification.category))) {
+    return { ...unbounded, gitOnly: false };
+  }
   if (classifications.every((classification) => classification.category === "read-only")) {
     return {
       category: "read-only",

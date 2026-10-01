@@ -200,7 +200,11 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     route.provider === BASELINE_PROVIDER &&
     (route.localCodeCandidate === true || ["code", "max", "vision"].includes(route.localTier || ""));
   const preserveSessionModel = scsActive && sessionModelLocked;
-  const useScsMainRole = scsActive && route.provider !== "mock" && !preserveSpecializedLocalRoute && !preserveSessionModel;
+  // SCS adds planning and evidence validation; it must not undo an explicit
+  // fast/manual executor selection. Its separately configured reviewer roles
+  // remain available, while automatic smart routing may still choose Main.
+  const preserveSelectedRoute = ["fast", "manual"].includes(routingMode);
+  const useScsMainRole = scsActive && route.provider !== "mock" && !preserveSpecializedLocalRoute && !preserveSessionModel && !preserveSelectedRoute;
   const activeProvider = useScsMainRole ? modelRoles.main.provider : route.provider;
   const activeModel = useScsMainRole ? modelRoles.main.model : route.model;
   const explicitReasoning = normalizeReasoningEffort(

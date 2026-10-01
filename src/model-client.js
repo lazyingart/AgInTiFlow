@@ -2576,7 +2576,10 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "run_command",
           description:
-            "Run a terminal command in the configured working directory under the active shell policy. Secrets, npm publishing, npx/npm-exec AgInTiFlow self-invocation, and recursive Docker aginti calls are blocked; Docker workspace mode with approved package installs supports broader network/setup commands, while host destructive or privileged work requires explicit trust.",
+            "Run a terminal command in the configured working directory under the active shell policy. Secrets, npm publishing, npx/npm-exec AgInTiFlow self-invocation, and recursive Docker aginti calls are blocked; Docker workspace mode with approved package installs supports broader network/setup commands, while host destructive or privileged work requires explicit trust." +
+            (config.sandboxMode === "host" && !config.allowDestructive
+              ? " Restricted host mode: use structured file tools and ordinary project test/build commands. Arbitrary interpreter snippets (node -e, python -c) can require additional permission; prefer adding regression checks to project test files and running the standard test runner. Keep optional diagnostics separate from required tests: one denied segment blocks an entire compound command."
+              : ""),
           parameters: {
             type: "object",
             properties: {

@@ -968,6 +968,7 @@ try {
     "high",
     "--no-web-search",
     "--no-auxiliary-tools",
+    "--no-wrappers",
     "--permission-mode",
     "safe",
     "--read-root",
@@ -980,6 +981,7 @@ try {
     resumeRuntimePatch.routeReasoning !== "high" ||
     resumeRuntimePatch.allowWebSearch !== false ||
     resumeRuntimePatch.allowAuxiliaryTools !== false ||
+    resumeRuntimePatch.allowWrapperTools !== false ||
     resumeRuntimePatch.permissionMode !== "safe" ||
     resumeRuntimePatch.workspaceWritePolicy !== "prompt" ||
     resumeRuntimePatch.useDockerSandbox !== true ||
