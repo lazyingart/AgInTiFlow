@@ -18940,6 +18940,23 @@ function groundedProjectTaskInstructionText(state = {}, config = {}, directContr
   }
 }
 
+function scopedArtifactTaskRoot(contract = {}, goal = "", commandCwd = process.cwd()) {
+  const root = scopedArtifactRoot(goal);
+  if (!root) return "";
+  const cwd = path.resolve(commandCwd);
+  const resolvedRoot = path.resolve(root);
+  const relativeRoot = path.relative(cwd, resolvedRoot);
+  if (!relativeRoot || relativeRoot.startsWith("..") || path.isAbsolute(relativeRoot)) return "";
+  const outputs = Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : [];
+  const scopedOutputs = outputs.length > 0 && outputs.every((item) => {
+    const relative = path.relative(resolvedRoot, path.resolve(cwd, item));
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  });
+  return contract.scopedArtifactDeliverable || contract.scopedArtifactOperation || scopedOutputs
+    ? relativeRoot.replace(/\\/g, "/")
+    : "";
+}
+
 export function completionTaskContract(config = {}, state = {}) {
   const taskProfile = config.taskProfile || state.meta?.taskProfile || "auto";
   const contractGoal = completionContractGoal(config, state);
@@ -19021,9 +19038,22 @@ export function completionTaskContract(config = {}, state = {}) {
     const scopedArtifactDeliverable = currentContract
       ? currentContract.scopedArtifactDeliverable === true
       : activeExecutionContract.scopedArtifactDeliverable === true;
+    const scopedMutationAt = Date.parse(String(activeExecutionContract.scopedArtifactMutationAt || ""));
+    const refreshedAt = Date.parse(String(activeExecutionContract.refreshedAt || ""));
+    const freshScopedMutation = Boolean(
+      scopedArtifactTaskRoot(
+        currentContract || contract, currentRequest || contractGoal,
+        config.commandCwd || state.commandCwd || process.cwd()
+      ) &&
+      Number.isFinite(scopedMutationAt) && Number.isFinite(refreshedAt) &&
+      scopedMutationAt >= refreshedAt &&
+      (currentContract?.exactInputPaths || []).every(
+        (input) => !documentSourceMutationExplicitlyRequested(state, config, input)
+      )
+    );
     const requiresFreshMutation = Boolean(
       (currentContract?.requiresFileMutation || activeExecutionContract.requiresFileMutation) &&
-        !scopedArtifactDeliverable
+        !scopedArtifactDeliverable && !freshScopedMutation
     );
     const minimumMutationRevision = requiresFreshMutation
       ? startedMutationRevision + 1
@@ -19386,42 +19416,13 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const currentGroundingGoal = String(
     state.meta?.goalContract?.currentRequest || config.goal || state.goal || ""
   );
-  const scopedRoot = scopedArtifactRoot(completionContractGoal(config, state));
   const commandCwd = path.resolve(
     config.commandCwd || state.commandCwd || process.cwd()
   );
-  const resolvedScopedRoot = scopedRoot ? path.resolve(scopedRoot) : "";
-  const scopedRootRelative = resolvedScopedRoot
-    ? path.relative(commandCwd, resolvedScopedRoot)
-    : "";
-  const exactScopedOutputs = Array.isArray(groundingTaskContract.exactOutputPaths)
-    ? groundingTaskContract.exactOutputPaths
-        .map((item) => String(item || "").trim())
-        .filter(Boolean)
-    : [];
-  const exactOutputsStayInsideScopedRoot = Boolean(
-    resolvedScopedRoot &&
-      exactScopedOutputs.length > 0 &&
-      exactScopedOutputs.every((item) => {
-        const absoluteOutput = path.resolve(commandCwd, item);
-        const relativeOutput = path.relative(resolvedScopedRoot, absoluteOutput);
-        return (
-          relativeOutput === "" ||
-          (!relativeOutput.startsWith("..") && !path.isAbsolute(relativeOutput))
-        );
-      })
+  const scopedRootRelative = scopedArtifactTaskRoot(
+    groundingTaskContract, completionContractGoal(config, state), commandCwd
   );
-  const scopedArtifactTask = Boolean(
-    (
-      groundingTaskContract.scopedArtifactDeliverable === true ||
-      groundingTaskContract.scopedArtifactOperation === true ||
-      exactOutputsStayInsideScopedRoot
-    ) &&
-      resolvedScopedRoot &&
-      scopedRootRelative &&
-      !scopedRootRelative.startsWith("..") &&
-      !path.isAbsolute(scopedRootRelative)
-  );
+  const scopedArtifactTask = Boolean(scopedRootRelative);
   if (scopedArtifactTask) {
     runtimeConfig.scopedArtifactTask = true;
     runtimeConfig.scopedArtifactRoot = scopedRootRelative.replace(/\\/g, "/");
@@ -19557,7 +19558,8 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     groundingExecutionContract.requiresFileMutation === true &&
       groundingExecutionContract.requiresSourceGrounding === true &&
       !groundingFreshMutationSatisfied &&
-      !groundingScopedArtifactMutationSatisfied
+      !groundingScopedArtifactMutationSatisfied &&
+      !separateSourceDeliverable
   );
   const explicitHeadRestore = currentTurnRequiresFreshMutation
     ? explicitlyRequestedDirtyHeadRestore(state, config)

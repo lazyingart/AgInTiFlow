@@ -98,6 +98,15 @@ assert.deepEqual(immutableInputsContract.exactInputPaths, ["notes.txt", "risks.t
 assert.deepEqual(immutableInputsContract.exactOutputPaths, ["summary.md"]);
 assert.deepEqual(immutableInputsContract.excludedOutputPaths, ["notes.txt", "risks.txt"]);
 assert.equal(immutableInputsContract.requiresSourceGrounding, true);
+const postfixReadonlyInputContract = deriveScsTaskContract({
+  goal: "Create a scene in bench.scene.json. requirements.txt is a read-only input.",
+});
+assert.deepEqual(postfixReadonlyInputContract.exactOutputPaths, ["bench.scene.json"]);
+assert.deepEqual(postfixReadonlyInputContract.exactInputPaths, ["requirements.txt"]);
+assert.deepEqual(postfixReadonlyInputContract.excludedOutputPaths, ["requirements.txt"]);
+assert.deepEqual(deriveScsTaskContract({
+  goal: "Create summary.md. `source.json` must remain immutable. Then update output.json.",
+}).excludedOutputPaths, ["source.json"], "postfix write protection leaked onto a later output");
 assert.deepEqual(evaluateScsSemanticContract(immutableInputsContract, {
   commandCwd: scopedReadThenWriteRoot,
   events: [{ type: "tool.completed", data: { ok: true, toolName: "read_file", path: "notes.txt", content: "first input" } }],

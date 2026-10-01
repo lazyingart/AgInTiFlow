@@ -9,6 +9,7 @@ import {
   assessResponseOnlyEmptyEnvelope,
   assessResponseOnlyPerfectAudit,
   completionRequirementCoverageInstruction,
+  completionTaskContract,
   continuationExecutionContractDirective,
   evaluateAuthoritativeStructuredCompletionCoverage,
   nextStepRuntimeConfig,
@@ -1214,6 +1215,12 @@ for (const candidateResult of [
   "No forecast is requested; please clarify what this number means.",
   "这不是预测；这串数字缺少上下文，无法判断它的含义。",
   "これは予測ではありません。この数字だけでは文脈が不足しており、意味を判断できません。",
+  "对两类客户群做事实性对比，只呈现现有资料中的差异，不编造营收预测。",
+  "对两个客户群做事实对比，不编造收入预测。",
+  "任务是对两个客户群体做事实性对比，不做虚构营收预测。",
+  "只做两个客户群的事实对比，不做收入预测。",
+  "Compare the customer groups; do not invent revenue forecasts.",
+  "Never fabricate market predictions.",
 ]) {
   const negatedForecastClarification = evaluateSourceFreeResponseClaims({
     goal: sourceFreeResearchGoal,
@@ -1231,6 +1238,8 @@ for (const candidateResult of [
   "No forecast was requested, but demand will grow next year.",
   "这串数字缺少上下文，但报告预测市场需求明年会增长。",
   "予測ではありませんが、市場需要は来年増加する見込みです。",
+  "不编造营收预测，但报告预测市场需求明年会增长。",
+  "Do not invent revenue forecasts, but demand will grow next year.",
 ]) {
   const disguisedForecast = evaluateSourceFreeResponseClaims({
     goal: sourceFreeResearchGoal,
@@ -2488,6 +2497,17 @@ try {
       assert.equal(editRuntime.completionFreshMutationRequired, true, `${verb}: actual input correction was exempted`);
       assert(editRuntime.completionFreshMutationPaths.includes("notes.txt"));
     }
+    const artifactRuntime = nextStepRuntimeConfig({ goal, commandCwd: summaryWorkspace }, {
+      goal,
+      commandCwd: summaryWorkspace,
+      meta: {
+        goalContract: { revision: 1, currentRequest: goal, activeGoal: goal },
+        activeExecutionContract: { revision: 1, requiresFileMutation: true, requiresSourceGrounding: true, startedMutationRevision: 0 },
+        projectVerification: { mutationRevision: 0, mutationHistory: [] },
+      },
+    });
+    assert.notEqual(artifactRuntime.completionFreshMutationRequired, true,
+      `${id}: separate deliverable forced a correction of its input or an unrelated source`);
   }
 
   const summaryFollowup = await runCase({
@@ -2511,6 +2531,35 @@ try {
   assert.equal(await fs.readFile(path.join(followupWorkspace, "checklist.md"), "utf8"), "- Assign an archive owner.\n- Test the backup.\n");
 
   const crossTaskIsolationId = "scoped-artifact-cross-task-completion";
+  for (const nestedRoot of [true, false]) {
+    const workspace = path.join(tempRoot, "workspaces", "scoped-json-freshness");
+    const artifactRoot = nestedRoot ? path.join(workspace, "artifacts") : workspace;
+    const goal = scopedTaskGoal(
+      "Use the existing routine to create artifacts/bench.scene.json and validate it. requirements.txt is a read-only input.",
+      artifactRoot
+    );
+    const state = {
+      goal, commandCwd: workspace,
+      meta: {
+        goalContract: { revision: 1, currentRequest: goal, activeGoal: goal },
+        activeExecutionContract: {
+          revision: 1, requiresFileMutation: true, requiresSourceGrounding: true, startedMutationRevision: 0,
+          refreshedAt: "2026-10-01T05:00:00Z",
+          scopedArtifactMutationAt: "2026-10-01T05:00:01Z",
+        },
+        projectVerification: { mutationRevision: 0, mutationHistory: [] },
+      },
+    };
+    const contract = completionTaskContract({ goal, commandCwd: workspace }, state);
+    assert.equal(contract.requiredFreshMutationRevision, nestedRoot ? 0 : 1,
+      "task artifact writes were confused with project source corrections, or a workspace-wide root bypassed freshness");
+    assert(contract.requiredEvidence.some((item) => item.category === "file"),
+      "artifact creation must still require real file evidence");
+    assert(contract.requiredEvidence.every((item) => !nestedRoot || !item.minimumMutationRevision));
+    state.meta.activeExecutionContract.scopedArtifactMutationAt = "2026-10-01T04:59:00Z";
+    assert.equal(completionTaskContract({ goal, commandCwd: workspace }, state).requiredFreshMutationRevision, 1,
+      "a prior artifact mutation cannot satisfy the current revision");
+  }
   const crossTaskWorkspace = path.join(tempRoot, "workspaces", crossTaskIsolationId);
   const currentTaskRoot = path.join(crossTaskWorkspace, "output", "tasks", "current-task");
   const siblingTaskRoot = path.join(crossTaskWorkspace, "output", "tasks", "sibling-task");

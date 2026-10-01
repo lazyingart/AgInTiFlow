@@ -891,6 +891,8 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
   // later exclusion backwards across coordinated clauses.
   const negativeActionAfter =
     /^\s*(?:(?:does\s+not|doesn't|is\s+not|isn't)\s+exist\b\s*(?:and\s+)?)?(?:must\s+not|should\s+not|never)\s+(?:be\s+)?(?:run|rerun|re-run|execut(?:e|ed)|creat(?:e|ed)|recreat(?:e|ed)|writ(?:e|ten)|generat(?:e|ed)|sav(?:e|ed)|output|touch(?:ed)?|modif(?:y|ied)|edit(?:ed)?|stag(?:e|ed)|commit(?:ted)?)(?:\b|\s)/i;
+  const immutablePathAfter =
+    /^[`"'\s]*(?:is|remains?|must\s+remain|should\s+remain)\s+(?:(?:an?|the)\s+)?(?:read[ -]?only|immutable)\b/i;
   const keepAbsent =
     /\b(?:keep|leave)\b[^.!?。！？;；\n]{0,80}\b(?:absent|missing|nonexistent|uncreated|untouched)\b/i;
   const cjkNegativeActionBefore =
@@ -935,6 +937,7 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
         immutablePathClause ||
         negativeActionBefore.test(before) ||
         negativeActionAfter.test(after) ||
+        immutablePathAfter.test(after) ||
         keepAbsent.test(`${before}${after}`) ||
         cjkNegativeActionBefore.test(before) ||
         cjkNegativeActionAfter.test(after) ||
@@ -2203,7 +2206,15 @@ function sourceFreeClaimSegmentOnlyNegatesForecast(text = "") {
       " "
     )
     .replace(
-      /(?:不是|並非|并非|没有|沒有|无|無|不作|不做|无需|無需|不需要)(?:任何)?(?:预测|預測|预计|預計|推测|推測|预言|預言)/gu,
+      /(?:不是|並非|并非|没有|沒有|无|無|不作|不做|无需|無需|不需要)(?:任何|虚构|虛構)?(?:营收|營收|收入|市场|市場|需求)?(?:预测|預測|预计|預計|推测|推測|预言|預言)/gu,
+      " "
+    )
+    .replace(
+      /\b(?:do\s+not|don't|must\s+not|never)\s+(?:invent|fabricate|make\s+up)\s+(?:any\s+)?(?:(?:revenue|income|market|demand)\s+)?(?:forecasts?|predictions?|projections?)\b/giu,
+      " "
+    )
+    .replace(
+      /(?:不|不要|不得|禁止)(?:编造|編造|虚构|虛構|捏造|杜撰)(?:任何)?(?:营收|營收|收入|市场|市場|需求)?(?:预测|預測|预计|預計|推测|推測)/gu,
       " "
     )
     .replace(
