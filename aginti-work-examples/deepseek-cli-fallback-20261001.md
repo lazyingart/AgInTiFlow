@@ -66,6 +66,15 @@ wall time. No external Codex/Claude/Gemini agent wrapper was called. The existin
 Docker image was reused; no GPU model, GUI desktop, or dependency rebuild was
 needed. The test-created containers exited after each command.
 
+The packaged CLI was then installed globally and tested again in a separate fresh
+workspace, using the installed entry point rather than the source checkout. All
+three cases passed again: summary in 6.8 seconds / 4 turns, code repair in 37.1
+seconds / 5 turns, and Chinese follow-up in 16.7 seconds / 4 additional turns.
+The same independent checks passed, including all 22 oracle assertions and
+unchanged input/code/test bytes where required. The installed package also passed
+the 13 focused lifecycle and CLI-policy regressions. These timings describe that
+individual run and are not a throughput guarantee.
+
 ## Usage
 
 See [DeepSeek CLI fallback](../docs/deepseek-cli-fallback.md) for start/resume,
