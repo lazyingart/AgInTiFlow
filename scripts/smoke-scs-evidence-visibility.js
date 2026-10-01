@@ -98,6 +98,12 @@ assert.deepEqual(immutableInputsContract.exactInputPaths, ["notes.txt", "risks.t
 assert.deepEqual(immutableInputsContract.exactOutputPaths, ["summary.md"]);
 assert.deepEqual(immutableInputsContract.excludedOutputPaths, ["notes.txt", "risks.txt"]);
 assert.equal(immutableInputsContract.requiresSourceGrounding, true);
+const coordinatedUntouchedInputsContract = deriveScsTaskContract({
+  goal: "Read notes.txt and risks.txt. Create artifacts/summary.md. Leave notes.txt and risks.txt untouched, then write artifacts/result.json.",
+});
+assert.deepEqual(coordinatedUntouchedInputsContract.excludedOutputPaths, ["notes.txt", "risks.txt"]);
+assert.deepEqual(coordinatedUntouchedInputsContract.exactOutputPaths, ["artifacts/summary.md", "artifacts/result.json"]);
+assert.deepEqual(coordinatedUntouchedInputsContract.exactInputPaths, ["notes.txt", "risks.txt"]);
 const postfixReadonlyInputContract = deriveScsTaskContract({
   goal: "Create a scene in bench.scene.json. requirements.txt is a read-only input.",
 });

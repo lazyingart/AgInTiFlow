@@ -19545,14 +19545,25 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     ),
     retainedSourceQualityRepairRequired ? mutationRevision + 1 : 0
   );
+  const artifactRepairBoundaryAt = Date.parse(String(completionRepair.at || ""));
+  const scopedArtifactSatisfiedRepair = Boolean(
+    groundingScopedArtifactMutationSatisfied &&
+    Number.isFinite(artifactRepairBoundaryAt) && scopedArtifactMutationAt > artifactRepairBoundaryAt &&
+    Number(groundingTaskContract.requiredFreshMutationRevision || 0) === 0 &&
+    !retainedSourceQualityRepairRequired &&
+    completionRepair.sourceQualityRepairRequired !== true &&
+    completionRepair.artifactQualityRepairRequired !== true
+  );
   const completionRepairRequiresFreshMutation = Boolean(
-    retainedSourceQualityRepairRequired ||
-    completionRepair.requiresFreshFileMutation === true ||
+    !scopedArtifactSatisfiedRepair && (
+      retainedSourceQualityRepairRequired ||
+      completionRepair.requiresFreshFileMutation === true ||
       (
         completionRepair.key &&
         groundingTaskContract.requiresFileMutation === true &&
         completionFreshMutationRevision > mutationRevision
       )
+    )
   );
   const currentTurnRequiresFreshMutation = Boolean(
     groundingExecutionContract.requiresFileMutation === true &&

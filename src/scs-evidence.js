@@ -894,7 +894,7 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
   const immutablePathAfter =
     /^[`"'\s]*(?:is|remains?|must\s+remain|should\s+remain)\s+(?:(?:an?|the)\s+)?(?:read[ -]?only|immutable)\b/i;
   const keepAbsent =
-    /\b(?:keep|leave)\b[^.!?。！？;；\n]{0,80}\b(?:absent|missing|nonexistent|uncreated|untouched)\b/i;
+    /\b(?:keep|leave)\b[^!?。！？;；\n]{0,300}?\b(?:absent|missing|nonexistent|uncreated|untouched)\b/gi;
   const cjkNegativeActionBefore =
     /(?:不要|不得|禁止|无需|不需要)[^。！？；\n]{0,140}(?:运行|执行|重跑|创建|建立|写入|生成|保存|输出|修改|编辑|提交|暂存)/u;
   const cjkNegativeActionAfter =
@@ -907,6 +907,7 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
   for (const clause of source.split(/[;；\n]|(?<=[.!?。！？])\s+/u)) {
     pathPattern.lastIndex = 0;
     const matches = [...clause.matchAll(pathPattern)];
+    const preservedPathSpans = [...clause.matchAll(keepAbsent)];
     const immutablePathClause = Boolean(
       /\b(?:treat|consider|regard)\b[^!?。！？;；\n]{0,260}\b(?:as\s+)?(?:immutable|read[ -]?only)\b/i.test(
         clause
@@ -938,7 +939,9 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
         negativeActionBefore.test(before) ||
         negativeActionAfter.test(after) ||
         immutablePathAfter.test(after) ||
-        keepAbsent.test(`${before}${after}`) ||
+        preservedPathSpans.some((span) =>
+          index >= span.index && index + rawPath.length <= span.index + span[0].length
+        ) ||
         cjkNegativeActionBefore.test(before) ||
         cjkNegativeActionAfter.test(after) ||
         directRemovalBefore.test(before) ||
@@ -2206,7 +2209,7 @@ function sourceFreeClaimSegmentOnlyNegatesForecast(text = "") {
       " "
     )
     .replace(
-      /(?:不是|並非|并非|没有|沒有|无|無|不作|不做|无需|無需|不需要)(?:任何|虚构|虛構)?(?:营收|營收|收入|市场|市場|需求)?(?:预测|預測|预计|預計|推测|推測|预言|預言)/gu,
+      /(?:不是|並非|并非|没有|沒有|无|無|不作|不做|不使用|无需|無需|不需要)[^\s，,。！？；;但而]{0,12}?(?:预测|預測|预计|預計|推测|推測|预言|預言)/gu,
       " "
     )
     .replace(
@@ -2248,7 +2251,11 @@ function sourceFreeExternalClaimCategoriesForSegment(
   text = "",
   { requireNamedEvidenceGrounding = false } = {}
 ) {
-  const value = String(text || "");
+  // Remove only negated verification phrases; reassess the remaining clause
+  // so a real evidence claim beside a disclaimer still requires a source.
+  const value = String(text || "")
+    .replace(/(?:尚未|未经|未經|未|待)(?:被|得到|经过|經過)?(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明)/gu, " ")
+    .replace(/(?:不再|不必|无需|無需|无须|無須)[^\s，,。！？；;但而]{0,12}?(?:验证|驗證|核实|核實|证实|證實|确认|確認|证明|證明)/gu, " ");
   if (!value.trim()) return [];
   const categories = [];
   const add = (category, pattern) => {

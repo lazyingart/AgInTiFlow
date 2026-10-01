@@ -17,18 +17,30 @@ current-turn scoped write can satisfy artifact freshness without an unrelated
 project edit. Its saved timestamp must follow the current execution contract;
 old mutations, no-op patches, and workspace-wide roots do not qualify for this
 exemption. Explicit input repairs still require their requested changes.
+After a verified scoped write satisfies a prior missing-file/freshness repair,
+the runtime also stops enforcing that retained repair's obsolete source-edit
+phase. Actual source or artifact quality defects remain blocking. Keeping the
+current contract correct without retiring the obsolete phase can still trap a
+valid routine in repeated no-op patches.
 File, command, requested-format, source-grounding, and quality evidence gates
 remain active. In particular, a pre-existing PDF cannot satisfy a request to
 materially revise and rebuild it.
 
 Postfix input declarations such as `requirements.txt is a read-only input`
 are recognized without accidentally excluding a neighboring output path.
+Coordinated preservation instructions such as `leave a.txt and b.txt untouched`
+exclude both inputs from deliverables, not just paths adjacent to the verb.
+An output requested after that preservation clause remains required.
 
 ## Source-Free Answers
 
 Refusing to invent a forecast is not a forecast. Chinese and English negated
 forecast clauses are stripped before assessing whether an answer needs source
 evidence. A real prediction later in the same sentence remains evidence-gated.
+Likewise, saying an item is unverified, pending confirmation, or needs no repeat
+confirmation is not a claim that it has been independently validated. Only the
+negated phrase is removed; real validation claims in the remaining text still
+require evidence.
 
 ## Validation
 

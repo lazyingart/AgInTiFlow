@@ -1219,6 +1219,10 @@ for (const candidateResult of [
   "对两个客户群做事实对比，不编造收入预测。",
   "任务是对两个客户群体做事实性对比，不做虚构营收预测。",
   "只做两个客户群的事实对比，不做收入预测。",
+  "对两个客户细分做事实对比，不做臆测性营收预测。",
+  "对两类客户客群做事实性对比，不使用收入预测。",
+  "结论以现有可得资料为限，未证实部分明确标注为待确认。",
+  "已确定事项不再重复确认。",
   "Compare the customer groups; do not invent revenue forecasts.",
   "Never fabricate market predictions.",
 ]) {
@@ -1240,6 +1244,8 @@ for (const candidateResult of [
   "予測ではありませんが、市場需要は来年増加する見込みです。",
   "不编造营收预测，但报告预测市场需求明年会增长。",
   "Do not invent revenue forecasts, but demand will grow next year.",
+  "不做臆测性营收预测，但报告预测市场需求明年会增长。",
+  "资料未证实部分待确认，但实验已经验证成功。",
 ]) {
   const disguisedForecast = evaluateSourceFreeResponseClaims({
     goal: sourceFreeResearchGoal,
@@ -2533,6 +2539,9 @@ try {
   const crossTaskIsolationId = "scoped-artifact-cross-task-completion";
   for (const nestedRoot of [true, false]) {
     const workspace = path.join(tempRoot, "workspaces", "scoped-json-freshness");
+    await fs.mkdir(path.join(workspace, "artifacts"), { recursive: true });
+    await fs.writeFile(path.join(workspace, "requirements.txt"), "Keep the tool source read-only.\n");
+    await fs.writeFile(path.join(workspace, "artifacts", "bench.scene.json"), "{}\n");
     const artifactRoot = nestedRoot ? path.join(workspace, "artifacts") : workspace;
     const goal = scopedTaskGoal(
       "Use the existing routine to create artifacts/bench.scene.json and validate it. requirements.txt is a read-only input.",
@@ -2556,6 +2565,19 @@ try {
     assert(contract.requiredEvidence.some((item) => item.category === "file"),
       "artifact creation must still require real file evidence");
     assert(contract.requiredEvidence.every((item) => !nestedRoot || !item.minimumMutationRevision));
+    state.meta.completionEvidenceRepair = {
+      key: "previous-file-evidence-rejection", at: "2026-10-01T05:00:00.500Z",
+      requiresFreshFileMutation: true, requiredFreshMutationRevision: 1,
+    };
+    const runtime = nextStepRuntimeConfig({ goal, commandCwd: workspace }, state);
+    assert.equal(runtime.completionFreshMutationRequired === true, !nestedRoot,
+      "a satisfied artifact mutation remained trapped in the retained fresh-source repair phase");
+    if (nestedRoot) {
+      state.meta.completionEvidenceRepair.artifactQualityRepairRequired = true;
+      assert.equal(nextStepRuntimeConfig({ goal, commandCwd: workspace }, state).completionFreshMutationRequired, true,
+        "a fresh artifact write cannot waive an outstanding quality defect");
+      state.meta.completionEvidenceRepair.artifactQualityRepairRequired = false;
+    }
     state.meta.activeExecutionContract.scopedArtifactMutationAt = "2026-10-01T04:59:00Z";
     assert.equal(completionTaskContract({ goal, commandCwd: workspace }, state).requiredFreshMutationRevision, 1,
       "a prior artifact mutation cannot satisfy the current revision");
