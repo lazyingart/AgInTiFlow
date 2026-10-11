@@ -10,7 +10,7 @@ AgInTiFlow treats model choice as a role-based control plane. A provider supplie
 | Main | `/model` or `/main` | `localllm/localllm-deep` | Local complex executor for coding, debugging, writing, and long tasks. |
 | Spare | `/spare` | `localllm/localllm-deep` with `medium` reasoning | Local cross-check lane; hosted spares require explicit selection. |
 | Wrapper | `/wrapper` | `codex gpt-5.5 medium` | External coding assistant when wrapper tools are enabled. |
-| Auxiliary | `/auxiliary` | `grsai/nano-banana-2` (tool off) | Explicitly enabled image/media tools; Venice image models are optional. |
+| Auxiliary | `/auxiliary` | `grsai/nano-banana-2.1` (tool off) | Explicitly enabled image/media tools; Venice keeps `nano-banana-2`. Explicit older models remain pinned. |
 
 Smart routing sends normal work to the LocalLLM route model and complex work to the LocalLLM main model. Manual hosted provider/model selection remains available for explicit one-off upgrades. A local error fails closed instead of changing providers.
 
@@ -63,7 +63,7 @@ Interactive commands:
 /model deepseek/deepseek-v4-pro
 /spare openai/gpt-5.4 medium
 /wrapper codex gpt-5.5 medium
-/auxiliary model grsai/nano-banana-2
+/auxiliary model grsai/nano-banana-2.1
 ```
 
 In the interactive CLI, `/provider`, `/route`, `/model`, `/spare`, and `/auxiliary model` without arguments open selectors. Use Up/Down/Left/Right to move through choices and Enter to confirm. Esc cancels at the top level; inside multi-level selectors it goes back one level. Slash-command hints use the same arrow selection behavior: type a prefix such as `/mo`, use arrows to choose `/model` or `/models`, then press Enter or Tab.
@@ -146,7 +146,7 @@ It keeps smart routing enabled. If the Venice key is missing, run `/auth venice`
 
 | Family | Models |
 | --- | --- |
-| GRS AI | `nano-banana-2`, `nano-banana-2-edit`, `gpt-image-2`, `gpt-image-2-edit` when the configured GRS AI-compatible endpoint supports them |
+| GRS AI | `nano-banana-2.1` (default), `nano-banana-2` (retained), `nano-banana-2-edit`, `gpt-image-2`, `gpt-image-2-edit` when the configured GRS AI-compatible endpoint supports them |
 | Venice Image | `wan-2-7-pro-edit`, `nano-banana-2`, `gpt-image-2`, `grok-imagine-image`, `qwen-image-2-pro`, `bria-bg-remover`, `recraft-v4`, `flux-2-pro`, and related image/edit routes |
 
 ## Keys

@@ -1,5 +1,5 @@
 import { BASELINE_PROVIDER, normalizeProviderId, providerContract } from "./provider-contract.js";
-import { ROUTING_MODES, REASONING_EFFORTS } from "./model-routing.js";
+import { ROUTING_MODES, REASONING_EFFORTS, defaultAuxiliaryModel } from "./model-routing.js";
 import { permissionModeDefaults } from "./permission-modes.js";
 import { TASK_PROFILES } from "./task-profiles.js";
 import { WRAPPER_NAMES } from "./tool-wrappers.js";
@@ -63,7 +63,7 @@ const DEFAULTS = Object.freeze({
   wrapperModel: "gpt-5.5",
   wrapperReasoning: "medium",
   auxiliaryProvider: "grsai",
-  auxiliaryModel: "nano-banana-2",
+  auxiliaryModel: defaultAuxiliaryModel(),
   taskProfile: "auto",
   language: "",
   executionTier: "focused",
@@ -341,7 +341,7 @@ function canonicalSnapshot(config = {}, revision = 1) {
       DEFAULTS.auxiliaryProvider
     ),
     auxiliaryModel: safeString(config.auxiliaryModel || roleValue(config, "auxiliary", "model"), "auxiliaryModel", {
-      fallback: DEFAULTS.auxiliaryModel,
+      fallback: defaultAuxiliaryModel(config.auxiliaryProvider || roleValue(config, "auxiliary", "provider")),
       allowEmpty: false,
     }),
     taskProfile: safeTaskProfile(config.taskProfile),

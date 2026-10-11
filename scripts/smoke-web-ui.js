@@ -19,6 +19,9 @@ const server = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js")
     AGINTIFLOW_NO_AUTO_UPDATE: "1",
     AGINTIFLOW_HOME: agintiflowHome,
     AGINTIFLOW_RUNTIME_DIR: runtimeDir,
+    AGINTI_AUX_PROVIDER: "grsai",
+    AGINTI_AUX_MODEL: "",
+    VENICE_IMAGE_MODEL: "",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -338,7 +341,51 @@ try {
   for (const wrapper of ["codex", "claude", "gemini", "copilot", "qwen"]) {
     if (!wrapperOptions.includes(wrapper)) throw new Error(`preferred wrapper dropdown is missing ${wrapper}`);
   }
+  async function captureImageRole(name) {
+    if (!process.env.AGINTI_SMOKE_SCREENSHOT_DIR) return;
+    await fs.mkdir(process.env.AGINTI_SMOKE_SCREENSHOT_DIR, { recursive: true });
+    await page.locator(".model-role-editor").screenshot({ path: path.join(process.env.AGINTI_SMOKE_SCREENSHOT_DIR, `${name}.png`) });
+  }
+  if ((await page.locator("#auxiliaryModel").inputValue()) !== "nano-banana-2.1") throw new Error("GRS AI UI default did not advance to 2.1");
+  await captureImageRole("grsai-default");
+  await page.selectOption("#auxiliaryProvider", "venice");
+  if ((await page.locator("#auxiliaryModel").inputValue()) !== "nano-banana-2") throw new Error("GRS model leaked into Venice UI default");
+  await captureImageRole("venice-default");
+  await page.selectOption("#auxiliaryProvider", "grsai");
+  if ((await page.locator("#auxiliaryModel").inputValue()) !== "nano-banana-2.1") throw new Error("Venice model leaked into GRS AI UI default");
+  const pinSaved = page.waitForResponse((response) => response.url().endsWith("/api/preferences") &&
+    response.request().postDataJSON()?.auxiliaryModel === "nano-banana-2");
+  await page.selectOption("#auxiliaryModel", "nano-banana-2");
+  await page.selectOption("#wrapperReasoning", "high");
+  if ((await page.locator("#auxiliaryModel").inputValue()) !== "nano-banana-2") throw new Error("Dropdown refresh silently upgraded the explicit old model");
+  if (!(await pinSaved).ok()) throw new Error("Explicit old model preference was not saved");
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator("#run-defaults-card summary").click();
+  await page.click("#open-settings");
+  if ((await page.locator("#auxiliaryModel").inputValue()) !== "nano-banana-2") throw new Error("Reload silently upgraded the saved old model");
+  await captureImageRole("explicit-old-model");
   await page.click("#done-settings");
+
+  for (const [provider, expected] of [["grsai", "nano-banana-2.1"], ["venice", "nano-banana-2"]]) {
+    await page.route("**/api/config", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      data.preferences.auxiliaryProvider = provider;
+      delete data.preferences.auxiliaryModel;
+      data.auxiliaryModelCatalog = {};
+      data.modelRoles.auxiliary = provider === "venice" ? { provider: "grsai", model: "nano-banana-2.1" } : {};
+      await route.fulfill({ response, json: data });
+    });
+    await page.reload({ waitUntil: "networkidle" });
+    await page.locator("#run-defaults-card summary").click();
+    await page.click("#open-settings");
+    if ((await page.locator("#auxiliaryModel").inputValue()) !== expected) throw new Error(`${provider} UI fallback chose a different provider's model`);
+    const values = await optionValues(page, "#auxiliaryModel");
+    if (!values.includes(expected)) throw new Error(`${provider} UI fallback catalog omitted its default`);
+    await captureImageRole(`${provider}-fallback`);
+    await page.click("#done-settings");
+    await page.unroute("**/api/config");
+  }
 
   console.log(
     JSON.stringify(
@@ -379,6 +426,9 @@ try {
           "deduped-finish-history",
           "settings-provider-dropdowns",
           "settings-wrapper-dropdowns",
+          "auxiliary-provider-specific-defaults",
+          "auxiliary-explicit-old-model-refresh-save-reload",
+          "auxiliary-empty-catalog-and-mismatched-role-fallbacks",
         ],
       },
       null,

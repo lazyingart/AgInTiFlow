@@ -36,6 +36,20 @@ Keys are saved in `~/.agintiflow/.env` by default as `GRSAI` or `VENICE_API_KEY`
 
 Provider selection is independent of key discovery. The selected auxiliary provider remains GRS AI or Venice for the whole call. If its key is missing or the request fails, the tool stops visibly; it never switches to the other provider because that provider's ambient key happens to exist. When no provider is selected, the deterministic default is GRS AI.
 
+The GRS AI default is `nano-banana-2.1`; Venice's default remains `nano-banana-2`.
+Explicit tool arguments, saved session/preferences and `AGINTI_AUX_MODEL` pins
+are preserved, including older `nano-banana-2` workflows. `VENICE_IMAGE_MODEL`
+applies only to Venice, never to the GRS AI default. Updating this default does
+not enable generation or rewrite an integrating app's pinned model.
+
+Verified 2026-10-11 against Google's
+[Nano Banana 2.1 model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1)
+and the GRS AI [Nano Banana model selector](https://grsai.ai/dashboard/documents/nano-banana).
+Google names its model `gemini-nano-banana-2.1`; GRS AI exposes the route ID
+`nano-banana-2.1`. These provider identifiers are not interchangeable. This
+default update is covered by offline/dry-run regression tests, not a paid-image
+quality or provider-generation qualification.
+
 ## Runtime Flow
 
 For image, cover, poster, illustration, photo, or logo-concept requests, the model can call:
@@ -124,3 +138,25 @@ Generated images are sent to the canvas automatically when available.
 Output paths must stay inside the project workspace. Secret paths, `.git`, `node_modules` writes, and oversized reference images are blocked. Reference images may be workspace files, HTTPS URLs, or data URLs.
 
 The mode gate is enforced inside `generate_image` as well as in progressive tool exposure, so a handcrafted model tool call cannot bypass a disabled auxiliary mode.
+
+## Default Update Regression Checks
+
+The 2026-10-11 default update passed these no-charge checks:
+
+```bash
+npm run check
+node --check public/app.js
+npm run smoke:web-api
+npm run smoke:coding-tools
+npm run smoke:model-roles
+npm run smoke:auxiliary-tools
+npm run smoke:session-runtime
+AGINTI_SMOKE_SCREENSHOT_DIR=artifacts/nano-banana-2.1-20261011 npm run smoke:web-ui
+```
+
+The browser smoke covers provider switching, saved older-model refresh/reload,
+and provider-specific fallbacks with an empty catalog or mismatched role defaults.
+The auxiliary smoke asserts exact serialized dry-run models, including argument,
+config and environment pins. Screenshots are generated evidence under ignored
+`artifacts/`, not committed browser profiles. No hosted image request or image
+credit was used to validate this change.

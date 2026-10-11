@@ -2785,7 +2785,7 @@ export async function requestNextStep(client, config, messages) {
             },
             aspectRatio: { type: "string", description: "Aspect ratio such as 1:1, 16:9, 2:3, or 3:2." },
             imageSize: { type: "string", description: "Image size such as 1K, 2K, or 4K." },
-            model: { type: "string", description: "Image model. Defaults to nano-banana-2; Venice also supports models such as gpt-image-2, wan-2-7-text-to-image, qwen-image-2, and bria-bg-remover." },
+            model: { type: "string", description: "Image model. GRS AI defaults to nano-banana-2.1; Venice keeps nano-banana-2 and also supports models such as gpt-image-2, wan-2-7-text-to-image, qwen-image-2, and bria-bg-remover." },
             referenceImages: {
               type: "array",
               items: { type: "string" },

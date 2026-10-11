@@ -58,6 +58,9 @@ for (const key of [
   "AGINTI_MAIN_MODEL",
   "AGINTI_SPARE_PROVIDER",
   "AGINTI_SPARE_MODEL",
+  "AGINTI_AUX_PROVIDER",
+  "AGINTI_AUX_MODEL",
+  "VENICE_IMAGE_MODEL",
 ]) {
   delete process.env[key];
 }
@@ -145,7 +148,19 @@ assert(
   "local-first spare model should stay on LocalLLM Deep unless explicitly changed"
 );
 assert(roles.wrapper.provider === "codex" && roles.wrapper.model === "gpt-5.5", "wrapper default should be Codex GPT-5.5");
-assert(roles.auxiliary.provider === "grsai" && roles.auxiliary.model === "nano-banana-2", "auxiliary default should be GRS AI Nano Banana");
+assert(roles.auxiliary.provider === "grsai" && roles.auxiliary.model === "nano-banana-2.1", "auxiliary default should be GRS AI Nano Banana 2.1");
+assert(getModelRoleDefaults({ auxiliaryProvider: "venice" }).auxiliary.model === "nano-banana-2", "Venice must keep its verified default");
+assert(getModelRoleDefaults({ auxiliaryProvider: "venice-image" }).auxiliary.model === "nano-banana-2", "Venice image alias must keep its default");
+assert(getModelRoleDefaults({ auxiliaryModel: "nano-banana-2" }).auxiliary.model === "nano-banana-2", "Explicit older models must remain pinned");
+assert(AUXILIARY_MODEL_CATALOG.grsai[0].id === "nano-banana-2.1", "GRS AI catalog must advertise its new default first");
+assert(AUXILIARY_MODEL_CATALOG.grsai.some((item) => item.id === "nano-banana-2"), "GRS AI catalog must retain the old model");
+process.env.VENICE_IMAGE_MODEL = "venice-explicit-image";
+assert(getModelRoleDefaults().auxiliary.model === "nano-banana-2.1", "Venice image environment must not select a GRS model");
+assert(getModelRoleDefaults({ auxiliaryProvider: "venice" }).auxiliary.model === "venice-explicit-image", "Venice explicit environment must remain honored");
+process.env.AGINTI_AUX_MODEL = "nano-banana-2";
+assert(getModelRoleDefaults().auxiliary.model === "nano-banana-2", "Explicit environment pin must survive the default update");
+delete process.env.AGINTI_AUX_MODEL;
+delete process.env.VENICE_IMAGE_MODEL;
 
 const envSnapshot = {
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,

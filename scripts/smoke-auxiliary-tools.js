@@ -23,6 +23,8 @@ const originalImageEnv = {
   VENICE_API_BASE: process.env.VENICE_API_BASE,
   VENICE_BASE_URL: process.env.VENICE_BASE_URL,
   AGINTI_AUX_PROVIDER: process.env.AGINTI_AUX_PROVIDER,
+  AGINTI_AUX_MODEL: process.env.AGINTI_AUX_MODEL,
+  VENICE_IMAGE_MODEL: process.env.VENICE_IMAGE_MODEL,
 };
 const originalFetch = globalThis.fetch;
 process.env.AGINTIFLOW_HOME = path.join(tempRoot, ".agintiflow-home");
@@ -32,12 +34,18 @@ delete process.env.VENICE_API_KEY;
 delete process.env.VENICE_API_BASE;
 delete process.env.VENICE_BASE_URL;
 delete process.env.AGINTI_AUX_PROVIDER;
+delete process.env.AGINTI_AUX_MODEL;
+delete process.env.VENICE_IMAGE_MODEL;
 const runtimeDir = path.join(tempRoot, "runtime");
 const workspace = path.join(tempRoot, "workspace");
 await fs.mkdir(workspace, { recursive: true });
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+async function preparedModel(result) {
+  return JSON.parse(await fs.readFile(path.join(workspace, result.requestPayloadPath), "utf8")).model;
 }
 
 try {
@@ -168,7 +176,25 @@ try {
   assert(dryRun.ok && dryRun.dryRun, "generate_image dry run failed");
   await fs.access(path.join(workspace, "artifacts/images/dry-run/task_manifest.json"));
   const payloadText = await fs.readFile(path.join(workspace, "artifacts/images/dry-run/request_payload.redacted.json"), "utf8");
-  assert(payloadText.includes("nano-banana-2"), "redacted image payload was not written");
+  assert(JSON.parse(payloadText).model === "nano-banana-2.1", "GRS AI dry run did not use the exact 2.1 model");
+  for (const source of ["argument", "config", "environment"]) {
+    if (source === "environment") process.env.AGINTI_AUX_MODEL = "nano-banana-2";
+    const pinned = await generateImage(
+      { prompt: "Preserve the explicit older model.", outputDir: `artifacts/images/pinned-${source}`, dryRun: true,
+        ...(source === "argument" ? { model: "nano-banana-2" } : {}) },
+      { commandCwd: workspace, allowFileTools: true, allowAuxiliaryTools: true,
+        ...(source === "config" ? { auxiliaryModel: "nano-banana-2" } : {}) }
+    );
+    assert(pinned.ok && await preparedModel(pinned) === "nano-banana-2", `${source} model pin was silently upgraded`);
+    delete process.env.AGINTI_AUX_MODEL;
+  }
+  process.env.VENICE_IMAGE_MODEL = "venice-only-image";
+  const grsWithVeniceEnvironment = await generateImage(
+    { prompt: "Provider-specific environment isolation.", outputDir: "artifacts/images/venice-env-isolation", dryRun: true },
+    { commandCwd: workspace, allowFileTools: true, allowAuxiliaryTools: true }
+  );
+  assert(await preparedModel(grsWithVeniceEnvironment) === "nano-banana-2.1", "Venice environment changed the GRS AI image model");
+  delete process.env.VENICE_IMAGE_MODEL;
   const referencePng = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAYAAACJ7f8GAAAADElEQVR42mP8z8AARAAAIf4BfQKxMQAAAABJRU5ErkJggg==",
     "base64"
@@ -210,6 +236,7 @@ try {
     }
   );
   assert(veniceDryRun.ok && veniceDryRun.provider === "venice", "venice generate_image dry run failed");
+  assert(await preparedModel(veniceDryRun) === "nano-banana-2", "Venice image default changed without qualification");
   const svgFallbackDryRun = await generateImage(
     {
       provider: "venice",
@@ -319,6 +346,10 @@ try {
           "venice_image_skill_listed",
           "image_generation_default_off",
           "generate_image_dry_run",
+          "grsai_exact_nano_banana_2_1_default",
+          "explicit_argument_config_environment_model_pins",
+          "venice_image_environment_isolation",
+          "venice_nano_banana_2_default_preserved",
           "reference_image_manifest_dimensions",
           "ambient_key_does_not_select_provider",
           "missing_selected_provider_does_not_fail_over",

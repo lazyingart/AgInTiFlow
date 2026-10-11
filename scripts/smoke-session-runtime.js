@@ -14,6 +14,15 @@ import {
 
 const SECRET = "session-runtime-smoke-secret-must-not-survive";
 
+assert.equal(captureSessionRuntime({}).auxiliaryModel, "nano-banana-2.1");
+assert.equal(captureSessionRuntime({ auxiliaryProvider: "venice" }).auxiliaryModel, "nano-banana-2");
+const pinnedImageRuntime = captureSessionRuntime({ auxiliaryProvider: "grsai", auxiliaryModel: "nano-banana-2" });
+const resumedImageRuntime = resolveSessionRuntime({
+  state: { meta: { runtimeConfig: pinnedImageRuntime } },
+  incomingConfig: { auxiliaryProvider: "grsai", auxiliaryModel: "nano-banana-2.1" },
+});
+assert.equal(resumedImageRuntime.runtimeOverrides.auxiliaryModel, "nano-banana-2", "Resuming a saved image model silently upgraded it");
+
 const localConfig = {
   provider: "localllm",
   model: "localllm-deep",

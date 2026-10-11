@@ -6,7 +6,7 @@ import { checkWorkspaceToolUse, resolveWorkspacePath } from "./workspace-tools.j
 
 const DEFAULT_GRS_HOST = "https://grsaiapi.com";
 const DEFAULT_VENICE_BASE = "https://api.venice.ai/api/v1";
-const DEFAULT_IMAGE_MODEL = "nano-banana-2";
+const DEFAULT_IMAGE_MODEL = "nano-banana-2.1";
 const DEFAULT_VENICE_IMAGE_MODEL = "nano-banana-2";
 const DEFAULT_ASPECT_RATIO = "1:1";
 const DEFAULT_IMAGE_SIZE = "2K";

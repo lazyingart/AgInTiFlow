@@ -1723,6 +1723,12 @@ function wrapperModelOptions() {
   );
 }
 
+function fallbackAuxiliaryModelForProvider(provider = auxiliaryProviderField?.value || "grsai") {
+  const roleProvider = modelRoles.auxiliary?.provider || "grsai";
+  if (provider === roleProvider && modelRoles.auxiliary?.model) return modelRoles.auxiliary.model;
+  return provider === "venice" ? "nano-banana-2" : "nano-banana-2.1";
+}
+
 function auxiliaryModelOptions(provider = auxiliaryProviderField?.value || "grsai") {
   if (provider === "venice") {
     return mergeModelOptions(auxiliaryModelCatalog["venice-image"], [
@@ -1733,6 +1739,7 @@ function auxiliaryModelOptions(provider = auxiliaryProviderField?.value || "grsa
     ]);
   }
   return mergeModelOptions(auxiliaryModelCatalog.grsai, [
+    { id: "nano-banana-2.1", label: "Nano Banana 2.1", bucket: "GRS AI" },
     { id: "nano-banana-2", label: "Nano Banana 2", bucket: "GRS AI" },
     { id: "gpt-image-2", label: "GPT Image 2", bucket: "GRS AI" },
   ]);
@@ -1787,7 +1794,7 @@ function refreshModelDropdowns() {
     auxiliaryModelField,
     auxiliaryModelOptions(auxiliaryProviderField?.value || "grsai"),
     fieldValue(auxiliaryModelField),
-    modelRoles.auxiliary?.model || "nano-banana-2"
+    fallbackAuxiliaryModelForProvider()
   );
 }
 
@@ -1895,7 +1902,7 @@ function renderModelRoles() {
     auxiliary: {
       ...(modelRoles.auxiliary || {}),
       provider: auxiliaryProviderField?.value || modelRoles.auxiliary?.provider || "grsai",
-      model: auxiliaryModelField?.value || modelRoles.auxiliary?.model || "nano-banana-2",
+      model: auxiliaryModelField?.value || fallbackAuxiliaryModelForProvider(),
     },
   };
   modelRoleGridEl.innerHTML = Object.values(roles)
@@ -2102,7 +2109,7 @@ function formPayload() {
     wrapperModel: fieldValue(wrapperModelField) || "gpt-5.5",
     wrapperReasoning: wrapperReasoningField?.value || "medium",
     auxiliaryProvider: auxiliaryProviderField?.value || "grsai",
-    auxiliaryModel: fieldValue(auxiliaryModelField) || "nano-banana-2",
+    auxiliaryModel: fieldValue(auxiliaryModelField) || fallbackAuxiliaryModelForProvider(),
     startUrl: document.querySelector("#startUrl").value.trim(),
     allowedDomains: document.querySelector("#allowedDomains").value.trim(),
     commandCwd: commandCwdField?.value.trim() || "",
@@ -3763,6 +3770,7 @@ modelField.addEventListener("change", updateRoutingHint);
   .filter(Boolean)
   .forEach((field) => {
     field.addEventListener("input", () => {
+      if (field === auxiliaryProviderField && auxiliaryModelField) auxiliaryModelField.value = "";
       if (field === routeProviderField || field === mainProviderField || field === spareProviderField || field === auxiliaryProviderField) refreshModelDropdowns();
       renderModelRoles();
       renderModelOptions();
@@ -3770,6 +3778,7 @@ modelField.addEventListener("change", updateRoutingHint);
       schedulePreferenceSave();
     });
     field.addEventListener("change", () => {
+      if (field === auxiliaryProviderField && auxiliaryModelField) auxiliaryModelField.value = "";
       if (field === routeProviderField || field === mainProviderField || field === spareProviderField || field === auxiliaryProviderField) refreshModelDropdowns();
       renderModelRoles();
       renderModelOptions();
@@ -4129,8 +4138,8 @@ async function loadConfig() {
   setSelectOptions(
     auxiliaryModelField,
     auxiliaryModelOptions(auxiliaryProviderField?.value || "grsai"),
-    prefs.auxiliaryModel || modelRoles.auxiliary?.model,
-    "nano-banana-2"
+    prefs.auxiliaryModel,
+    fallbackAuxiliaryModelForProvider()
   );
   renderTaskProfiles(prefs.taskProfile || "auto");
   document.querySelector("#startUrl").value = prefs.startUrl || "";

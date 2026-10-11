@@ -25,6 +25,7 @@ import {
   MODEL_PROVIDER_GROUPS,
   PROVIDER_MODEL_CATALOG,
   getModelRoleDefaults,
+  defaultAuxiliaryModel,
   modelsForProviderGroup,
   normalizeReasoningEffort,
   reasoningEffortLabel,
@@ -2750,7 +2751,7 @@ function createState(args = {}) {
     wrapperModel: args.wrapperModel || "gpt-5.5",
     wrapperReasoning: args.wrapperReasoning || "medium",
     auxiliaryProvider: args.auxiliaryProvider || "grsai",
-    auxiliaryModel: args.auxiliaryModel || "nano-banana-2",
+    auxiliaryModel: args.auxiliaryModel || defaultAuxiliaryModel(args.auxiliaryProvider),
     taskProfile: normalizeTaskProfile(args.taskProfile || "auto"),
     aapsMode: normalizeTaskProfile(args.taskProfile || "auto") === "aaps" ? "on" : "off",
     veniceMode: "",
@@ -2916,7 +2917,7 @@ function printModelRoles(state) {
       "/model deepseek/deepseek-v4-pro",
       "/spare openai/gpt-5.4 medium",
       "/wrapper codex gpt-5.5 medium",
-      "/auxiliary model grsai/nano-banana-2",
+      "/auxiliary model grsai/nano-banana-2.1",
       "",
       "Provider groups",
       ...groups,
@@ -3388,7 +3389,7 @@ async function pickModelRole(role, state) {
       : role === "spare"
         ? state.spareModel || "localllm-deep"
         : role === "auxiliary"
-          ? state.auxiliaryModel || "nano-banana-2"
+          ? state.auxiliaryModel || defaultAuxiliaryModel(state.auxiliaryProvider)
           : state.mainModel || "localllm-deep";
 
   const groupOptions = role === "auxiliary" ? auxiliaryGroupChoices() : modelGroupChoices();
@@ -3809,7 +3810,7 @@ async function handleCommand(line, state, packageDir) {
           `Auxiliary tools: ${state.allowAuxiliaryTools ? "on" : "off"}`,
           `Image generation: ${keys.grsai ? "GRSAI key available" : "missing GRSAI key"}`,
           `Venice image: ${keys.venice ? "Venice key available" : "missing Venice key"}`,
-          `Selected auxiliary: ${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || "nano-banana-2"}`,
+          `Selected auxiliary: ${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || defaultAuxiliaryModel(state.auxiliaryProvider)}`,
           "Use `/auxiliary model` for the two-level selector, `/auxiliary grsai` or `/auxiliary venice` to paste a key, `/auxiliary image`, or `/auxiliary off`.",
         ].join("\n")
       );
@@ -3817,7 +3818,7 @@ async function handleCommand(line, state, packageDir) {
     }
     if (action === "select") {
       const changed = await pickModelRole("auxiliary", state);
-      if (!changed) printSystemLine(`auxiliary=${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || "nano-banana-2"}`);
+      if (!changed) printSystemLine(`auxiliary=${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || defaultAuxiliaryModel(state.auxiliaryProvider)}`);
       return true;
     }
     if (action === "on") {
@@ -3840,12 +3841,12 @@ async function handleCommand(line, state, packageDir) {
       const modelValue = action.replace(/^model\s*/, "");
       if (!modelValue.trim() && input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
         const changed = await pickModelRole("auxiliary", state);
-        if (!changed) printSystemLine(`auxiliary=${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || "nano-banana-2"}`);
+        if (!changed) printSystemLine(`auxiliary=${state.auxiliaryProvider || "grsai"}/${state.auxiliaryModel || defaultAuxiliaryModel(state.auxiliaryProvider)}`);
         return true;
       }
       const selected = parseProviderModel(modelValue, state.auxiliaryProvider || "grsai");
       state.auxiliaryProvider = selected.provider === "venice-image" ? "venice" : selected.provider || "grsai";
-      state.auxiliaryModel = selected.model || state.auxiliaryModel || "nano-banana-2";
+      state.auxiliaryModel = selected.model || state.auxiliaryModel || defaultAuxiliaryModel(state.auxiliaryProvider);
       printSystemLine(`auxiliary=${state.auxiliaryProvider}/${state.auxiliaryModel}`);
       return true;
     }
@@ -3853,7 +3854,7 @@ async function handleCommand(line, state, packageDir) {
       await promptAndSaveProviderKey(action === "venice" ? "venice" : "grsai", state);
       return true;
     }
-    printAgentMessage("Usage: /auxiliary [status|select|grsai|venice|model [grsai/nano-banana-2]|on|off|image]");
+    printAgentMessage("Usage: /auxiliary [status|select|grsai|venice|model [grsai/nano-banana-2.1]|on|off|image]");
     return true;
   }
   if (command === "aaps") {

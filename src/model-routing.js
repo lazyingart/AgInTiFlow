@@ -669,13 +669,23 @@ export const MODEL_PROVIDER_GROUPS = {
   },
 };
 
+export function defaultAuxiliaryModel(provider = "grsai") {
+  return ["venice", "venice-image"].includes(provider) ? "nano-banana-2" : "nano-banana-2.1";
+}
+
 export const AUXILIARY_MODEL_CATALOG = {
   grsai: [
+    {
+      id: "nano-banana-2.1",
+      label: "Nano Banana 2.1",
+      type: "image",
+      description: "Current GRS AI Nano Banana generation and reference-image editing route (verified 2026-10-11).",
+    },
     {
       id: "nano-banana-2",
       label: "Nano Banana 2",
       type: "image",
-      description: "Default auxiliary image-generation route through GRS AI-compatible APIs.",
+      description: "Previous-generation GRS AI route, retained for explicitly selected workflows.",
     },
     {
       id: "nano-banana-2-edit",
@@ -1554,7 +1564,9 @@ export function getModelRoleDefaults(overrides = {}) {
       ? presets.complex.model
       : providerDefaultModel(spareProvider, "", "main"));
   const auxiliaryProvider = overrides.auxiliaryProvider || process.env.AGINTI_AUX_PROVIDER || "grsai";
-  const auxiliaryModel = overrides.auxiliaryModel || process.env.AGINTI_AUX_MODEL || process.env.VENICE_IMAGE_MODEL || "nano-banana-2";
+  const auxiliaryModel = overrides.auxiliaryModel || process.env.AGINTI_AUX_MODEL ||
+    (["venice", "venice-image"].includes(auxiliaryProvider) ? process.env.VENICE_IMAGE_MODEL : "") ||
+    defaultAuxiliaryModel(auxiliaryProvider);
   return {
     route: {
       id: "route",
