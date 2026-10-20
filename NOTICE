@@ -1,0 +1,11 @@
+AgInTiLite
+Copyright 2026 AgInTi and AgInTiFlow contributors
+
+Derived from the Apache-2.0 AgInTiFlow restricted application SDK:
+https://github.com/lazyingart/AgInTiFlow
+Commit e4c16b0610c41e690d9288739561a5a7e187cc9d
+
+The standalone extraction removes image handling and vision/provider imports,
+accepts text-only input, and packages the bounded runner without dependencies.
+The contract validator and credential-text detector are retained unchanged.
+See README.md for the extraction boundary and qualification limits.

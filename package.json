@@ -1,0 +1,30 @@
+{
+  "name": "@lazyingart/agintilite",
+  "version": "0.1.0-preview.1",
+  "private": true,
+  "description": "Bounded text-only application tool loop with explicit providers and read-only callbacks.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./src/restricted-application.js",
+    "./restricted-application": "./src/restricted-application.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/restricted-application.js",
+    "src/restricted-application-contract.js",
+    "src/redaction.js",
+    "README.md",
+    "NOTICE",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check": "node --check src/restricted-application.js && node --check src/restricted-application-contract.js && node --check src/redaction.js && node --check test/restricted-application.test.js && node --check test/distribution.test.js",
+    "test": "node --test test/*.test.js",
+    "pack:dry-run": "npm pack --dry-run --ignore-scripts --offline",
+    "pack:local": "npm pack --ignore-scripts --offline --pack-destination artifacts"
+  }
+}
