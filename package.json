@@ -31,6 +31,11 @@
     "access": "public"
   },
   "exports": {
+    "./illustration-worker": "./src/illustration-worker.js",
+    "./illustration-worker/store": "./src/illustration-store.js",
+    "./illustration-worker/transport": "./src/illustration-transport.js",
+    "./illustration-worker/rpc": "./src/illustration-rpc.js",
+    "./illustration-worker/contract": "./src/illustration-contract.js",
     "./document-worker": "./src/integration-document-worker-service.js",
     "./document-worker/config": "./src/integration-document-worker-config.js",
     "./document-worker/contract": "./src/integration-document-worker-contract.js",
@@ -73,6 +78,7 @@
     "scripts/supervision-ledger.js",
     "scripts/smoke-supervision-ledger.js",
     "scripts/smoke-integration-production-mount.js",
+    "scripts/smoke-illustration-worker.js",
     "scripts/smoke-integration-production-runtime-bundle.js",
     "scripts/smoke-integration-retained-idempotency-store.js",
     "scripts/smoke-integration-storage-authority.js",
@@ -221,6 +227,7 @@
     "aginti-safe-chat": "bin/aginti-safe-chat.js"
   },
   "scripts": {
+    "smoke:illustration-worker": "node --test scripts/smoke-illustration-worker.js",
     "start": "node run.js",
     "web": "node web.js",
     "check": "node scripts/check-js-syntax.js",
