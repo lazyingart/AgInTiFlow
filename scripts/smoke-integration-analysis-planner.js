@@ -6216,6 +6216,23 @@ async function providerBatchesRemainSequentialAndFullyValidated() {
   } finally {cancelled.coordinator.close();}
 }
 
+async function documentTitlesAreNotExtraFileActions() {
+  const source="\\documentclass{article}\n\\begin{document}File delivery.\\end{document}\n";
+  for(const [prompt,limited] of [
+    ["<conversation>\nUSER:\nCreate exactly two downloadable files named note.tex and note.pdf. Write a short self-contained LaTeX document titled File Delivery Test, with an equation. Return the TeX source and compiled PDF.\n</conversation>",false],
+    ["Create a TeX source and compiled PDF. Write a LaTeX document titled File Delivery and create an archive.zip.",true],
+  ]) {
+    const worker=createDocumentWorkerFixture();
+    const f=fixture(async()=>texToolResponse("note.tex",source),{documentWorkerClient:worker.client()});
+    try {
+      const result=await f.planner.run(scope(),{prompt},documentRunOptions());
+      assert.equal(result.artifacts.filter(a=>a.kind==="file").length,2);
+      assert.equal(result.text.includes("requested file operation is outside"),limited);
+    }finally{f.coordinator.close();}
+  }
+}
+
+await documentTitlesAreNotExtraFileActions();
 await providerBatchesRemainSequentialAndFullyValidated();
 await deepResearchCompletesWithoutSecondModelSynthesis();
 await deepResearchCompletesWithoutSecondModelSynthesis(DEEPSEEK_MODEL);

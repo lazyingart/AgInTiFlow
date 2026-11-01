@@ -773,8 +773,16 @@ function unsupportedCapabilityRequests(
     if (UNSUPPORTED_WEB_ACTION.test(clause)) requested.add("web");
     let fileClause = clause;
     if (texPdfEnabled) {
+      // Display titles are document data, not an additional file operation.
+      // Keep coordinated actions after the title visible to the capability
+      // classifier; e.g. a report titled "File Delivery" followed by an actual
+      // archive request still needs the archive limitation.
+      fileClause = fileClause.replace(
+        /\b((?:document|report|paper)\s+(?:titled|entitled)\s+)(.*?)(?=,|$|\s+(?:and|then|also|but)\s+(?:make|create|generate|write|produce|prepare|export|save|download|upload|provide|return|output)\b)/giu,
+        (_match, prefix, title) => prefix + title.replace(/\b(?:files?|attachments?|downloads?|archives?|images?|audio|videos?)\b/giu, "text")
+      );
       const namesPairedArtifacts = /\.tex\b/iu.test(clause) && /\.pdf\b/iu.test(clause);
-      fileClause = clause.replace(
+      fileClause = fileClause.replace(
         /\.(?:tex|pdf)\b|\b(?:latex|tex|pdf)(?:\s+(?:source|file|document|format))?\b/giu,
         " "
       );
