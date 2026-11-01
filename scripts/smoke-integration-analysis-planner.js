@@ -5149,6 +5149,7 @@ async function explicitMultipleExecutionObligationsAreProven() {
   const prompts = [
     "Run Python for the first calculation, then run Python for the second calculation.",
     "Run Python twice in separate calls to compare two calculations.",
+    "Use Python twice: first calculate a product, then separately calculate a sum.",
   ];
   for (const [index, prompt] of prompts.entries()) {
     let modelStep = 0;
@@ -6152,6 +6153,67 @@ await deterministicExpressionPlotFailuresStayTruthful();
 await unsupportedSafeExpressionPlotFallsBackToBoundedModelExecution();
 await groundsWithPrivateSearchBeforeModelSynthesis();
 await focusedSearchQuerySelection();
+async function providerBatchesRemainSequentialAndFullyValidated() {
+  const batch = () => {
+    const first = toolResponse("print('first calculation')");
+    const second = toolResponse("print('second calculation')");
+    first.choices[0].finish_reason = "tool_calls";
+    first.choices[0].message.tool_calls.push(second.choices[0].message.tool_calls[0]);
+    return first;
+  };
+  let calls = 0;
+  let active = 0;
+  let peak = 0;
+  const sequential = fixture(async (_client, payload) => {
+    calls++;
+    if (calls === 1) {
+      assert.equal(payload.parallel_tool_calls, false);
+      assert.equal(payload.tool_choice, "required");
+      return batch();
+    }
+    assert.equal(payload.tools, undefined);
+    assert.equal(payload.messages.filter(m => m.role === "tool").length, 2);
+    assert.equal(payload.messages.find(m => m.tool_calls)?.tool_calls.length, 2);
+    return textResponse("Both calculations completed.");
+  }, {worker: fakeWorker((request, signal) => {
+    active++;peak=Math.max(peak,active);
+    const result=terminalResult(request,signal,[]);active--;return result;
+  })});
+  try {
+    const result = await sequential.planner.run(scope(), {prompt:"Use Python twice: first calculate a product, then separately calculate a sum."});
+    assert.equal(result.toolCalls, 2);
+    assert.equal(calls, 2);
+    assert.equal(peak, 1);
+    assert.equal(sequential.rpcCalls.filter(c => c.pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart).length, 2);
+  } finally {sequential.coordinator.close();}
+
+  for (const [name, mutate, code] of [
+    ["forbidden second", v=>{v.choices[0].message.tool_calls[1].function.name="run_shell";}, "ANALYSIS_TOOL_FORBIDDEN"],
+    ["invalid second", v=>{v.choices[0].message.tool_calls[1].function.arguments='{"source":';}, "ANALYSIS_TOOL_CALL_INVALID"],
+    ["duplicate identity", v=>{v.choices[0].message.tool_calls[1].id=v.choices[0].message.tool_calls[0].id;}, "ANALYSIS_TOOL_CALL_INVALID"],
+    ["too many", v=>{v.choices[0].message.tool_calls.push(structuredClone(v.choices[0].message.tool_calls[0]));}, "ANALYSIS_TOOL_CALL_INVALID"],
+    ["truncated batch", v=>{v.choices[0].finish_reason="length";}, "ANALYSIS_MODEL_PROTOCOL_INVALID"],
+  ]) {
+    const rejected = fixture(async()=>{const value=batch();mutate(value);return value;});
+    try {
+      await assert.rejects(rejected.planner.run(scope(),{prompt:"Use Python twice to compare two calculations."}),
+        error=>error.code===code,name);
+      assert.equal(rejected.rpcCalls.some(c=>c.pathname===EXECUTION_WORKER_RPC_PATHS.jobsStart),false,name);
+    } finally {rejected.coordinator.close();}
+  }
+  const controller = new AbortController();
+  let executions=0;
+  const cancelled=fixture(async()=>batch(),{worker:fakeWorker((request,signal)=>{
+    executions++;const value=terminalResult(request,signal,[]);controller.abort();return value;
+  })});
+  try {
+    await assert.rejects(cancelled.planner.run(scope(),{prompt:"Use Python twice to compare two calculations."},
+      {signal:controller.signal}),error=>error.code==="ANALYSIS_CANCELLED");
+    assert.equal(executions,1);
+  } finally {cancelled.coordinator.close();}
+}
+
+await providerBatchesRemainSequentialAndFullyValidated();
 await deepResearchCompletesWithoutSecondModelSynthesis();
 await deepResearchCompletesWithoutSecondModelSynthesis(DEEPSEEK_MODEL);
 await executesAndSynthesizesPlot();

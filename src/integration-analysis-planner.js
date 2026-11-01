@@ -674,7 +674,7 @@ function explicitCountValue(value) {
 
 function explicitExecutionMultiplicity(clause) {
   const normalized = String(clause || "").normalize("NFKC");
-  if (/\b(?:run|execute)\b[^.!?;\r\n]{0,120}\btwice\b/iu.test(normalized)) return 2;
+  if (/\b(?:run|execute|use\s+python)\b[^.!?;\r\n]{0,120}\btwice\b/iu.test(normalized)) return 2;
   const countToken = "(?<count>[1-9]|one|two|three|four|five|six|seven|eight|nine)";
   const patterns = [
     new RegExp(
@@ -1169,7 +1169,7 @@ function normalizeAnalysisArguments(rawArguments) {
   return Object.freeze({ source: args.source, stdin, timeoutMs });
 }
 
-function normalizeToolCall(value) {
+function normalizeToolCall(value, ordinal = 0) {
   const call = exactObject(
     value,
     ["id", "type", "function", "index"],
@@ -1187,7 +1187,7 @@ function normalizeToolCall(value) {
   if (call.type !== "function") {
     fail("ANALYSIS_TOOL_CALL_INVALID", "LocalLLM returned an invalid analysis tool call.", { status: 502 });
   }
-  if (Object.hasOwn(call, "index") && !Object.is(call.index, 0)) {
+  if (Object.hasOwn(call, "index") && !Object.is(call.index, ordinal)) {
     fail("ANALYSIS_TOOL_CALL_INVALID", "LocalLLM returned an invalid analysis tool call index.", { status: 502 });
   }
   if (fn.name !== INTEGRATION_ANALYSIS_TOOL_NAME) {
@@ -1211,7 +1211,27 @@ function normalizeToolCall(value) {
   });
 }
 
-function normalizeModelMessage(response) {
+function completeModelMessage(response) {
+  const choices = response?.choices;
+  const choice = Array.isArray(choices) && choices.length === 1 ? choices[0] : null;
+  const message = choice?.message;
+  const calls = message?.tool_calls;
+  // Check the original wire envelope before interpreting any textual fallback.
+  // A syntactically complete JSON call can still be an unfinished generation.
+  // Legacy loopback transports may omit finish_reason; explicit partial/unknown
+  // reasons never qualify. Hosted DeepSeek always supplies its native reason.
+  if (!message || typeof message !== "object" || Array.isArray(message)
+      || (message.role !== undefined && message.role !== "assistant")
+      || message.refusal != null || message.function_call != null
+      || (choice.finish_reason !== undefined
+        && choice.finish_reason !== (Array.isArray(calls) && calls.length ? "tool_calls" : "stop"))) {
+    fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "The model response was not one complete assistant turn.", { status: 502 });
+  }
+  return message;
+}
+
+function normalizeModelMessage(response, { maximumCalls = 1 } = {}) {
+  completeModelMessage(response);
   const normalized = normalizeTextToolCallResponse(response);
   const message = normalized?.choices?.[0]?.message;
   if (!message || typeof message !== "object") {
@@ -1221,8 +1241,15 @@ function normalizeModelMessage(response) {
     fail("ANALYSIS_TOOL_CALL_INVALID", "LocalLLM returned a malformed analysis tool call.", { status: 502 });
   }
   const calls = message.tool_calls ?? [];
-  if (!Array.isArray(calls) || calls.length > 1) {
-    fail("ANALYSIS_TOOL_CALL_INVALID", "LocalLLM must request at most one analysis tool call at a time.", { status: 502 });
+  if (!Array.isArray(calls) || calls.length > maximumCalls) {
+    fail("ANALYSIS_TOOL_CALL_INVALID", "The model exceeded the remaining authorized analysis calls.", { status: 502 });
+  }
+  // Validate the ENTIRE bounded batch before dispatch. Some providers return
+  // multiple calls despite parallel_tool_calls=false. They remain sequential,
+  // use the same netless worker, and cannot exceed explicit user multiplicity.
+  const toolCalls = Object.freeze(calls.map((call, index) => normalizeToolCall(call, index)));
+  if (new Set(toolCalls.map(call => call.id)).size !== toolCalls.length) {
+    fail("ANALYSIS_TOOL_CALL_INVALID", "The model repeated a tool call identity.", { status: 502 });
   }
   const content = message.content === null || message.content === undefined
     ? ""
@@ -1231,7 +1258,8 @@ function normalizeModelMessage(response) {
       : fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "LocalLLM returned unsupported assistant content.", { status: 502 });
   return Object.freeze({
     content,
-    toolCall: calls.length === 1 ? normalizeToolCall(calls[0]) : null,
+    toolCall: toolCalls[0] ?? null,
+    toolCalls,
   });
 }
 
@@ -1365,6 +1393,7 @@ function texDocumentFinalText({ compoundDocumentExecution, publicSummary }) {
 }
 
 function normalizeTexToolMessage(response) {
+  completeModelMessage(response);
   const normalized = normalizeTextToolCallResponse(response);
   const message = normalized?.choices?.[0]?.message;
   if (!message || typeof message !== "object" || message.aginti_text_tool_retry) {
@@ -1443,6 +1472,7 @@ function bindExactTexToolSource(toolCall, source) {
 }
 
 function normalizeFileToolMessage(response) {
+  completeModelMessage(response);
   const normalized = normalizeTextToolCallResponse(response);
   const message = normalized?.choices?.[0]?.message;
   if (!message || typeof message !== "object" || message.aginti_text_tool_retry) {
@@ -3204,7 +3234,7 @@ function createPlanner({
       try {
         const response = await invokeModel(modelClient, payload, config, "bounded inference-only step");
         const choice = response?.choices?.[0];
-        const message = choice?.message;
+        const message = completeModelMessage(response);
         if (!message || typeof message.content !== "string"
             || (message.tool_calls !== undefined && (!Array.isArray(message.tool_calls) || message.tool_calls.length))
             || message.function_call != null
@@ -4464,7 +4494,10 @@ function createPlanner({
         assertNotAborted(signal);
         let assistant;
         try {
-          assistant = normalizeModelMessage(response);
+          assistant = normalizeModelMessage(response, { maximumCalls: Math.max(1, Math.min(
+            INTEGRATION_ANALYSIS_MAX_TOOL_CALLS - toolCalls,
+            executionObligations.minimumSuccessfulExecutions - successfulExecutions
+          )) });
         } catch (error) {
           // Correct formation before execution, including malformed native
           // arguments. Forbidden tools and disabled-tool turns still fail closed.
@@ -4605,113 +4638,123 @@ function createPlanner({
           fail("ANALYSIS_TOOL_LIMIT", "LocalLLM exceeded the bounded analysis tool-call limit.", { status: 502 });
         }
         pendingRequiredToolFormationCorrection = null;
-        const callDigest = contractDigest(assistant.toolCall.args);
-        const priorDigestOutcome = executionDigestOutcomes.get(callDigest);
-        const duplicateAdvancesExplicitMultiplicity =
-          priorDigestOutcome === true &&
-          successfulExecutions < executionObligations.minimumSuccessfulExecutions;
-        if (priorDigestOutcome !== undefined && !duplicateAdvancesExplicitMultiplicity) {
-          fail("ANALYSIS_TOOL_LOOP", "LocalLLM repeated the same analysis tool call.", { status: 502 });
+        for (const call of assistant.toolCalls) {
+          const prior = executionDigestOutcomes.get(contractDigest(call.args));
+          if (prior !== undefined && !(prior === true &&
+              successfulExecutions < executionObligations.minimumSuccessfulExecutions)) {
+            fail("ANALYSIS_TOOL_LOOP", "LocalLLM repeated the same analysis tool call.", { status: 502 });
+          }
         }
         messages.push(Object.freeze({
           role: "assistant",
           content: assistant.content || null,
-          tool_calls: Object.freeze([assistant.toolCall.messageCall]),
+          tool_calls: Object.freeze(assistant.toolCalls.map(call => call.messageCall)),
         }));
-
-        const execution = await executeOnce(assistant.toolCall.args, toolCalls + 1);
-        toolCalls += 1;
-        executionStatus = execution.status;
-        const successfulExecutionRecorded = recordSuccessfulExecution(execution);
-        executionDigestOutcomes.set(callDigest, successfulExecutionRecorded);
-        const nextObligationsSatisfied = executionObligationsSatisfied(
-          executionObligations,
-          successfulExecutions,
-          successfulArtifactKinds
-        );
-        const nextExecutionSatisfied = successfulExecutions > 0 && nextObligationsSatisfied;
-        if (
-          successfulExecutionRecorded && nextExecutionSatisfied &&
-          hasVerifiedLinearClassifierTable(execution.artifacts)
-        ) {
-          await emitProgress("synthesizing", {
-            executionSucceeded: true,
-            artifactCount: artifacts.length,
-          });
-          return await finalize({
-            text: explicitPythonResultText(execution, artifacts),
-            toolCalls,
-            executionStatus,
-          });
-        }
-        const nextRequireTool =
-          explicitExecution && !nextObligationsSatisfied &&
-          toolCalls < INTEGRATION_ANALYSIS_MAX_TOOL_CALLS;
-        const nextDisableTools =
-          fencedNonExecution || contextualNoTool || executionForbidden || nextExecutionSatisfied ||
-          toolCalls >= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS;
-        const feedback = modelToolResult(execution, {
-          missingArtifactKinds: missingExecutionArtifactKinds(
+        for (const [batchIndex, toolCall] of assistant.toolCalls.entries()) {
+          assertNotAborted(signal);
+          const callDigest = contractDigest(toolCall.args);
+          const priorDigestOutcome = executionDigestOutcomes.get(callDigest);
+          const duplicateAdvancesExplicitMultiplicity =
+            priorDigestOutcome === true &&
+            successfulExecutions < executionObligations.minimumSuccessfulExecutions;
+          if (priorDigestOutcome !== undefined && !duplicateAdvancesExplicitMultiplicity) {
+            fail("ANALYSIS_TOOL_LOOP", "LocalLLM repeated the same analysis tool call.", { status: 502 });
+          }
+          const execution = await executeOnce(toolCall.args, toolCalls + 1);
+          toolCalls += 1;
+          executionStatus = execution.status;
+          const successfulExecutionRecorded = recordSuccessfulExecution(execution);
+          executionDigestOutcomes.set(callDigest, successfulExecutionRecorded);
+          const nextObligationsSatisfied = executionObligationsSatisfied(
             executionObligations,
+            successfulExecutions,
             successfulArtifactKinds
-          ),
-          remainingSuccessfulExecutions: Math.max(
-            0,
-            executionObligations.minimumSuccessfulExecutions - successfulExecutions
-          ),
-          toolCallNumber: toolCalls,
-          successfulExecutionCount: successfulExecutions,
-          maximumFeedbackTokens: maximumPendingToolFeedbackTokens(messages, modelConfig, {
-            disableTools: nextDisableTools,
-          }),
-        });
-        if (feedback === null) {
-          if (successfulExecutionRecorded && nextExecutionSatisfied) {
+          );
+          const nextExecutionSatisfied = successfulExecutions > 0 && nextObligationsSatisfied &&
+            batchIndex === assistant.toolCalls.length - 1;
+          if (
+            successfulExecutionRecorded && nextExecutionSatisfied &&
+            hasVerifiedLinearClassifierTable(execution.artifacts)
+          ) {
+            await emitProgress("synthesizing", {
+              executionSucceeded: true,
+              artifactCount: artifacts.length,
+            });
+            return await finalize({
+              text: explicitPythonResultText(execution, artifacts),
+              toolCalls,
+              executionStatus,
+            });
+          }
+          const nextRequireTool =
+            explicitExecution && !nextObligationsSatisfied &&
+            toolCalls < INTEGRATION_ANALYSIS_MAX_TOOL_CALLS;
+          const nextDisableTools =
+            fencedNonExecution || contextualNoTool || executionForbidden || nextExecutionSatisfied ||
+            toolCalls >= INTEGRATION_ANALYSIS_MAX_TOOL_CALLS;
+          const feedback = modelToolResult(execution, {
+            missingArtifactKinds: missingExecutionArtifactKinds(
+              executionObligations,
+              successfulArtifactKinds
+            ),
+            remainingSuccessfulExecutions: Math.max(
+              0,
+              executionObligations.minimumSuccessfulExecutions - successfulExecutions
+            ),
+            toolCallNumber: toolCalls,
+            successfulExecutionCount: successfulExecutions,
+            maximumFeedbackTokens: maximumPendingToolFeedbackTokens(messages, modelConfig, {
+              disableTools: nextDisableTools,
+            }),
+          });
+          if (feedback === null) {
+            if (successfulExecutionRecorded && nextExecutionSatisfied) {
+              return await finalize({
+                text: verifiedSynthesisFallback(),
+                toolCalls,
+                executionStatus,
+              });
+            }
+            fail(
+              "ANALYSIS_CONTEXT_BUDGET_EXCEEDED",
+              "This public conversation is too large for the configured LocalLLM context window.",
+              { status: 413 }
+            );
+          }
+          messages.push(Object.freeze({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(feedback),
+          }));
+          try {
+            assertWithinModelContext(
+              completionPayload(messages, modelConfig, {
+                requireTool: nextRequireTool,
+                disableTools: nextDisableTools,
+              }),
+              modelConfig
+            );
+          } catch (error) {
+            if (
+              error?.code !== "ANALYSIS_CONTEXT_BUDGET_EXCEEDED" ||
+              !successfulExecutionRecorded ||
+              !nextExecutionSatisfied
+            ) {
+              throw error;
+            }
+            messages.pop();
             return await finalize({
               text: verifiedSynthesisFallback(),
               toolCalls,
               executionStatus,
             });
           }
-          fail(
-            "ANALYSIS_CONTEXT_BUDGET_EXCEEDED",
-            "This public conversation is too large for the configured LocalLLM context window.",
-            { status: 413 }
-          );
-        }
-        messages.push(Object.freeze({
-          role: "tool",
-          tool_call_id: assistant.toolCall.id,
-          content: JSON.stringify(feedback),
-        }));
-        try {
-          assertWithinModelContext(
-            completionPayload(messages, modelConfig, {
-              requireTool: nextRequireTool,
-              disableTools: nextDisableTools,
-            }),
-            modelConfig
-          );
-        } catch (error) {
-          if (
-            error?.code !== "ANALYSIS_CONTEXT_BUDGET_EXCEEDED" ||
-            !successfulExecutionRecorded ||
-            !nextExecutionSatisfied
-          ) {
-            throw error;
-          }
-          messages.pop();
-          return await finalize({
-            text: verifiedSynthesisFallback(),
-            toolCalls,
-            executionStatus,
+          if (successfulExecutionRecorded) successfulModelFeedbacks.push(feedback);
+          await emitProgress("synthesizing", {
+            executionSucceeded: execution.ok === true,
+            artifactCount: artifacts.length,
           });
         }
-        if (successfulExecutionRecorded) successfulModelFeedbacks.push(feedback);
-        await emitProgress("synthesizing", {
-          executionSucceeded: execution.ok === true,
-          artifactCount: artifacts.length,
-        });
       }
       fail("ANALYSIS_TOOL_LIMIT", "The bounded analysis loop ended without a final answer.", { status: 502 });
     } catch (error) {

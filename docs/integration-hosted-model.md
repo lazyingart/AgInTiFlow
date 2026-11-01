@@ -15,7 +15,7 @@ Use schema `aginti-integration-analysis-service-config-v3` and replace the v2
 {
   "provider": "deepseek",
   "baseURL": "https://api.deepseek.com/v1",
-  "model": "deepseek-v4-flash",
+  "model": "deepseek-flash",
   "thinking": "disabled",
   "contextWindowTokens": 32768,
   "maxOutputTokens": 4096,
@@ -30,6 +30,12 @@ in the v3 service config. The bounded planner also accepts the verified
 models from client input. Readiness and capacity still depend on the account
 and selected model at runtime.
 
+As of November 1, 2026, the canonical `deepseek-flash` ID serves
+DeepSeek-V4.1-Flash-1017. DeepSeek still accepts the older `deepseek-v4-flash`
+alias, which already routes to the same model. Keep service context/output
+limits bounded rather than copying the provider's maximums into every request.
+See [current pricing/model identifiers](https://api-docs.deepseek.com/quick_start/pricing/).
+
 Pass the model credential through systemd `LoadCredential=deepseek-token:...`.
 The CLI reads it only from its existing protected systemd credential directory;
 config JSON, BFF requests, public summaries and planner attestations contain no
@@ -43,6 +49,28 @@ planner inference path applies `thinking: {"type":"disabled"}` and removes
 the unrelated `reasoning_effort` field. This keeps interactive/tool requests on
 the explicitly selected non-thinking profile. A future thinking profile needs
 provider reasoning retention across tool turns before it can be enabled.
+
+### Complete responses and sequential batches
+
+The planner rejects partial/filtered responses, unknown explicit finish reasons,
+refusal envelopes, multiple choices and legacy function-call envelopes before
+execution or final publication. This applies to ordinary analysis and document/
+file tool formation. Legacy loopback adapters may omit `finish_reason`; this
+compatibility allowance does not permit an explicit unfinished response.
+
+Some hosted responses contain several calls despite `parallel_tool_calls=false`.
+The general Python loop accepts a batch only within the user's remaining explicit
+execution count and the existing four-call total. Every call is validated before
+the first dispatch; tool names, argument shapes and distinct call IDs must pass.
+Calls execute sequentially through the same netless worker, with cancellation
+checked between them. No new tool, network access or host permission is granted.
+“Use Python twice” now carries the same two-execution requirement as “Run Python
+twice”; an incomplete pair cannot become a successful final answer.
+
+The hosted-request lifecycle backports the established `a5287e9` fix: a reasoning-
+compatibility retry shares the original deadline and cancellation signal. Late
+provider responses cannot turn an interrupted request into success. SDK retries
+remain disabled for the hosted integration.
 
 ## Capabilities and deployment
 
