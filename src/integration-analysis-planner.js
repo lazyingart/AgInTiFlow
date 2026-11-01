@@ -423,7 +423,7 @@ function texDocumentSystemPrompt(intent, { requirePublicSummary = false } = {}) 
     intent?.requirements?.minimumFigureCount > 0
       ? `The request explicitly requires figures. Include at least ${intent.requirements.minimumFigureCount === 1 ? "one" : intent.requirements.minimumFigureCount} nonempty self-contained figure, tikzpicture, or pgfplots axis structure; never reference an external image file.`
       : "Use self-contained figures only when requested; never reference an external image file.",
-    "Use standard installed packages conservatively. Keep every required textual element in the supplied source.",
+    "Use the base LaTeX fonts and the smallest preamble needed by the requested content. Do not add optional font or decorative packages merely for styling; their availability is not guaranteed in the offline compiler. Add packages only when required by the user's actual content or figures. Keep every required textual element in the supplied source.",
     texPublicSummaryPromptLine(requirePublicSummary),
     "The application publishes the two verified file cards after commit. Never invent paths or download links.",
     "This route can create only the paired TeX/PDF artifacts. Shell commands, package installation, arbitrary extra files, uploads, email, publishing, deployment, and other external-state actions are unavailable. The server will disclose any unsupported mixed request while still returning the verified pair.",
@@ -443,7 +443,7 @@ function texDocumentRevisionSystemPrompt(intent, { requirePublicSummary = false 
     intent?.requirements?.minimumFigureCount > 0
       ? `The revised document must retain at least ${intent.requirements.minimumFigureCount === 1 ? "one" : intent.requirements.minimumFigureCount} nonempty self-contained figure, tikzpicture, or pgfplots axis structure unless the current user explicitly requested its removal; never reference an external image file.`
       : "Use self-contained figures only when requested; never reference an external image file.",
-    "Use standard installed packages conservatively. Keep every required textual element in the supplied source.",
+    "Preserve the prior document's required features. Use base LaTeX fonts; do not introduce optional font or decorative dependencies just for styling. Keep every required textual element in the supplied source.",
     texPublicSummaryPromptLine(requirePublicSummary),
     "The application publishes the two verified file cards after commit. Never invent paths or download links.",
     "This route can revise only the paired TeX/PDF artifacts. Shell commands, package installation, arbitrary extra files, uploads, email, publishing, deployment, and other external-state actions are unavailable. The server will disclose any unsupported mixed request while still returning the verified pair.",
@@ -504,7 +504,7 @@ const TEX_TOOL_RETRY_INSTRUCTIONS = Object.freeze({
   publicSummary:
     `The previous TeX tool call omitted or used an invalid publicSummary. Return exactly one complete ${INTEGRATION_DOCUMENT_WORKER_TOOL_NAME} call with a safe .tex filename, complete self-contained source, and publicSummary supported only by trusted current-run execution evidence. Omit unsupported numbers instead of guessing.`,
   compile:
-    `The previous source was rejected by the bounded TeX compiler. Correct the self-contained LaTeX and return exactly one new ${INTEGRATION_DOCUMENT_WORKER_TOOL_NAME} call. Do not discuss or guess compiler diagnostics.`,
+    `The previous source was rejected by the bounded TeX compiler. Correct the self-contained LaTeX and return exactly one new ${INTEGRATION_DOCUMENT_WORKER_TOOL_NAME} call. Remove unnecessary optional font and decorative package dependencies and use base LaTeX fonts, while preserving all requested content, equations and figures. Do not discuss or guess compiler diagnostics.`,
 });
 
 const SEARCH_QUERY_SELECTION_PROMPT = [

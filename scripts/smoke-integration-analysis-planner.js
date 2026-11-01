@@ -3945,6 +3945,9 @@ async function texToolRetriesAreBoundedAndSanitized() {
     assert.equal(compileStep, 2);
     const correction = payload.messages.at(-1).content;
     assert.match(correction, /rejected by the bounded TeX compiler/u);
+    assert.match(correction, /Remove unnecessary optional font and decorative package dependencies/u);
+    assert.match(correction, /preserving all requested content, equations and figures/u);
+    assert.match(payload.messages[0].content, /base LaTeX fonts and the smallest preamble/u);
     assert.match(correction, /Do not discuss or guess compiler diagnostics/u);
     assert.doesNotMatch(correction, new RegExp(`${rejectedSourceMarker}|/private/|compiler\\.log`, "u"));
     return texToolResponse("corrected-compile.tex", correctedSource);

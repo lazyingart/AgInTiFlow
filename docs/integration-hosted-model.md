@@ -72,6 +72,13 @@ compatibility retry shares the original deadline and cancellation signal. Late
 provider responses cannot turn an interrupted request into success. SDK retries
 remain disabled for the hosted integration.
 
+Document generation uses the base LaTeX fonts and a minimal preamble rather than
+assuming optional styling packages exist in the offline compiler. A failed
+compile gets the same bounded retry, with guidance to remove unnecessary font/
+decoration dependencies while retaining requested text, equations and figures.
+No package installation, font substitution in exact user source, or compiler
+permission expansion is performed.
+
 ## Capabilities and deployment
 
 Public model labels remain `LocalLLM` for existing local services and use the
