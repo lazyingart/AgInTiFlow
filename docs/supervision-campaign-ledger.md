@@ -56,6 +56,29 @@ in `evidence_json` and `events`.
 
 ## Current Campaign Findings
 
+### Backend dependency qualification
+
+The November 4 production-dependency audit identified ten advisories in the
+locked graph, including HTTP/MCP trust-boundary issues and KaTeX inherited-option
+handling. The candidate raises the MCP dependency floor to 1.32.0, pins KaTeX
+0.18.2 and refreshes the affected compatible transitive dependencies. The updated
+lockfile resolves MCP 1.32.2 and reports zero production audit findings.
+The npm publication workflow now checks the production dependency audit before
+packaging or publication, so future reported advisories block that release gate.
+
+Focused tests exercise the actual MCP client registry over two loopback origins:
+307/308 redirects must not forward a configured app header or request body to
+the second origin. The KaTeX regression rejects inherited `trust:true` while
+preserving ordinary accessible math. A direct old/new probe reproduced unsafe
+inherited trust on the previous KaTeX and rejection on the updated dependency.
+The existing browser math/assets/XSS and stdio/HTTP MCP smokes also pass.
+The full local `npm test` suite passes against this exact refreshed graph.
+
+This records tested dependency behavior, not a claim that every advisory was
+exploitable in every application. Applications keep their own permission and
+provider routing policies. Intentional cross-origin MCP redirects now require
+configuration of the final server URL rather than forwarding app credentials.
+
 ### Complete provider turns before public backend execution
 
 The November 4 backend check reproduced thirteen failures in a 33-case matrix
