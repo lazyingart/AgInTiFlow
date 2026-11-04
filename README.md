@@ -278,7 +278,7 @@ AgInTiFlow does not treat "the model" as one global setting. It has roles:
 | Main | `localllm/localllm-deep` | Local complex executor for coding, debugging, writing, research, and long tasks. |
 | Code capability | `localllm/localllm-code` | Smart implementation-only upgrade after authenticated alias discovery; unavailable aliases fall back to Deep. |
 | Spare | `localllm/localllm-deep` medium | Local cross-check lane; a hosted spare requires explicit selection. |
-| Wrapper | `codex/gpt-5.5` medium | Optional external coding-agent advisor; `research_wrapper` defaults to `gpt-5.4-mini` medium for image/web second opinions. |
+| Wrapper | `codex/cli-default` medium | Optional advice using the configured Codex CLI model; explicit pins remain available. `research_wrapper` has its own model policy. |
 | Auxiliary | `grsai/nano-banana-2.1` (off) | Explicitly enabled image generation and other non-text helper tools; Venice keeps `nano-banana-2`; explicit older model selections remain pinned. No credential-driven provider failover. |
 
 Useful selectors:

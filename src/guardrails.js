@@ -40,6 +40,25 @@ const DESTRUCTIVE_PROMPT_HINTS = [
   "publish",
 ];
 
+function advisoryPromptRiskText(prompt) {
+  // Remove only a tightly bound prohibition/verb list. Do not discard whole
+  // sentences: "do not install, then deploy" must still expose "deploy".
+  const action = "(?:modify|create|write|edit|delete|deleting|install(?:ing|s)?|publish(?:ing)?|deploy(?:ing)?|remove files|git (?:push|reset|checkout))";
+  const source = String(prompt || "").replace(/\b(?:do not|don't|dont|must not|should not|never)\s+([^.!?;\n]+)/gi, (whole, body) => {
+    const parts = body.split(/,\s*/);
+    // An explicit final "or <verb>" binds a comma-separated prohibition list.
+    // Reject ambiguous noun lists and any contrast/sequencing reset.
+    return parts.length > 1 && /^or\s+/i.test(parts.at(-1)) &&
+      !/\b(?:but|then|however|instead|actually|please)\b/i.test(body) &&
+      parts.every((part) => /^(?:or\s+)?(?:modify|create|write|edit|delete|install|inspect|use|load|run|publish|deploy|remove)\b/i.test(part))
+      ? " [prohibited actions] " : whole;
+  });
+  return source.replace(new RegExp(
+    `\\b(?:do not|don't|dont|must not|should not|never|without|no)\\s+(?:ever\\s+)?${action}(?:(?:\\s*,\\s*(?:(?:or|and)\\s+)?|\\s+(?:or|and)\\s+)${action})*\\b`,
+    "gi"
+  ), " [prohibited action] ").toLowerCase();
+}
+
 function checkSpecialistProviderBoundary({ rawProvider, config = {}, permissionFlag, label, category }) {
   const raw = String(rawProvider || "").trim();
   if (!raw) return null;
@@ -415,7 +434,7 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
       return { allowed: false, reason: "Agent wrapper prompt is too long." };
     }
 
-    const loweredPrompt = prompt.toLowerCase();
+    const loweredPrompt = advisoryPromptRiskText(prompt);
     if (!config.allowDestructive && DESTRUCTIVE_PROMPT_HINTS.some((hint) => loweredPrompt.includes(hint))) {
       return { allowed: false, reason: "Agent wrapper prompt appears to request write-capable or destructive work." };
     }

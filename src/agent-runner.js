@@ -163,6 +163,7 @@ import {
   inferSuccessfulGitActionsFromCommandResult,
   inferSuccessfulGitActionsFromTmuxCapture,
   isResponseOnlyEvidenceScope,
+  isReadOnlyDiagnosticGoal,
   successfulGitCommitProvesFileMutation,
   isObservationalGitAction,
   gitActionsSatisfyContract,
@@ -10275,7 +10276,21 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
   return verification;
 }
 
+function currentWorkIsReadOnlyDiagnostic(state = {}) {
+  const active = state.meta?.activeExecutionContract || {};
+  const verification = state.meta?.projectVerification || {};
+  return Boolean(
+    Number.isSafeInteger(active.revision) && active.revision > 0 && active.revision === state.meta?.goalContract?.revision &&
+    Number.isSafeInteger(active.startedMutationRevision) &&
+    Number.isSafeInteger(verification.mutationRevision) && verification.mutationRevision === active.startedMutationRevision &&
+    verification.privateMutationRevision === 0 &&
+    active.requiresWorkspaceMutation === false &&
+    isReadOnlyDiagnosticGoal(state.meta?.goalContract?.currentRequest || state.goal || "", verification.taskProfile || "auto")
+  );
+}
+
 function currentFailedProjectTest(state = {}) {
+  if (currentWorkIsReadOnlyDiagnostic(state)) return null;
   const verification = state.meta?.projectVerification || {};
   const mutationRevision = Number(verification.mutationRevision || 0);
   const privateMutationRevision = verificationPrivateMutationRevision(verification);
@@ -10829,7 +10844,7 @@ export function buildTaskOwnedCommitCommand(
   ].join(" && ");
 }
 
-export function projectTestVerificationFinishBlock(state = {}) {
+export function projectTestVerificationFinishBlock(state = {}, candidateResult) {
   const verification = state.meta?.projectVerification || {};
   const mutationRevision = Math.max(0, Number(verification.mutationRevision || 0));
   const privateMutationRevision = verificationPrivateMutationRevision(verification);
@@ -10859,6 +10874,20 @@ export function projectTestVerificationFinishBlock(state = {}) {
 
   if (!unresolvedFailure && currentPassingRun) {
     return null;
+  }
+
+  if (currentWorkIsReadOnlyDiagnostic(state)) {
+    if (candidateResult === undefined) return null;
+    const currentObservation = Date.parse(String(unresolvedFailure?.at || "")) >= Date.parse(String(state.meta.activeExecutionContract.refreshedAt || ""));
+    const report = String(candidateResult || "");
+    const reportsFailure = /\bfail(?:ed|ing|s|ure)?\b|\bnot\s+pass(?:ing)?\b|失败|失敗|不通过|未通過|未通过|没有通过|沒有通過|通ら|落ち/i.test(report);
+    const passClaims = report.replace(/\b(?:tests?|suite|checks?|verification)\s+(?:(?:did|do|does|have|has|are|is)\s+)?(?:not|never)\s+pass(?:ed|ing)?\b/gi, "")
+      .replace(/(?:测试|測試)[^。；，,\n]{0,12}(?:没有|沒有|未|不)(?:全部)?通[过過]/g, "");
+    const claimsPass = /\b(?:all\s+)?(?:tests?|suite|verification|checks?)\s+(?:(?:have|has|are|is|now|all|successfully)\s+)*(?:pass(?:ed|ing)?|green|succeeded|successful)\b|\b(?:no|zero|without)\s+(?:failed|failing|failures?)\b|\bnot\s+fail|测试[^。；，,\n]{0,16}(?:全部|均|已)?通过|測試[^。；，,\n]{0,16}(?:全部|均|已)?通過|テスト[^。\n]{0,12}(?:成功|合格)/i.test(passClaims);
+    if (unresolvedFailure && currentObservation && reportsFailure && !claimsPass) return null;
+    return { category: "read-only-diagnostic-report", command: String(requiredRun?.command || ""), mutationRevision,
+      reason: "The read-only review must truthfully report the observed failed test; it cannot claim a pass or authorize repair.",
+      instruction: "Preserve all files. Report the current diagnostic failure and its grounded cause; do not claim tests passed or perform a repair." };
   }
 
   const failedAtCurrentRevision = Boolean(unresolvedFailure);
@@ -10901,6 +10930,7 @@ export function completionExternalBlockerCanClose({
 }
 
 export function enqueueFailedTestRepairInstruction(state = {}, toolResults = []) {
+  if (currentWorkIsReadOnlyDiagnostic(state)) return null;
   const latestTestResult = [...(Array.isArray(toolResults) ? toolResults : [])]
     .reverse()
     .find((result) => result?.projectTest);
@@ -19765,7 +19795,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         Number(latestRecordedTest.mutationRevision || 0)
   );
   const observedRetainedFailedTest =
-    latestCurrentTest && latestCurrentTest.passed !== true ? latestCurrentTest : null;
+    latestCurrentTest && latestCurrentTest.passed !== true && !currentWorkIsReadOnlyDiagnostic(state) ? latestCurrentTest : null;
   const currentTurnRequiredCommands = normalizedRequiredProjectCommands(
     groundingExecutionContract.requiredProjectCommands
   );
@@ -23797,6 +23827,21 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       });
 
   if (!guard.allowed) {
+    const diagnosticRecovery = state.meta?.readOnlyDiagnosticPolicyRecovery || {};
+    if (toolName === "run_command" && guard.category === "general-shell" && currentWorkIsReadOnlyDiagnostic(state) &&
+        diagnosticRecovery.goalRevision !== state.meta.goalContract.revision) {
+      // Refusal remains absolute. One bounded retry may report retained evidence
+      // or a limitation, never elevate host authority or execute another variant.
+      state.meta.readOnlyDiagnosticPolicyRecovery = { goalRevision: state.meta.goalContract.revision };
+      const permissionAdvice = { category: "read-only-diagnostic", autoRecover: true,
+        summary: "The extra command was denied; keep the read-only boundary.",
+        instruction: "This general shell command was NOT executed. Do not retry variants or request broader permissions. Reuse the retained source, test output and any completed advisory review to finish truthfully. Report observed failures as findings, not passing tests. If required evidence is still missing, explain that specific limitation." };
+      const result = { ok: false, blocked: true, recoverable: true, needsApproval: false, toolName, args: safeArgs,
+        reason: guard.reason, category: guard.category, permissionAdvice };
+      await store.appendEvent("tool.blocked", result);
+      observers.event("tool.blocked", result);
+      return result;
+    }
     const permissionAdvice = buildPermissionAdvice({
       toolName,
       args: safeArgs,
@@ -25740,6 +25785,7 @@ async function evaluateCompletionEvidence({ config, state, store }) {
       events: scoped.events,
       taskProfile: config.taskProfile,
       goal: config.goal,
+      readOnlyDiagnostic: currentWorkIsReadOnlyDiagnostic(state),
     },
   });
   const evidence = evaluateScsEvidence(contract, ledger);
@@ -26136,7 +26182,7 @@ async function completionEvidenceDecision({ config, state, store, observers, ste
   // deterministic execution, project-test, and artifact gates below. A model
   // narrative must not become successful merely because SCS is active.
   let assessment = await evaluateCompletionEvidence({ config, state, store });
-  const projectTestBlock = projectTestVerificationFinishBlock(state);
+  const projectTestBlock = projectTestVerificationFinishBlock(state, candidateResult);
   if (projectTestBlock) {
     assessment = {
       ...assessment,

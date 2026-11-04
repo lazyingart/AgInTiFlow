@@ -2,7 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { getModelPresets } from "./model-routing.js";
+import { getModelPresets, CODEX_CLI_DEFAULT_MODEL } from "./model-routing.js";
 import { redactSensitiveText } from "./redaction.js";
 
 export const WRAPPER_NAMES = ["codex", "claude", "gemini", "copilot", "qwen"];
@@ -173,8 +173,7 @@ function buildPrompt(prompt) {
 function codexArgs(prompt, config, preset) {
   return [
     "exec",
-    "--model",
-    preset.model,
+    ...(preset.model === CODEX_CLI_DEFAULT_MODEL ? [] : ["--model", preset.model]),
     "-c",
     `model_reasoning_effort="${preset.reasoning}"`,
     "--sandbox",
@@ -247,7 +246,9 @@ export function listAgentWrappers() {
       name: "codex",
       label: "Codex",
       available: commandExists("codex"),
-      role: `Coding enhancement wrapper; primary ${presets.codexPrimary.model} ${presets.codexPrimary.reasoning}, spare ${presets.codexSpare.model} ${presets.codexSpare.reasoning}.`,
+      role: presets.codexPrimary.model === CODEX_CLI_DEFAULT_MODEL
+        ? "Optional advice using the configured Codex CLI model; no automatic model substitution."
+        : `Coding enhancement wrapper; primary ${presets.codexPrimary.model} ${presets.codexPrimary.reasoning}, spare ${presets.codexSpare.model} ${presets.codexSpare.reasoning}.`,
     },
     {
       name: "claude",
@@ -310,7 +311,7 @@ export async function runAgentWrapper({ wrapper, prompt }, config) {
     };
   } catch (error) {
     if (error?.name === "AbortError" || error?.code === "ABORT_ERR") throw error;
-    if (wrapper === "codex" && mayTrySpare(error)) {
+    if (wrapper === "codex" && getModelPresets({ wrapperModel: config.wrapperModel }).codexPrimary.model !== CODEX_CLI_DEFAULT_MODEL && mayTrySpare(error)) {
       const fallbackSpec = wrapperCommand(wrapper, prompt, config, { fallback: true });
       try {
         const fallback = await runOnce(fallbackSpec);
@@ -328,6 +329,9 @@ export async function runAgentWrapper({ wrapper, prompt }, config) {
           wrapper,
           error: redactSensitiveText(fallbackError instanceof Error ? fallbackError.message : String(fallbackError)),
           primaryError: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+          stdout: cleanOutput(fallbackError.stdout, 8000),
+          stderr: cleanOutput(fallbackError.stderr, 4000),
+          primaryStderr: cleanOutput(error.stderr, 4000),
         };
       }
     }
@@ -349,8 +353,7 @@ function codexImageArgs(prompt, imagePaths, config, preset, outputFile) {
   }
   return [
     "exec",
-    "--model",
-    preset.model,
+    ...(preset.model === CODEX_CLI_DEFAULT_MODEL ? [] : ["--model", preset.model]),
     "-c",
     `model_reasoning_effort="${preset.reasoning}"`,
     "--sandbox",
@@ -409,7 +412,7 @@ export async function runCodexImageWrapper({ prompt, imagePaths = [] }, config) 
     };
   } catch (error) {
     if (error?.name === "AbortError" || error?.code === "ABORT_ERR") throw error;
-    if (!mayTrySpare(error)) {
+    if (presets.codexPrimary.model === CODEX_CLI_DEFAULT_MODEL || !mayTrySpare(error)) {
       return {
         ok: false,
         wrapper: "codex",

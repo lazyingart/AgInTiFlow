@@ -38,7 +38,7 @@ function setup(t) {
   const signals = [];
   t.mock.method(process, "kill", (pid, signal) => { signals.push({ pid, signal }); return true; });
   const abort = new AbortController();
-  return { signals, abort, config: { commandCwd: process.cwd(), wrapperTimeoutMs: 20, abortSignal: abort.signal } };
+  return { signals, abort, config: { commandCwd: process.cwd(), wrapperModel: "explicit-test-model", wrapperTimeoutMs: 20, abortSignal: abort.signal } };
 }
 
 async function turn() { await new Promise(resolve => setImmediate(resolve)); }
@@ -118,6 +118,37 @@ test("an ordinary nonzero exit retains the existing explicit-wrapper spare model
   children[1].emit("close", 0, null);
   assert.equal((await pending).fallback, true);
   assert.equal(getEventListeners(abort.signal, "abort").length, 0);
+});
+
+test("failed spare advice preserves bounded redacted diagnostics from both attempts", async (t) => {
+  const { config } = setup(t);
+  const pending = runAgentWrapper(task, config);
+  children[0].stderr.write("MODEL_UNAVAILABLE\nAuthorization: Bearer synthetic-private-fixture\n");
+  children[0].emit("close", 1, null);
+  await turn();
+  children[1].stderr.write(`ROUTE_UNAVAILABLE\n${"x".repeat(5000)}`);
+  children[1].emit("close", 1, null);
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.match(result.primaryStderr, /MODEL_UNAVAILABLE/);
+  assert.ok(!result.primaryStderr.includes("synthetic-private-fixture"));
+  assert.match(result.stderr, /ROUTE_UNAVAILABLE/);
+  assert.ok(result.stderr.length <= 4000 && result.primaryStderr.length <= 4000);
+  assert.equal(children.length, 2);
+});
+
+test("CLI-default advice omits model override and cannot invent a spare route", async (t) => {
+  const { config } = setup(t);
+  config.wrapperModel = "cli-default";
+  const pending = runAgentWrapper(task, config);
+  assert.ok(!children[0].args.includes("--model"));
+  assert.ok(!children[0].args.includes("cli-default"));
+  children[0].stderr.write("Configured CLI route unavailable.");
+  children[0].emit("close", 1, null);
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.match(result.stderr, /route unavailable/);
+  assert.equal(children.length, 1);
 });
 
 test("unconfirmed termination is bounded and cannot launch a spare", async (t) => {

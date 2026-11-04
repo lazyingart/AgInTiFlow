@@ -25,6 +25,7 @@ import {
   MODEL_PROVIDER_GROUPS,
   PROVIDER_MODEL_CATALOG,
   getModelRoleDefaults,
+  CODEX_CLI_DEFAULT_MODEL,
   defaultAuxiliaryModel,
   modelsForProviderGroup,
   normalizeReasoningEffort,
@@ -2748,7 +2749,7 @@ function createState(args = {}) {
     spareProvider: args.spareProvider || "localllm",
     spareModel: args.spareModel || "localllm-deep",
     spareReasoning: isReasoningLevel(args.spareReasoning) ? reasoningConfigValue(args.spareReasoning) : args.spareReasoning || "medium",
-    wrapperModel: args.wrapperModel || "gpt-5.5",
+    wrapperModel: args.wrapperModel || CODEX_CLI_DEFAULT_MODEL,
     wrapperReasoning: args.wrapperReasoning || "medium",
     auxiliaryProvider: args.auxiliaryProvider || "grsai",
     auxiliaryModel: args.auxiliaryModel || defaultAuxiliaryModel(args.auxiliaryProvider),
@@ -2916,7 +2917,7 @@ function printModelRoles(state) {
       "/route localllm/localllm-fast",
       "/model deepseek/deepseek-v4-pro",
       "/spare openai/gpt-5.4 medium",
-      "/wrapper codex gpt-5.5 medium",
+      "/wrapper codex cli-default medium",
       "/auxiliary model grsai/nano-banana-2.1",
       "",
       "Provider groups",
@@ -3158,6 +3159,8 @@ function textModelRoleChoices(groupId = "") {
 }
 
 export function modelRoleChoices(role = "main") {
+  if (role === "wrapper") return [{ provider: "codex", model: CODEX_CLI_DEFAULT_MODEL, label: "Codex · configured CLI model", group: "Codex",
+    description: "Use the existing Codex model configuration without an AgInTi model override.", reasoningDefault: "medium", reasoningOptions: ["low", "medium", "high", "xhigh"] }, ...textModelRoleChoices()];
   if (role !== "auxiliary") return textModelRoleChoices();
   return auxiliaryModelRoleChoices();
 }
@@ -4376,7 +4379,7 @@ async function handleCommand(line, state, packageDir) {
   if (command === "wrapper") {
     if (!value) {
       printAgentMessage(
-        `Wrapper: ${state.preferredWrapper || "codex"} model=${state.wrapperModel || "gpt-5.5"} reasoning=${
+        `Wrapper: ${state.preferredWrapper || "codex"} model=${state.wrapperModel || CODEX_CLI_DEFAULT_MODEL} reasoning=${
           state.wrapperReasoning || "medium"
         } tools=${state.allowWrapperTools ? "on" : "off"}`
       );

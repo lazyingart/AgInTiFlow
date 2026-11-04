@@ -15,14 +15,36 @@ Codex must already be installed and authenticated by the trusted CLI user.
 The primary provider stays selected; delegation does not switch the session's
 provider or transfer ownership of the task. Ordinary runs keep wrappers off.
 
+New runs use `--wrapper-model cli-default`: AgInTi omits Codex's model override
+and uses the model already selected by the user's Codex configuration. This is
+a selection policy, not an API model ID or evidence of the served model. Wrapper
+reasoning remains independently configured (medium by default). Explicit
+`--wrapper-model MODEL`, environment pins and saved session models remain
+authoritative; an older saved model is not silently migrated. Use the explicit
+`cli-default` override to change that saved choice when desired. Codex documents
+its model/configuration overrides in the [CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
+
+CLI-default makes one local wrapper invocation and does not invent a spare
+model after failure. Explicitly pinned wrappers retain the existing eligible
+ordinary-exit spare policy. This does not disable Codex's internal transport
+behavior or prove a single upstream inference attempt. Failed advice returns
+bounded, redacted diagnostics; it is never converted to a successful answer.
+
+For an explicitly read-only review, explaining a proposed fix does not create
+a source-edit obligation. A failed diagnostic test remains recorded as failed
+and may be reported as a finding while the current goal's mutation boundary is
+unchanged. It cannot satisfy a repair or mandatory-green contract. An extra
+general-shell command stays denied; one bounded recovery can report retained
+evidence or the remaining limitation without granting broader host permission.
+
 The default wrapper deadline is 120 seconds, configurable by
 `WRAPPER_TIMEOUT_MS`. Cancellation is checked before spawning. During timeout
 or cancellation the launcher sends SIGTERM, escalates after 1.2 seconds, and
 waits up to a further 3 seconds for close. Unconfirmed termination is an explicit
 failure, not a successful answer. All cleanup timers and abort listeners are
 cleared at settlement. A timeout, signal, cancellation or unconfirmed process
-failure cannot start a spare-model call. Ordinary nonzero Codex exits retain
-the existing one-spare-attempt behavior. Each allowed attempt has its own
+failure cannot start a spare-model call. Ordinary nonzero exits of an explicitly
+pinned Codex wrapper retain the existing one-spare-attempt behavior. Each allowed attempt has its own
 deadline; this is not a shared two-attempt task deadline.
 
 This wrapper is for trusted standalone CLI use. Its read-only sandbox and

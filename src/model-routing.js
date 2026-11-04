@@ -1,5 +1,8 @@
 import { BASELINE_PROVIDER, normalizeProviderId, resolveProviderDefaults } from "./provider-contract.js";
 
+// Selection policy for optional native Codex advice, not an API model ID.
+export const CODEX_CLI_DEFAULT_MODEL = "cli-default";
+
 const COMPLEXITY_KEYWORDS = [
   "architecture",
   "refactor",
@@ -1542,7 +1545,7 @@ export function getModelPresets(overrides = {}) {
       id: "codexPrimary",
       label: "Codex primary wrapper",
       provider: "codex-wrapper",
-      model: overrides.wrapperModel || process.env.AGINTI_WRAPPER_MODEL || process.env.CODEX_PRIMARY_MODEL || "gpt-5.5",
+      model: overrides.wrapperModel || process.env.AGINTI_WRAPPER_MODEL || process.env.CODEX_PRIMARY_MODEL || CODEX_CLI_DEFAULT_MODEL,
       reasoning:
         overrides.wrapperReasoning || process.env.AGINTI_WRAPPER_REASONING || process.env.CODEX_PRIMARY_REASONING || "medium",
       description: "External Codex wrapper route for coding enhancement tasks.",
@@ -1609,7 +1612,7 @@ export function getModelRoleDefaults(overrides = {}) {
       provider: "codex",
       model: presets.codexPrimary.model,
       reasoning: presets.codexPrimary.reasoning,
-      description: "External coding wrapper when enabled. Default: Codex with GPT-5.5 medium reasoning.",
+      description: "Optional native Codex advice. Default: configured Codex CLI model with medium wrapper reasoning; explicit model pins remain authoritative.",
     },
     auxiliary: {
       id: "auxiliary",

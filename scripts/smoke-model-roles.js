@@ -147,7 +147,9 @@ assert(
   roles.spare.provider === "localllm" && roles.spare.model === "localllm-deep",
   "local-first spare model should stay on LocalLLM Deep unless explicitly changed"
 );
-assert(roles.wrapper.provider === "codex" && roles.wrapper.model === "gpt-5.5", "wrapper default should be Codex GPT-5.5");
+assert(roles.wrapper.provider === "codex" && roles.wrapper.model === "cli-default", "wrapper default should preserve the configured native Codex model");
+assert(modelRoleChoices("wrapper").some((item) => item.provider === "codex" && item.model === "cli-default"), "wrapper selector lost native CLI policy");
+assert(!modelRoleChoices("main").some((item) => item.model === "cli-default"), "native CLI policy leaked into API model choices");
 assert(roles.auxiliary.provider === "grsai" && roles.auxiliary.model === "nano-banana-2.1", "auxiliary default should be GRS AI Nano Banana 2.1");
 assert(getModelRoleDefaults({ auxiliaryProvider: "venice" }).auxiliary.model === "nano-banana-2", "Venice must keep its verified default");
 assert(getModelRoleDefaults({ auxiliaryProvider: "venice-image" }).auxiliary.model === "nano-banana-2", "Venice image alias must keep its default");

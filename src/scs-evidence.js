@@ -1428,10 +1428,32 @@ function stripHostManagedResponseNarration(goal = "") {
   );
 }
 
+function stripAdvisoryMutationNarration(goal = "") {
+  const text = String(goal || "");
+  // A review can describe a fix without authorizing one. Keep an explicit
+  // anaphoric apply directive: "suggest a patch, then apply it" is real work.
+  if (/(?:^|[.;\n]|\b(?:and|then)\b)\s*(?:then\s+)?(?:(?:actually|only|please)\s+)*apply\s+(?:it|them|(?:this|that|the)\s+(?:fix|patch|change|update|recommendation|suggestion)s?)\b/i.test(text)) return text;
+  return text.replace(
+    /\b(?:explain|describe|outline|suggest|recommend|propose|discuss|review|inspect|check|verify)\s+(?:(?:a|an|the|one|some|any|existing|current|proposed|possible|potential|minimal|smallest|recommended|necessary|appropriate|safe|code)\s+)*(?:fix(?:es|ing)?|repair(?:s|ing)?|patch(?:es|ing)?|changes?|modifications?|updates?)\b/gi,
+    ""
+  ).replace(
+    /\b(?:explain|describe|outline|discuss)\s+(?:how\s+to|how\s+(?:we|i|you|one)\s+(?:could|can|should|would)|whether\s+to)\s+(?:fix|repair|patch|change|modify|update|rewrite|refactor)\b/gi,
+    ""
+  ).replace(
+    /(?:解释|解釋|说明|說明|描述|建议|建議|推荐|推薦|讨论|討論|概述)(?:(?:一下|一个|一個|最小|最少|建议的|建議的|可行的|可能的|必要的)\s*)*(?:修复|修復|修改|更新|重构|重構)(?:方案|建议|建議|思路|意见|意見)/g,
+    ""
+  ).replace(
+    /(?:修復|修正|変更|更新|再構築)(?:案|方法|方針|内容|提案)(?:を|について)(?:説明|解説|提案)/g,
+    ""
+  );
+}
+
 function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
   const text = normalizedText(
-    stripHostManagedResponseNarration(
-      stripCompletedWorkNarration(stripForbiddenLanguage(goal))
+    stripAdvisoryMutationNarration(
+      stripHostManagedResponseNarration(
+        stripCompletedWorkNarration(stripForbiddenLanguage(goal))
+      )
     )
   );
   const explicitAddMutation =
@@ -1471,6 +1493,13 @@ function goalRequestsFileMutation(goal = "", taskProfile = "") {
     ) ||
     /文件|文档|代码|代码库|仓库|脚本|源码|路径|工作区|说明书|笔记/.test(text)
   );
+}
+
+export function isReadOnlyDiagnosticGoal(goal = "", taskProfile = "") {
+  const text = String(goal || "");
+  const explicitReadOnly = /\bread[- ]only\b|\breview\s+only\b|\b(?:do not|don't|without)\b[^.!?;\n]{0,100}\b(?:chang(?:e|ing)|modif(?:y|ying)|edit(?:ing)?|writ(?:e|ing))\b[^.!?;\n]{0,50}\b(?:any\s+)?files?\b|只读|只讀|(?:不要|请勿|請勿)[^。；\n]{0,60}(?:修改|编辑|編輯)(?:文件|檔案)/i.test(text);
+  const mustPass = /\b(?:must|require|ensure)\b[^.!?;\n]{0,80}\b(?:pass|green)\b|\b(?:tests?|suite)\s+must\s+pass\b|必须[^。；\n]{0,40}测试[^。；\n]{0,30}通过|必須[^。；\n]{0,40}測試[^。；\n]{0,30}通過/i.test(stripForbiddenLanguage(text));
+  return explicitReadOnly && !mustPass && !goalRequestsWorkspaceMutation(text, taskProfile);
 }
 
 function goalRequestsScopedArtifactDeliverable(goal = "") {
@@ -1787,8 +1816,7 @@ function stripForbiddenLanguage(goal = "") {
     )
     .replace(/\b(do not|don't|dont|must not|should not|never|no need to)\s+([^.\n;]+)/gi, "")
     .replace(/\bwithout\s+([^.,:\uFF1A\n;]+)/gi, "")
-    .replace(/不要([^。\n；]+)/g, "")
-    .replace(/禁止([^。\n；]+)/g, "");
+    .replace(/(?:不要|禁止|请勿|請勿)([^。\n；]+)/g, "");
 }
 
 function stripCompletedWorkNarration(goal = "") {
@@ -2924,6 +2952,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     exactInputPaths,
     declaredSourceRoots,
     readOnlyReadiness: isReadOnlyReadinessTask(evidenceGoal),
+    readOnlyDiagnostic: isReadOnlyDiagnosticGoal(evidenceGoal, taskProfile),
     requiresPerSourceChecks: requiresPerSourceChecks(evidenceGoal),
     requiredToolCalls,
     requiredGitActions,
@@ -5168,6 +5197,26 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
   );
   const messages = Array.isArray(state.messages) ? state.messages : [];
   const eventEvidence = events.flatMap(eventToEvidence);
+  // A diagnostic failure proves an observation, never a passing test or repair.
+  // Only the runtime may opt in after checking the current read-only goal and
+  // unchanged mutation boundary. Keep the distinction in every ledger item.
+  if (context.readOnlyDiagnostic === true) {
+    for (const event of events) {
+      const data = event?.data || {};
+      const active = state.meta?.activeExecutionContract || {};
+      if (event.type !== "tool.completed" || data.toolName !== "run_command" || data.blocked ||
+          data.projectTest?.passed !== false || data.projectTest.invalidInvocation === true || !Number.isInteger(data.exitCode) ||
+          data.goalRevision !== active.revision || data.projectMutationRevision !== active.startedMutationRevision ||
+          !(Date.parse(String(event.timestamp || "")) >= Date.parse(String(active.refreshedAt || ""))) ||
+          typeof data.args?.command !== "string") continue;
+      for (const category of ["command", "test"]) eventEvidence.push({
+        category, source: "runtime-diagnostic-observation", toolName: "run_command", target: compact(data.args.command, 260),
+        command: normalizeProjectCommand(data.args.command), proof: "Observed failed diagnostic test; not a passing test or completed repair.",
+        verified: true, diagnosticOnly: true, passed: false,
+        goalRevision: Math.max(0, Number(data.goalRevision || 0)), mutationRevision: Math.max(0, Number(data.projectMutationRevision || 0)),
+      });
+    }
+  }
   // Completed tools are mirrored into both the append-only event stream and
   // model messages. Use the chronological event stream when it is available;
   // otherwise use messages as the durable fallback. Combining both can repeat
@@ -5234,10 +5283,17 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
 
 export function evaluateScsEvidence(contract = {}, ledger = {}) {
   const required = Array.isArray(contract.requiredEvidence) ? contract.requiredEvidence : [];
-  const ledgerCategories = new Set(Array.isArray(ledger.categories) ? ledger.categories : []);
-  const ledgerItems = Array.isArray(ledger.items) ? ledger.items : [];
+  const allowDiagnostics = contract.readOnlyDiagnostic === true && contract.requiresWorkspaceMutation !== true && contract.requiresFileMutation !== true;
+  const originalItems = Array.isArray(ledger.items) ? ledger.items : [];
+  const ledgerItems = originalItems.filter((item) => item.diagnosticOnly !== true || allowDiagnostics);
+  const categoryAllowed = (category) => allowDiagnostics || !originalItems.some((item) => item.diagnosticOnly === true && item.category === category) ||
+    ledgerItems.some((item) => item.category === category && item.verified !== false);
+  const ledgerCategories = new Set((Array.isArray(ledger.categories) ? ledger.categories : []).filter(categoryAllowed));
   const requiredToolCalls = Array.isArray(contract.requiredToolCalls) ? contract.requiredToolCalls : [];
-  const ledgerToolNames = new Set(Array.isArray(ledger.toolNames) ? ledger.toolNames : []);
+  const ledgerToolNames = new Set((Array.isArray(ledger.toolNames) ? ledger.toolNames : []).filter((name) =>
+    allowDiagnostics || !originalItems.some((item) => item.diagnosticOnly === true && item.toolName === name) ||
+    ledgerItems.some((item) => item.toolName === name && item.verified !== false)
+  ));
   const requiredGitRevision = Math.max(0, Number(contract.requiredGitRevision || 0));
   const requiredGitMutationRevision = Math.max(
     0,

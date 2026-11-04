@@ -1,5 +1,51 @@
 # Supervision Campaign Ledger
 
+## Optional Codex review through the native runtime — 2026-11-05
+
+A normal read-only source review reproduced a core instruction-following gap:
+"explain the smallest fix" created a source-mutation obligation, and observing
+a failed test forced a repair. Successive fresh sessions with the same prompt
+also exposed a negated-install wrapper refusal, lost wrapper diagnostics and
+an unsupported hardcoded Codex model. These are core routing/guardrail issues;
+the intentionally failing invoice fixture was never an authorized repair task.
+
+The correction distinguishes proposed changes from requested edits and records
+failed diagnostic execution as an observation, never a passing test. This narrow
+exception requires an explicit read-only goal and unchanged mutation boundary;
+repair, private mutation and mandatory-green contracts retain their gates. A
+denied extra shell command remains denied; one bounded recovery can report the
+retained evidence, and a second attempt stops. New Codex wrappers use the native
+CLI's configured model unless explicitly pinned, with bounded failure diagnostics.
+
+Real session `optional-codex-review-candidate6-20261105` completed with DeepSeek
+Flash and one successful Codex delegation, without a spare. The native CLI
+reported its requested model as gpt-6-astra; this is not served-model attestation.
+Five `model.requested` events and 64.319 seconds were observed, not a guaranteed
+billed-request count or latency benchmark. An actual Node test failed 9 versus
+31; the final answer explained the quantity bug and proposed the smallest fix.
+The source, test and fixture instructions retained identical SHA256 hashes.
+The parent's command piped test output through `tail`, so its exit0 was not
+accepted as a test pass; a separate unpiped run confirmed exit1 and the finding.
+The proposed patch was not executed, and an extra inline Node command remained
+blocked. Runtime bookkeeping persisted; provider network requests occurred.
+
+Seven new offline regression groups and all 14 wrapper lifecycle groups pass.
+The full `npm test` exits 0, including 309-file syntax and neighboring policy,
+truthful-completion, SCS and Studio checks. Production dependency audit reports
+zero findings. Two existing document-worker HTTP checks skipped their occupied
+fixed port18102; no full HTTP coverage is claimed for those checks. The initial
+suite was superseded and stopped after a new live failure; only the final suite
+is reported as passing.
+
+The result qualifies trusted CLI advice, not an application no-tools transport.
+Codex still uses the trusted user's configuration/environment and native tools.
+Restricted SDK/app routing is unchanged, wrappers remain opt-in, old saved model
+pins are not silently migrated, and LocalLLM/Mac functional admission remains
+unavailable. The successful answer was longer than requested; concise output
+and provider startup/metadata latency remain model-quality limits. Redacted
+evidence and an explicitly labeled replay video are retained in Nutstore
+`Projects/AgInTi/2026-11-05-optional-codex-review/`.
+
 ## LocalLLM text-profile offline agreement — 2026-11-05
 
 The proposed LocalLLM text qualification contract now has an AgInTi-side

@@ -1712,6 +1712,7 @@ function wrapperModelOptions() {
   const openai = providerModelOptions("openai").filter((item) => /gpt|codex/i.test(item.id || item.label || ""));
   return mergeModelOptions(
     [
+      { id: "cli-default", label: "Configured Codex CLI model", bucket: "Codex wrapper" },
       { id: "gpt-5.5", label: "GPT-5.5", bucket: "Codex wrapper" },
       { id: "gpt-5.4", label: "GPT-5.4", bucket: "Codex wrapper" },
       { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", bucket: "Codex wrapper" },
@@ -1789,7 +1790,7 @@ function refreshModelDropdowns() {
     coerceModelForProvider(spareProvider, fieldValue(spareModelField), fallbackModelForProvider(spareProvider, "spare")),
     fallbackModelForProvider(spareProvider, "spare")
   );
-  setSelectOptions(wrapperModelField, wrapperModelOptions(), fieldValue(wrapperModelField), modelRoles.wrapper?.model || "gpt-5.5");
+  setSelectOptions(wrapperModelField, wrapperModelOptions(), fieldValue(wrapperModelField), modelRoles.wrapper?.model || "cli-default");
   setSelectOptions(
     auxiliaryModelField,
     auxiliaryModelOptions(auxiliaryProviderField?.value || "grsai"),
@@ -1896,7 +1897,7 @@ function renderModelRoles() {
     wrapper: {
       ...(modelRoles.wrapper || {}),
       provider: preferredWrapperField?.value || modelRoles.wrapper?.provider || "codex",
-      model: wrapperModelField?.value || modelRoles.wrapper?.model || "gpt-5.5",
+      model: wrapperModelField?.value || modelRoles.wrapper?.model || "cli-default",
       reasoning: wrapperReasoningField?.value || modelRoles.wrapper?.reasoning || "medium",
     },
     auxiliary: {
@@ -2106,7 +2107,7 @@ function formPayload() {
     spareProvider: spareProviderField?.value || "localllm",
     spareModel: fieldValue(spareModelField) || "localllm-deep",
     spareReasoning: spareReasoningField?.value ?? "medium",
-    wrapperModel: fieldValue(wrapperModelField) || "gpt-5.5",
+    wrapperModel: fieldValue(wrapperModelField) || "cli-default",
     wrapperReasoning: wrapperReasoningField?.value || "medium",
     auxiliaryProvider: auxiliaryProviderField?.value || "grsai",
     auxiliaryModel: fieldValue(auxiliaryModelField) || fallbackAuxiliaryModelForProvider(),
@@ -4134,7 +4135,7 @@ async function loadConfig() {
     ),
     fallbackModelForProvider(spareProviderField?.value || "localllm", "spare")
   );
-  setSelectOptions(wrapperModelField, wrapperModelOptions(), prefs.wrapperModel || modelRoles.wrapper?.model, "gpt-5.5");
+  setSelectOptions(wrapperModelField, wrapperModelOptions(), prefs.wrapperModel || modelRoles.wrapper?.model, "cli-default");
   setSelectOptions(
     auxiliaryModelField,
     auxiliaryModelOptions(auxiliaryProviderField?.value || "grsai"),

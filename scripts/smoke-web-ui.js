@@ -22,6 +22,8 @@ const server = spawn(process.execPath, [path.join(repoRoot, "bin/aginti-cli.js")
     AGINTI_AUX_PROVIDER: "grsai",
     AGINTI_AUX_MODEL: "",
     VENICE_IMAGE_MODEL: "",
+    AGINTI_WRAPPER_MODEL: "",
+    CODEX_PRIMARY_MODEL: "",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -122,6 +124,9 @@ try {
   });
   await page.goto(baseUrl, { waitUntil: "networkidle" });
   await page.waitForSelector("#chat-input");
+  if (!(await optionValues(page, "#wrapperModel")).includes("cli-default") || await page.locator("#wrapperModel").inputValue() !== "cli-default") {
+    throw new Error("new Studio preferences force a model instead of the configured Codex CLI policy");
+  }
 
   const initialSubmit = await page.locator("#chat-submit").innerText();
   if (!/start new run/i.test(initialSubmit)) throw new Error(`composer did not default to new-run mode: ${initialSubmit}`);

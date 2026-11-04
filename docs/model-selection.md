@@ -9,7 +9,7 @@ AgInTiFlow treats model choice as a role-based control plane. A provider supplie
 | Route | `/route` | `localllm/localllm-fast` | Local fast planner, triage, short tasks, and routing decisions. |
 | Main | `/model` or `/main` | `localllm/localllm-deep` | Local complex executor for coding, debugging, writing, and long tasks. |
 | Spare | `/spare` | `localllm/localllm-deep` with `medium` reasoning | Local cross-check lane; hosted spares require explicit selection. |
-| Wrapper | `/wrapper` | `codex gpt-5.5 medium` | External coding assistant when wrapper tools are enabled. |
+| Wrapper | `/wrapper` | `codex cli-default medium` | Optional advice using the configured Codex CLI model. |
 | Auxiliary | `/auxiliary` | `grsai/nano-banana-2.1` (tool off) | Explicitly enabled image/media tools; Venice keeps `nano-banana-2`. Explicit older models remain pinned. |
 
 Smart routing sends normal work to the LocalLLM route model and complex work to the LocalLLM main model. Manual hosted provider/model selection remains available for explicit one-off upgrades. A local error fails closed instead of changing providers.
@@ -43,7 +43,7 @@ aginti --provider openrouter --model openrouter/auto --routing manual "try a gat
 aginti --provider openrouter --model anthropic/claude-sonnet-4.6 --routing manual "draft a design review"
 aginti --provider venice --model venice-uncensored-1-2 --routing manual "draft a note"
 aginti --spare-provider openai --spare-model gpt-5.4 --spare-reasoning medium "review this design"
-aginti --allow-wrappers --wrapper codex --wrapper-model gpt-5.5 "patch this bug"
+aginti --allow-wrappers --wrapper codex "Review this bug and suggest a fix"
 aginti --image --aux-provider venice --aux-model gpt-image-2 "generate a logo"
 ```
 
@@ -65,7 +65,7 @@ Interactive commands:
 /route deepseek/deepseek-flash
 /model deepseek/deepseek-v4-pro
 /spare openai/gpt-5.4 medium
-/wrapper codex gpt-5.5 medium
+/wrapper codex cli-default medium
 /auxiliary model grsai/nano-banana-2.1
 ```
 

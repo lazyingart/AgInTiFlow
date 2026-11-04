@@ -1,5 +1,5 @@
 import { BASELINE_PROVIDER, normalizeProviderId, providerContract } from "./provider-contract.js";
-import { ROUTING_MODES, REASONING_EFFORTS, defaultAuxiliaryModel } from "./model-routing.js";
+import { ROUTING_MODES, REASONING_EFFORTS, defaultAuxiliaryModel, CODEX_CLI_DEFAULT_MODEL } from "./model-routing.js";
 import { permissionModeDefaults } from "./permission-modes.js";
 import { TASK_PROFILES } from "./task-profiles.js";
 import { WRAPPER_NAMES } from "./tool-wrappers.js";
@@ -60,7 +60,7 @@ const DEFAULTS = Object.freeze({
   routeReasoning: "",
   mainReasoning: "",
   preferredWrapper: "codex",
-  wrapperModel: "gpt-5.5",
+  wrapperModel: CODEX_CLI_DEFAULT_MODEL,
   wrapperReasoning: "medium",
   auxiliaryProvider: "grsai",
   auxiliaryModel: defaultAuxiliaryModel(),
