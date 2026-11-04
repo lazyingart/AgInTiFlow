@@ -463,7 +463,7 @@ export async function initProject(projectRoot = process.cwd(), { template = "dis
       "VENICE_MODEL=venice-uncensored-1-2",
       "VENICE_IMAGE_MODEL=nano-banana-2",
       "GRSAI=",
-      "DEEPSEEK_FAST_MODEL=deepseek-v4-flash",
+      "DEEPSEEK_FAST_MODEL=deepseek-flash",
       "DEEPSEEK_PRO_MODEL=deepseek-v4-pro",
       "AGENT_ROUTING_MODE=smart",
       "AGINTI_ROUTE_PROVIDER=",

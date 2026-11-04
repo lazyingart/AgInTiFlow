@@ -2808,7 +2808,7 @@ try {
     modelTimeoutMs: 180000,
   });
   assert(
-    deepSeekTimeoutRoute.model === "deepseek-v4-flash" && deepSeekTimeoutRoute.switchedModel,
+    deepSeekTimeoutRoute.provider === "deepseek" && deepSeekTimeoutRoute.model === "deepseek-flash" && deepSeekTimeoutRoute.switchedModel,
     "DeepSeek timeout retry did not stay in-provider and switch to the fast route"
   );
   assert(

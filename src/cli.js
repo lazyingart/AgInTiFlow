@@ -49,6 +49,7 @@ import { ensureAgintiWebApp, readWebAppPreference, stopAgintiWebApp, writeWebApp
 import { dockerHostInstallPlan, formatDockerSetupText, summarizeDockerSetup } from "./docker-setup.js";
 import { mcpCliCommand, formatMcpCliResult } from "./mcp/tool-bridge.js";
 import { closeAllMcpConnections } from "./mcp/client-registry.js";
+import { cliProviderDefaultsCommand, selectStandaloneCliProvider } from "./cli-provider-defaults.js";
 import { agentLinkCliCommand, formatAgentLinkCliResult } from "./agentlink.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -968,6 +969,7 @@ function printUsage() {
     'Usage: aginti [chat] OR aginti init [--template minimal|disciplined|coding|research|writing|design|aaps|supervision] OR aginti web [--port 3210] OR aginti docker [status|setup|install-host] OR aginti update OR aginti image [--json] [--dry-run] [--format png|webp|svg] "prompt" OR aginti models OR aginti aaps [status|init|files|validate|compile|check|run] OR aginti agentlink [status|peers|boards|create|board|send|claim|evidence|summary] OR aginti mcp [status|config|inspect|tools|resources|read|prompts|prompt|call|restart] OR aginti skills [query] OR aginti skillmesh [status|off|record|share|sync|serve|service] OR aginti housekeeping [--json] OR aginti auth [--project] [localllm|deepseek|openai|openrouter|qwen|venice|grsai] OR aginti resume [--all-sessions] [latest|<session-id>] ["prompt"] OR aginti --remove-empty-sessions OR aginti --remove-sessions OR aginti queue <session-id> "message" OR aginti [--no-auto-update] [-s safe|normal|danger] [--language en|ja|zh-Hans|zh-Hant|ko|fr|es|ar|vi|de|ru] [--image] [--latex] [--scs|--scs auto|--no-scs] [--dynamic-steps auto|on|off] [--routing smart|fast|complex|manual] [--provider localllm|deepseek|openai|openrouter|qwen|venice|mock] [--model MODEL] [--route-model MODEL --route-reasoning provider-default|minimal|low|medium|high|xhigh] [--main-model MODEL --main-reasoning provider-default|minimal|low|medium|high|xhigh] [--spare-model MODEL --spare-reasoning medium] [--aux-provider grsai|venice --aux-model MODEL] [--sandbox-mode host|docker-readonly|docker-workspace] [--package-install-policy block|prompt|allow] [--approve-package-installs] [--allow-shell|--no-shell] [--allow-file-tools|--no-file-tools] [--web-search|--no-web-search] [--mcp|--no-mcp] [--parallel-scouts|--no-parallel-scouts --scout-count 1..10] [--allow-auxiliary-tools|--no-auxiliary-tools] [--allow-wrappers|--no-wrappers] [--wrapper codex --wrapper-model gpt-5.5] [--list-models|--list-routes] "your task"'
   );
   console.log("Cross-repository reads: repeat --read-root /absolute/reference/repository (read-only; writes stay under --cwd).");
+  console.log("Standalone provider: aginti defaults status | defaults set --provider deepseek | defaults reset. Headless run/resume and SDK routing remain explicit.");
   console.log("Permission shortcuts: -s safe asks before writes/setup; -s normal allows current-project writes and Docker setup; -s danger enables trusted host/full-access mode.");
   console.log(`Languages: ${["en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"].map((code) => `${code}=${languageLabel(code)}`).join(", ")}`);
 }
@@ -1388,7 +1390,11 @@ function providerLabel(provider) {
   return "DeepSeek";
 }
 
-function agentDefaults(args) {
+function agentDefaults(args, { standalone = false } = {}) {
+  // Personal defaults apply only to fresh standalone tasks/chats. The explicit
+  // `run`/`resume` API and SDK keep their existing provider authority. Read the
+  // established project/environment settings before considering the preference.
+  if (standalone) loadProjectEnv(args.commandCwd || process.cwd());
   const envSandboxMode = process.env.SANDBOX_MODE || "";
   const envPackageInstallPolicy = process.env.PACKAGE_INSTALL_POLICY || "";
   const envUseDockerSandbox = process.env.USE_DOCKER_SANDBOX;
@@ -1404,7 +1410,7 @@ function agentDefaults(args) {
   const defaults = {
     ...args,
     permissionMode,
-    provider: args.provider || process.env.AGENT_PROVIDER || "",
+    provider: standalone ? selectStandaloneCliProvider(args) : args.provider || process.env.AGENT_PROVIDER || "",
     routingMode: args.routingMode || process.env.AGENT_ROUTING_MODE || "smart",
     routeProvider: args.routeProvider || process.env.AGINTI_ROUTE_PROVIDER || "",
     routeModel: args.routeModel || process.env.AGINTI_ROUTE_MODEL || "",
@@ -2225,6 +2231,12 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
 
+  const defaultsArgv = stripLeadingGlobalOptions(argv).argv;
+  if (defaultsArgv[0] === "defaults") {
+    console.log(JSON.stringify(cliProviderDefaultsCommand(defaultsArgv.slice(1))));
+    return;
+  }
+
   if (argv[0] === "update" || argv[0] === "upgrade") {
     const updateCommandCwd = commandCwdFromArgv(argv);
     const updateLanguage = languageFromArgv(argv);
@@ -2699,7 +2711,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (args.interactive || (!args.goal && !args.resume && process.stdin.isTTY)) {
-    let interactiveArgs = agentDefaults(args);
+    let interactiveArgs = agentDefaults(args, { standalone: !args.resume });
     if (args.resume) {
       const preparedRuntime = await prepareResumeRuntime(args.resume, args, commandArgv);
       interactiveArgs = agentDefaults({
@@ -2759,7 +2771,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   let preparedRuntime = null;
-  let finalArgs = agentDefaults(args);
+  let finalArgs = agentDefaults(args, { standalone: !args.resume });
   if (args.resume) {
     preparedRuntime = await prepareResumeRuntime(args.resume, args, commandArgv);
     finalArgs = agentDefaults({

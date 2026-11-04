@@ -59,7 +59,7 @@ Interactive commands:
 /spare
 /route localllm/localllm-fast
 /model localllm/localllm-deep
-/route deepseek/deepseek-v4-flash
+/route deepseek/deepseek-flash
 /model deepseek/deepseek-v4-pro
 /spare openai/gpt-5.4 medium
 /wrapper codex gpt-5.5 medium
@@ -79,7 +79,7 @@ Provider families:
 | Family | Models |
 | --- | --- |
 | LocalLLM | `localllm-fast`, `localllm-deep`, `localllm-code`, `localllm-max`, `localllm-vision-xl`; Code, Max, and Vision retain the gates above |
-| DeepSeek | `deepseek-v4-flash`, `deepseek-v4-pro` |
+| DeepSeek | `deepseek-flash`, `deepseek-v4-pro`; explicit `deepseek-v4-flash` remains a compatibility alias |
 | Venice | `venice-uncensored-1-2`, `venice-uncensored`, `gemma-4-uncensored` |
 | OpenAI | `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2`; each has low/medium/high/xhigh reasoning |
 | OpenRouter | `openrouter/auto`, `openrouter/pareto-code`, `openrouter/free` |

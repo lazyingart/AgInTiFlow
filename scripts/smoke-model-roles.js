@@ -432,6 +432,7 @@ const spareChoices = modelRoleChoices("spare").map((item) => `${item.provider}/$
 assert(JSON.stringify(routeChoices) === JSON.stringify(mainChoices), "route and main selectors should share the same text-model list");
 assert(JSON.stringify(routeChoices) === JSON.stringify(spareChoices), "route and spare selectors should share the same text-model list");
 for (const expected of [
+  "deepseek/deepseek-flash",
   "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-pro",
   "localllm/localllm-fast",

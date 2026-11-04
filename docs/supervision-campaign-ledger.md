@@ -56,6 +56,65 @@ in `evidence_json` and `events`.
 
 ## Current Campaign Findings
 
+### Explicit standalone provider preference and current DeepSeek routes
+
+The November 4 CLI qualification adds an explicit personal provider preference
+for fresh standalone tasks and chats. `aginti defaults set --provider deepseek`
+writes only a small non-secret private preference. Status/set/reset import Node
+built-ins rather than the Agent runtime or provider SDK. Credential files are
+unchanged. Explicit provider, environment/project settings and saved-session
+snapshots retain precedence; headless `run`/`resume`, SDKs and application
+services do not read the preference. The shared LocalLLM baseline is preserved.
+
+The direct fast route now uses the documented `deepseek-flash` name, while Pro
+remains `deepseek-v4-pro`. Explicit legacy aliases remain accepted and listed;
+third-party gateway identifiers are unchanged. A separate pure-function probe
+reproduced incorrect timeout accounting: current Flash was relabeled as its old
+alias and reported as a model switch. Recovery now recognizes equivalent Flash
+names, preserves their explicit selection and uses the unswitched timeout cap;
+Pro can still downgrade to current Flash under the existing recovery policy.
+
+Thirteen offline regressions cover CLI/settings round trips, a dependency-free
+entry, new task/chat selection, flags/project/environment precedence, headless
+and SDK isolation, exact saved-model continuation, corruption/mode/link rejection,
+unchanged credential bytes and timeout alias accounting. Role, LocalLLM readiness,
+session-runtime and scripted provider-handoff smokes pass.
+The final full offline `npm test` passed (exit 0, 412.75 seconds), including
+303-file syntax checking and the unchanged interactive/resume suite. The
+production dependency audit reports zero findings. Earlier failed gate logs
+remain in private evidence rather than being relabeled as passing runs.
+
+Pre-release full validation caught the optional reader blocking an existing
+group-writable home with no saved preference. The reader now preserves legacy
+startup when the opt-in file is absent; a present preference still requires
+strict owned-directory/file checks. A separate deterministic race covers benign
+session-directory creation: directory link-count changes do not replace the open
+preference file. Root inode/owner/mode and file identity/link checks remain.
+
+A real synthetic-file CLI example created and verified three checklist items
+using DeepSeek Flash, then explicitly resumed the same native session with Pro.
+Both invocations completed. Independent checks found the original input and
+checklist unchanged on resume, correct item count/source phrases, retained first
+goal and runtime revision 1->2. The ledger recorded six `model.requested` events
+across the two turns; those are runtime events, not an independently measured
+HTTP billing count. Only file/finish tools ran; no application service, GPU,
+LocalLLM model or provider fallback was activated.
+
+The first verifier used the wrong saved-state field after Flash had completed.
+It was corrected to `meta.runtimeConfig`, and verification continued the existing
+session without repeating artifact generation. Nutstore contains the synthetic
+input/output, redacted receipt and a 20-second evidence-replay video. The replay
+made no model calls and is not a latency benchmark or live screen recording.
+
+Read-only LocalLLM checks used the documented `/livez` and `/readyz` routes.
+Both returned 200/ok on the workstation. The existing Mac SSH route was reachable,
+but neither route responded on that host's port 8008. Health/static readiness does
+not establish an admitted authenticated inference role. No model loading, service
+change or new tunnel was attempted; role qualification remains separate.
+No existing Node binary was found on the Mac's non-interactive PATH or the
+checked Homebrew/v22 locations, so a Mac CLI canary was not run or installed.
+This does not prove that no other Node or inference installation exists there.
+
 ### Complete text-only fallback turns
 
 The November 4 follow-up reproduced a separate gap in `runSafeChat`, using the

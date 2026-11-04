@@ -12,6 +12,11 @@ try {
   if (["--version", "version", "-v"].includes(argv[0])) {
     const packageJson = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     console.log(packageJson.version);
+  } else if (argv[0] === "defaults") {
+    // Settings need neither the Agent runtime nor third-party dependencies.
+    import("../src/cli-provider-defaults.js")
+      .then(({ cliProviderDefaultsCommand }) => console.log(JSON.stringify(cliProviderDefaultsCommand(argv.slice(1)))))
+      .catch(fail);
   } else {
     import("../src/cli.js")
       .then(({ main }) => main(argv))

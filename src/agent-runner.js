@@ -2342,8 +2342,10 @@ export function modelTimeoutRetryRoute(config = {}) {
   const provider = normalizeProviderId(config.provider, "");
   const currentModel = String(config.model || "").trim();
   let model = currentModel;
-  if (provider === "deepseek" && currentModel !== "deepseek-v4-flash") {
-    model = "deepseek-v4-flash";
+  // These names resolve to the same Flash model. Do not label an alias-only
+  // retry as a model switch or give it the switched-model timeout budget.
+  if (provider === "deepseek" && !["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"].includes(currentModel)) {
+    model = "deepseek-flash";
   } else if (provider === "localllm" && currentModel !== "localllm-fast") {
     model = "localllm-fast";
   }

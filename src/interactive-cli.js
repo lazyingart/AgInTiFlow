@@ -3212,7 +3212,7 @@ function providerChoices() {
     },
     {
       provider: "deepseek",
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       label: "DeepSeek",
       description: "default smart route with flash/pro roles",
     },

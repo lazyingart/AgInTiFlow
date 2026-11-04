@@ -770,11 +770,18 @@ export const PROVIDER_MODEL_CATALOG = {
   ],
   deepseek: [
     {
-      id: "deepseek-v4-flash",
-      label: "DeepSeek V4 Flash",
+      id: "deepseek-flash",
+      label: "DeepSeek Flash",
       role: "fast",
       context: "1.0M",
       description: "Default fast route for normal shell, browser, and short coding tasks.",
+    },
+    {
+      id: "deepseek-v4-flash",
+      label: "DeepSeek Flash (legacy alias)",
+      role: "legacy-alias",
+      context: "1.0M",
+      description: "Compatibility name for existing configurations; the provider serves the current Flash model.",
     },
     {
       id: "deepseek-v4-pro",
@@ -1378,7 +1385,7 @@ export function getModelPresets(overrides = {}) {
         overrides.routeModel ||
         process.env.AGINTI_ROUTE_MODEL ||
         (routeProvider === "deepseek" ? process.env.DEEPSEEK_FAST_MODEL : "") ||
-        providerDefaultModel(routeProvider, routeProvider === "deepseek" ? "deepseek-v4-flash" : "", "route"),
+        providerDefaultModel(routeProvider, routeProvider === "deepseek" ? "deepseek-flash" : "", "route"),
       description: "Default fast route for normal browser, shell, and short coding tasks.",
     },
     complex: {
