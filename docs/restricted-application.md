@@ -201,6 +201,45 @@ SDK transport metadata is ignored; only descriptor-read `choices` is projected.
 Configure transport body limits, no redirects/unapproved endpoint access, and
 no unbounded retries in the host. Never pass a request-supplied provider callback.
 
+## Explicit transport-failure classification
+
+Raw callback errors still become `PROVIDER_FAILED` or `TOOL_FAILED`, without
+their messages, causes, status properties or response bodies. A trusted host
+transport can explicitly preserve a closed classification through the new
+`createRestrictedProviderFailure` export from the **same SDK module instance**:
+
+```js
+throw createRestrictedProviderFailure({
+  category: "rate_limit",
+  retryAfterMs: 1000,
+});
+```
+
+The runner still rejects with `code:"PROVIDER_FAILED"`. Its optional deeply
+frozen `providerFailure` is exactly
+`{schemaVersion:"aginti-provider-failure-v1",category,retryAfterMs}`. Categories
+are `authentication`, `permission`, `quota`, `rate_limit`, `unavailable`,
+`timeout` and `protocol`. Omitted cooldown becomes null. A non-null cooldown is
+an integer from0 through86,400,000 milliseconds, allowed only for `rate_limit`
+or `unavailable`; it is descriptive and never starts a timer or retry.
+
+Only the transport may classify its actually observed error using a reviewed
+provider contract. The factory does not authenticate an HTTP response or infer
+retryability from status/body prose. For example, an HTTP429 may represent a
+temporary rate limit or exhausted quota; the host must distinguish those rather
+than automatically retrying. A declaration is trusted host metadata, not an
+upstream attestation or permission to switch providers. The app still owns its
+durable attempt/ambiguity policy, user consent, budget and any new invocation.
+
+A private in-process brand prevents JSON/model output, ordinary Error fields,
+serialized copies, proxies, another SDK instance or tool callback errors from
+impersonating that channel. The runner reconstructs a safe error and never
+returns the transport's original stack/cause. It does not expose unknown errors
+or classify parser failures automatically. Cancellation and the overall
+monotonic deadline take precedence, even if synchronous callback code exceeds
+the deadline before a timer can run. Capacity remains charged until ignored
+cancellation settles. No default provider, retry, fallback or app routing changes.
+
 ## Optional Codex assistance
 
 Trusted standalone CLI work already supports explicitly enabled advisory Codex

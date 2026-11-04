@@ -1,5 +1,53 @@
 # Supervision Campaign Ledger
 
+## Typed transport failures and exception deadlines — 2026-11-05
+
+The AiMemo qualification had an unresolved generic SDK gap: auth, quota and
+outage failures all collapse to `PROVIDER_FAILED`. That opacity is an intentional
+privacy default, but leaves no safe explicit transport classification for the
+host's own recovery policy. The additive `createRestrictedProviderFailure`
+factory preserves that code while admitting only a private in-process brand
+with a closed category and bounded optional cooldown. The runner reconstructs
+a safe error. Raw properties/prose, JSON clones, other module instances, Proxy
+traps, native wire data and tool failures cannot impersonate the channel. It
+does not prove HTTP authenticity or authorize any retry/provider switch.
+
+The tests also reproduced a current deadline defect independently in installed
+346 and Lite preview3: synchronous callback code can pass its monotonic deadline
+and throw before a timer runs, producing `PROVIDER_FAILED` instead of `TIMEOUT`.
+The exception path now checks the overall deadline before classifying failure.
+Eight independent before/after and nonexpired controls pass. Cancellation wins
+and uncooperative callbacks remain capacity-charged. No weakening of tool,
+schema, privacy or completion gates is needed.
+
+Five new groups fail before the feature (33existing pass), then all38 full
+focused groups pass; Lite all43 pass with the same implementation/tests. A
+deterministic delayed-exception regression fails before the deadline correction.
+Final focused controls include cross-module brand refusal and zero getter/Proxy
+traps. Full npm test exits0 in523.827s; syntax309 and audit0 pass. Two existing
+fixed-port18102 document HTTP checks skip an occupied foreign listener.
+
+Two separate bounded qualification variants inject synthetic loopback HTTP402,
+not real provider quota incidents. Each produces exactly one classified failure,
+zero reads/upstream inference and no SDK retry/fallback. The first explicit Pro
+invocation hits its deliberately tight two-turn STEP_LIMIT after two real
+requests/one read; it remains failed evidence. The unchanged normal Chinese
+follow-up succeeds under the documented four-turn app profile in three real Pro
+requests/two reads, after an actual process restart and host context reload.
+It reads revision13 rather than stale12, proposes the requested title, preserves
+all remarks and leaves both synthetic accounts unchanged. Total real requests
+across both variants:five. Another-distribution Lite replay reproduces the three
+request bodies and exact proposal with zero additional inference. This is host
+fixture qualification, not SDK-owned persistence, production auth/consent/store,
+remote termination or a latency/efficiency guarantee. The duplicate read is a
+remaining model-quality cost, not hidden by extra core retries.
+
+Only the restricted runtime/tests/docs and a private lightweight preview change.
+Existing app routing/vendors/stores, native CLI/Studio, Codex wrapper and LocalLLM
+maintenance/admission remain unchanged. The fresh lightweight LocalLLM GETs still
+show catalog readiness without configured functional roles. No inference, model
+load/unload, credential, service, tunnel or GPU change is granted by that status.
+
 ## Native-turn admission and lightweight DeepSeek parity — 2026-11-05
 
 Auditing the Lite profile gap exposed a real restricted-wire-adapter defect.
