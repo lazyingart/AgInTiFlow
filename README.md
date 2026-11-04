@@ -20,17 +20,17 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.3.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.4.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.3.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.4.tgz
 ```
 
-The package root and `/restricted-application` export the same five names:
+The package root and `/restricted-application` export the same six names:
 `createRestrictedApplicationRunner`, `createRestrictedOpenAIProvider`,
-`createRestrictedDeepSeekProvider`, `RestrictedApplicationError`, and
+`createRestrictedDeepSeekProvider`, `createRestrictedProviderFailure`, `RestrictedApplicationError`, and
 `RESTRICTED_APPLICATION_PROTOCOL`.
 The protocol remains `aginti-restricted-application-v1`, with text-only input.
 Internal modules are not package exports.
@@ -189,10 +189,29 @@ using this bounded contract. Credentials belong in the transport closure only,
 never instructions, history, tool results or proposals.
 
 Callback errors become safe `PROVIDER_FAILED` or `TOOL_FAILED` without raw
-messages/causes. This intentionally does not expose an auth/quota/retryable
-taxonomy. `PROVIDER_FAILED` alone is not permission to fallback. A future
-typed transport-error contract needs separate qualification; do not infer it
-from model text. Cancellation must not automatically trigger fallback.
+messages/causes. Preview4 adds explicit trusted-transport classification:
+
+```js
+throw createRestrictedProviderFailure({ category: "rate_limit", retryAfterMs: 1000 });
+```
+
+Import that factory from the same SDK module instance as the runner. Only a
+trusted transport may call it for its actually observed failure. Runner errors
+retain `code:"PROVIDER_FAILED"` and an optional deeply frozen `providerFailure`:
+`{schemaVersion:"aginti-provider-failure-v1",category,retryAfterMs}`. Exact
+categories: `authentication`, `permission`, `quota`, `rate_limit`, `unavailable`,
+`timeout`, `protocol`. Omitted cooldown becomes null; a non-null integer from0
+through86,400,000 milliseconds is allowed only for `rate_limit` or `unavailable`.
+No wait, repair, retry or provider switch is performed. The host still owns
+durable attempt/ambiguity policy, consent, quotas and new invocations.
+
+This is a private in-process brand, not an HTTP attestation. The host must map
+its reviewed provider contract; status429 alone cannot distinguish temporary
+limits from exhausted quota. Raw Error properties, model text, proxies, JSON
+clones, another SDK instance and tool callback failures cannot forge the
+channel. Unknown failures stay opaque; the original callback stack/cause is
+never propagated. Cancellation/deadline wins, including a synchronous callback
+that throws after the monotonic budget expires before the timer runs.
 
 ## Bounds and cancellation
 

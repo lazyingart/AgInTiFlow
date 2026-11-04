@@ -10,7 +10,7 @@ import test from "node:test";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const runtimeFiles = ["src/redaction.js", "src/restricted-application-contract.js", "src/restricted-application.js"];
 const packageFiles = ["LICENSE", "NOTICE", "README.md", "package.json", ...runtimeFiles].sort();
-const publicExports = ["RESTRICTED_APPLICATION_PROTOCOL", "RestrictedApplicationError", "createRestrictedApplicationRunner", "createRestrictedOpenAIProvider", "createRestrictedDeepSeekProvider"].sort();
+const publicExports = ["RESTRICTED_APPLICATION_PROTOCOL", "RestrictedApplicationError", "createRestrictedApplicationRunner", "createRestrictedOpenAIProvider", "createRestrictedDeepSeekProvider", "createRestrictedProviderFailure"].sort();
 const metadata = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
 
 test("distribution has a closed, zero-dependency, non-executable package surface", async () => {
@@ -124,6 +124,9 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
       }});
       const nativeRunner = root.createRestrictedApplicationRunner({provider:deepseek,tools:[],instructions:"Uncommitted JSON only.",outputSchema:schema});
       assert.equal((await nativeRunner.run({input:[{type:"text",text:"Review my draft."}]})).proposal.reply,"Native DeepSeek profile");
+      const declared = root.createRestrictedProviderFailure({category:"quota"});
+      const failing = root.createRestrictedApplicationRunner({provider:{supportsImages:false,complete:async()=>{throw declared;}},tools:[],instructions:"Propose only.",outputSchema:schema});
+      await assert.rejects(failing.run({input:[{type:"text",text:"Check my draft."}]}),error=>error.code==="PROVIDER_FAILED"&&error.providerFailure.category==="quota");
       const native = (content, extra = {}) => ({choices:[{finish_reason:"stop",message:{role:"assistant",content,...extra}}]});
       for (const raw of [
         native('{"reply":"first","reply":"last"}'),

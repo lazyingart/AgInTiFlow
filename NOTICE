@@ -16,3 +16,8 @@ Preview 3 adds the explicit text-only DeepSeek profile and shared native-turn
 admission checks from AgInTiFlow commit
 6de9bb0b543613c4f01dfa29f6eebe520ab15de2. The factory/marker-guard block is kept
 byte-identical to its qualified full SDK source; transport remains host-owned.
+
+Preview 4 adds the shared explicit host-declared provider-failure channel and
+monotonic exception-deadline correction from AgInTiFlow commit
+18918723d3e68943e83ea22f45edeff3af1da5ba. The private in-process brand adds no
+transport, retry, fallback, credential or application policy authority.
