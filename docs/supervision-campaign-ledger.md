@@ -1,5 +1,34 @@
 # Supervision Campaign Ledger
 
+## LocalLLM text-profile offline agreement — 2026-11-05
+
+The proposed LocalLLM text qualification contract now has an AgInTi-side
+conformance suite. Sixteen offline groups reproduce the owner-reviewed English
+and Chinese request hashes, exercise actual SDK emission with the Mac model
+alias, and reject identity/header/body substitution, stale leases, malformed
+native completion, duplicate JSON and hostile descriptors. The fixture oracle
+also rejects noncanonical identity JSON inside otherwise valid base64url.
+
+All four workstation/Mac request bodies are byte-identical between full
+0.20.344-integration.1 and Lite0.1.0-preview.2. An independent Python validator
+accepts them against the owner-supplied JSON Schema and reproduces their
+canonical hashes. The new Mac vectors were emitted by both SDKs, rather than
+created by editing the earlier workstation fixtures.
+
+This is test infrastructure, not a provider activation or runtime repair.
+Production sources, exports, dependencies and installed version are unchanged.
+The oracle is excluded from the npm package; its acceptance records and response
+identities are fabricated test data. It supplies no protected credential/profile
+registry, live resource/transport proof, request-ID ledger or hard cancellation.
+Both hosts still lack an admitted profile. The functional-admission ledger case
+remains prerequisite_missing; this separate offline-contract case does not
+upgrade it. No model request, app source, service or tunnel was changed.
+
+`npm test` passes with the new 16-group suite in pretest; repository syntax
+passes for 309 files. Production dependency audit reports zero findings; dry
+packing contains 488 files and no private paths. These checks validate the
+offline contract infrastructure and preserve the existing runtime baseline.
+
 ## Lightweight distribution wire parity — 2026-11-05
 
 AgInTiLite's unchanged preview1 reproduced seven failures in nine new offline

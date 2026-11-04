@@ -1,5 +1,17 @@
 # Restricted Application SDK (v1)
 
+The repository includes an offline LocalLLM text-profile conformance suite:
+`npm run test:localllm-text-contract`. It reproduces English/Chinese SDK request
+hashes and host-selected workstation/Mac model aliases, then checks synthetic
+profile and response-identity cases. The oracle under `scripts/fixtures` is
+neither an exported client nor a production admission authority. Its fabricated
+approvals and responses never authorize inference. A real transport still
+requires independently delivered owner evidence, protected profile acceptance,
+a live lease, resource admission, credential provisioning, atomic request-ID
+tracking, and cancellation/cleanup qualification. The generic SDK does not infer
+that authority from a model name or response header. This suite adds no endpoint,
+automatic fallback or application activation.
+
 Node 22 ESM, Apache-2.0. Import
 `@lazyingart/agintiflow/restricted-application`. This additive entry point is
 separate from the CLI, Studio and `/agent/v1` server. It starts no listener,
