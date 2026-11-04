@@ -1,5 +1,34 @@
 # Supervision Campaign Ledger
 
+## Lightweight distribution wire parity — 2026-11-05
+
+AgInTiLite's unchanged preview1 reproduced seven failures in nine new offline
+wire-integrity tests: duplicate final/argument keys, contradictory native/legacy
+metadata, unsafe direct parser errors and unbounded parsed structure. Its
+already-closed newline identifier and valid-value controls passed; those were
+not treated as defects. The standalone package now backports full SDK parser
+source8dc44e6 plus the corresponding metadata checks.
+
+Private preview2 is committed at `3bf02335d4360e27bbe34561d5a70b5765c8662b`
+in the canonical AgInTiLite repository. Syntax/all32 tests, reproducible seven-file
+packing, offline install/closed import graph and diff checks pass. Runtime
+dependencies0, exports4, text-only/no ambient providers/tools/fallback unchanged.
+The contract module SHA256 is
+`03529966865e3054b2f29e4161f79c2aee16b421ace5805e8b3b003d71549260`, identical
+to the hardened full SDK. No model or application runtime was invoked/changed.
+
+The standalone repo has no configured remote; a verified self-contained source
+bundle and tarball are delivered with hashes, not an invented remote push.
+`private:true` and the prior no-npm-publication boundary remain intact. No Bunko
+vendor update was made; app-owner review is required. Generic host transports that
+decode JSON themselves remain responsible for that parsing. The current full
+SDK already has these guards, so installed Flow344.1 needs no redundant release.
+Detailed receipts/handoff are in the private campaign ledger and Nutstore
+`Projects/AgInTi/2026-11-05-agintilite-preview2/`.
+The source bundle was cloned with explicit `--branch main` in a clean offline
+environment: syntax/all32 tests passed again and its rebuilt tarball matched
+the delivered SHA256 exactly. Temporary delivery/install roots were removed.
+
 ## Restricted proposal conflict/restart qualification — 2026-11-05
 
 Installed0.20.344-integration.1 passed a synthetic Chinese correction across
