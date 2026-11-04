@@ -139,7 +139,10 @@ It deliberately avoids the separate thinking-history contract described in
 [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/).
 
 On 2026-11-05, a live synthetic English Flash and Chinese Pro fixture each passed
-initial read/correction plus a fresh-runner follow-up after host-state restart.
+initial read/correction plus a fresh-runner follow-up after host-state reload in
+the same Node process. This first fixture was not an OS-process restart; see
+[conflict/restart qualification](restricted-application-recovery.md) for the
+separate-process follow-up.
 Each phase used two transport dispatches and one authorized read. The fixture
 verified revision binding, language/context preservation, unchanged host state
 before apply and an apply-once host receipt. These are bounded workflow results,

@@ -1,5 +1,27 @@
 # Supervision Campaign Ledger
 
+## Restricted proposal conflict/restart qualification — 2026-11-05
+
+Installed0.20.344-integration.1 passed a synthetic Chinese correction across
+Flash/Pro and a separate-process follow-up. A stale revision7 proposal was
+rejected after a host-owned concurrent edit advanced8; a fresh Pro runner
+preserved that edit, and the host applied9 once. After process exit, serialized
+history/state fed another Pro follow-up, preserving all current remarks and
+advancing10. Six real provider requests/three scoped reads, no automatic
+retry/fallback, no foreign-account mutation and no application activation.
+
+The runtime needed no change. Three offline companion regressions cover the
+host/SDK contract, including a schema-valid stale negative control. The host
+fixture owns transactions and history; only the final phase is an actual OS
+restart. This is not native SessionStore, retained storage, app rollout or
+cross-process database-lock qualification. See
+`docs/restricted-application-recovery.md`. Evidence/demo and exact source hashes
+are retained in the private campaign ledger and Nutstore checkpoint.
+Validation: three new recovery cases plus28 existing SDK cases pass; full
+`npm test` exit0 in408.89 seconds, syntax308 files, production audit0,
+pack dry-run488 files/no forbidden private paths and `git diff --check` pass.
+Only tests/docs/package test wiring changed; no version bump or npm publication.
+
 ## Optional advisory wrapper lifecycle — 2026-11-05
 
 Four offline regressions reproduced genuine launcher defects: pre-cancelled
