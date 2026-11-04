@@ -56,6 +56,37 @@ in `evidence_json` and `events`.
 
 ## Current Campaign Findings
 
+### Protected record snapshots tolerate atomic replacement
+
+The tagged 0.20.343-integration.0 release gate failed in the existing authority
+retention/heartbeat smoke before publication. The failure reported a hard link
+while scanning a live pending record. A deterministic independent probe then
+opened a record, atomically replaced it before fstat, and observed the old
+descriptor with zero links and a valid current named record with one link. The
+old reader classified this expected replacement as corruption. A second case
+returned the obsolete record if replacement occurred during the read.
+
+The protected reader now discards unlinked/replaced snapshots and reopens at
+most eight times. It validates regular type, owner, permissions and single-link
+status before and after bounded reads, then binds the named file to the same
+identity/version. It never returns the discarded bytes. Real hard links, unsafe
+owner/mode, symlinks and oversize still reject. Continuous replacement returns
+bounded 503 busy; close failure cannot be reported as successful content.
+
+Ten offline regressions cover both gated races, byte growth after fstat,
+security controls, bounded retries, cleanup, and concurrent monotonic snapshots.
+The previously failing authority smoke passes three consecutive runs; syntax
+checking covers 307 files and production dependency audit has zero findings.
+Full `npm test` passed in 386.25 seconds on the repair. Release/package
+qualification is separate. The failed release tag is immutable and not
+published; the installed CLI remains 0.20.342-integration.0.
+
+This is a named-path snapshot helper, not retained-directory storage authority,
+multi-file transaction isolation or same-UID/rollback protection. It does not
+enable any native integration capability or alter process liveness, recovery,
+handler dispatch, lease ownership, response roots or hard-link policy. No model,
+application service, credential, GPU or production operation is part of this fix.
+
 ### Explicit restricted DeepSeek transport and unambiguous native proposals
 
 `restricted-deepseek-native-calls-20261105` qualifies the existing isolated

@@ -305,19 +305,49 @@ export async function reconcileProtectedJsonTemporaryFiles(
 }
 
 export async function readProtectedUtf8File(filePath, { optional = false, maxBytes = 1024 * 1024 } = {}) {
-  let handle;
-  try {
-    handle = await fs.open(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    const stat = await handle.stat();
-    assertProtectedFileStat(stat, filePath, { maxBytes });
-    return await handle.readFile("utf8");
-  } catch (error) {
-    if (optional && error?.code === "ENOENT") return null;
-    if (error?.code === "ELOOP") authorityFail("INTEGRATION_AUTHORITY_CORRUPT", `${filePath} must not be a symlink.`);
-    throw error;
-  } finally {
-    await handle?.close().catch(() => {});
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    authorityFail("INTEGRATION_AUTHORITY_CORRUPT", "Protected read byte limit is invalid.");
   }
+  const same = (left, right) => ["dev", "ino", "uid", "gid", "mode", "size", "mtimeMs", "ctimeMs"]
+    .every((key) => left[key] === right[key]);
+  // Atomic writers replace immutable files. An opened old inode can lose its
+  // final name before fstat/read; discard it and reopen rather than describing
+  // nlink=0 as a hard-link attack. Never accept those bytes or relax nlink>1.
+  // This is a bounded named-path snapshot, not retained-directory authority.
+  for (let attempt = 0; attempt < 8; attempt++) {
+    let handle;
+    try {
+      handle = await fs.open(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const before = await handle.stat();
+      if (before.nlink === 0) continue;
+      assertProtectedFileStat(before, filePath, { maxBytes });
+      const chunks = [];
+      let length = 0;
+      while (true) {
+        const buffer = Buffer.alloc(Math.min(64 * 1024, maxBytes - length + 1));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        if (!bytesRead) break;
+        length += bytesRead;
+        if (length > maxBytes) authorityFail("INTEGRATION_AUTHORITY_CORRUPT", `${filePath} size is invalid.`);
+        chunks.push(buffer.subarray(0, bytesRead));
+      }
+      const after = await handle.stat();
+      if (after.nlink === 0) continue;
+      assertProtectedFileStat(after, filePath, { maxBytes });
+      const named = await fs.lstat(filePath);
+      if (named.nlink === 0) continue;
+      assertProtectedFileStat(named, filePath, { maxBytes });
+      if (!same(before, after) || !same(after, named) || length !== after.size) continue;
+      return Buffer.concat(chunks, length).toString("utf8");
+    } catch (error) {
+      if (optional && error?.code === "ENOENT") return null;
+      if (error?.code === "ELOOP") authorityFail("INTEGRATION_AUTHORITY_CORRUPT", `${filePath} must not be a symlink.`);
+      throw error;
+    } finally {
+      await handle?.close();
+    }
+  }
+  authorityFail("INTEGRATION_AUTHORITY_BUSY", "Protected record changed repeatedly during read.", { status: 503 });
 }
 
 export async function readProtectedJsonFile(filePath, options = {}) {
