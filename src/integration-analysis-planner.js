@@ -1211,6 +1211,24 @@ function normalizeToolCall(value) {
   });
 }
 
+function assertCompleteModelResponse(response) {
+  const choices = response?.choices;
+  const choice = Array.isArray(choices) && choices.length === 1 ? choices[0] : null;
+  const message = choice?.message;
+  const calls = message?.tool_calls;
+  // Validate the original envelope before text-tool normalization or any side
+  // effect. Well-formed arguments do not prove the generation was complete.
+  // Keep legacy loopback replies without finish_reason compatible, but never
+  // accept an explicit partial/unknown reason or a contradictory tool finish.
+  if (!message || typeof message !== "object" || Array.isArray(message)
+      || (message.role !== undefined && message.role !== "assistant")
+      || message.refusal != null || message.function_call != null
+      || (choice.finish_reason !== undefined
+        && choice.finish_reason !== (Array.isArray(calls) && calls.length ? "tool_calls" : "stop"))) {
+    fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "The model response was not one complete assistant turn.", { status: 502 });
+  }
+}
+
 function normalizeModelMessage(response) {
   const normalized = normalizeTextToolCallResponse(response);
   const message = normalized?.choices?.[0]?.message;
@@ -2839,9 +2857,11 @@ function createPlanner({
   if (!modelClient || typeof complete !== "function") {
     fail("ANALYSIS_CONFIGURATION_INVALID", "LocalLLM model transport is unavailable.");
   }
-  const invokeModel = (client, payload, config, label) => complete(
-    client, integrationModelPayload(payload, modelConfig), config, label
-  );
+  const invokeModel = async (client, payload, config, label) => {
+    const response = await complete(client, integrationModelPayload(payload, modelConfig), config, label);
+    assertCompleteModelResponse(response);
+    return response;
+  };
   if (groundedSearchClient !== undefined) {
     try {
       assertIntegrationGroundedSearchClient(groundedSearchClient, {

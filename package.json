@@ -71,6 +71,7 @@
     "scripts/check-js-syntax.js",
     "scripts/seed-supervised-homework.js",
     "scripts/supervision-ledger.js",
+    "scripts/demo-backend-completion.js",
     "scripts/smoke-supervision-ledger.js",
     "scripts/smoke-integration-production-mount.js",
     "scripts/smoke-integration-production-runtime-bundle.js",
@@ -117,6 +118,7 @@
     "scripts/smoke-integration-grounded-search.js",
     "scripts/smoke-integration-analysis-planner.js",
     "test/integration-research-synthesis.test.js",
+    "test/integration-model-completion.test.js",
     "test/provider-runtime-private-health.test.js",
     "test/model-request-lifecycle.test.js",
     "test/integration-independent-vision.test.js",
@@ -221,6 +223,7 @@
     "aginti-safe-chat": "bin/aginti-safe-chat.js"
   },
   "scripts": {
+    "demo:backend-completion": "node scripts/demo-backend-completion.js",
     "start": "node run.js",
     "web": "node web.js",
     "check": "node scripts/check-js-syntax.js",
@@ -326,7 +329,8 @@
     "smoke:integration-file-worker-client": "node scripts/smoke-integration-file-worker-client.js",
     "test:document-worker": "npm run smoke:integration-document-worker-contract && npm run smoke:integration-document-worker-store && npm run smoke:integration-document-worker-longevity && npm run smoke:integration-document-worker-service && npm run smoke:integration-document-worker-server && npm run smoke:integration-document-worker-systemd-boundary && npm run smoke:integration-document-worker-real-compile",
     "smoke:integration-grounded-search": "node scripts/smoke-integration-grounded-search.js",
-    "smoke:integration-analysis-planner": "node --test test/integration-research-synthesis.test.js test/public-pdf-download.test.js && node scripts/smoke-integration-analysis-planner.js",
+    "smoke:integration-model-completion": "node --test test/integration-model-completion.test.js",
+    "smoke:integration-analysis-planner": "node --test test/integration-model-completion.test.js test/integration-research-synthesis.test.js test/public-pdf-download.test.js && node scripts/smoke-integration-analysis-planner.js",
     "smoke:public-pdf-download:live": "node scripts/smoke-public-pdf-download.js --live",
     "smoke:integration-model-binding": "node scripts/smoke-integration-model-binding.js",
     "smoke:integration-analysis-session-service": "node scripts/smoke-integration-analysis-session-service.js",

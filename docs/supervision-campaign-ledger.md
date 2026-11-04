@@ -56,6 +56,34 @@ in `evidence_json` and `events`.
 
 ## Current Campaign Findings
 
+### Complete provider turns before public backend execution
+
+The November 4 backend check reproduced thirteen failures in a 33-case matrix
+on the primary integration line. A short "Just say READY" request could publish
+text despite an explicit truncated/filtered/unknown finish reason, a refusal,
+multiple choices or the wrong message role. Valid-looking tool arguments could
+also arrive inside an unfinished generation. The fault was in the public
+planner's response boundary; no application policy or prompt was required.
+
+The planner now validates each original model envelope at its shared invocation
+boundary, before text-tool normalization, worker dispatch or final publication.
+Only a complete assistant turn with a consistent stop/tool reason proceeds.
+Explicit partial metadata becomes `ANALYSIS_MODEL_PROTOCOL_INVALID`. Existing
+loopback replies omitting finish metadata retain their compatibility path.
+
+The focused regression covers normal, text and JSON-only responses; real durable
+session failure/restart/same-thread correction; native tool dispatch; and Chinese
+and Japanese LocalLLM compatibility. These are controlled provider fixtures, not
+live provider latency or quality measurements. `npm run demo:backend-completion`
+demonstrates the persisted failure and recovery without provider credentials,
+network calls or execution-worker activity. Its `--paced` option only spaces the
+printed observations for recording; it does not alter runtime decisions.
+
+All 38 focused cases and the full `npm test` suite passed. Syntax checks and the
+dry package inspection also passed, including the shipped regression and demo.
+This source checkpoint does not certify deployment or a new npm release; the
+dependency audit and release authentication retain their separate gates.
+
 ### Established media-chain reuse and permission boundaries
 
 `media-chain-readiness-020` passed after reconciling a stale machine-ledger
