@@ -56,6 +56,65 @@ in `evidence_json` and `events`.
 
 ## Current Campaign Findings
 
+### Explicit restricted DeepSeek transport and unambiguous native proposals
+
+`restricted-deepseek-native-calls-20261105` qualifies the existing isolated
+restricted application runner on top of the current integration release. It
+keeps authenticated read callbacks, explicit history and all application writes
+host-owned. The SDK owns bounded context, tool dispatch, interruption and schema
+validation; no CLI/Studio/native service or app runtime is mounted.
+
+The old SDK's JSON parser accepted duplicate final fields and dispatched a read
+with duplicate argument keys. An unchanged-source offline probe reproduced both.
+Strict duplicate detection now compares decoded keys in every object, including
+escaped aliases, before returning a proposal or executing a native call.
+
+The new explicit DeepSeek text profile requests JSON-object output and disables
+thinking. It embeds the exact host output schema and still validates it locally.
+Four initial single-request live probes failed closed while diagnosing complete
+native tool responses containing commentary and ordinal metadata. Canonical
+normalization now discards commentary only on native call turns and removes
+only an ordinal equal to the call's batch position. It does not parse textual
+tool protocols or bypass the complete-batch/name/argument/owner gates.
+
+The final real synthetic workflow passed four phases: English Flash and Chinese
+Pro initial correction, then a fresh-runner follow-up using host-persisted state
+and explicit authorized history. Each phase made two transport dispatches and
+one scoped read. Revisions were bound to 3/4 and 7/8 respectively; language and
+previous corrections were retained. Agent execution left host state unchanged
+before apply. A separate fixture-owned apply simulation verified revision and
+duplicate-apply behavior. It is not a production consent transaction or an
+SDK-owned durable session. The successful workflow used eight dispatches; the
+four earlier probes are separate qualification traffic, not hidden retries.
+
+Twenty-eight offline cases pass on the final source. They cover scope/history isolation, local
+schema checks, malformed/partial/refused responses, duplicate JSON/indices,
+cancellation, ignored-abort capacity and zero-trap descriptor boundaries. The
+production dependency audit has zero findings. The package scan includes the
+four SDK files and excludes private state. The full `npm test` passed (397.88
+seconds, including 306-file syntax validation); the final focused SDK rerun also
+passed. Generic transport review additionally caught legacy function requests,
+malformed tool metadata and trailing-newline identifier aliases. All now reject
+without dispatch. Final safe-error/negative guards were also checked against
+recorded live native/final responses without additional paid calls.
+
+Earlier harness failures are retained: globally disabling auto-update suppressed
+its smoke, and an isolated HOME hid the existing Playwright browser cache. The
+overrides were corrected and the verified shared browser cache reused. Both
+focused checks then passed unchanged. No assertion, download or production
+service was used to bypass a gate. Package/release qualification is separate.
+
+Nutstore holds redacted synthetic proposals and a labeled 20-second evidence
+replay. No app source/state/service, LocalLLM model, GPU, paid image generation
+or AgInTiLite distribution changed. Ordinary model quality and each app's
+authorization/history/apply contract remain separate acceptance gates.
+
+Optional Codex assistance remains an explicit trusted-CLI choice. Offline guard
+probes reject disabled delegation and nonselected wrappers. Read-only Codex
+still has tools and the legacy wrapper retains its own environment/spare policy;
+this is not a qualified no-tools app transport. The restricted SDK neither
+launches Codex nor treats a provider error as fallback authority.
+
 ### Explicit standalone provider preference and current DeepSeek routes
 
 The November 4 CLI qualification adds an explicit personal provider preference
