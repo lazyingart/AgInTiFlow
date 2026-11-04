@@ -566,7 +566,18 @@ export async function runSafeChat(body = {}, options = {}) {
     }
 
     const response = await requestWithTimeout(client, safeChatPayload(request, config), config, abortSignal);
-    const answer = response?.choices?.[0]?.message?.content;
+    const choice = Array.isArray(response?.choices) && response.choices.length === 1 ? response.choices[0] : null;
+    const message = choice?.message;
+    // This route cannot execute tools or repair an unfinished turn. Preserve
+    // legacy replies omitting finish metadata, but never publish an explicitly
+    // partial/refused/tool response just because it contains plausible text.
+    if (!plainObject(choice) || !plainObject(message) || message.role !== "assistant"
+        || message.refusal != null || message.function_call != null
+        || (message.tool_calls != null && (!Array.isArray(message.tool_calls) || message.tool_calls.length))
+        || (Object.hasOwn(choice, "finish_reason") && choice.finish_reason !== "stop")) {
+      return failure("invalid_response", 502, false, "Safe chat provider returned an invalid response.");
+    }
+    const answer = message.content;
     if (typeof answer !== "string" || !answer.trim()) {
       return failure("invalid_response", 502, false, "Safe chat provider returned an invalid response.");
     }

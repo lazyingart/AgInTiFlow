@@ -56,6 +56,51 @@ in `evidence_json` and `events`.
 
 ## Current Campaign Findings
 
+### Complete text-only fallback turns
+
+The November 4 follow-up reproduced a separate gap in `runSafeChat`, using the
+ordinary prompt "Just say Ready." and controlled provider replies. Sixteen of
+23 new cases failed before the repair: plausible text could be returned as
+success despite truncation, filtering, refusal, a wrong role, multiple choices
+or an unexpected tool/function call. The authenticated HTTP route also returned
+200 for an explicitly truncated turn. This was a text-helper response-boundary
+defect, not a provider-quality result or an application session-policy issue.
+
+Safe chat now requires one assistant text choice, no refusal or tool/function
+call, and `stop` when finish metadata is present. Replies omitting legacy finish
+metadata remain compatible. Invalid envelopes return the existing bounded
+`invalid_response`/502 with no answer, automatic repair, retry or fallback.
+English, Chinese and Japanese positive controls pass. The HTTP regression proves
+the failure stays no-store and a subsequent corrected request can succeed;
+rejected replies do not strand the concurrency slot. All 23 focused cases, the
+existing safe-chat smoke and the 38 public-planner completion cases pass.
+The full offline `npm test` suite then passed (exit 0), along with the 302-file
+syntax check, zero-finding production audit and private-path package scan.
+
+Safe chat remains a stateless text helper, not an AgInTi Agent session engine.
+Applications retain conversation, account, tool, consent and provider authority.
+The separate restricted-application SDK and AgInTiLite were not changed.
+
+### Published backend checkpoint
+
+`0.20.340-integration.0` was published from commit
+`4bf5d4fe3ac58c5ae10c49a719226da4a05e92a3` by the established tagged GitHub
+workflow, run `41839822662`. Its full suite, production audit and package gates
+passed before publication. The registry tarball matched the locally qualified
+archive byte-for-byte; its published provenance identifies that exact commit.
+All 44 shipped completion/helper/dependency regressions passed from a fresh
+registry-artifact install. Both globally installed CLIs report the exact version;
+no active global consumer was present and no production service was restarted.
+The `integration` dist-tag advanced; stable `latest` was not promoted.
+
+The earlier manual workflow dispatch failed before publication because its event
+did not satisfy the existing GitHub nested-bubblewrap exception contract. The
+normal tag-push workflow passed without weakening that guard. Registry metadata
+briefly lagged the successful publish; a fresh registry read and exact artifact
+install verified propagation. The private local npm token was not used for the
+successful OIDC publication. Nutstore release receipts are under
+`Projects/AgInTi/2026-11-04-release-0.20.340-integration.0/`.
+
 ### Backend dependency qualification
 
 The November 4 production-dependency audit identified ten advisories in the

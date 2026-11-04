@@ -1,6 +1,6 @@
 # Safe Chat
 
-AgInTiFlow provides an optional narrow text fallback for server applications. It calls a server-owned DeepSeek route directly and intentionally has no agent loop, tools, filesystem, shell, browser, sessions, artifacts, or persistence.
+AgInTiFlow provides an optional narrow text fallback for server applications. It calls an explicitly server-selected provider directly and has no agent loop, tools, filesystem, shell, browser, sessions, artifacts, or persistence.
 
 This service is suitable for a bounded fallback response after an application has already classified a primary provider quota or capacity error. It must not be exposed directly to an end-user client.
 
@@ -17,6 +17,7 @@ Required server environment:
 
 ```bash
 export AGINTI_SAFE_CHAT_ENABLED=1
+export AGINTI_SAFE_CHAT_PROVIDER=deepseek
 export AGINTI_SAFE_CHAT_BEARER_TOKEN=server-owned-random-value
 export DEEPSEEK_API_KEY=server-owned-deepseek-key
 ```
@@ -34,7 +35,12 @@ export AGINTI_SAFE_CHAT_OUTPUT_CHARS=12000
 
 Do not put the bearer token or DeepSeek key in client code, request bodies, command-line arguments, logs, or source control. Use a protected service environment file or secret store.
 The bearer token must contain at least 24 characters.
-The provider endpoint is fail-closed to the exact production hostname `api.deepseek.com` over HTTPS. Credentials, query strings, fragments, alternate hosts, and non-default ports are rejected.
+The example explicitly selects DeepSeek. Without an explicit safe-chat provider,
+selection follows the server's `AGENT_PROVIDER` or the LocalLLM baseline; a
+hosted key alone does not select a hosted provider. Hosted endpoints must be
+HTTPS and non-loopback. LocalLLM must be loopback-only. URL credentials, query
+strings and fragments are rejected. Endpoint/model configuration belongs to the
+host, not the request; operators must restrict egress to their approved origin.
 
 ## API
 
@@ -82,6 +88,13 @@ Response:
 Compatibility aliases are available at `/api/safe-chat/status` and `/api/safe-chat`.
 
 The request schema accepts only `prompt`, bounded `history`, and an optional short locale. Client-controlled provider, model, key, base URL, system prompt, tool, filesystem, command, environment, and sandbox fields are rejected. Responses never expose provider/model names or upstream diagnostics.
+
+Success requires one assistant text choice with no refusal or tool/function
+call. If finish metadata is present, it must be `stop`; legacy responses that
+omit it remain compatible. Truncated, filtered, ambiguous or tool-shaped turns
+return `invalid_response` with HTTP502 and no answer. The helper does not retry,
+repair, execute tools or switch providers after such a failure. Callers must not
+commit an `ok:false` response as a completed conversation answer.
 
 If the calling server cancels a programmatic request or its HTTP connection closes before the response, the upstream request is aborted. Programmatic callers receive a frozen, non-retryable `cancelled` result; a disconnected HTTP caller receives no late response.
 
