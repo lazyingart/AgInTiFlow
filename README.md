@@ -255,6 +255,14 @@ in depth, not a guarantee that arbitrary sensitive content will be detected.
 
 ## Extraction and qualification
 
+Preview 5 withdraws read tools on the last provider turn and after the read
+budget is spent. A transient system instruction requests final JSON only when
+existing authorized evidence suffices. History/results, schemas and output
+budget are preserved. No extra call, summary, formatter or fallback is added;
+ignored limits and invalid answers still reject. No-tools request bytes remain
+unchanged. The host still owns mandatory reads, factual/reference validation,
+revision checks and writes. Five additional offline groups cover these gates.
+
 Derived from AgInTiFlow commit
 `e4c16b0610c41e690d9288739561a5a7e187cc9d`, Apache-2.0.
 `redaction.js` is unchanged. Preview 2's contract module is byte-identical to
