@@ -80,6 +80,52 @@ export function text(value, max, allowEmpty = false) {
   return value;
 }
 
+// JSON.parse validates grammar but silently keeps the last duplicate key. Scan
+// the already bounded document as well, comparing decoded keys in every object.
+// Never repair/truncate provider JSON or let ambiguous tool arguments dispatch.
+export function parseRestrictedJson(value) {
+  text(value, 256 * 1024);
+  let result;
+  try { result = JSON.parse(value); } catch { fail("PROVIDER_PROTOCOL_INVALID"); }
+  let offset = 0, nodes = 0;
+  const whitespace = () => { while (/[\x20\t\r\n]/.test(value[offset] || "x")) offset++; };
+  function string() {
+    const start = offset++;
+    while (offset < value.length) {
+      const char = value[offset++];
+      if (char === "\\") offset++;
+      else if (char === '"') return JSON.parse(value.slice(start, offset));
+    }
+    fail("PROVIDER_PROTOCOL_INVALID");
+  }
+  function visit(depth) {
+    if (++nodes > 20_000 || depth > 32) fail("DATA_LIMIT");
+    whitespace();
+    const type = value[offset];
+    if (type === '"') { string(); return; }
+    if (type !== "{" && type !== "[") {
+      while (offset < value.length && !/[\x20\t\r\n,}\]]/.test(value[offset])) offset++;
+      return;
+    }
+    offset++; whitespace();
+    const closing = type === "{" ? "}" : "]", keys = new Set();
+    if (value[offset] === closing) { offset++; return; }
+    while (true) {
+      if (type === "{") {
+        const key = string();
+        if (keys.has(key)) fail("PROVIDER_PROTOCOL_INVALID");
+        keys.add(key); whitespace(); offset++; // grammar already proves ':'
+      }
+      visit(depth + 1); whitespace();
+      if (value[offset++] === closing) return;
+      whitespace(); // grammar already proves ',' followed by the next value/key
+    }
+  }
+  visit(0); whitespace();
+  if (offset !== value.length) fail("PROVIDER_PROTOCOL_INVALID");
+  return jsonSnapshot(result);
+}
+
 export function assertNoCredentials(value) {
   if (typeof value === "string") {
     if (hasSensitiveText(value) || /-----BEGIN .*PRIVATE KEY-----|\beyJ[\w-]+\.eyJ[\w-]+\.[\w-]+/.test(value)) fail("SENSITIVE_DATA");

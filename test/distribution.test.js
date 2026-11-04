@@ -116,6 +116,17 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
       assert.equal(result.schemaVersion, "aginti-restricted-application-v1");
       assert.equal(calls, 1);
       assert.equal(Object.isFrozen(result.proposal), true);
+      const native = (content, extra = {}) => ({choices:[{finish_reason:"stop",message:{role:"assistant",content,...extra}}]});
+      for (const raw of [
+        native('{"reply":"first","reply":"last"}'),
+        native('{"reply":"valid"}', {function_call:{name:"undeclared",arguments:"{}"}}),
+        native('{"reply":"valid"}', {tool_calls:{}}),
+        native('{"reply":"valid"}', {refusal:false})
+      ]) {
+        const provider = root.createRestrictedOpenAIProvider({model:"offline-fixture",supportsImages:false,complete:async () => raw});
+        const guarded = root.createRestrictedApplicationRunner({provider,tools:[],instructions:"Proposal only.",outputSchema:schema});
+        await assert.rejects(guarded.run({input:[{type:"text",text:"Review this record."}]}), {code:"PROVIDER_FAILED"});
+      }
       await assert.rejects(import("@lazyingart/agintilite/src/redaction.js"), {code:"ERR_PACKAGE_PATH_NOT_EXPORTED"});
       console.log("INSTALLED_PACKAGE_OK");
     `;

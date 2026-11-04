@@ -7,5 +7,7 @@ Commit e4c16b0610c41e690d9288739561a5a7e187cc9d
 
 The standalone extraction removes image handling and vision/provider imports,
 accepts text-only input, and packages the bounded runner without dependencies.
-The contract validator and credential-text detector are retained unchanged.
+The credential-text detector is retained unchanged. Preview 2 backports the
+strict JSON parser and native metadata checks from AgInTiFlow commit
+8dc44e691e61c2c23c8cc21d6aed26939d59c33e; the contract module matches that commit.
 See README.md for the extraction boundary and qualification limits.

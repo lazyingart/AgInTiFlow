@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import {
   RestrictedApplicationError, fail, dataFields, jsonSnapshot, integer, text,
   assertNoCredentials, checkedSchema, matchesSchema,
+  parseRestrictedJson,
 } from "./restricted-application-contract.js";
 
 export { RestrictedApplicationError };
@@ -220,16 +221,19 @@ export function createRestrictedOpenAIProvider(options) {
       if (!choice || typeof choice !== "object" || Array.isArray(choice)) fail("PROVIDER_PROTOCOL_INVALID");
       const message = choice.message;
       if (!message || message.role !== "assistant" || message.refusal) fail("PROVIDER_PROTOCOL_INVALID");
+      if ((Object.hasOwn(message, "function_call") && message.function_call !== null) ||
+          (Object.hasOwn(message, "tool_calls") && message.tool_calls !== null && !Array.isArray(message.tool_calls)) ||
+          (Object.hasOwn(message, "refusal") && message.refusal !== null && typeof message.refusal !== "string")) fail("PROVIDER_PROTOCOL_INVALID");
       if (choice.finish_reason === "tool_calls" && Array.isArray(message.tool_calls) && message.tool_calls.length && !message.content) {
         return { type: "tool_calls", calls: message.tool_calls.map((call) => {
           dataFields(call, ["id", "type", "function"]);
           dataFields(call.function, ["name", "arguments"]);
           if (call.type !== "function" || typeof call.function.arguments !== "string") fail("PROVIDER_PROTOCOL_INVALID");
-          return { id: call.id, name: call.function.name, arguments: JSON.parse(call.function.arguments) };
+          return { id: call.id, name: call.function.name, arguments: parseRestrictedJson(call.function.arguments) };
         }) };
       }
       if (choice.finish_reason !== "stop" || (message.tool_calls && message.tool_calls.length) || typeof message.content !== "string") fail("PROVIDER_PROTOCOL_INVALID");
-      return { type: "final", value: JSON.parse(message.content) };
+      return { type: "final", value: parseRestrictedJson(message.content) };
     },
   });
 }

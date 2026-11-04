@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.1.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.2.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.1.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.2.tgz
 ```
 
 The package root and `/restricted-application` export the same four names:
@@ -127,6 +127,20 @@ callback: explicit model, native tools, strict `json_schema`, `max_tokens`,
 response or final JSON document. Truncated, refused, mixed and malformed output
 fails closed. Provider/model compatibility must be tested by the app.
 
+Preview 2 backports the full SDK's strict JSON parser and native metadata
+checks. Duplicate decoded keys reject at every nesting level, including escaped
+aliases and native tool arguments. A malformed call rejects the whole batch
+before any callback. Legacy `function_call`, non-array `tool_calls` and malformed
+`refusal` metadata cannot accompany a successful final answer. Neutral null/empty
+metadata and valid complete native calls remain compatible.
+
+Parsing is bounded by UTF-8 bytes, depth and node count; malformed JSON produces
+a stable protocol error without raw response text. This strengthens the optional
+wire adapter. The runner still validates schemas/credentials and flattens callback
+errors; using the adapter alone does not replace that runner boundary. Host
+transports injecting already-decoded objects remain host-owned and must reject
+ambiguous raw JSON before decoding it. No app transport is silently replaced.
+
 There is no qualified DeepSeek transport or Codex backend in this preview.
 Use the generic provider callback with an independently qualified transport.
 Do not silently downgrade schema mode or select a different model after failure.
@@ -187,7 +201,9 @@ in depth, not a guarantee that arbitrary sensitive content will be detected.
 
 Derived from AgInTiFlow commit
 `e4c16b0610c41e690d9288739561a5a7e187cc9d`, Apache-2.0.
-`restricted-application-contract.js` and `redaction.js` are unchanged.
+`redaction.js` is unchanged. Preview 2's contract module is byte-identical to
+the hardened full SDK at `8dc44e691e61c2c23c8cc21d6aed26939d59c33e`;
+only the duplicate-aware parser was added to the original contract module.
 The runner's loop, deadlines, cancellation, admission accounting, schema checks,
 batch checks and result/error envelopes are retained. The extraction:
 
@@ -206,3 +222,10 @@ consumer and enforce the closed runtime import graph. No model is invoked.
 
 These checks do not qualify live model quality, transport authentication,
 latency, citation correctness, app transactions or production isolation.
+
+The preview-2 offline review reproduced seven failing wire-integrity regressions
+on unchanged preview 1 before the backport. Positive controls preserve valid
+Unicode/escapes, neutral metadata and the already-closed newline identifier
+boundary. No model request, application edit, provider activation, deployment or
+npm publication is part of this preview. Existing vendored copies stay pinned
+until their application owner independently reviews and qualifies an upgrade.
