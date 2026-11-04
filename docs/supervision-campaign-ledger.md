@@ -1,5 +1,40 @@
 # Supervision Campaign Ledger
 
+## Restricted caller cancellation isolation — 2026-11-05
+
+The next unqualified boundary was cancellation while another application caller
+was active. Installed345 passed a real DeepSeek workflow with synthetic accounts
+sharing the same draft ID and HTTP client. One Flash request reached a deliberately
+held read; a second account began its Flash request; cancelling the first did not
+abort the second. The first returned only CANCELLED, kept its capacity charged
+until the ignored-abort read settled, and could not publish or continue afterward.
+The second produced its current-revision Chinese proposal with all other text
+preserved. A fresh, explicitly chosen Pro runner then read the unchanged first
+account and produced the requested English edit with its notes preserved.
+
+Five HTTP model dispatches and three scoped reads were observed:1+2+2 model
+turns, no automatic retries or fallback. Neither outgoing requests nor accepted
+proposals contained the other account's marker. SDK execution left host bytes
+unchanged. The separate fixture host exercised sequential CAS/apply replay only
+for the two successful proposals, advancing7->8 and31->32; the cancelled request
+has no accepted proposal or write receipt. This apply exercise is not a user
+consent, production transaction or cross-process durability qualification.
+
+No core defect reproduced and no runtime change is justified. Three new offline
+cases cover separate-account cancellation, two same-account overlapping runs
+with late rejection/capacity recovery, and cancellation after final resolution
+but before publication. All31 focused groups pass. Callbacks are trusted host
+code; this is not a sandbox, remote provider termination, production authentication
+or app rollout proof. Pro uses explicit host history in the same OS process;
+no native SessionStore/restart claim is made. LocalLLM/Codex activation is unchanged.
+Full `npm test` passes in459.098 seconds, including309-file syntax; production
+audit reports zero findings, dry pack contains489 files and diff checks pass.
+Two existing document HTTP checks skipped occupied18102. No version bump or
+publication is needed for this tests/docs-only checkpoint. A20-second labeled
+evidence replay and independently checked receipt are retained in Nutstore
+`Projects/AgInTi/2026-11-05-caller-cancellation/`. The requested private
+WeSticker SDK guidance was refreshed; its working app source/runtime was unchanged.
+
 ## LocalLLM oracle review corrections — 2026-11-05
 
 Independent owner review identified two real disagreements in the offline

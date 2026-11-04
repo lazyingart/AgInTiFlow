@@ -134,6 +134,88 @@ test("pre-aborted and mid-provider cancellation dispatch no tools or fallback", 
   assert.equal(getEventListeners(live.signal, "abort").length, 0);
 });
 
+test("cancelling a caller-bound read preserves a concurrent account and withholds late results", { timeout: 10000 }, async (t) => {
+  const lateRead = deferred(), alphaEntered = deferred(), betaEntered = deferred(), allowBeta = deferred();
+  const alpha = new AbortController(), beta = new AbortController();
+  t.after(() => { alpha.abort(); beta.abort(); lateRead.resolve({ text: "alpha-only", revision: 7 }); allowBeta.resolve(); });
+  const records = { alpha: { text: "alpha-only", revision: 7 }, beta: { text: "beta-only", revision: 31 } };
+  let alphaCalls = 0, betaCalls = 0, betaSignal;
+  const a = runner(async request => {
+    alphaCalls++; assert.ok(!JSON.stringify(request).includes("beta-only")); return call();
+  }, { limits: { maxConcurrency: 1 }, tools: [tool(async () => { alphaEntered.resolve(); return lateRead.promise; })] });
+  const b = runner(async (request, { signal }) => {
+    betaCalls++; betaSignal = signal; assert.ok(!JSON.stringify(request).includes("alpha-only"));
+    if (request.messages.at(-1).role === "tool") return final(request.messages.at(-1).value.text);
+    betaEntered.resolve(); await allowBeta.promise; return call();
+  }, { limits: { maxConcurrency: 1 }, tools: [tool(async () => records.beta)] });
+  const first = a.run({ ...input, history: [{ role: "assistant", text: "alpha-only history" }] }, { signal: alpha.signal });
+  first.catch(() => {});
+  await alphaEntered.promise;
+  const second = b.run(input, { signal: beta.signal }); second.catch(() => {});
+  await betaEntered.promise;
+  alpha.abort(); await rejects(first, "CANCELLED");
+  assert.equal(betaSignal.aborted, false); assert.equal(beta.signal.aborted, false);
+  assert.equal(getEventListeners(alpha.signal, "abort").length, 0);
+  await rejects(a.run(input), "BUSY"); assert.equal(alphaCalls, 1);
+  allowBeta.resolve();
+  const result = await second;
+  assert.equal(result.proposal.reply, "beta-only");
+  assert.deepEqual({ ...result.usage }, { steps: 2, toolCalls: 1 });
+  assert.equal(betaCalls, 2); assert.equal(getEventListeners(beta.signal, "abort").length, 0);
+  assert.deepEqual(records, { alpha: { text: "alpha-only", revision: 7 }, beta: { text: "beta-only", revision: 31 } });
+  lateRead.resolve(records.alpha); await new Promise(setImmediate);
+  assert.equal(alphaCalls, 1, "late read started another provider turn");
+  const cancelledProbe = new AbortController(); cancelledProbe.abort();
+  await rejects(a.run(input, { signal: cancelledProbe.signal }), "CANCELLED"); // Reclaimed capacity, no new provider call.
+  assert.equal(alphaCalls, 1);
+});
+
+test("same-account overlapping runs retain only cancelled live work and reclaim sibling capacity", { timeout: 10000 }, async (t) => {
+  const firstWork = deferred(), secondWork = deferred(), firstEntered = deferred(), secondEntered = deferred();
+  const firstControl = new AbortController(), secondControl = new AbortController();
+  const unhandled = []; const onUnhandled = error => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => { process.off("unhandledRejection", onUnhandled); firstControl.abort(); secondControl.abort(); firstWork.resolve(final()); secondWork.resolve(final()); });
+  let calls = 0;
+  const app = runner(async request => {
+    calls++; const current = request.messages.at(-1).content[0].text;
+    if (current === "first-marker") { firstEntered.resolve(); return firstWork.promise; }
+    assert.ok(!JSON.stringify(request).includes("first-marker"));
+    if (current === "second-marker") { secondEntered.resolve(); return secondWork.promise; }
+    assert.ok(!JSON.stringify(request).includes("second-marker"));
+    return final("fresh same-account request");
+  }, { limits: { maxConcurrency: 2 } });
+  const first = app.run({ input: [{ type: "text", text: "first-marker" }] }, { signal: firstControl.signal }); first.catch(() => {});
+  const second = app.run({ input: [{ type: "text", text: "second-marker" }] }, { signal: secondControl.signal }); second.catch(() => {});
+  await Promise.all([firstEntered.promise, secondEntered.promise]);
+  await rejects(app.run(input), "BUSY");
+  firstControl.abort(); await rejects(first, "CANCELLED");
+  await rejects(app.run(input), "BUSY"); assert.equal(calls, 2);
+  secondWork.resolve(final("second survives")); assert.equal((await second).proposal.reply, "second survives");
+  assert.equal((await app.run(input)).proposal.reply, "fresh same-account request"); assert.equal(calls, 3);
+  firstWork.reject(new Error("private late callback failure")); await new Promise(setImmediate);
+  assert.equal(unhandled.length, 0);
+  assert.equal((await app.run(input)).status, "completed"); assert.equal(calls, 4);
+  for (const control of [firstControl, secondControl]) assert.equal(getEventListeners(control.signal, "abort").length, 0);
+});
+
+test("cancellation before final publication defeats a resolved proposal without cancelling its sibling", { timeout: 10000 }, async (t) => {
+  const one = deferred(), two = deferred(), enteredOne = deferred(), enteredTwo = deferred();
+  const controlOne = new AbortController(), controlTwo = new AbortController();
+  t.after(() => { controlOne.abort(); controlTwo.abort(); one.resolve(final()); two.resolve(final()); });
+  const app = runner(async request => {
+    if (request.messages.at(-1).content[0].text === "first") { enteredOne.resolve(); return one.promise; }
+    enteredTwo.resolve(); return two.promise;
+  }, { limits: { maxConcurrency: 2 } });
+  const first = app.run({ input: [{ type: "text", text: "first" }] }, { signal: controlOne.signal }); first.catch(() => {});
+  const second = app.run(input, { signal: controlTwo.signal }); second.catch(() => {});
+  await Promise.all([enteredOne.promise, enteredTwo.promise]);
+  one.resolve(final("must not escape")); controlOne.abort(); two.resolve(final("allowed sibling"));
+  await rejects(first, "CANCELLED"); assert.equal((await second).proposal.reply, "allowed sibling");
+  assert.equal(controlTwo.signal.aborted, false);
+  for (const control of [controlOne, controlTwo]) assert.equal(getEventListeners(control.signal, "abort").length, 0);
+});
+
 test("tool cancellation and timeout sink late rejection; no continuation/no mutation", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const unhandled = [];

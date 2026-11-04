@@ -265,3 +265,23 @@ It does not invoke models, a database, containers or services. App-owned accepta
 must still prove authentication/transport isolation, actual LocalLLM JSON/tool
 and vision behavior, revision rebinding, apply-once under response loss, durable
 history, cancellation and qualified Codex fallback before production routing.
+
+On 2026-11-05, installed0.20.345-integration.0 passed a synthetic multi-caller
+workflow with real DeepSeek: one Flash caller was cancelled at a deliberately
+held host-read boundary while another account completed its two-turn Flash
+proposal. The late read could not produce a proposal or another model call;
+capacity stayed charged until it settled. A fresh, explicitly selected Pro
+runner then read the first account's unchanged revision and proposed its edit.
+Five transport dispatches, three account-bound reads, no automatic retry/fallback
+and no cross-account marker in outgoing requests or returned proposals were
+observed. English and Chinese content, unrelated remarks and exact IDs/revisions
+were preserved. The host supplied scoped handlers and history; this is neither
+native SessionStore nor an OS-process restart test.
+
+The fixture separately exercises host CAS/apply replay after proposal validation;
+that test action is not model authority or proof of user consent. Its sequential
+file-backed store is not a production database or retained-descriptor authority.
+The cancelled boundary was a cooperative JavaScript read, not an in-flight model
+kill or remote hard-termination proof. The31-group offline suite adds deterministic
+cross-account and same-account overlap, late rejection/capacity, final-publication
+cancellation and abort-listener cleanup controls. No runtime repair was required.
