@@ -1,5 +1,47 @@
 # Supervision Campaign Ledger
 
+## Native-turn admission and lightweight DeepSeek parity — 2026-11-05
+
+Auditing the Lite profile gap exposed a real restricted-wire-adapter defect.
+Four adversarial replay variants accompanied a valid native read with DSML,
+XML or requested-tool text. Installed345 silently discarded that competing
+protocol and ran the read. A related falsey check treated boolean false or0
+content as an empty native message. These are SDK admission defects; the raw
+text was never itself executed, and no observed live DeepSeek response is
+claimed to have produced them. Existing scope/tool/schema checks stayed intact.
+
+The correction rejects invalid native content types and known competing text
+protocol markers before any callback. It parses no additional tool syntax,
+introduces no repair/fallback call and keeps ordinary prose/neutral metadata
+compatible. Two new groups reproduce31pass/2fail before the fix and33pass after.
+English/Chinese/Japanese commentary and final JSON documentation text remain
+valid; complete/truncated markers, oversized data, falsey types and mixed native
+turns cannot start a read. Existing generic omitted-content compatibility stays.
+
+An isolated Lite preview ports the same non-thinking DeepSeek factory/guard
+block byte-for-byte without importing a provider SDK, vision, CLI or transport.
+It retains zero dependencies and seven package files. Its new export is an
+explicit wire adapter, not an HTTP client, credential loader or admission proof.
+The five previously unavailable feature groups and shared falsey-content
+regression now pass with all38 Lite groups. Existing newline-ID controls were
+already closed and are not reported as new defects. No app vendor is changed.
+
+A bounded real paired check used the full candidate with Flash and Lite with
+Pro. Each performed two HTTP requests/one scoped read and returned an exact
+current draft title/ID/revision. Host records stayed unchanged. Captured native
+responses replayed through the other distribution reproduced both outgoing
+requests and final results with no extra inference. These are four live HTTP
+dispatches plus offline replays, not four independent live trials or universal
+provider/app qualification. The existing LocalLLM profile/version bindings and
+the maintenance fence remain unchanged; neither new package is implicitly admitted.
+
+The final full `npm test` exits0 in444.546s; syntax309 files, audit0 and the
+489-file dry package pass. Two existing fixed-port18102 document HTTP checks
+remain skipped because the listener is occupied; no foreign service is stopped.
+Lite check and all38 tests pass, including an offline packed import with network
+forbidden. Optional Codex CLI advice retains its separately qualified opt-in
+contract; this admission repair adds no app Codex transport or automatic fallback.
+
 ## Restricted caller cancellation isolation — 2026-11-05
 
 The next unqualified boundary was cancellation while another application caller

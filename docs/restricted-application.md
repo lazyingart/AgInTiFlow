@@ -146,6 +146,14 @@ Complete native tool turns may contain assistant commentary; that text is
 discarded, never treated as a final answer or parsed into commands. Optional
 native call `index` must equal its batch ordinal before removal. Names, IDs,
 argument schemas and the complete batch still pass the normal runner gates.
+Commentary containing known DSML, XML, requested-tool or JSON/YAML tool-envelope
+markers rejects the whole turn before a read; it is never parsed as commands or
+silently discarded alongside native calls. Ordinary English/Chinese/Japanese
+prose remains compatible, and protocol labels inside a valid final JSON value
+remain data. Native `content` must be text or null; boolean/number coercion is
+not an empty assistant message. The generic adapter preserves its existing
+compatibility with omitted content on complete native tool turns. See the
+[Chat Completions schema](https://api-docs.deepseek.com/api/create-chat-completion/).
 Unknown fields, inconsistent indices, nonempty thinking output, refusal,
 partial/blank responses and raw textual tool envelopes reject. Duplicate JSON
 keys, including escaped aliases, reject in both final JSON and tool arguments;

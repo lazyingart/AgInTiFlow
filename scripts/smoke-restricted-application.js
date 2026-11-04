@@ -461,6 +461,68 @@ test("DeepSeek JSON-object output still requires the full host schema", async ()
   }
 });
 
+test("native tool turns reject falsey non-text content before any read", async () => {
+  for (const make of [
+    complete => createRestrictedOpenAIProvider({ model: "explicit", supportsImages: false, complete }),
+    complete => restricted.createRestrictedDeepSeekProvider({ model: "deepseek-flash", complete }),
+  ]) {
+    for (const content of [false, 0, true, 1, [], {}]) {
+      let turns = 0, reads = 0;
+      const provider = make(async () => ({ choices: [++turns === 1
+        ? { finish_reason: "tool_calls", message: { role: "assistant", content, tool_calls: [{ id: "c1", type: "function", function: { name: "record_search", arguments: '{"query":"draft"}' } }] } }
+        : { finish_reason: "stop", message: { role: "assistant", content: '{"reply":"proposal"}' } }] }));
+      await rejects(runner(undefined, { provider, tools: [tool(async () => { reads++; return { text: "scoped", revision: 1 }; })] }).run(input), "PROVIDER_FAILED");
+      assert.equal(reads, 0); assert.equal(turns, 1);
+    }
+    for (const content of [null, ""]) {
+      let turns = 0, reads = 0;
+      const provider = make(async () => ({ choices: [++turns === 1
+        ? { finish_reason: "tool_calls", message: { role: "assistant", content, tool_calls: [{ id: "c1", type: "function", function: { name: "record_search", arguments: '{"query":"draft"}' } }] } }
+        : { finish_reason: "stop", message: { role: "assistant", content: '{"reply":"proposal"}' } }] }));
+      assert.equal((await runner(undefined, { provider, tools: [tool(async () => { reads++; return { text: "scoped", revision: 1 }; })] }).run(input)).status, "completed");
+      assert.equal(reads, 1); assert.equal(turns, 2);
+    }
+  }
+  // Preserve the generic adapter's existing compatibility with omitted content.
+  let turns = 0;
+  const provider = createRestrictedOpenAIProvider({ model: "explicit", supportsImages: false, complete: async () => ({ choices: [++turns === 1
+    ? { finish_reason: "tool_calls", message: { role: "assistant", tool_calls: [{ id: "c1", type: "function", function: { name: "record_search", arguments: '{"query":"draft"}' } }] } }
+    : { finish_reason: "stop", message: { role: "assistant", content: '{"reply":"proposal"}' } }] }) });
+  assert.equal((await runner(undefined, { provider, tools: [tool()] }).run(input)).status, "completed");
+});
+
+test("DeepSeek native commentary cannot conceal another text tool protocol", { timeout: 10000 }, async () => {
+  const conflicting = [
+    '<｜DSML｜tool_calls><｜DSML｜invoke name="other_tool">', '<｜｜DSML｜｜tool_calls', '<|DSML|tool_calls>',
+    '< ｜DSML｜tool_calls extra="yes">', '<tool_calls><invoke name="other_tool"/></tool_calls>', '<TOOL_CALL',
+    '<function_call name="other_tool">', 'Requested tool: other_tool\nArguments: {}',
+    '先读取。\nRequested tool: other_tool', '{"tool_calls":[{"name":"other_tool"}]}',
+    '{"function_call":{"name":"other_tool"}}', '<' + ' '.repeat(120000) + '|DSML|tool_calls',
+    "{'tool_calls': [{'name': 'other_tool'}]}", 'tool_calls: [{name: other_tool}]',
+    'x'.repeat(262144),
+  ];
+  for (const model of ["deepseek-flash", "deepseek-v4-pro"]) {
+    for (const content of conflicting) {
+      let turns = 0, reads = 0;
+      const provider = restricted.createRestrictedDeepSeekProvider({ model, complete: async () => ({ choices: [++turns === 1
+        ? { finish_reason: "tool_calls", message: { role: "assistant", content, tool_calls: [{ id: "c1", type: "function", function: { name: "record_search", arguments: '{"query":"draft"}' } }] } }
+        : { finish_reason: "stop", message: { role: "assistant", content: '{"reply":"proposal"}' } }] }) });
+      await rejects(runner(undefined, { provider, tools: [tool(async () => { reads++; return { text: "scoped", revision: 1 }; })] }).run(input), "PROVIDER_FAILED");
+      assert.equal(reads, 0); assert.equal(turns, 1);
+    }
+    for (const content of ["Let me read the current note first.", "我先读取当前记录。", "現在の記録を読みます。", "DSML and tool_calls are names discussed in the document."]) {
+      let turns = 0, reads = 0;
+      const provider = restricted.createRestrictedDeepSeekProvider({ model, complete: async () => ({ choices: [++turns === 1
+        ? { finish_reason: "tool_calls", message: { role: "assistant", content, tool_calls: [{ id: "c1", type: "function", function: { name: "record_search", arguments: '{"query":"draft"}' } }] } }
+        : { finish_reason: "stop", message: { role: "assistant", content: '{"reply":"proposal"}' } }] }) });
+      assert.equal((await runner(undefined, { provider, tools: [tool(async () => { reads++; return { text: "scoped", revision: 1 }; })] }).run(input)).proposal.reply, "proposal");
+      assert.equal(reads, 1); assert.equal(turns, 2);
+    }
+    const provider = restricted.createRestrictedDeepSeekProvider({ model, complete: async () => ({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"reply":"The <tool_calls> label is documentation data."}' } }] }) });
+    assert.equal((await runner(undefined, { provider }).run(input)).proposal.reply, "The <tool_calls> label is documentation data.");
+  }
+});
+
 test("DeepSeek blank/partial/refused/raw/mixed/thinking/legacy responses fail without retry or reads", async () => {
   const cases = [
     { finish_reason: "stop", message: { role: "assistant", content: "  " } },

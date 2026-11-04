@@ -233,6 +233,7 @@ export function createRestrictedOpenAIProvider(options) {
       const message = choice.message;
       if (!message || message.role !== "assistant" || message.refusal) fail("PROVIDER_PROTOCOL_INVALID");
       if ((Object.hasOwn(message, "function_call") && message.function_call !== null) ||
+          (Object.hasOwn(message, "content") && message.content !== null && typeof message.content !== "string") ||
           (Object.hasOwn(message, "tool_calls") && message.tool_calls !== null && !Array.isArray(message.tool_calls)) ||
           (Object.hasOwn(message, "refusal") && message.refusal !== null && typeof message.refusal !== "string")) fail("PROVIDER_PROTOCOL_INVALID");
       if (choice.finish_reason === "tool_calls" && Array.isArray(message.tool_calls) && message.tool_calls.length && !message.content) {
@@ -247,6 +248,13 @@ export function createRestrictedOpenAIProvider(options) {
       return { type: "final", value: parseRestrictedJson(message.content) };
     },
   });
+}
+
+function containsTextToolProtocol(content) {
+  // The bounded choices snapshot has already validated bytes/JSON. Detect
+  // competing protocol markers, never parse them into commands or tool calls.
+  return /<\s*[|｜]{1,2}\s*DSML\b|<\s*(?:\/\s*)?(?:tool_calls?|function_calls?)\b/i.test(content) ||
+    /\bRequested[ \t]+tool[ \t]*:|["'](?:tool_calls|function_call)["'][ \t\r\n]*:|(?:^|\n)[ \t]*(?:tool_calls|function_call)[ \t]*:/i.test(content);
 }
 
 // Explicit non-thinking text profile, not a fallback from JSON Schema. The host
@@ -298,6 +306,7 @@ export function createRestrictedDeepSeekProvider(options) {
       // text; the shared parser and runner still validate the entire native
       // batch before dispatching any declared read.
       if (choice.finish_reason === "tool_calls" && typeof message.content === "string" && calls?.length) {
+        if (containsTextToolProtocol(message.content)) fail("PROVIDER_PROTOCOL_INVALID");
         return { choices: [{ ...choices[0], message: { ...choice.message, tool_calls: calls, content: null } }] };
       }
       return { choices: [{ ...choices[0], message: { ...choice.message, ...(calls ? { tool_calls: calls } : {}) } }] };
