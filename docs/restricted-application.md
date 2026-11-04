@@ -12,6 +12,12 @@ tracking, and cancellation/cleanup qualification. The generic SDK does not infer
 that authority from a model name or response header. This suite adds no endpoint,
 automatic fallback or application activation.
 
+The oracle admits only the selected profile's exact request alias or resolved
+model tag and hashes the original incoming spelling and bytes. Dispatch must
+occur at or after owner issuance, independently of the permitted client/server
+clock difference. Equal wire bodies do not admit a different package release:
+the profile still binds its reviewed client version and package/harness hashes.
+
 Node 22 ESM, Apache-2.0. Import
 `@lazyingart/agintiflow/restricted-application`. This additive entry point is
 separate from the CLI, Studio and `/agent/v1` server. It starts no listener,

@@ -1,5 +1,41 @@
 # Supervision Campaign Ledger
 
+## LocalLLM oracle review corrections — 2026-11-05
+
+Independent owner review identified two real disagreements in the offline
+conformance oracle: it admitted dispatch before owner issuance inside the client
+clock allowance, and it rejected the profile's explicitly admitted resolved
+model spelling. Two new regression groups reproduced both against the prior
+checkpoint; the other sixteen groups passed. These were test-validator defects,
+not deployed provider failures or evidence of an admitted local runtime.
+
+The oracle now enforces owner issue <= dispatch separately from client clock
+agreement and accepts exactly the admitted alias or resolved tag. It preserves
+the incoming model and all wire/canonical/upstream hashes. Eighteen groups pass,
+including exact issue equality, permitted and excessive client skew, both host
+namespaces/client variants, foreign model rejection and stale alias-proof reuse.
+Existing pinned request vectors, normative owner contract and schema are unchanged.
+
+Both actual full/Lite SDKs emitted eight equal-byte bodies covering the two
+hosts, alias/resolved spellings and the existing English-initial/Chinese-follow-up
+shapes. An independent Python validator checks the owner schema and reproduces
+wire, canonical and upstream hashes. This is request-shape evidence with
+fabricated provider replies; it does not prove live language/fact quality or
+the plan's four sequential trials per host. The current full SDK source is
+byte-identical to the reviewed SDK, but package345 is not admitted by a proposed
+profile pinned to344. Equal source/payload does not override that binding.
+
+Only tests and documentation changed. The oracle remains excluded from the npm
+surface; runtime, exports, dependencies and installed version345 are unchanged.
+No LocalLLM HTTP/model/credential, service or tunnel operation occurred. Protected
+acceptance storage, live lease/resource proof, hard cancellation and functional
+admission on both hosts remain missing. The functional-admission ledger case
+stays prerequisite_missing. Qualification results and owner response are in the
+dated offline correction checkpoint; no redundant npm publication is needed.
+The full `npm test` passes in419.963 seconds, including309-file syntax; audit
+reports zero findings and dry packing contains489 files with the oracle/test
+excluded. Two existing fixed-port document HTTP checks skipped occupied18102.
+
 ## Optional Codex review through the native runtime — 2026-11-05
 
 A normal read-only source review reproduced a core instruction-following gap:

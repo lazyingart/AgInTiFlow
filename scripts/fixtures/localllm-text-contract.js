@@ -66,10 +66,10 @@ export function strictEntity(value, limit = 262144) {
   return Object.freeze({ bytes, value: parseRestrictedJson(text) });
 }
 
-export function validateRequest(entity, model) {
+export function validateRequest(entity, model, resolvedModel) {
   const { bytes, value } = strictEntity(entity, 16384);
   exact(value, ["model", "messages", "response_format", "max_tokens", "stream", "temperature"]);
-  requireTrue(value.model === model && value.stream === false && value.temperature === 0);
+  requireTrue((value.model === model || (resolvedModel !== undefined && value.model === resolvedModel)) && value.stream === false && value.temperature === 0);
   matching(value.model, modelPattern);
   safeInteger(value.max_tokens, 1, 128);
   same(value.response_format, { type: "json_schema", json_schema: { name: "application_proposal", strict: true, schema: replySchema } });
@@ -161,11 +161,14 @@ export function validateResponse(input) {
   const p = validateProfile(profile, acceptance, start);
   validateProfile(p, acceptance, arrival);
   requireTrue(Number.isSafeInteger(elapsedMs) && elapsedMs >= 0 && elapsedMs < Math.min(60000, timestamp(p.expiresAt) - start));
-  const request = validateRequest(requestBytes, p.model.requestAlias);
+  // Preserve the incoming spelling and bytes. The profile admits exactly its
+  // alias or resolved tag, not another host's model or an implicit rewrite.
+  const request = validateRequest(requestBytes, p.model.requestAlias, p.model.resolvedId);
   const response = strictEntity(responseBytes);
   const identity = decodeIdentity(rawHeaders);
   const dispatched = timestamp(identity.dispatchedAt), completed = timestamp(identity.completedAt);
-  requireTrue(dispatched >= start - 5000 && dispatched <= completed && completed < timestamp(p.expiresAt) && completed <= arrival + 5000);
+  // Inter-host clock allowance is separate from the owner's issuance bound.
+  requireTrue(dispatched >= timestamp(p.issuedAt) && dispatched >= start - 5000 && dispatched <= completed && completed < timestamp(p.expiresAt) && completed <= arrival + 5000);
   same(identity, { schemaVersion: "localllm-aginti-response-identity-v1", outcome: "complete", requestId, profileId: p.profileId, profileGeneration: p.generation,
     profileSha256: acceptance.profileSha256, hostId: p.hostId, apiReleaseId: p.release.apiReleaseId, model: p.model.resolvedId, modelManifestSha256: p.model.manifestSha256,
     canaryReceiptSha256: p.canary.receiptSha256, clientWireSha256: request.wireSha256, clientCanonicalSha256: request.canonicalSha256,

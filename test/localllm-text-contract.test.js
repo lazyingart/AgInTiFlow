@@ -47,7 +47,9 @@ function acceptance(p) {
 function responseFixture(body, p = profile()) {
   const requestBytes = bytes(body), response = { id: "synthetic-native-response", model: p.model.resolvedId, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: '{"reply":"amber"}' } }] };
   const input = { profile: p, acceptance: acceptance(p), requestBytes, responseBytes: bytes(response), rawHeaders: [], requestId, startedAt, arrivedAt, elapsedMs: 1000 };
-  const request = validateRequest(requestBytes, p.model.requestAlias);
+  // Build structurally valid proofs even for an unadmitted model. Admission is
+  // the response validator's responsibility, not this synthetic fixture's.
+  const request = validateRequest(requestBytes, body.model);
   let identity = { schemaVersion: "localllm-aginti-response-identity-v1", outcome: "complete", requestId, profileId: p.profileId, profileGeneration: p.generation,
     profileSha256: input.acceptance.profileSha256, hostId: p.hostId, apiReleaseId: p.release.apiReleaseId, model: p.model.resolvedId, modelManifestSha256: p.model.manifestSha256,
     canaryReceiptSha256: p.canary.receiptSha256, clientWireSha256: request.wireSha256, clientCanonicalSha256: request.canonicalSha256,
@@ -80,6 +82,53 @@ test("Mac model selection is actual SDK emission and changes only the host-selec
     validateRequest(bytes(mac), "localllm-qwen36");
     const fixture = responseFixture(mac, profile("mac"));
     assert.equal(validateResponse(fixture.input).reply, "amber");
+  }
+});
+
+test("owner issuance bounds dispatch independently of the permitted client clock skew", async () => {
+  for (const hostId of ["workstation", "mac"]) for (const variant of ["full", "lite"]) {
+    const p = profile(hostId, variant); p.issuedAt = startedAt;
+    const body = await emittedRequest(inputs["english-initial"], p.model.requestAlias);
+    const beforeIssue = responseFixture(body, p);
+    beforeIssue.identity.dispatchedAt = "2026-11-05T01:00:09Z"; beforeIssue.seal();
+    assert.throws(() => validateResponse(beforeIssue.input), `${hostId}/${variant}: dispatch before owner issue`);
+
+    const atIssue = responseFixture(body, p);
+    atIssue.input.startedAt = "2026-11-05T01:00:12Z";
+    atIssue.input.arrivedAt = "2026-11-05T01:00:13Z";
+    atIssue.identity.completedAt = atIssue.input.arrivedAt; atIssue.seal();
+    assert.equal(validateResponse(atIssue.input).reply, "amber", "owner issue equality and bounded client skew remain valid");
+
+    const outsideSkew = responseFixture(body, p);
+    outsideSkew.input.startedAt = "2026-11-05T01:00:16Z";
+    outsideSkew.input.arrivedAt = "2026-11-05T01:00:17Z";
+    outsideSkew.identity.completedAt = outsideSkew.input.arrivedAt; outsideSkew.seal();
+    assert.throws(() => validateResponse(outsideSkew.input), "owner issue does not waive client clock agreement");
+  }
+});
+
+test("only the admitted alias or exact resolved tag is accepted without rewriting request hashes", async () => {
+  for (const hostId of ["workstation", "mac"]) for (const variant of ["full", "lite"]) {
+    const p = profile(hostId, variant);
+    for (const input of Object.values(inputs)) {
+      const alias = await emittedRequest(input, p.model.requestAlias);
+      const resolved = await emittedRequest(input, p.model.resolvedId);
+      assert.equal(canonical({ ...resolved, model: alias.model }), canonical(alias));
+      const a = responseFixture(alias, p), r = responseFixture(resolved, p);
+      assert.equal(validateResponse(a.input).reply, "amber");
+      assert.equal(validateResponse(r.input).reply, "amber", `${hostId}/${variant}: exact resolved tag`);
+      assert.notEqual(r.identity.clientWireSha256, a.identity.clientWireSha256);
+      assert.notEqual(r.identity.clientCanonicalSha256, a.identity.clientCanonicalSha256);
+      assert.notEqual(r.identity.upstreamCanonicalSha256, a.identity.upstreamCanonicalSha256);
+      a.input.requestBytes = bytes(resolved); // Same final model cannot excuse substituted incoming bytes.
+      assert.throws(() => validateResponse(a.input));
+      for (const model of [profile(hostId === "mac" ? "workstation" : "mac").model.requestAlias,
+        profile(hostId === "mac" ? "workstation" : "mac").model.resolvedId,
+        p.model.resolvedId.toUpperCase(), `${p.model.resolvedId}-other`, "ambient-alias"]) {
+        const f = responseFixture({ ...alias, model }, p);
+        assert.throws(() => validateResponse(f.input), `${hostId}/${variant}: unadmitted ${model}`);
+      }
+    }
   }
 });
 
