@@ -10,7 +10,7 @@ import test from "node:test";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const runtimeFiles = ["src/redaction.js", "src/restricted-application-contract.js", "src/restricted-application.js"];
 const packageFiles = ["LICENSE", "NOTICE", "README.md", "package.json", ...runtimeFiles].sort();
-const publicExports = ["RESTRICTED_APPLICATION_PROTOCOL", "RestrictedApplicationError", "createRestrictedApplicationRunner", "createRestrictedOpenAIProvider"].sort();
+const publicExports = ["RESTRICTED_APPLICATION_PROTOCOL", "RestrictedApplicationError", "createRestrictedApplicationRunner", "createRestrictedOpenAIProvider", "createRestrictedDeepSeekProvider"].sort();
 const metadata = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
 
 test("distribution has a closed, zero-dependency, non-executable package surface", async () => {
@@ -116,6 +116,14 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
       assert.equal(result.schemaVersion, "aginti-restricted-application-v1");
       assert.equal(calls, 1);
       assert.equal(Object.isFrozen(result.proposal), true);
+      const deepseek = root.createRestrictedDeepSeekProvider({model:"deepseek-flash",complete:async body => {
+        assert.equal(body.response_format.type,"json_object");
+        assert.equal(body.thinking.type,"disabled");
+        assert.equal(Object.hasOwn(body,"tools"),false);
+        return {choices:[{finish_reason:"stop",message:{role:"assistant",content:'{"reply":"Native DeepSeek profile"}'}}]};
+      }});
+      const nativeRunner = root.createRestrictedApplicationRunner({provider:deepseek,tools:[],instructions:"Uncommitted JSON only.",outputSchema:schema});
+      assert.equal((await nativeRunner.run({input:[{type:"text",text:"Review my draft."}]})).proposal.reply,"Native DeepSeek profile");
       const native = (content, extra = {}) => ({choices:[{finish_reason:"stop",message:{role:"assistant",content,...extra}}]});
       for (const raw of [
         native('{"reply":"first","reply":"last"}'),

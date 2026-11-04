@@ -20,17 +20,18 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.2.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.3.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.2.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.3.tgz
 ```
 
-The package root and `/restricted-application` export the same four names:
+The package root and `/restricted-application` export the same five names:
 `createRestrictedApplicationRunner`, `createRestrictedOpenAIProvider`,
-`RestrictedApplicationError`, and `RESTRICTED_APPLICATION_PROTOCOL`.
+`createRestrictedDeepSeekProvider`, `RestrictedApplicationError`, and
+`RESTRICTED_APPLICATION_PROTOCOL`.
 The protocol remains `aginti-restricted-application-v1`, with text-only input.
 Internal modules are not package exports.
 
@@ -141,10 +142,46 @@ errors; using the adapter alone does not replace that runner boundary. Host
 transports injecting already-decoded objects remain host-owned and must reject
 ambiguous raw JSON before decoding it. No app transport is silently replaced.
 
-There is no qualified DeepSeek transport or Codex backend in this preview.
-Use the generic provider callback with an independently qualified transport.
-Do not silently downgrade schema mode or select a different model after failure.
-The adapter has no streaming or provider-specific reasoning-history support.
+Preview 3 adds an explicit non-thinking DeepSeek wire profile:
+
+```js
+import {
+  createRestrictedApplicationRunner,
+  createRestrictedDeepSeekProvider,
+} from "@lazyingart/agintilite";
+
+const provider = createRestrictedDeepSeekProvider({
+  model: "deepseek-flash", // trusted host choice; Pro is deepseek-v4-pro
+  complete: (body, { signal }) => hostTransport(body, { signal }),
+});
+// Supply provider to the same bounded runner, host schemas and scoped tools.
+```
+
+Exact factory options are `model,complete`. It accepts only `deepseek-flash`
+or `deepseek-v4-pro`, returns `supportsImages:false`, requests `json_object`
+with `thinking:{type:"disabled"}`, and includes the exact final schema in the
+system instruction. Local runner/schema validation remains mandatory. This is
+an explicit profile, not an automatic downgrade from the JSON-schema adapter.
+It imports no provider SDK and starts no HTTP request. `hostTransport` is the
+application's authenticated, fixed-endpoint, no-redirect, no-retry transport.
+Its authentication, response byte limits and actual abort behavior require
+the application's own qualification.
+
+Complete native calls may carry ordinary English/Chinese/Japanese commentary.
+Known competing DSML, XML, requested-tool and JSON/YAML tool-envelope markers
+reject the whole turn before a read; they are never parsed into commands.
+Native `content` cannot be boolean/number data masquerading as an empty string.
+Neutral null/empty content stays compatible. Nonempty thinking, inconsistent
+indices, unknown model fields, duplicate arguments, partial/refused responses
+and unsupported tool names fail closed. A protocol label inside a valid final
+JSON value remains data. Thinking/history/vision/streaming profiles require
+separate support. See DeepSeek's [tool calls](https://api-docs.deepseek.com/guides/tool_calls/),
+[JSON output](https://api-docs.deepseek.com/guides/json_mode/) and
+[native message schema](https://api-docs.deepseek.com/api/create-chat-completion/).
+
+The package still supplies no credentialed HTTP client or qualified Codex
+backend. Do not silently retry, downgrade output mode or select a different
+model after failure. Existing host adapters are not replaced automatically.
 
 The host controls transport response size, endpoint/redirect policy,
 credentials, retries and cancellation. Disable automatic SDK retries when

@@ -222,6 +222,7 @@ export function createRestrictedOpenAIProvider(options) {
       const message = choice.message;
       if (!message || message.role !== "assistant" || message.refusal) fail("PROVIDER_PROTOCOL_INVALID");
       if ((Object.hasOwn(message, "function_call") && message.function_call !== null) ||
+          (Object.hasOwn(message, "content") && message.content !== null && typeof message.content !== "string") ||
           (Object.hasOwn(message, "tool_calls") && message.tool_calls !== null && !Array.isArray(message.tool_calls)) ||
           (Object.hasOwn(message, "refusal") && message.refusal !== null && typeof message.refusal !== "string")) fail("PROVIDER_PROTOCOL_INVALID");
       if (choice.finish_reason === "tool_calls" && Array.isArray(message.tool_calls) && message.tool_calls.length && !message.content) {
@@ -234,6 +235,70 @@ export function createRestrictedOpenAIProvider(options) {
       }
       if (choice.finish_reason !== "stop" || (message.tool_calls && message.tool_calls.length) || typeof message.content !== "string") fail("PROVIDER_PROTOCOL_INVALID");
       return { type: "final", value: parseRestrictedJson(message.content) };
+    },
+  });
+}
+
+function containsTextToolProtocol(content) {
+  // The bounded choices snapshot has already validated bytes/JSON. Detect
+  // competing protocol markers, never parse them into commands or tool calls.
+  return /<\s*[|｜]{1,2}\s*DSML\b|<\s*(?:\/\s*)?(?:tool_calls?|function_calls?)\b/i.test(content) ||
+    /\bRequested[ \t]+tool[ \t]*:|["'](?:tool_calls|function_call)["'][ \t\r\n]*:|(?:^|\n)[ \t]*(?:tool_calls|function_call)[ \t]*:/i.test(content);
+}
+
+// Explicit non-thinking text profile, not a fallback from JSON Schema. The host
+// still supplies its authenticated, bounded, no-retry transport. Reuse the same
+// AgInTi loop and native-call parser; schema enforcement remains local and exact.
+export function createRestrictedDeepSeekProvider(options) {
+  const fields = dataFields(options, ["complete", "model"]);
+  const complete = callback(fields.complete);
+  if (!["deepseek-flash", "deepseek-v4-pro"].includes(fields.model)) fail();
+  return createRestrictedOpenAIProvider({
+    model: fields.model, supportsImages: false,
+    async complete(body, options) {
+      const { response_format: format, ...rest } = body;
+      const messages = body.messages.map((message) => {
+        if (message.role === "system") return { role: "system", content: `${message.content}\nReturn one JSON object matching FINAL_JSON_SCHEMA:\n${JSON.stringify(format.json_schema.schema)}` };
+        if (!Array.isArray(message.content)) return message;
+        return { ...message, content: message.content.map((part) => {
+          dataFields(part, ["type", "text"]);
+          if (part.type !== "text") fail("VISION_UNAVAILABLE");
+          return part.text;
+        }).join("\n") };
+      });
+      const payload = jsonSnapshot({ ...rest, messages, response_format: { type: "json_object" }, thinking: { type: "disabled" } }, { maxBytes: 2 * 1024 * 1024 });
+      const pending = complete(payload, options);
+      if (types.isProxy(pending)) fail("PROVIDER_PROTOCOL_INVALID");
+      // Do not assimilate arbitrary thenables returned synchronously. A trusted
+      // host's own async resolution occurs before our boundary and is not a
+      // sandbox against malicious JavaScript inside that callback.
+      const raw = types.isPromise(pending) ? await pending : pending;
+      if (!raw || typeof raw !== "object" || types.isProxy(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) fail("PROVIDER_PROTOCOL_INVALID");
+      if (Object.hasOwn(raw, "then")) fail("PROVIDER_PROTOCOL_INVALID");
+      const descriptor = Object.getOwnPropertyDescriptor(raw, "choices");
+      if (!descriptor?.enumerable || !("value" in descriptor)) fail("PROVIDER_PROTOCOL_INVALID");
+      const choices = jsonSnapshot(descriptor.value);
+      if (!Array.isArray(choices) || choices.length !== 1) fail("PROVIDER_PROTOCOL_INVALID");
+      const choice = dataFields(choices[0], ["message", "finish_reason", "index", "logprobs"], ["message", "finish_reason"]);
+      if ((Object.hasOwn(choice, "index") && choice.index !== 0) || (Object.hasOwn(choice, "logprobs") && choice.logprobs !== null)) fail("PROVIDER_PROTOCOL_INVALID");
+      const message = dataFields(choice.message, ["role", "content", "tool_calls", "refusal", "reasoning_content"], ["role", "content"]);
+      if (Object.hasOwn(message, "reasoning_content") && message.reasoning_content !== null && message.reasoning_content !== "") fail("PROVIDER_PROTOCOL_INVALID");
+      if (Object.hasOwn(message, "tool_calls") && message.tool_calls !== null && !Array.isArray(message.tool_calls)) fail("PROVIDER_PROTOCOL_INVALID");
+      if (Object.hasOwn(message, "refusal") && message.refusal !== null && typeof message.refusal !== "string") fail("PROVIDER_PROTOCOL_INVALID");
+      const calls = message.tool_calls?.map((call, index) => {
+        const fields = dataFields(call, ["index", "id", "type", "function"], ["id", "type", "function"]);
+        if (Object.hasOwn(fields, "index") && fields.index !== index) fail("PROVIDER_PROTOCOL_INVALID");
+        return { id: fields.id, type: fields.type, function: fields.function };
+      });
+      // DeepSeek can accompany complete native calls with commentary. It is
+      // neither a final answer nor another tool protocol. Discard only this
+      // text; the shared parser and runner still validate the entire native
+      // batch before dispatching any declared read.
+      if (choice.finish_reason === "tool_calls" && typeof message.content === "string" && calls?.length) {
+        if (containsTextToolProtocol(message.content)) fail("PROVIDER_PROTOCOL_INVALID");
+        return { choices: [{ ...choices[0], message: { ...choice.message, tool_calls: calls, content: null } }] };
+      }
+      return { choices: [{ ...choices[0], message: { ...choice.message, ...(calls ? { tool_calls: calls } : {}) } }] };
     },
   });
 }
