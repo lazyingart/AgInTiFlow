@@ -43,7 +43,7 @@ async function runNpm(args, env) {
       env,
       stdio: ["ignore", "inherit", "inherit"],
     });
-    child.on("close", (code) => resolve(Number(code) || 0));
+    child.on("close", (code) => resolve(code === null ? 1 : Number(code)));
     child.on("error", (error) => {
       console.error(error instanceof Error ? error.message : String(error));
       resolve(1);
@@ -84,13 +84,14 @@ async function main() {
       NPM_TOKEN: token,
       NPM_CONFIG_REGISTRY: registry,
     });
-    process.exit(code);
+    // Natural exit must occur only after the private temporary config is gone.
+    process.exitCode = code;
   } finally {
-    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(tempDir, { recursive: true, force: true });
   }
 }
 
 main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+  process.exitCode = 1;
 });

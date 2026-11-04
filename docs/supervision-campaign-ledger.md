@@ -84,6 +84,17 @@ dry package inspection also passed, including the shipped regression and demo.
 This source checkpoint does not certify deployment or a new npm release; the
 dependency audit and release authentication retain their separate gates.
 
+### Private npm configuration cleanup
+
+The same checkpoint's npm authentication check exposed a separate release-helper
+defect: exiting inside the private-config `try` block skipped asynchronous
+cleanup. A terminated npm child could also be reported as successful because
+its null exit code was coerced to zero. The helper now records the exit status,
+awaits cleanup and then exits naturally; signal termination remains a failure.
+Three offline subprocess regressions use a synthetic token and a fake npm binary
+to verify cleanup and status for success, failure and child signal termination.
+No real credential is required by these tests.
+
 ### Established media-chain reuse and permission boundaries
 
 `media-chain-readiness-020` passed after reconciling a stale machine-ledger
