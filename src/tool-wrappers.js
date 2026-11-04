@@ -32,7 +32,9 @@ function cleanOutput(value, limit) {
 }
 
 function killChildTree(child, signal = "SIGTERM") {
-  if (!child || child.killed) return;
+  // `killed` records signal delivery, not exit. In particular, it must not
+  // suppress the later SIGKILL of a still-open process group.
+  if (!child || !Number.isSafeInteger(child.pid) || child.pid <= 0) return;
   try {
     if (process.platform === "win32") child.kill(signal);
     else process.kill(-child.pid, signal);
@@ -45,7 +47,25 @@ function killChildTree(child, signal = "SIGTERM") {
   }
 }
 
+function wrapperAbortError() {
+  const error = new Error("Wrapper interrupted by user.");
+  error.name = "AbortError";
+  error.code = "ABORT_ERR";
+  return error;
+}
+
+function assertWrapperNotAborted(config) {
+  if (config.abortSignal?.aborted) throw wrapperAbortError();
+}
+
+function mayTrySpare(error) {
+  return error?.name !== "AbortError" && error?.code !== "ABORT_ERR" &&
+    error?.code !== 124 && error?.code !== "WRAPPER_TERMINATION_UNPROVEN" &&
+    error?.code !== "WRAPPER_SIGNALLED" && error?.code !== "WRAPPER_PROCESS_ERROR";
+}
+
 function runWrapperProcess(spec, config) {
+  assertWrapperNotAborted(config);
   return new Promise((resolve, reject) => {
     const child = spawn(spec.command, spec.args, {
       cwd: config.commandCwd,
@@ -53,18 +73,26 @@ function runWrapperProcess(spec, config) {
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const timeoutMs = Number(config.wrapperTimeoutMs) || 120000;
+    const requestedTimeout = Number(config.wrapperTimeoutMs);
+    const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? requestedTimeout : 120000;
     const maxStdout = 512 * 1024;
     const maxStderr = 128 * 1024;
     let stdout = "";
     let stderr = "";
     let settled = false;
     let timedOut = false;
+    let aborted = false;
+    let processError = null;
+    let stopping = false;
+    let killTimer = null;
+    let closeTimer = null;
 
     const settle = (callback) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      if (closeTimer) clearTimeout(closeTimer);
       if (config.abortSignal && onAbort) config.abortSignal.removeEventListener("abort", onAbort);
       callback();
     };
@@ -75,25 +103,27 @@ function runWrapperProcess(spec, config) {
       error.stderr = stderr;
       return error;
     };
-    const onAbort = () => {
+    const stop = () => {
+      if (stopping || settled) return;
+      stopping = true;
+      killTimer = setTimeout(() => {
+        closeTimer = setTimeout(() => {
+          const error = makeError("Wrapper termination could not be confirmed.", "WRAPPER_TERMINATION_UNPROVEN");
+          if (aborted) error.name = "AbortError";
+          settle(() => reject(error));
+        }, 3000);
+        killChildTree(child, "SIGKILL");
+      }, 1200);
       killChildTree(child, "SIGTERM");
-      setTimeout(() => killChildTree(child, "SIGKILL"), 1200).unref?.();
-      const error = makeError("Wrapper interrupted by user.", "ABORT_ERR");
-      error.name = "AbortError";
-      settle(() => reject(error));
     };
-    const timer =
-      Number.isFinite(timeoutMs) && timeoutMs > 0
-        ? setTimeout(() => {
-            timedOut = true;
-            killChildTree(child, "SIGTERM");
-            setTimeout(() => killChildTree(child, "SIGKILL"), 1200).unref?.();
-          }, timeoutMs)
-        : null;
-    timer?.unref?.();
-
-    if (config.abortSignal?.aborted) return onAbort();
-    if (config.abortSignal) config.abortSignal.addEventListener("abort", onAbort, { once: true });
+    const onAbort = () => {
+      aborted = true;
+      stop();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
+    }, timeoutMs);
 
     child.stdout?.on("data", (chunk) => {
       if (stdout.length < maxStdout) stdout += chunk.toString();
@@ -102,19 +132,37 @@ function runWrapperProcess(spec, config) {
       if (stderr.length < maxStderr) stderr += chunk.toString();
     });
     child.on("error", (error) => {
+      if (Number.isSafeInteger(child.pid) && child.pid > 0) {
+        processError = makeError("Wrapper process failed; waiting for termination.", "WRAPPER_PROCESS_ERROR");
+        stop();
+        return;
+      }
       settle(() => reject(makeError(error instanceof Error ? error.message : String(error), 1)));
     });
     child.on("close", (code, signal) => {
+      if (aborted) {
+        const error = makeError("Wrapper interrupted by user.", "ABORT_ERR");
+        error.name = "AbortError";
+        settle(() => reject(error));
+        return;
+      }
       if (timedOut) {
         settle(() => reject(makeError(`Wrapper timed out after ${timeoutMs}ms.`, 124)));
         return;
       }
-      if (Number(code || 0) === 0) {
+      if (processError) {
+        settle(() => reject(processError));
+        return;
+      }
+      if (code === 0 && !signal) {
         settle(() => resolve({ stdout, stderr }));
         return;
       }
-      settle(() => reject(makeError(`Wrapper exited with ${signal || code}.`, Number.isInteger(code) ? code : 1)));
+      settle(() => reject(makeError(`Wrapper exited with ${signal || code}.`, signal ? "WRAPPER_SIGNALLED" : Number.isInteger(code) ? code : 1)));
     });
+    if (config.abortSignal) config.abortSignal.addEventListener("abort", onAbort, { once: true });
+    // Covers cancellation during spawn/setup without returning before close.
+    if (config.abortSignal?.aborted) onAbort();
   });
 }
 
@@ -240,6 +288,7 @@ export function wrapperStatusText() {
 }
 
 export async function runAgentWrapper({ wrapper, prompt }, config) {
+  assertWrapperNotAborted(config);
   if (!isKnownWrapper(wrapper)) {
     return { ok: false, wrapper, error: `Unknown wrapper: ${wrapper}` };
   }
@@ -261,7 +310,7 @@ export async function runAgentWrapper({ wrapper, prompt }, config) {
     };
   } catch (error) {
     if (error?.name === "AbortError" || error?.code === "ABORT_ERR") throw error;
-    if (wrapper === "codex") {
+    if (wrapper === "codex" && mayTrySpare(error)) {
       const fallbackSpec = wrapperCommand(wrapper, prompt, config, { fallback: true });
       try {
         const fallback = await runOnce(fallbackSpec);
@@ -318,6 +367,7 @@ function codexImageArgs(prompt, imagePaths, config, preset, outputFile) {
 }
 
 export async function runCodexImageWrapper({ prompt, imagePaths = [] }, config) {
+  assertWrapperNotAborted(config);
   if (!commandExists("codex")) {
     return { ok: false, wrapper: "codex", error: "Codex CLI is not available on PATH." };
   }
@@ -340,6 +390,7 @@ export async function runCodexImageWrapper({ prompt, imagePaths = [] }, config) 
       config
     );
     const lastMessage = await fs.readFile(outputFile, "utf8").catch(() => "");
+    assertWrapperNotAborted(config);
     return {
       stdout: cleanOutput(lastMessage || result.stdout, 24000),
       stderr: cleanOutput(result.stderr, 4000),
@@ -358,6 +409,15 @@ export async function runCodexImageWrapper({ prompt, imagePaths = [] }, config) 
     };
   } catch (error) {
     if (error?.name === "AbortError" || error?.code === "ABORT_ERR") throw error;
+    if (!mayTrySpare(error)) {
+      return {
+        ok: false,
+        wrapper: "codex",
+        error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+        stdout: cleanOutput(error.stdout, 8000),
+        stderr: cleanOutput(error.stderr, 4000),
+      };
+    }
     try {
       const fallback = await runOnce(presets.codexSpare, "fallback");
       return {

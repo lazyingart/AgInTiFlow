@@ -47,6 +47,9 @@ aginti --allow-wrappers --wrapper codex --wrapper-model gpt-5.5 "patch this bug"
 aginti --image --aux-provider venice --aux-model gpt-image-2 "generate a logo"
 ```
 
+See [Optional Codex advice](optional-codex-help.md) for the trusted CLI
+delegation boundary, cancellation behavior and spare-attempt policy.
+
 Interactive commands:
 
 ```text

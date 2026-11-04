@@ -1,5 +1,25 @@
 # Supervision Campaign Ledger
 
+## Optional advisory wrapper lifecycle — 2026-11-05
+
+Four offline regressions reproduced genuine launcher defects: pre-cancelled
+delegation spawned a child; abort returned before close; timeout launched a
+spare Codex request; and signal termination with a null exit code appeared
+successful. The correction checks cancellation before dispatch, waits for close
+with bounded TERM/KILL cleanup, preserves signal/process failure, and prohibits
+spare attempts after ambiguous termination. Normal successful advice and the
+existing ordinary-exit spare policy remain compatible.
+
+The focused test uses mocked child transports and one exact local Node fixture
+which ignores SIGTERM. No Codex/other model was invoked. Trusted CLI opt-in and
+selected-wrapper guardrails remain unchanged; no application-safe no-tools
+transport or universal delegation quality is claimed. See
+`docs/optional-codex-help.md` for usage and limitations. All 12 focused cases,
+execution-policy and perception/research smokes pass. Full `npm test` passed in
+411.01 seconds, including 307-file syntax; production dependency audit reports
+zero findings. Release/package qualification is recorded separately in the
+private machine ledger and does not establish live Codex model quality.
+
 Continuous AgInTiFlow validation uses a SQLite ledger instead of relying on a
 chat transcript. The ledger records capability coverage, realistic scenarios,
 individual test runs, runtime events, reusable fixes, versions, session IDs,
