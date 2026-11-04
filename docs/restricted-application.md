@@ -26,6 +26,20 @@ live model qualification is implied by the source export.
 
 ## Ownership and security boundary
 
+The per-turn tool catalog reflects the remaining dispatch budget. On the last
+allowed provider turn, or once the read-call budget is spent, configured read
+tools are withdrawn and a transient system instruction asks for a final proposal
+only when the supplied input and observed authorized evidence suffice. Full
+history, native tool IDs/results, output schema and output-token budget remain
+intact. No extra turn, automatic summary, repair or fallback is added. A provider
+that requests an unavailable read still fails closed. Runs configured without
+tools retain their existing request bytes.
+
+This makes a bounded final turn possible; it does not prove that a model used
+all required evidence or produced a semantically correct answer. The application
+must still validate references, current revisions and any mandatory-read policy
+before applying a proposal.
+
 The application authenticates the caller, binds read-only handlers to that
 account, supplies only authorized history/data, and applies validated proposals
 in its own revision-checked, idempotent transaction. Model arguments cannot

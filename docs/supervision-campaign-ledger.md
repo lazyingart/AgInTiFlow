@@ -1,5 +1,37 @@
 # Supervision Campaign Ledger
 
+## Bounded read-loop finalization — 2026-11-05
+
+The restricted runner advertised reads on a turn whose step/read budget could
+not execute them. A catalog-sensitive offline provider reproduces STEP_LIMIT;
+four of five corrected regression groups fail on the old Lite runtime. The
+previous real two-turn Pro failure remains failed evidence; its raw choices were
+not retained, so this is not a reconstruction of that model's exact decision.
+
+The runner now withdraws unavailable reads and adds a transient evidence-bound
+finalization instruction. It preserves all history/results, schema and output
+budget. Dispatch, cancellation, deadline, context, credential and validation
+gates remain authoritative. No synthetic proposal, extra call, fallback or
+automatic formatter is introduced. No-tools LocalLLM vectors remain unchanged;
+an equal wire body does not admit a new client package or model profile.
+
+A one-shot synthetic host fixture with ordinary English/Chinese corrections
+passes with Flash and Pro: two real requests and one caller-bound read each,
+current revision13 over stale history12, exact requested titles and all remarks
+retained, other-account marker absent, records unchanged. Lite replays both
+native exchanges byte-for-byte without further inference. This is a host-owned
+read/proposal fixture, not native session durability, production auth/store/
+transactions/consent or a latency benchmark. App adoption remains owner-owned.
+
+Five focused groups cover closed catalogs, native wire history, invalid final/
+ignored catalog failures, no-tools compatibility and cancellation/context gates.
+Full SDK43 and Lite48 tests pass, with18 LocalLLM oracle and3 proposal-recovery
+controls. Optional trusted CLI Codex advice remains qualified separately; no
+app-safe Codex fallback or LocalLLM/Mac functional admission is added.
+The full npm suite exits0 with309-file syntax; production audit reports zero
+findings. Two existing fixed-port18102 document HTTP checks skip their occupied
+port; those HTTP checks are not claimed as covered by this local run.
+
 ## Typed transport failures and exception deadlines — 2026-11-05
 
 The AiMemo qualification had an unresolved generic SDK gap: auth, quota and
