@@ -1,5 +1,38 @@
 # Supervision Campaign Ledger
 
+## Root proposal types on native provider wires — 2026-11-05
+
+The restricted SDK accepts list/scalar/root-union proposal schemas, but its
+native adapters previously sent those schemas directly to object-root wire
+protocols. DeepSeek also instructed the model to return an object matching an
+array/scalar schema. Five of six initial regression groups fail before the
+repair; the first dependency-link setup failure is retained separately and is
+not counted as a runtime reproduction. This is a generic provider-adapter gap,
+not a model-quality, prompt-specific or app-policy defect.
+
+The native adapter now envelopes only non-object final proposals in exactly
+one closed proposal property, then unwraps before the original schema check.
+Object-root profiles retain their wire, including literal proposal properties.
+Tool calls/arguments/results, output budget, cancellation, retry and routing
+policy are unchanged. Seven controlled groups cover list/scalar/union/falsey
+values, whole native read batches, malformed/duplicate/extra wrappers, caller
+alias mutation and ordinary multilingual host-backed requests.
+
+One bounded real qualification uses four DeepSeek requests in about five
+seconds: explicit Flash English and Pro Chinese, one current host read/two
+turns each. Ordered two-record lists preserve exact IDs, revisions and content
+despite stale history. Synthetic host files remain byte-identical, no automatic
+retry/fallback or unhandled rejection occurs. Independent body/source/result
+review is retained outside Git. This does not qualify production app auth/DB,
+native SessionStore restart, LocalLLM admission or live OpenAI behavior.
+
+The final focused set passes 67 groups and the full npm suite passes in
+415.164 seconds with all 353 selected code/test/package hashes unchanged.
+Syntax covers 312 files, the dependency audit has zero findings and diff checks
+pass. Two existing fixed-port document HTTP tests skip occupied 18102; the
+foreign listener remains untouched. Publication and installed-package evidence
+are separate release gates, not inferred from the source tests.
+
 ## Restricted Codex admission — prerequisite remains unavailable, 2026-11-05
 
 The remaining optional application fallback is examined with a credential-free

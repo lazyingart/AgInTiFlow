@@ -385,6 +385,17 @@ additionalProperties:false`; arrays require `items,maxItems` (optional
 Unknown keywords, `$ref`, regex/format schemas and coercion are rejected.
 Flatten app schema references explicitly and retain app-side domain validation.
 String lengths use Unicode code points; transport/context caps use UTF-8 bytes.
+For array, scalar and root `anyOf` proposals, the native OpenAI/DeepSeek adapters
+use a closed object envelope on the provider wire: `{"proposal": VALUE}`. The
+SDK unwraps only that exact final envelope and validates VALUE against the host's
+original schema. Applications still receive the original proposal type; object
+root schemas, including an application property called `proposal`, retain their
+existing wire and returned shape. Tool arguments/results are never enveloped.
+Missing/extra/duplicate keys, direct unwrapped values and invalid proposal types
+fail closed without retry. This reconciles the local schema dialect with
+[OpenAI's object-root requirement](https://developers.openai.com/api/docs/guides/structured-outputs)
+and [DeepSeek's JSON-object profile](https://api-docs.deepseek.com/guides/json_mode/).
+It does not add unsupported provider schema keywords or qualify another model.
 Enum values use JSON instance equality: object property order is irrelevant,
 array order and exact primitive types/values remain significant, and strings
 are not Unicode-normalized. Validation does not reorder the returned proposal,

@@ -269,14 +269,19 @@ export function createRestrictedOpenAIProvider(options) {
   return Object.freeze({
     supportsImages: fields.supportsImages,
     async complete(request, { signal }) {
+      // Native structured-output protocols use an object root. Keep the host's
+      // proposal schema/value unchanged; only non-object roots need a closed
+      // wire envelope. Object-root profiles retain their exact existing wire.
+      const wrapped = request.outputSchema.type !== "object";
+      const wireSchema = wrapped ? jsonSnapshot({ type: "object", properties: { proposal: request.outputSchema }, required: ["proposal"], additionalProperties: false }) : request.outputSchema;
       const messages = request.messages.map((message) => {
-        if (message.role === "system") return message;
+        if (message.role === "system") return wrapped ? { role: "system", content: `${message.content}\nFor the final transport response only, return a JSON object with exactly one key, proposal, containing the application proposal value. Do not wrap native tool calls or tool arguments.` } : message;
         if (message.role === "tool") return { role: "tool", tool_call_id: message.callId, content: JSON.stringify(message.value) };
         if (message.calls) return { role: "assistant", content: null, tool_calls: message.calls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) };
         return { role: message.role, content: message.content.map((part) => part.type === "text" ? part : ({ type: "image_url", image_url: { url: `data:${part.mediaType};base64,${part.data}` } })) };
       });
       const raw = await complete({ model, messages, ...(request.tools.length ? { tools: request.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })) } : {}),
-        response_format: { type: "json_schema", json_schema: { name: "application_proposal", strict: true, schema: request.outputSchema } },
+        response_format: { type: "json_schema", json_schema: { name: "application_proposal", strict: true, schema: wireSchema } },
         max_tokens: request.maxOutputTokens, stream: false, temperature: 0 }, { signal });
       // The SDK adds non-enumerable _request_id. Only choices is model data;
       // ignore transport metadata without invoking any accessors/hooks.
@@ -302,7 +307,9 @@ export function createRestrictedOpenAIProvider(options) {
         }) };
       }
       if (choice.finish_reason !== "stop" || (message.tool_calls && message.tool_calls.length) || typeof message.content !== "string") fail("PROVIDER_PROTOCOL_INVALID");
-      return { type: "final", value: parseRestrictedJson(message.content) };
+      const value = parseRestrictedJson(message.content);
+      if (wrapped && (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, "proposal"))) fail("PROVIDER_PROTOCOL_INVALID");
+      return { type: "final", value: wrapped ? value.proposal : value };
     },
   });
 }
