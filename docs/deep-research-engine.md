@@ -81,7 +81,20 @@ every query an unbounded agent swarm:
    closed instead of accepting generic filler. Source budgets are ceilings rather than targets, and a
    bounded diversity penalty prevents one domain from crowding every selected
    source.
-4. **Read exact sources**: `read_web_page` validates every redirect before the
+4. **Read exact sources**: research `domains` narrow the server-owned
+   `allowedDomains` policy. The effective scope is their intersection using
+   the existing parent/subdomain semantics. An empty task list retains the
+   server policy; disjoint or malformed lists fail before retrieval, synthesis
+   or checkpoint writes. Search results, PDF/alternate URLs, page redirects
+   and canonical metadata retain that effective scope. Snippet and explicitly
+   authorized hosted research receive the same narrowed domains, and cached
+   deep-research checkpoints bind the effective scope in their fingerprint.
+   This is a source-domain policy, not an allowlist for search-index transport
+   hosts, a public-suffix validator, or a JavaScript sandbox. Injected reader
+   and search callbacks remain trusted host code responsible for their own
+   I/O and returned evidence. The restricted application SDK does not import
+   these native research tools or gain web permission from this change.
+   `read_web_page` validates every redirect before the
    next request, rejects private DNS resolutions, streams bounded bytes, strips
    scripts/navigation, extracts article/main text and metadata, records hashes,
    and marks all retrieved text as untrusted evidence. Verified PDF response

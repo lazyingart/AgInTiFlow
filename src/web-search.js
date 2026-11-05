@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 
 import { XMLParser } from "fast-xml-parser";
 
-import { isDomainAllowed } from "./guardrails.js";
+import { isDomainAllowed, resolveResearchDomains } from "./guardrails.js";
 import { redactSensitiveText } from "./redaction.js";
 import { assessPublicWebQuery } from "./web-query-privacy.js";
 import { createReadRequestGate } from "./read-request-gate.js";
@@ -783,7 +783,8 @@ export async function searchWeb(args = {}, config = {}) {
   }
 
   const maxResults = Math.min(Math.max(Number(args.maxResults) || 5, 1), MAX_RESULTS);
-  const allowedDomains = normalizeList(args.domains).length ? normalizeList(args.domains) : normalizeList(config.allowedDomains);
+  const allowedDomains = resolveResearchDomains(args.domains ?? args.allowedDomains, config.allowedDomains);
+  if (allowedDomains === null) return { ok: false, toolName: "web_search", error: "Research domains are invalid or outside the server allowlist." };
   const blockedDomains = normalizeList(args.blockedDomains);
   if (config.webSearchDryRun) {
     const url = "https://example.com/agintiflow-web-search-smoke";
@@ -806,7 +807,7 @@ export async function searchWeb(args = {}, config = {}) {
           publishedAt: "",
           provider: "dry-run",
         },
-      ].slice(0, maxResults),
+      ].filter(result => sourceUrlAllowed(result.url, allowedDomains, blockedDomains)).slice(0, maxResults),
     };
   }
 
@@ -1034,12 +1035,13 @@ export async function readWebPage(args = {}, config = {}) {
   if (!isPublicWebUrl(requestedUrl)) {
     return { ok: false, toolName: "read_web_page", error: "A public http/https URL is required." };
   }
-  const allowedDomains = normalizeList(args.domains).length ? normalizeList(args.domains) : normalizeList(config.allowedDomains);
+  const allowedDomains = resolveResearchDomains(args.domains ?? args.allowedDomains, config.allowedDomains);
+  if (allowedDomains === null) return { ok: false, toolName: "read_web_page", error: "Research domains are invalid or outside the server allowlist." };
   const blockedDomains = normalizeList(args.blockedDomains);
   if (!isDomainAllowed(requestedUrl, allowedDomains) || isBlockedDomain(requestedUrl, blockedDomains)) {
     return { ok: false, toolName: "read_web_page", error: "URL is outside the allowed research domains." };
   }
-  if (typeof config.webPageReaderImpl === "function") return config.webPageReaderImpl(args, config);
+  if (typeof config.webPageReaderImpl === "function") return config.webPageReaderImpl({ ...args, domains: allowedDomains }, config);
   const fetchImpl = config.webPageFetchImpl || config.webFetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") {
     return { ok: false, toolName: "read_web_page", error: "No compatible fetch implementation is available." };

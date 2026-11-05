@@ -13,6 +13,7 @@ import {
   searchWeb,
 } from "./web-search.js";
 import { resolveWorkspacePath } from "./workspace-tools.js";
+import { resolveResearchDomains } from "./guardrails.js";
 
 export const RESEARCH_VERSION = 14;
 const DEPTH_BUDGETS = Object.freeze({
@@ -1986,6 +1987,10 @@ function publicResult(state, paths, extra = {}) {
 }
 
 export async function deepResearch(args = {}, config = {}, store = null) {
+  const domains = resolveResearchDomains(args.domains ?? args.allowedDomains, config.allowedDomains);
+  if (domains === null) return { ok: false, toolName: "deep_research", error: "Research domains are invalid or outside the server allowlist." };
+  // Bind cached checkpoints to the effective server/task intersection too.
+  args = { ...args, domains };
   const query = String(args.query || args.question || "").trim();
   if (!query) return { ok: false, toolName: "deep_research", error: "Research query is required." };
   if (Buffer.byteLength(query, "utf8") > MAX_QUERY_BYTES) {

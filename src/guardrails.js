@@ -9,6 +9,7 @@ import { normalizeProviderId } from "./provider-contract.js";
 import { resolveAuxiliaryImageEndpoint } from "./auxiliary-tools.js";
 import { splitTopLevelShellCommands, tokenizeShellWords } from "./shell-syntax.js";
 import { assessPublicWebQuery } from "./web-query-privacy.js";
+import { domainToASCII } from "node:url";
 
 const DESTRUCTIVE_KEYWORDS = [
   "delete",
@@ -161,7 +162,44 @@ export function isDomainAllowed(urlString, allowedDomains) {
   });
 }
 
+// A tool may narrow server-owned research scope, never replace it. Empty lists
+// mean unrestricted; null means invalid/disjoint and must never become []. This
+// preserves the existing parent/subdomain policy, not a public-suffix authority.
+export function resolveResearchDomains(requested, configured) {
+  const canonical = (value) => {
+    if (value === undefined || value === null || value === "") return [];
+    const list = typeof value === "string" ? value.split(",") : value;
+    if (!Array.isArray(list)) return null;
+    const result = [];
+    for (const entry of list) {
+      if (typeof entry !== "string") return null;
+      const raw = entry.trim();
+      if (!raw || /[\s/:?#@\[\]\\%*]/u.test(raw)) return null;
+      const domain = normalizeDomain(domainToASCII(raw));
+      if (!domain || domain.length > 253 || domain.split(".").some(label =>
+        label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))) return null;
+      if (!result.includes(domain)) result.push(domain);
+    }
+    return result.sort();
+  };
+  const task = canonical(requested), host = canonical(configured);
+  if (task === null || host === null) return null;
+  if (!host.length) return task;
+  if (!task.length) return host;
+  const intersection = [];
+  for (const left of task) for (const right of host) {
+    const narrower = left === right || left.endsWith(`.${right}`) ? left
+      : right.endsWith(`.${left}`) ? right : null;
+    if (narrower && !intersection.includes(narrower)) intersection.push(narrower);
+  }
+  return intersection.length ? intersection.sort() : null;
+}
+
 export function checkToolUse({ toolName, args, snapshot, config }) {
+  if (["web_search", "read_web_page", "web_research", "deep_research"].includes(toolName) &&
+      resolveResearchDomains(args.domains ?? args.allowedDomains, config.allowedDomains) === null) {
+    return { allowed: false, reason: "Research domains are invalid or outside the server allowlist.", category: "web-search" };
+  }
   if (isMcpBridgeTool(toolName)) {
     return checkMcpToolUse(toolName, args, config);
   }
@@ -223,7 +261,7 @@ export function checkToolUse({ toolName, args, snapshot, config }) {
     if (!/^https?:\/\//i.test(url)) {
       return { allowed: false, reason: "A public http/https source URL is required.", category: "web-search" };
     }
-    if (!isDomainAllowed(url, Array.isArray(args.domains) && args.domains.length ? args.domains : config.allowedDomains)) {
+    if (!isDomainAllowed(url, resolveResearchDomains(args.domains ?? args.allowedDomains, config.allowedDomains))) {
       return { allowed: false, reason: `Domain is outside the research allowlist: ${url}`, category: "web-search" };
     }
     if (Number(args.maxChars) > 40_000 || Number(args.maxPassages) > 16) {

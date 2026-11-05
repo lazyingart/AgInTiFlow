@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
-import { isDomainAllowed } from "./guardrails.js";
+import { isDomainAllowed, resolveResearchDomains } from "./guardrails.js";
 import { redactSensitiveText } from "./redaction.js";
 import { isWrapperAvailable, normalizeWrapperName, runAgentWrapper, runCodexImageWrapper } from "./tool-wrappers.js";
 import { searchWeb } from "./web-search.js";
@@ -778,7 +778,9 @@ function summarizeSnippetResults(results = []) {
 export async function webResearch(args = {}, config = {}, store = null) {
   const query = String(args.query || "").trim();
   const mode = String(args.mode || "snippets").trim().toLowerCase();
-  const domains = normalizeList(args.domains || args.allowedDomains);
+  const domains = resolveResearchDomains(args.domains ?? args.allowedDomains, config.allowedDomains);
+  if (domains === null) return { ok: false, toolName: "web_research", error: "Research domains are invalid or outside the server allowlist." };
+  args = { ...args, domains };
   const maxResults = clampInteger(args.maxResults, 1, 10, 5);
   if (!query) return { ok: false, toolName: "web_research", error: "Research query is required." };
   if (Buffer.byteLength(query, "utf8") > MAX_QUERY_BYTES) {
@@ -795,10 +797,7 @@ export async function webResearch(args = {}, config = {}, store = null) {
       timeoutMs: args.timeoutMs,
       domains,
     },
-    {
-      ...config,
-      allowedDomains: domains.length ? domains : config.allowedDomains || [],
-    }
+    config
   );
 
   const payload = {

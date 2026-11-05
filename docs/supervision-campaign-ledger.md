@@ -1,5 +1,35 @@
 # Supervision Campaign Ledger
 
+## Server-owned research scope — 2026-11-05
+
+Installed351 accepts a model-supplied outside domain in place of a configured
+research allowlist. The native guard permits the read, the reader invokes its
+fetch callback, and search admits the outside result. A persisted normal-prompt
+fixture reproduces that source read. This is a core authority-composition gap,
+not an upstream model-quality failure. All eight initial regressions fail before
+the repair; controlled transports perform no external HTTP or model requests.
+
+Research arguments now intersect with server-owned domains. Parent/subdomain
+restrictions retain their existing meaning; an empty task list keeps the server
+restriction, while invalid/disjoint lists stop before callbacks or persistence.
+Snippet research no longer replaces server configuration. Effective domains
+also bind deep-research checkpoint fingerprints and pass to explicitly permitted
+hosted research. Redirect/canonical, alternate-PDF, dry-run and cached-policy
+controls accompany the persisted read denial. These checks do not attest an
+app sandbox or constrain arbitrary injected host callbacks. Other applications,
+LocalLLM roles, credentials, services, provider defaults and Lite remain unchanged.
+
+Twelve focused groups, an independent 4,356-membership oracle and six tampered
+evidence controls pass. A later approved public-page read matches independent
+response bytes; earlier fetch failures remain recorded with original cause
+unproven. No automatic retry or new inference is added. A labelled 15-second
+evidence replay and receipts are synced to Nutstore. The first full suite stops
+because the global dependency graph needs an absent Playwright browser. After
+correcting only the owned dependency link to an existing lockfile-matched graph
+(107 installed versions, optional Darwin fsevents absent), full npm test passes
+in415.148 seconds with runtime/tests frozen. Syntax310, audit0 and diff checks
+pass; two occupied18102 HTTP checks skip without touching that foreign listener.
+
 ## Bounded scholarly-source pacing — 2026-11-05
 
 The installed350 built-in Crossref path reproduces an independent core gap:
