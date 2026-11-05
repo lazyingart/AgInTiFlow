@@ -361,17 +361,22 @@ function imagePathRequestedAsText(args = {}) {
 }
 
 function textToolRetryInstruction(response) {
+  const nativeArguments = response?.choices?.[0]?.message?.aginti_text_tool_retry?.reason === "ambiguous-native-tool-arguments";
   const offered = (toolContractFromResponse(response)?.tools || [])
     .map((tool) => String(tool?.function?.name || "").trim())
     .filter(Boolean);
   const preferred = ["write_file", "apply_patch", "finish"].filter((name) => offered.includes(name));
   return [
-    "Your previous textual tool request was malformed or truncated. It was not executed and it did not count as a tool-contract violation.",
+    nativeArguments
+      ? "Your previous native tool arguments were malformed or ambiguous. No call in that batch was executed."
+      : "Your previous textual tool request was malformed or truncated. It was not executed and it did not count as a tool-contract violation.",
     offered.length > 0
       ? `Retry with exactly one valid call from the currently offered tools: ${offered.join(", ")}.`
       : "Return one concise complete answer without any tool-call marker.",
     preferred.length > 0 ? `Prefer the task-finishing route when ready: ${preferred.join(", ")}.` : "",
-    "Use the configured textual tool-call syntax exactly. Keep arguments valid JSON, keep one call small enough to complete, and do not emit raw or partial tool-call syntax as prose.",
+    nativeArguments
+      ? "Use the configured native function-call interface with exactly one JSON object and unique keys at every level. Do not guess between repeated values, switch to a textual tool protocol, or repeat completed work."
+      : "Use the configured textual tool-call syntax exactly. Keep arguments valid JSON, keep one call small enough to complete, and do not emit raw or partial tool-call syntax as prose.",
   ]
     .filter(Boolean)
     .join("\n");

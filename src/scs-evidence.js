@@ -1624,8 +1624,29 @@ function requiresSourceGrounding(goal = "") {
   );
 }
 
+function stripPublishObservationPredicates(value = "") {
+  // A polite request to report a status/decision is not a new publish action.
+  // Remove only its local predicate, preserving later explicit instructions.
+  const text = String(value);
+  return text.replace(
+    /\b(?:tell\s+me|report|explain|say|check|verify|confirm|assess|determine|decide|show)\s+(?:whether|if)\s+(?:or\s+not\s+)?(?:to|(?:(?:we|i|you|they|it)\s+)?(?:(?:still|really|actually)\s+)*(?:(?:need|needs|want|plan|intend|have|has)\s+to|should|must|can|could|would|will))\s+(?:publish|deploy|submit|upload|release|ship)\b/giu,
+    (match, offset) => {
+      const tail = text.slice(offset + match.length, offset + match.length + 100);
+      // "check if we should deploy and if so do so" still requests execution.
+      if (/^\s*[,;]?\s*(?:and\s+)?(?:if\s+so\s+)?(?:then\s+)?(?:do\s+so|proceed|go\s+ahead)\b/iu.test(tail)) return match;
+      return "publication status";
+    }
+  ).replace(
+    /(?:是否|有(?:没|沒)有)(?:(?:已经|已經|已|曾经|曾經|曾|完成|成功|被|需要|应该|應該|要|会|會)\s*){0,4}(?:发布|發布|發佈|部署|提交|上传|上傳)/gu,
+    "状态"
+  ).replace(
+    /(?:检查|檢查|查看|查询|查詢|确认|確認|说明|說明|报告|報告|告诉我|告訴我|说清|說清)[^。；\n,，]{0,48}?(?:发布|發布|發佈|部署|提交|上传|上傳)(?:状态|狀態|情况|情況|记录|紀錄|结果|結果|历史|歷史)(?=$|[\s.,，。;；!?！？、]|以及|和|及|然后|然後|再|还|還)/gu,
+    "状态"
+  );
+}
+
 function goalRequestsPublishAction(goal = "") {
-  const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
+  const text = normalizedText(stripPublishObservationPredicates(stripCompletedWorkNarration(stripForbiddenLanguage(goal))));
   const action =
     "(?:publish|deploy|submit|upload\\s+to|generate\\s+(?:a\\s+)?video|npm\\s+publish)";
   const release =

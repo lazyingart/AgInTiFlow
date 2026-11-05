@@ -1,3 +1,5 @@
+import { parseNativeToolArguments } from "./native-tool-arguments.js";
+
 const responseContracts = new WeakMap();
 const contractMarker = Symbol("aginti.tool-contract");
 const trustedMockDryRunMarker = Symbol("aginti.tool-contract.trusted-mock-dry-run");
@@ -269,7 +271,7 @@ function recoverSingletonEnumReadCall(toolCalls, contract, validation) {
 
   let args;
   try {
-    args = JSON.parse(call.function.arguments);
+    args = parseNativeToolArguments(call.function.arguments);
   } catch {
     return null;
   }
@@ -326,7 +328,7 @@ function recoverReadFileRangeAlias(toolCalls, contract, validation) {
   }
   let args;
   try {
-    args = JSON.parse(call.function.arguments);
+    args = parseNativeToolArguments(call.function.arguments);
   } catch {
     return null;
   }
@@ -411,7 +413,7 @@ function recoverBoundedCommitSubject(toolCalls, contract, validation) {
 
   let args;
   try {
-    args = JSON.parse(call.function.arguments);
+    args = parseNativeToolArguments(call.function.arguments);
   } catch {
     return null;
   }
@@ -475,7 +477,7 @@ function normalizeBenignToolCallAnnotations(toolCalls, contract) {
 
     let args;
     try {
-      args = JSON.parse(call.function.arguments);
+      args = parseNativeToolArguments(call.function.arguments);
     } catch {
       return null;
     }
@@ -576,7 +578,7 @@ export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } 
     }
     let args;
     try {
-      args = JSON.parse(call.function.arguments);
+      args = parseNativeToolArguments(call.function.arguments);
     } catch {
       addError("TOOL_ARGUMENTS_INVALID_JSON", index, "Tool arguments must contain valid JSON.");
       continue;

@@ -31,6 +31,7 @@ import {
   estimateToolSchemaTokens,
 } from "./context-budget-controller.js";
 import { attachToolContract } from "./tool-contract.js";
+import { NativeToolArgumentsError, parseNativeToolArguments } from "./native-tool-arguments.js";
 import { scopedChatopsEvidenceGoal } from "./scs-evidence.js";
 
 function isRetainedWorkspaceProfile(config = {}) {
@@ -1119,7 +1120,35 @@ function textBeforeToolCallMarker(content = "") {
 
 export function normalizeTextToolCallResponse(response) {
   const message = response?.choices?.[0]?.message;
-  if (!message || Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return response;
+  if (!message) return response;
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+    // Validate the entire native batch before any schema recovery can erase
+    // duplicate keys or execute an otherwise valid prefix. Reuse the existing
+    // bounded syntax-repair lane; never select a last/first value or tool.
+    for (const call of message.tool_calls) {
+      if (typeof call?.function?.arguments !== "string") continue;
+      try { parseNativeToolArguments(call.function.arguments); }
+      catch (error) {
+        // Ordinary JSON syntax errors keep their established native contract
+        // repair budget/events. Only complete-but-ambiguous/noncanonical data
+        // needs interception before schema recovery can erase its evidence.
+        if (error instanceof NativeToolArgumentsError && error.kind === "syntax") continue;
+        return {
+          ...response,
+          choices: response.choices.map((choice, index) => index === 0 ? {
+            ...choice,
+            message: {
+              ...message,
+              content: "The previous native tool arguments were malformed or ambiguous and no call in that batch was executed. Retry using one valid JSON object with unique keys at every level. Do not guess which repeated value was intended or repeat completed work.",
+              tool_calls: [],
+              aginti_text_tool_retry: { reason: "ambiguous-native-tool-arguments" },
+            },
+          } : choice),
+        };
+      }
+    }
+    return response;
+  }
 
   const calls = parseTextToolCalls(message.content || "");
   if (calls.length === 0) {

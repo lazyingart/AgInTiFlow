@@ -1,5 +1,73 @@
 # Supervision Campaign Ledger
 
+## Native argument JSON has one interpretation — 2026-11-06
+
+Installed360 reproduces a core parsing gap with a normal note-summary request.
+A scripted native write_file call contains two content fields; JSON.parse keeps
+the last and writes a wrong summary. The final completion guard subsequently
+stops, but it does not undo that file mutation. This attributes the malformed
+reply to the scripted provider and the unsafe argument admission to AgInTi.
+No external model or private source is involved in the reproduction.
+
+Nine of ten initial controls fail before repair. Native batches now preflight
+strict bounded argument JSON before any schema recovery or dispatch. Repeated
+decoded keys, malformed Unicode, nonfinite overflow and structural limits fail
+closed; no value is guessed and no valid prefix executes. Tool-contract helpers
+use the same parser so a benign schema repair cannot erase the ambiguity. The
+existing bounded repair lane explicitly requests a native interface and unique
+keys. Valid raw arguments and JSON-looking text content remain unchanged.
+
+The expanded30controls pass:27 parser/normalizer/contract tests and three actual
+native child-process cases. One corrected reply creates exactly one accurate
+summary; a mixed batch creates neither prefix nor wrong artifact. Repeated
+ambiguity stops without tool activity, releases the lease, and fresh-process
+resume completes the same session with one verified summary. Persisted state and
+events do not retain the synthetic wrong-content marker. Those are scripted HTTP
+core tests, separate from any real-provider qualification or release gates.
+
+See [native tool argument integrity](native-tool-json.md). This does not qualify
+every legacy text decoder, a caller-supplied parser, semantic truth, application
+authority or all-task autonomy. Full-suite, packaged-install, registry and global
+evidence must pass separately before a release is claimed.
+
+The first full gate catches a genuine draft compatibility regression after
+348.808 seconds with 373 inputs unchanged: intercepting ordinary truncated JSON
+changed its established native one-repair path. The guard now distinguishes
+JSON grammar errors from complete-but-ambiguous/noncanonical data. Ordinary
+syntax failures retain their prior budget/events; the local-first evaluation
+returns to 18 passes. A dedicated regression preserves that distinction.
+
+## Observed publication status is not a deployment instruction — 2026-11-06
+
+The real native Flash task creates one accurate summary from a synthetic note in
+five requests. A fresh-process Pro follow-up in Chinese asks for the latency,
+whether deployment happened and the remaining check, with no file changes. The
+core incorrectly derives publish evidence from the polite question. Four failed
+completion attempts cause irrelevant canvas/AgentLink exploration and the run
+stops after ten provider requests. Input and artifact hashes remain unchanged.
+
+Eight of seventeen status/action controls fail before correction. Publication
+inference now removes only local Chinese/English observational predicates,
+retaining direct/mixed/conditional publication requests. All seventeen controls
+across three profiles pass, together with a fresh-process native session case.
+Combined with argument-integrity coverage, the focused set has 48 passing tests.
+
+Without repeating the successful Flash task, the unchanged Chinese request on
+the existing session succeeds in three Pro requests after correction. It reports
+120 to 90 ms, no production deployment and the larger-input check; the summary
+and input remain byte-identical. Runtime revision advances from the failed
+revision 2 to 3; the lease is released. The actual recovery PTY capture lasts
+11.699 seconds. Eighteen real requests include the preserved failed trial; this
+is one bounded example, not a benchmark or all-task qualification. The first
+Flash source predates later syntax-budget/intent tightening; final Pro and
+offline controls bind the final runtime separately.
+
+Final source gates pass: 48 focused tests, neighboring progressive tool selection,
+truthful completion, provider handoff and local-first evaluation, syntax 316 and
+zero audit vulnerabilities. After the preserved failed first full gate, the
+complete final suite passes in 451.926 seconds with all 374 selected inputs
+unchanged. Package, registry and global installation are separate release gates.
+
 ## Model HTTP responses have a decoded byte budget — 2026-11-06
 
 An installed359 synthetic transport accepts32MiB of assistant text, ignores an
