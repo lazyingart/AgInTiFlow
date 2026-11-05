@@ -1,5 +1,56 @@
 # Supervision Campaign Ledger
 
+## Research provenance and bounded correction — release candidate, 2026-11-05
+
+The prior failed live review proves a provider-output protocol problem: runtime
+metadata was quoted as if it occurred in retained source text. Three test-first
+native SessionStore controls reproduce the missing correction path. Policy v2
+adds one durable, same-provider quotation correction after full inventory
+validation; it never accepts the bad verdict or weakens semantic review.
+Reservations bind the exact batch and survive restart/response loss. Cancellation,
+foreign/malformed inventory and exhausted correction remain fail-closed.
+
+A new twelve-request whole-agent check then reaches valid semantic rejection,
+but replacement repeats a rejected note. The retained evidence exposes a
+contradictory synthesis instruction: put coverage gaps in uncertainties while
+requiring those entries to be source-backed. Unquoted extraction limitations
+and reader metadata were also included in supposedly verified synthesis input.
+Those observations now remain diagnostic. Bibliographic projection reduces the
+input, optional arrays may be empty, and replacement feedback binds each exact
+rejected statement to an explicit replace-or-omit action. The unchanged-rejection
+guard is preserved. The failed live attempt remains failed, not retroactively
+qualified. Prior cumulative Python requests were 34; this attempt adds 12.
+
+Focused coverage passes 77 groups, including durable retry exhaustion,
+response loss, cancellation, later-row inventory attacks, malformed reservation
+records, earlier policy refusal and synthesis input boundaries. Another live
+attempt completes native research in eight requests, but an invented CPython
+implementation subquestion prevents safe answer selection and the parent again
+paraphrases. It remains a failed final-acceptance case. Official-docs planning
+now stays within its requested source class; disclosed native coverage gaps
+cannot reopen unreviewed paraphrasing. The persisted regression covers a scoped
+answer plus a poisoned parent, retaining the native coverage caveat and all
+mandatory evidence gates.
+
+The final fresh whole-agent attempt passes in six requests: Flash parent/plan/
+extraction and Pro synthesis/assessment, then the finish-only parent turn. Its
+13 assessed statements pass without correction or replacement. Final output
+equals the native assessed answer, preserves normal termination/break/return/
+exception conditions and exact source quotations, and writes no workspace
+files. Independent fresh HTTP has the same raw HTML hash and matches all six
+extracted quotations; finite Python examples corroborate the control-flow
+conditions. A separate OS process replays the native state with no model,
+source or network calls and unchanged report/checkpoint bytes. Python live
+requests total 60 across the refinements, including the retained failures.
+This qualifies a bounded official-corpus workflow, not broad discovery, formal
+entailment, app deployment or LocalLLM admission. The full npm suite passes in
+419.497 seconds with all 337 tracked runtime/test/package inputs unchanged.
+Syntax covers 311 files and the dependency audit reports no vulnerabilities.
+The two existing document HTTP checks skip occupied port 18102; the foreign
+listener is preserved. Package inspection has 498 files and no private-state
+paths. Registry publication/install qualification is a separate pending gate;
+no publication is claimed by the source tests.
+
 ## Structured research-note authority — candidate, 2026-11-05
 
 The preceding live failure identifies a reusable report contract gap: paragraphs

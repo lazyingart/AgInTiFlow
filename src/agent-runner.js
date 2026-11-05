@@ -71,7 +71,7 @@ import {
 import { refreshCodebaseMap } from "./codebase-map.js";
 import { firstJsonObject, readImage, researchWrapper, webResearch } from "./perception-tools.js";
 import { readWebPage, searchWeb } from "./web-search.js";
-import { deepResearch, RESEARCH_VERSION, RESEARCH_SCOPE_REVIEW_POLICY, RESEARCH_SCOPE_REVIEW_LIMITS } from "./deep-research.js";
+import { deepResearch, researchCoverageCaveat, RESEARCH_VERSION, RESEARCH_SCOPE_REVIEW_POLICY, RESEARCH_SCOPE_REVIEW_LIMITS } from "./deep-research.js";
 import {
   assessBoundedTranscriptResponse,
   assessResponseOnlyContextEcho,
@@ -15857,6 +15857,7 @@ export function rememberCompletedDeepResearch(state = {}, args = {}, config = {}
       answer: result.answer || "",
       answerDigest: crypto.createHash("sha256").update(result.answer || "").digest("hex"),
       evidenceAppendixRequested: result.evidenceAppendixRequested === true,
+      answerCoverageComplete: result.answerCoverageComplete,
       artifactPath: result.artifactPath || "",
       reportPath: result.reportPath,
       scopeReview: {
@@ -15919,8 +15920,11 @@ export function retainedReadOnlyResearchAnswer(config = {}, state = {}) {
     result.answerDigest !== crypto.createHash("sha256").update(result.answer).digest("hex") ||
     Buffer.byteLength(result.answer, "utf8") > 65536 ||
     !Number.isSafeInteger(result.coverage?.verifiedClaimCount) || result.coverage.verifiedClaimCount < 1 ||
-    !Array.isArray(result.coverage?.missingQuestions) || result.coverage.missingQuestions.length ||
+    !Array.isArray(result.coverage?.missingQuestions) ||
     !result.reportPath || !fsSync.existsSync(result.reportPath)) return null;
+  const missing = result.coverage.missingQuestions.length;
+  if (missing === 0 ? result.answerCoverageComplete !== true
+    : result.answerCoverageComplete !== false || !researchCoverageCaveat(missing) || !result.answer.includes(researchCoverageCaveat(missing))) return null;
   return Object.freeze({ researchId: result.researchId, answer: result.answer });
 }
 

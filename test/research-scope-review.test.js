@@ -63,14 +63,14 @@ async function fixture(t, options = {}) {
       observed.push({ input, model: body.model, responseFormat: body.response_format });
       if (/research plan/i.test(input.task)) {
         counts.plan++;
-        return completion({ objective: question, sourcePolicy: "primary", subquestions: [{ id: "retry", question: "What is the rule and its scope?", query: "read retry documentation" }],
+        return completion({ objective: question, sourcePolicy: "primary", subquestions: [{ id: "retry", question: "What is the rule and its scope?", query: "read retry documentation" }, ...(options.extraQuestion ? [{ id: "optional", question: "What extra implementation details exist?", query: "optional implementation details" }] : [])],
           queries: ["read retry documentation"], sourceTypes: ["official documentation"], exclusions: [] });
       }
       if (/Extract only source-grounded evidence/i.test(input.task)) {
         counts.extract++;
         const row = JSON.parse(input.input);
         return completion({ sourceId: row.sourceId, relevant: true, summary: originalClaim, relevantQuestionIds: ["retry"],
-          claims: [{ claim: originalClaim, quote: selectedQuote, confidence: "high" }], limitations: [] });
+          claims: [{ claim: originalClaim, quote: selectedQuote, confidence: "high" }], limitations: options.extractionLimitations || [] });
       }
       if (/Synthesize a source-grounded/i.test(input.task)) {
         counts.synthesize++;
@@ -98,7 +98,7 @@ async function fixture(t, options = {}) {
             supportingQuotes: [{ sourceId: "S1", quote: options.scopeQuote || correct }],
           };
         }
-        if (typeof options.review === "function") decision = await options.review({ input, decision, counts });
+        if (typeof options.review === "function") decision = await options.review({ input, decision, counts, store });
         return completion(decision);
       }
       throw new Error("Unexpected research phase");
@@ -112,7 +112,7 @@ async function fixture(t, options = {}) {
     },
   };
   Object.assign(config, options.configOverrides || {});
-  const args = { query: question, depth: "quick", maxQueries: 1, maxSources: 2, sourcePolicy: "primary", researchId: "scope-contract" };
+  const args = { query: question, depth: "quick", maxQueries: options.extraQuestion ? 2 : 1, maxSources: 2, sourcePolicy: "primary", researchId: "scope-contract" };
   const execute = () => deepResearch(args, config, store);
   const file = path.join(store.artifactsDir, "deep-research-scope-contract.json");
   const markdown = path.join(store.artifactsDir, "deep-research-scope-contract.md");
@@ -137,6 +137,11 @@ test("conditional native research gets one bounded repair with complete retained
   assert.equal(Object.hasOwn(previous, "executiveSummarySourceIds"), false);
   assert.equal(Object.hasOwn(previous.sections[0].paragraphs[0], "sourceIds"), false);
   assert.equal(Object.hasOwn(previous.keyFindings[0], "sourceIds"), false);
+  const syntheses = run.observed.filter(row => /Synthesize a source-grounded/.test(row.input.task));
+  assert.ok(!syntheses[0].input.instructions.includes("put it in uncertainties instead"));
+  assert.ok(syntheses[0].input.instructions.includes("Return empty arrays"));
+  const required = syntheses[1].input.input.scopeFeedback.rejectedStatements;
+  assert.ok(required.some(row => row.statement.text === incorrect && row.requiredAction === "replace_with_retained_source_support_or_omit"));
 });
 
 test("an unsafe replacement cannot finish or expose candidate answer/report", async t => {
@@ -206,7 +211,7 @@ test("requested exact quotes reach the parent answer and cache without another r
   assert.equal(nextStepRuntimeConfig(run.config, state).nativeResearchCompletionPending, true);
 });
 
-test("canonical research completion rejects stale, altered, incomplete and compound work", async t => {
+test("canonical research completion rejects stale, altered, undisclosed gaps and compound work", async t => {
   const run = await fixture(t, { initialClaim: correct, configOverrides: { goal: `${question} Include an exact quote.` } });
   const initial = { goal: run.config.goal, meta: { goalContract: { currentHash: "canonical-research" } } };
   rememberCompletedDeepResearch(initial, run.args, run.config, run.result);
@@ -233,6 +238,19 @@ test("canonical research completion rejects stale, altered, incomplete and compo
     "Do deep research and return exactly two lines.",
     "Read the current notes/source.md before research.",
   ]) assert.equal(retainedReadOnlyResearchAnswer({ ...run.config, goal }, initial), null, goal);
+});
+
+test("assessed scoped research retains its native coverage caveat instead of reopening paraphrase", async t => {
+  const run = await fixture(t, { initialClaim: correct, extraQuestion: true, configOverrides: { goal: `${question} Include an exact quote.` } });
+  assert.equal(run.result.ok, true, run.result.error);
+  assert.equal(run.result.coverage.missingQuestions.length, 1);
+  assert.equal(run.result.answerCoverageComplete, false);
+  assert.ok(run.result.answer.includes("Coverage limitation: 1 planned research question remains outside this assessed answer."));
+  const state = { goal: run.config.goal, meta: { goalContract: { currentHash: "scoped-research" } } };
+  rememberCompletedDeepResearch(state, run.args, run.config, run.result);
+  assert.equal(retainedReadOnlyResearchAnswer(run.config, state).answer, run.result.answer);
+  state.meta.completedDeepResearch[0].result.answerCoverageComplete = true;
+  assert.equal(retainedReadOnlyResearchAnswer(run.config, state), null);
 });
 
 test("failed or dry research cannot expose assessment quotations as an accepted answer", async t => {
@@ -283,6 +301,18 @@ test("a source citation does not bless unsupported model provenance prose", asyn
   const markdown = await fs.readFile(run.markdown, "utf8");
   assert.ok(!markdown.includes(invented));
   assert.ok(markdown.includes("Reader retained truncated text for S1"));
+});
+
+test("synthesis receives verified claims but not unquoted extraction or reader metadata", async t => {
+  const run = await fixture(t, { initialClaim: correct, readerTruncated: true, extractionLimitations: ["A source-free observation cannot become a verified limitation."] });
+  assert.equal(run.result.ok, true, run.result.error);
+  const row = run.observed.find(row => /Synthesize a source-grounded/.test(row.input.task));
+  const input = typeof row.input.input === "string" ? JSON.parse(row.input.input) : row.input.input;
+  assert.equal(Object.hasOwn(input.evidence[0], "limitations"), false);
+  assert.equal(Object.hasOwn(input.sources[0], "readTruncated"), false);
+  assert.equal(Object.hasOwn(input.sources[0], "retrievedAt"), false);
+  assert.equal(input.evidence[0].claims[0].quote, quote);
+  assert.deepEqual(run.state.evidence[0].limitations, ["A source-free observation cannot become a verified limitation."]);
 });
 
 test("a same-provider schema retry can bind a missing note citation without approving the invalid report", async t => {
@@ -346,18 +376,20 @@ test("invalid string-note model reports cannot silently complete through determi
   }
 });
 
-test("version15 string-note checkpoints are refused without mutation or model dispatch", async t => {
-  const run = await fixture(t, { initialClaim: correct });
-  run.state.version = 15;
-  run.state.synthesis.uncertainties = [`${correct} [S1-C1]`];
-  await fs.writeFile(run.file, JSON.stringify(run.state));
-  const before = await fs.readFile(run.file), markdown = await fs.readFile(run.markdown), counts = { ...run.counts };
-  const result = await run.execute();
-  assert.equal(result.ok, false);
-  assert.match(result.error, /older or unsupported schema/);
-  assert.deepEqual(run.counts, counts);
-  assert.deepEqual(await fs.readFile(run.file), before);
-  assert.deepEqual(await fs.readFile(run.markdown), markdown);
+test("earlier note-policy checkpoints are refused without mutation or model dispatch", async t => {
+  for (const version of [15, 16]) {
+    const run = await fixture(t, { initialClaim: correct });
+    run.state.version = version;
+    if (version === 15) run.state.synthesis.uncertainties = [`${correct} [S1-C1]`];
+    await fs.writeFile(run.file, JSON.stringify(run.state));
+    const before = await fs.readFile(run.file), markdown = await fs.readFile(run.markdown), counts = { ...run.counts };
+    const result = await run.execute();
+    assert.equal(result.ok, false);
+    assert.match(result.error, /older or unsupported schema/);
+    assert.deepEqual(run.counts, counts);
+    assert.deepEqual(await fs.readFile(run.file), before);
+    assert.deepEqual(await fs.readFile(run.markdown), markdown);
+  }
 });
 
 test("structured note text, ID or source-binding tampering invalidates cached review", async t => {
@@ -475,13 +507,14 @@ test("cancellation during source assessment cannot return a completed answer or 
 });
 
 test("missing/foreign/duplicate verdicts, wrong digest and unsupported quote cannot grant completion", async t => {
+  const invalidQuotation = value => { value.decisions.find(row => row.verdict === "supported").supportingQuotes[0].quote = "This completely different source statement was never in the retained context."; };
   const attacks = [
     value => { value.decisions.pop(); },
     value => { value.decisions[0].statementId = "foreign"; },
     value => { value.decisions[1].statementId = value.decisions[0].statementId; },
     value => { value.requestDigest = "0".repeat(64); },
     value => { value.extra = true; },
-    value => { value.decisions.find(row => row.verdict === "supported").supportingQuotes[0].quote = "This completely different source statement was never in the retained context."; },
+    invalidQuotation,
     value => { value.decisions.find(row => row.verdict === "supported").supportingQuotes[0].sourceId = "S999"; },
     value => { const row = value.decisions.find(row => row.verdict === "supported"); row.verdict = "not_factual"; row.reason = "not_factual"; row.supportingQuotes = []; },
   ];
@@ -489,10 +522,138 @@ test("missing/foreign/duplicate verdicts, wrong digest and unsupported quote can
     const run = await fixture(t, { initialClaim: correct, review: ({ decision }) => { mutate(decision); return decision; } });
     assert.equal(run.result.ok, false);
     assert.equal(run.result.answer, "");
-    assert.equal(run.counts.review, 1);
+    assert.equal(run.counts.review, mutate === invalidQuotation ? 2 : 1);
     assert.equal(run.counts.synthesize, 1, "malformed review was treated as legitimate repair advice");
     await assert.rejects(fs.readFile(run.markdown), { code: "ENOENT" });
   }
+});
+
+test("one source-quotation correction can recover without accepting the invalid decision", async t => {
+  const run = await fixture(t, { initialClaim: correct, readerTruncated: true, review: async ({ input, decision, counts, store }) => {
+    if (counts.review === 1) {
+      decision.decisions.find(row => row.verdict === "supported").supportingQuotes[0].quote = "readerTruncated";
+    } else {
+      assert.ok(input.instructions.includes("Only sources[].retainedText"));
+      assert.deepEqual(input.input.protocolFeedback, {
+        batchIndex: 0, requestDigest: input.input.requestDigest, reason: "quotation_not_in_retained_source",
+      });
+      assert.ok(!JSON.stringify(input.input.protocolFeedback).includes("readerTruncated"));
+      const persisted = JSON.parse(await fs.readFile(path.join(store.artifactsDir, "deep-research-scope-contract.json")));
+      assert.deepEqual(persisted.scopeReview.protocolRepairs, [input.input.protocolFeedback]);
+      assert.deepEqual(persisted.scopeReview.batches, []);
+    }
+    return decision;
+  } });
+  assert.equal(run.result.ok, true, run.result.error);
+  assert.equal(run.counts.review, 2);
+  assert.equal(run.counts.synthesize, 1);
+  assert.equal(run.state.scopeReview.protocolRepairs.length, 1);
+  assert.equal(run.state.scopeReview.batches.length, 1);
+  assert.ok(!JSON.stringify(run.state.scopeReview.batches).includes('"quote":"readerTruncated"'));
+  const counts = { ...run.counts }, before = await fs.readFile(run.file);
+  const replay = await deepResearch(run.args, run.config, new SessionStore(path.join(run.root, "sessions"), "scope-contract"));
+  assert.equal(replay.ok, true, replay.error);
+  assert.deepEqual(run.counts, counts);
+  assert.deepEqual(await fs.readFile(run.file), before);
+});
+
+test("repeated invalid quotation exhausts its durable correction without restart dispatch", async t => {
+  const run = await fixture(t, { initialClaim: correct, review: ({ decision }) => {
+    decision.decisions.find(row => row.verdict === "supported").supportingQuotes[0].quote = "readerTruncated";
+    return decision;
+  } });
+  assert.equal(run.result.ok, false);
+  assert.equal(run.result.answer, "");
+  assert.equal(run.counts.review, 2);
+  assert.equal(run.state.scopeReview.protocolRepairs.length, 1);
+  assert.equal(run.state.scopeReview.batches.length, 0);
+  const before = await fs.readFile(run.file), counts = { ...run.counts };
+  const result = await deepResearch(run.args, run.config, new SessionStore(path.join(run.root, "sessions"), "scope-contract"));
+  assert.equal(result.ok, false);
+  assert.match(result.error, /correction.*exhausted/);
+  assert.deepEqual(run.counts, counts);
+  assert.deepEqual(await fs.readFile(run.file), before);
+});
+
+test("quotation correction cannot bypass unsupported semantics or report replacement", async t => {
+  const run = await fixture(t, { review: ({ decision, counts }) => {
+    if (counts.review === 1) decision.decisions.find(row => row.verdict === "unsupported").supportingQuotes[0].quote = "readerTruncated";
+    return decision;
+  } });
+  assert.equal(run.result.ok, true, run.result.error);
+  assert.equal(run.result.answer, correct);
+  assert.equal(run.counts.synthesize, 2);
+  assert.equal(run.counts.review, 3);
+  assert.equal(run.state.scopeRepairAttempted, true);
+});
+
+test("a foreign or malformed later row cannot be disguised as a quotation correction", async t => {
+  for (const corrupt of [
+    value => { value.requestDigest = "0".repeat(64); },
+    value => { value.decisions.at(-1).statementId = "foreign"; },
+    value => { value.decisions.at(-1).statementId = value.decisions[0].statementId; },
+    value => { value.decisions.filter(row => row.verdict === "supported").at(-1).supportingQuotes[0].sourceId = "foreign"; },
+  ]) {
+    const run = await fixture(t, { initialClaim: correct, review: ({ decision }) => {
+      decision.decisions.find(row => row.verdict === "supported").supportingQuotes[0].quote = "readerTruncated";
+      corrupt(decision);return decision;
+    } });
+    assert.equal(run.result.ok, false);
+    assert.equal(run.counts.review, 1);
+    assert.deepEqual(run.state.scopeReview.protocolRepairs, []);
+  }
+});
+
+test("cancellation during correction cannot accept, repair the report or spend after restart", async t => {
+  const abort = new AbortController();
+  const run = await fixture(t, { initialClaim: correct, configOverrides: { abortSignal: abort.signal }, review: ({ decision, counts }) => {
+    if (counts.review === 1) decision.decisions.find(row => row.verdict === "supported").supportingQuotes[0].quote = "readerTruncated";
+    else abort.abort();
+    return decision;
+  } });
+  assert.equal(run.result.ok, false);
+  assert.equal(run.result.answer, "");
+  assert.equal(run.counts.review, 2);
+  assert.equal(run.counts.synthesize, 1);
+  assert.equal(run.state.scopeBlocked, true);
+  const before = await fs.readFile(run.file), counts = { ...run.counts };
+  assert.equal((await run.execute()).ok, false);
+  assert.deepEqual(run.counts, counts);
+  assert.deepEqual(await fs.readFile(run.file), before);
+});
+
+test("corrupt durable quotation-correction inventory cannot authorize cached output", async t => {
+  for (const corrupt of [
+    row => { row.requestDigest = "0".repeat(64); },
+    row => { row.batchIndex = 99; },
+    row => { row.reason = "approve"; },
+    row => { row.extra = true; },
+  ]) {
+    const run = await fixture(t, { initialClaim: correct });
+    const row = { batchIndex: 0, requestDigest: run.state.scopeReview.batches[0].requestDigest, reason: "quotation_not_in_retained_source" };
+    corrupt(row);run.state.scopeReview.protocolRepairs = [row];
+    await fs.writeFile(run.file, JSON.stringify(run.state));
+    const before = await fs.readFile(run.file), counts = { ...run.counts };
+    const result = await run.execute();
+    assert.equal(result.ok, false);
+    assert.deepEqual(run.counts, counts);
+    assert.deepEqual(await fs.readFile(run.file), before);
+  }
+});
+
+test("a lost correction response cannot reset the paid-dispatch budget after restart", async t => {
+  const run = await fixture(t, { initialClaim: correct, review: ({ decision, counts }) => {
+    if (counts.review === 2) throw new Error("Synthetic response loss after the correction dispatch");
+    decision.decisions.find(row => row.verdict === "supported").supportingQuotes[0].quote = "readerTruncated";
+    return decision;
+  } });
+  assert.equal(run.result.ok, false);
+  assert.equal(run.counts.review, 2);
+  assert.equal(run.state.scopeBlocked, true);
+  const before = await fs.readFile(run.file), counts = { ...run.counts };
+  assert.equal((await run.execute()).ok, false);
+  assert.deepEqual(run.counts, counts);
+  assert.deepEqual(await fs.readFile(run.file), before);
 });
 
 test("fresh SessionStore reuses a bound completed review without model/source work", async t => {

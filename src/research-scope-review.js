@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { types } from "node:util";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 
-export const RESEARCH_SCOPE_REVIEW_POLICY = "retained-source-context-review-v1";
+export const RESEARCH_SCOPE_REVIEW_POLICY = "retained-source-context-review-v2";
 export const RESEARCH_SCOPE_REVIEW_LIMITS = Object.freeze({
   statements: 128,
   statementChars: 6000,
@@ -12,9 +12,10 @@ export const RESEARCH_SCOPE_REVIEW_LIMITS = Object.freeze({
   totalBytes: 1024 * 1024,
 });
 
-function fail(message) {
+function fail(message, reason) {
   const error = new Error(message);
   error.code = "DEEP_RESEARCH_SCOPE_REVIEW_INVALID";
+  if (reason) error.reason = reason;
   throw error;
 }
 
@@ -136,6 +137,7 @@ export function buildResearchScopeReviewPlan({ query, synthesis, sources, eviden
   if (!statements.some(statement => statement.evidenceIds.length)) fail("Research has no quotation-backed statement to assess.");
   const base = {
     policy: RESEARCH_SCOPE_REVIEW_POLICY,
+    quotationBoundary: "retained-source-text-only-v1",
     question: text(query, 4000),
     coverage: {
       readableSources: Number(coverage.readableSourceCount || 0),
@@ -209,6 +211,7 @@ export function validateResearchScopeReview(batch, result) {
   const expected = new Map(batch.payload.statements.map(row => [row.statementId, row]));
   const seen = new Set();
   const decisions = [];
+  let invalidQuotation = false;
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
     exactObject(row, ["statementId", "verdict", "reason", "supportingQuotes"]);
@@ -225,18 +228,39 @@ export function validateResearchScopeReview(batch, result) {
     if (row.verdict === "not_factual" && (statement.evidenceIds.length || !["title", "heading", "note"].includes(statement.kind) || quotes.length)) fail("A factual statement cannot bypass review as metadata.");
     if (row.reason === "dropped_scope" && !quotes.length) fail("Dropped-scope feedback requires a source quotation.");
     const supportingQuotes = [];
+    let rowInvalidQuotation = false;
     for (let quoteIndex = 0; quoteIndex < quotes.length; quoteIndex += 1) {
       const quote = quotes[quoteIndex];
       exactObject(quote, ["sourceId", "quote"]);
       if (typeof quote.sourceId !== "string") fail("Scope-review source ID must be a string.");
       const source = batch.payload.sources.find(source => source.sourceId === quote.sourceId);
       const value = text(quote.quote, 1200);
-      if (!source || !statement.sourceIds.includes(quote.sourceId) || normalized(value).length < 2 || !normalized(source.retainedText).includes(normalized(value))) fail("Scope-review supporting quotation is outside its exact retained source.");
+      if (!source || !statement.sourceIds.includes(quote.sourceId) || normalized(value).length < 2) fail("Scope-review supporting quotation is outside its exact retained source.");
+      if (!normalized(source.retainedText).includes(normalized(value))) {
+        invalidQuotation = true;
+        rowInvalidQuotation = true;
+      }
       supportingQuotes.push({ sourceId: quote.sourceId, quote: value });
     }
-    if (row.verdict === "supported" && !supportingQuotes.some(quote => normalized(quote.quote).length >= 24)) fail("Supported statements require a substantive source quotation.");
+    if (row.verdict === "supported" && !rowInvalidQuotation && !supportingQuotes.some(quote => normalized(quote.quote).length >= 24)) fail("Supported statements require a substantive source quotation.");
     decisions.push({ statementId: row.statementId, verdict: row.verdict, reason: row.reason, supportingQuotes });
   }
+  // Validate the entire inventory before offering correction: a malformed or
+  // foreign later row must never be disguised as a recoverable quote error.
+  if (invalidQuotation) fail("Scope-review supporting quotation is outside its exact retained source.", "quotation_not_in_retained_source");
   decisions.sort((left, right) => batch.payload.statements.findIndex(row => row.statementId === left.statementId) - batch.payload.statements.findIndex(row => row.statementId === right.statementId));
   return freeze({ schemaVersion: result.schemaVersion, requestDigest: result.requestDigest, decisions });
+}
+
+export function validateResearchScopeProtocolRepairs(plan, records = []) {
+  denseArray(records, plan.batches.length);
+  let previous = -1;
+  return freeze(records.map(record => {
+    exactObject(record, ["batchIndex", "requestDigest", "reason"]);
+    if (!Number.isSafeInteger(record.batchIndex) || record.batchIndex <= previous ||
+      !plan.batches[record.batchIndex] || record.requestDigest !== plan.batches[record.batchIndex].requestDigest ||
+      record.reason !== "quotation_not_in_retained_source") fail("Scope-review correction inventory is invalid.");
+    previous = record.batchIndex;
+    return { batchIndex: record.batchIndex, requestDigest: record.requestDigest, reason: record.reason };
+  }));
 }

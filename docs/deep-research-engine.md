@@ -174,7 +174,7 @@ recover text the reader did not retain. Each normal batch adds one model call;
 a rejected report may add one replacement call and one further batch sequence.
 No tool authority, wrapper or cross-provider fallback is added for this stage.
 
-Checkpoint schema 16 binds the review policy, report schema and live/dry mode. Earlier
+Checkpoint schema 17 binds the review policy, report schema and live/dry mode. Earlier
 quotation-only checkpoints, changed report/source/evidence bytes, malformed
 checkpoints and dry-run results cannot satisfy live completion or outer-session
 cache reuse. An explicit incompatible ID is refused without overwriting the
@@ -213,6 +213,24 @@ Earlier string-note checkpoints are refused without mutation. This is a native
 report schema change; the public integration search wire contract, restricted
 SDK and application-owned stores are unchanged.
 
+Assessment policy v2 permits one same-provider correction per batch when the
+entire response inventory is valid but a quotation does not occur in its cited
+retained source text. No verdict from that response is accepted. The native
+runtime saves a digest-bound correction reservation before the request, supplies
+closed feedback, and validates the complete new response again. A malformed or
+foreign inventory cannot use this path. A repeated failure, cancellation or
+lost correction response cannot restart its paid-dispatch budget. Semantic
+rejections still require the separate bounded report replacement and a new
+assessment; an unchanged rejected assertion still blocks completion.
+
+Only `sources[].retainedText` is quotable source context. Reader flags, retrieval
+times, coverage metadata and unquoted extraction limitations stay diagnostic;
+synthesis receives bibliography and quote-verified claims rather than those
+unverified observations. Empty optional note arrays are valid. Missing sources
+and coverage gaps are rendered from native state rather than used to fill
+source-backed uncertainty fields. Replacement feedback binds each rejected text
+to its verdict and an explicit replace-or-omit action.
+
 When exact quotations are requested, the tool result includes a bounded selection
 of supporting quotations from the passed assessment, source URLs, assessed
 uncertainties and observed reader limitations. The parent does not need to start
@@ -220,7 +238,7 @@ another research run merely to retrieve wording from an internal report path.
 The complete evidence appendix remains in the report.
 
 For a plain read-only answer with exactly one completed current-goal research
-record, full planned-question coverage and requested quotations, native
+record, explicit native coverage status and requested quotations, native
 completion preserves that assessed answer rather than an unreviewed parent
 paraphrase. It still passes the existing completion gates. Compound execution,
 local inputs, artifact requests, host-managed response scopes and explicit
@@ -229,6 +247,14 @@ An unfinished or blocked parent response does not become successful through this
 selection. The cache binds the answer bytes with an integrity digest; altered,
 stale, missing-report or unassessed records cannot authorize the selection.
 This digest is not a MAC and does not protect against same-account forgery.
+
+A planner-added question may remain outside an otherwise assessed answer.
+Native results mark incomplete planned coverage explicitly and carry a bounded
+coverage caveat. Safe reuse requires that matching marker and caveat; altered
+coverage or an undisclosed gap is refused. Such a gap cannot reopen unreviewed
+parent paraphrasing. Required source counts, requested PDFs/recommendations,
+tool evidence and compound-task completion gates still apply. Official-docs
+discovery does not automatically request implementation/source-code research.
 
 Explanatory research questions do not request interpreter execution merely by
 mentioning Python, Node, or asking when something runs. Positive execution,

@@ -86,7 +86,7 @@ test("ordinary persisted research uses the native workflow without invented shel
       assert.ok(parentCalls <= 2, "explanatory research entered an execution-repair loop");
       const name = parentCalls === 1 ? "deep_research" : "finish";
       if (parentCalls === 2) assert.deepEqual(request.tools.map(tool => tool.function.name), ["finish"]);
-      const args = parentCalls === 1 ? { query: goal, depth: "quick", maxQueries: 1, maxSources: 2, sourcePolicy: "primary", researchId: "instruction-contract" }
+      const args = parentCalls === 1 ? { query: goal, depth: "quick", maxQueries: 2, maxSources: 2, sourcePolicy: "primary", researchId: "instruction-contract" }
         : { result: `${fact} With no break the else always runs, even if the function returns. A journal confirmed this in 2026.` };
       return { choices: [{ message: { role: "assistant", content: "", tool_calls: [{ id: `instruction_${parentCalls}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] } }] };
     } } } });
@@ -103,7 +103,7 @@ test("ordinary persisted research uses the native workflow without invented shel
         specialistCalls++;
         const input = JSON.parse(request.messages[1].content);
         const approval = researchScopeApproval(input);if (approval) return completion(approval);
-        if (/research plan/i.test(input.task)) return completion({ objective: goal, sourcePolicy: "primary", subquestions: [{ id: "loop", question: "When does loop else run?", query: "loop else documentation" }], queries: ["loop else documentation"], sourceTypes: ["official documentation"], exclusions: [] });
+        if (/research plan/i.test(input.task)) return completion({ objective: goal, sourcePolicy: "primary", subquestions: [{ id: "loop", question: "When does loop else run?", query: "loop else documentation" }, { id: "optional", question: "What additional implementation evidence exists?", query: "implementation evidence" }], queries: ["loop else documentation"], sourceTypes: ["official documentation"], exclusions: [] });
         if (/Extract only source-grounded/i.test(input.task)) return completion({ sourceId: "S1", relevant: true, summary: fact, relevantQuestionIds: ["loop"], claims: [{ claim: fact, quote: fact, confidence: "high" }], limitations: [] });
         if (/Synthesize a source-grounded/i.test(input.task)) return completion({ title: "Loop else conditions", executiveSummary: fact, executiveSummaryEvidenceIds: ["S1-C1"], sections: [{ heading: "Conditions", paragraphs: [{ text: fact, evidenceIds: ["S1-C1"] }] }], keyFindings: [{ claim: fact, evidenceIds: ["S1-C1"], confidence: "high" }], recommendations: [], contradictions: [], uncertainties: [{ text: fact, evidenceIds: ["S1-C1"] }], nextQuestions: [] });
         throw new Error("Unexpected research stage");
@@ -116,6 +116,7 @@ test("ordinary persisted research uses the native workflow without invented shel
     assert.ok(result.result.startsWith(fact));
     assert.ok(!result.result.includes("With no break the else always runs"));
     assert.ok(!result.result.includes("journal confirmed"));
+    assert.ok(result.result.includes("Coverage limitation: 1 planned research question remains outside this assessed answer."));
     assert.equal(parentCalls, 2);assert.equal(specialistCalls, 4);
     const session = path.join(root, "sessions/research-instruction");
     const events = (await fs.readFile(path.join(session, "events.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
