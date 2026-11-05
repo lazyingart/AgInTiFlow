@@ -15,10 +15,10 @@ relative redirects within a five-hop bound. One15-second deadline spans the
 entire acquisition and remains active with caller cancellation. Streaming stops
 at10MiB rather than buffering an unbounded response. Declared oversize,
 redirect and error bodies are cancelled; parent listeners and timers are
-removed. Successful metadata preserves both requested and final source URLs.
+removed. Successful metadata preserves the requested URL and actual byte hash.
 Acquisition errors cannot invoke a perception provider or wrapper fallback.
 
-Twenty-six focused controls pass, including a real stalled HTTP body timing out
+Twenty-seven focused controls cover a real stalled HTTP body timing out
 with a live caller signal, cancellation before headers/during the body, allowed
 redirect statuses, later-hop scope rejection, exact/over-limit bytes, cleanup
 and ordered native-client input. A local protocol fixture receives the exact
@@ -26,10 +26,15 @@ PNG bytes once; retained JSON/Markdown stores metadata and a labelled synthetic
 reply without pixel bodies or the fixture credential. This is not a real vision
 quality test. New tests run in pretest and the fresh online packed-consumer gate.
 
-The full suite passes in446.188seconds with363selected inputs unchanged;
-syntax314/audit0/diff checks pass. Existing document HTTP checks skip occupied
-port18102, preserving its foreign listener. Package, registry and installed
-consumer qualification remain separate release gates.
+The initial26-case candidate passed a446.188-second full suite. Review then
+reproduced an unnecessary new final-URL field retaining hidden redirect
+credentials. That field is removed before publication; an additional regression
+checks typed and retained JSON/Markdown for the synthetic credential. The
+preliminary package/full/demo receipts remain separate. The tightened source
+passes a fresh452.163-second full suite with363selected inputs unchanged,
+syntax314/audit0/diff checks. Existing fixed-port document HTTP checks preserve
+their occupied18102 skips. Package, registry and global installed-consumer
+qualification remain separate release gates.
 
 The hostname rule is the existing server-owned allowlist, not DNS pinning or an
 SSRF-proof application gateway. No application, model, GPU, credential, tunnel

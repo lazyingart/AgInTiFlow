@@ -139,7 +139,7 @@ for (const status of [301, 302, 303, 307, 308]) {
     assert.equal(result.ok, true);
     assert.deepEqual(visits, ["/start", "/final.png"]);
     assert.equal(result.images[0].url, source.origin + "/start");
-    assert.equal(result.images[0].finalUrl, source.origin + "/final.png");
+    assert.equal(result.images[0].sha256, createHash("sha256").update(png).digest("hex"));
   });
 }
 
@@ -338,4 +338,27 @@ test("native client receives ordered exact pixels only after acquisition; retain
   assert.doesNotMatch(retained, /data:image|synthetic-fixture-key/);
   assert.equal(JSON.parse(retained).result.answer, "fixture reply");
   await fs.access(result.markdownArtifactPath);
+});
+
+test("redirect-only credential material never becomes perception metadata or a retained artifact", { timeout: 5000 }, async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-remote-image-private-"));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const workspace = path.join(temp, "workspace"); await fs.mkdir(workspace);
+  const store = new SessionStore(path.join(temp, "sessions"), "remote-image-private-fixture");
+  const marker = "synthetic-hidden-asset-auth";
+  const source = await server(t, (request, response) => {
+    if (request.url === "/start") {
+      response.writeHead(302, { Location: `/private/${marker}/image.png?X-Amz-Signature=${marker}` }); response.end();
+    } else {
+      response.writeHead(200, { "Content-Type": "image/png" }); response.end(png);
+    }
+  });
+  const url = source.origin + "/start";
+  const result = await readImage({ ...args, url }, { ...config, commandCwd: workspace }, store);
+  assert.equal(result.ok, true);
+  assert.equal(result.images[0].url, url);
+  assert.equal(Object.hasOwn(result.images[0], "finalUrl"), false);
+  assert.equal(JSON.stringify(result).includes(marker), false);
+  assert.equal((await fs.readFile(result.artifactPath, "utf8")).includes(marker), false);
+  assert.equal((await fs.readFile(result.markdownArtifactPath, "utf8")).includes(marker), false);
 });

@@ -44,9 +44,9 @@ try {
   }
   const log = run(process.execPath, ["--test", "test/package-runtime-dependencies.test.js", "test/model-http-boundary.test.js", "test/remote-image-input.test.js",
     "test/dependency-security-boundaries.test.js"], installed, 30000);
-  assert.match(log, /# tests 45\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# tests 46\n/); assert.match(log, /# fail 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 45, failures: 0, cliVersionsVerified: true };
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 46, failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });
 }

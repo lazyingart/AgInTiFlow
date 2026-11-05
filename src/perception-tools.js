@@ -360,7 +360,6 @@ async function loadRemoteImage(url, config) {
       return {
         source: "url",
         url,
-        finalUrl: target.href,
         mime,
         sizeBytes: buffer.length,
         sha256: sha256(buffer),
