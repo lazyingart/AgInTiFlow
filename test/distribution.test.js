@@ -124,6 +124,32 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
       }});
       const nativeRunner = root.createRestrictedApplicationRunner({provider:deepseek,tools:[],instructions:"Uncommitted JSON only.",outputSchema:schema});
       assert.equal((await nativeRunner.run({input:[{type:"text",text:"Review my draft."}]})).proposal.reply,"Native DeepSeek profile");
+      const roots = [
+        [{type:"array",items:{type:"string",maxLength:40},maxItems:2},["first","second"]],
+        [{type:"boolean"},false], [{type:"null"},null], [{type:"string",maxLength:20},""],
+        [{anyOf:[{type:"string",maxLength:20},{type:"null"}]},null]
+      ];
+      for (const kind of ["openai","deepseek-flash","deepseek-v4-pro"]) for (const [outputSchema,value] of roots) {
+        const complete = async body => {
+          const wire = kind === "openai" ? body.response_format.json_schema.schema
+            : JSON.parse(body.messages[0].content.split("FINAL_JSON_SCHEMA:\\n").at(-1));
+          assert.equal(wire.type,"object");
+          assert.deepEqual(Object.keys(wire.properties),["proposal"]);
+          assert.deepEqual(wire.required,["proposal"]);
+          assert.equal(wire.additionalProperties,false);
+          return {choices:[{finish_reason:"stop",message:{role:"assistant",content:JSON.stringify({proposal:value})}}]};
+        };
+        const provider = kind === "openai" ? root.createRestrictedOpenAIProvider({model:"offline-fixture",supportsImages:false,complete})
+          : root.createRestrictedDeepSeekProvider({model:kind,complete});
+        const app = root.createRestrictedApplicationRunner({provider,tools:[],instructions:"Proposal only.",outputSchema});
+        const result = await app.run({input:[{type:"text",text:"List the observed items; no saves."}]});
+        assert.deepEqual(JSON.parse(JSON.stringify(result.proposal)),value);
+      }
+      for (const content of ['{}','{"proposal":[],"extra":true}','{"proposal":[],"proposal":[]}','[]']) {
+        const provider = root.createRestrictedDeepSeekProvider({model:"deepseek-flash",complete:async()=>({choices:[{finish_reason:"stop",message:{role:"assistant",content}}]})});
+        const app = root.createRestrictedApplicationRunner({provider,tools:[],instructions:"Proposal only.",outputSchema:roots[0][0]});
+        await assert.rejects(app.run({input:[{type:"text",text:"List items."}]}),error=>error.code==="PROVIDER_FAILED");
+      }
       const declared = root.createRestrictedProviderFailure({category:"quota"});
       const failing = root.createRestrictedApplicationRunner({provider:{supportsImages:false,complete:async()=>{throw declared;}},tools:[],instructions:"Propose only.",outputSchema:schema});
       await assert.rejects(failing.run({input:[{type:"text",text:"Check my draft."}]}),error=>error.code==="PROVIDER_FAILED"&&error.providerFailure.category==="quota");

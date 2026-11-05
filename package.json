@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintilite",
-  "version": "0.1.0-preview.7",
+  "version": "0.1.0-preview.8",
   "private": true,
   "description": "Bounded text-only application tool loop with explicit providers and read-only callbacks.",
   "type": "module",
@@ -22,7 +22,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "check": "node --check src/restricted-application.js && node --check src/restricted-application-contract.js && node --check src/redaction.js && node --check test/restricted-application.test.js && node --check test/distribution.test.js && node --check test/wire-integrity.test.js && node --check test/deepseek-profile.test.js && node --check test/provider-failure.test.js && node --check test/finalization-budget.test.js && node --check test/json-enum.test.js && node --check test/tool-failure.test.js",
+    "check": "node --check src/restricted-application.js && node --check src/restricted-application-contract.js && node --check src/redaction.js && node --check test/restricted-application.test.js && node --check test/distribution.test.js && node --check test/wire-integrity.test.js && node --check test/deepseek-profile.test.js && node --check test/provider-failure.test.js && node --check test/finalization-budget.test.js && node --check test/json-enum.test.js && node --check test/tool-failure.test.js && node --check test/restricted-root-proposal.test.js && node --check test/fixtures/restricted-root-proposal.js",
     "test": "node --test test/*.test.js",
     "pack:dry-run": "npm pack --dry-run --ignore-scripts --offline",
     "pack:local": "npm pack --ignore-scripts --offline --pack-destination artifacts"

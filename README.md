@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.4.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.8.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.7.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.8.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -272,6 +272,30 @@ No partial proposal is returned on failure. Secret-pattern checks are defense
 in depth, not a guarantee that arbitrary sensitive content will be detected.
 
 ## Extraction and qualification
+
+Preview 8 backports AgInTiFlow's non-object final proposal adaptation from
+`0d43f40e008f8624a03548222857d0416da167f2`. Arrays, scalars and root `anyOf`
+schemas use exactly `{"proposal": VALUE}` on the native provider wire. The
+adapter unwraps that closed final envelope before validating VALUE against
+the original application schema. Object-root proposals, including literal
+`proposal` properties, retain their wire and returned shape. Native tool
+arguments/results are never wrapped. Missing, extra, duplicate, unwrapped and
+invalid values fail closed without retry. Custom provider callbacks keep the
+existing `{type:"final",value}` protocol.
+
+Seven new groups reproduce six failures on preview 7, then cover typed/falsey/
+union/list values, hostile envelopes, whole read batches, alias mutation and
+ordinary English/Chinese host-backed requests. The offline installed-package
+test exercises the adaptation while forbidding network and non-allowlisted
+imports. No dependency, export, deadline, cancellation, retry or provider-policy
+change is introduced. This preview does not update an application's vendored
+copy or qualify its live transport. Reviewed Flow evidence is separate from
+Lite/package/application qualification; no new live model call is claimed here.
+The current preview passes 64 offline tests, including reproducible seven-file
+packing and a disposable installed consumer with network and unapproved imports
+forbidden. The two-model list fixture has four byte-identical request pairs
+against the registry-installed Flow 0.20.356 reference using scripted transport;
+that parity check is not an independent live Lite or application qualification.
 
 Preview 6 fixes object-valued enum equality throughout final proposals and tool
 arguments/results. JSON object key order is irrelevant; array order, exact
