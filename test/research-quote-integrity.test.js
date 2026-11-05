@@ -40,7 +40,7 @@ async function fixture(t, source = original, quote = source, options = {}) {
         return completion({ title: "Controlled Observation", executiveSummary: "The source reports a controlled observation.",
           executiveSummaryEvidenceIds: ["S1-C1"], sections: [{ heading: "Observation", paragraphs: [{ text: "The source reports a controlled observation.", evidenceIds: ["S1-C1"] }] }],
           keyFindings: [{ claim: "A controlled observation is documented.", evidenceIds: ["S1-C1"], confidence: "high" }],
-          recommendations: [], contradictions: [], uncertainties: ["Controlled fixture only."], nextQuestions: [] });
+          recommendations: [], contradictions: [], uncertainties: [], nextQuestions: [] });
       }
       throw new Error("Unexpected scripted research phase");
     } } } }),

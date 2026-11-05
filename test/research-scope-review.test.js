@@ -7,7 +7,7 @@ import { deepResearch } from "../src/deep-research.js";
 import { SessionStore } from "../src/session-store.js";
 import { buildResearchScopeReviewPlan, validateResearchScopeReview } from "../src/research-scope-review.js";
 import { researchScopeApproval } from "./fixtures/research-scope-review.js";
-import { runAgent, rememberCompletedDeepResearch, completedDeepResearchReuse } from "../src/agent-runner.js";
+import { runAgent, rememberCompletedDeepResearch, completedDeepResearchReuse, retainedReadOnlyResearchAnswer, nextStepRuntimeConfig } from "../src/agent-runner.js";
 import { RESEARCH_VERSION } from "../src/deep-research.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { flushHousekeeping } from "../src/housekeeping.js";
@@ -74,11 +74,13 @@ async function fixture(t, options = {}) {
       }
       if (/Synthesize a source-grounded/i.test(input.task)) {
         counts.synthesize++;
-        if (counts.synthesize > 1) {
+        if (options.emptySpare && counts.synthesize > 1) return { choices: [{ message: { content: "" } }] };
+        if (counts.synthesize > 1 && !options.allowSynthesisRetry) {
           assert.ok(input.input.scopeFeedback?.statements?.length, "repair lost exact statement mapping");
           assert.ok(input.instructions.includes("generic disclaimer"));
         }
-        return completion(report(counts.synthesize === 1 ? originalClaim : fixedClaim, options.paragraphs || 1));
+        const output = counts.synthesize === 1 ? options.initialReport : options.repairedReport;
+        return completion(output || report(counts.synthesize === 1 ? originalClaim : fixedClaim, options.paragraphs || 1));
       }
       if (input.task === "Assess research statements against retained source context.") {
         counts.review++;
@@ -105,7 +107,7 @@ async function fixture(t, options = {}) {
       url: "https://docs.example.org/retry", canonicalUrl: "https://docs.example.org/retry", domain: "docs.example.org", snippet: "Retry rules for archived and active projects." }] }),
     webPageReaderImpl: async ({ url }) => {
       counts.source++;
-      return { ok: true, url, title: "Official read retry rules", readable: true, contentType: "text/plain", truncated: false,
+      return { ok: true, url, title: "Official read retry rules", readable: true, contentType: "text/plain", truncated: options.readerTruncated === true,
         retrievedAt: "2026-11-05T00:00:00Z", sha256: "a".repeat(64), content: original, passages: [original] };
     },
   };
@@ -131,6 +133,10 @@ test("conditional native research gets one bounded repair with complete retained
   const markdown = await fs.readFile(run.markdown, "utf8");
   assert.ok(markdown.includes(correct));
   assert.ok(!markdown.includes(incorrect));
+  const previous = run.observed.filter(row => /Synthesize a source-grounded/.test(row.input.task))[1].input.input.scopeFeedback.previousReport;
+  assert.equal(Object.hasOwn(previous, "executiveSummarySourceIds"), false);
+  assert.equal(Object.hasOwn(previous.sections[0].paragraphs[0], "sourceIds"), false);
+  assert.equal(Object.hasOwn(previous.keyFindings[0], "sourceIds"), false);
 });
 
 test("an unsafe replacement cannot finish or expose candidate answer/report", async t => {
@@ -156,14 +162,264 @@ test("supported normal research needs one review and no replacement", async t =>
   assert.deepEqual(run.counts, { plan: 1, extract: 1, synthesize: 1, review: 1, source: 1 });
 });
 
+test("structured research notes retain exact evidence IDs through audit, assessment and rendering", async t => {
+  const model = report(correct);
+  model.contradictions = [{ text: correct, evidenceIds: ["S1-C1"] }];
+  model.uncertainties = [{ text: correct, evidenceIds: ["S1-C1"] }];
+  model.nextQuestions = [{ text: "Which conditions need further research?", evidenceIds: [] }];
+  const run = await fixture(t, { initialClaim: correct, initialReport: model });
+  assert.equal(run.result.ok, true, run.result.error);
+  for (const field of ["contradictions", "uncertainties"]) {
+    assert.deepEqual(run.state.synthesis[field][0].evidenceIds, ["S1-C1"]);
+    assert.deepEqual(run.state.synthesis[field][0].sourceIds, ["S1"]);
+  }
+  const rows = run.observed.find(row => row.input.task === "Assess research statements against retained source context.").input.input.statements;
+  const notes = rows.filter(row => row.kind === "note");
+  assert.deepEqual(notes.map(row => row.evidenceIds), [["S1-C1"], ["S1-C1"], []]);
+  const markdown = await fs.readFile(run.markdown, "utf8");
+  assert.match(markdown, /## Contradictions\n\n- For archived projects only, read requests never require retries\. \[S1\]/);
+  assert.match(markdown, /## Open Questions\n\n- Which conditions need further research\?/);
+  const counts = { ...run.counts }, state = await fs.readFile(run.file);
+  const cached = await deepResearch(run.args, run.config, new SessionStore(path.join(run.root, "sessions"), "scope-contract"));
+  assert.equal(cached.ok, true, cached.error);
+  assert.equal(cached.cached, true);
+  assert.deepEqual(run.counts, counts);
+  assert.deepEqual(await fs.readFile(run.file), state);
+  assert.equal(await fs.readFile(run.markdown, "utf8"), markdown);
+});
+
+test("requested exact quotes reach the parent answer and cache without another research pass", async t => {
+  const run = await fixture(t, { initialClaim: correct, configOverrides: { goal: `${question} Include an exact quote.` } });
+  assert.equal(run.result.ok, true, run.result.error);
+  assert.ok(run.result.answer.startsWith(correct));
+  assert.ok(run.result.answer.includes(`“${quote}” [S1]`));
+  const counts = { ...run.counts }, bytes = await fs.readFile(run.file);
+  const cached = await deepResearch(run.args, run.config, new SessionStore(path.join(run.root, "sessions"), "scope-contract"));
+  assert.equal(cached.ok, true, cached.error);
+  assert.equal(cached.answer, run.result.answer);
+  assert.deepEqual(run.counts, counts);
+  assert.deepEqual(await fs.readFile(run.file), bytes);
+  const state = { goal: run.config.goal, meta: { goalContract: { currentHash: "quoted-answer" } } };
+  rememberCompletedDeepResearch(state, run.args, run.config, run.result);
+  assert.equal(completedDeepResearchReuse(state, run.args, run.config).answer, run.result.answer);
+  assert.equal(retainedReadOnlyResearchAnswer(run.config, state).answer, run.result.answer);
+  assert.equal(nextStepRuntimeConfig(run.config, state).nativeResearchCompletionPending, true);
+});
+
+test("canonical research completion rejects stale, altered, incomplete and compound work", async t => {
+  const run = await fixture(t, { initialClaim: correct, configOverrides: { goal: `${question} Include an exact quote.` } });
+  const initial = { goal: run.config.goal, meta: { goalContract: { currentHash: "canonical-research" } } };
+  rememberCompletedDeepResearch(initial, run.args, run.config, run.result);
+  for (const mutate of [
+    state => { state.meta.completedDeepResearch[0].goalKey = "foreign"; },
+    state => { state.meta.goalContract.currentHash = "new-goal"; },
+    state => { state.meta.completedDeepResearch.push(structuredClone(state.meta.completedDeepResearch[0])); },
+    state => { state.meta.completedDeepResearch[0].result.answer += "An unassessed assertion."; },
+    state => { delete state.meta.completedDeepResearch[0].result.answerDigest; },
+    state => { state.meta.completedDeepResearch[0].result.scopeReview.status = "rejected"; },
+    state => { state.meta.completedDeepResearch[0].result.evidenceAppendixRequested = false; },
+    state => { state.meta.completedDeepResearch[0].result.coverage.missingQuestions.push({ question: "Unresolved required scope" }); },
+    state => { state.meta.completedDeepResearch[0].result.coverage.verifiedClaimCount = 0; },
+    state => { state.meta.completedDeepResearch[0].result.reportPath = path.join(run.root, "absent.md"); },
+    state => { state.meta.artifactProgress = {}; },
+  ]) {
+    const state = structuredClone(initial);mutate(state);
+    assert.equal(retainedReadOnlyResearchAnswer(run.config, state), null);
+  }
+  for (const goal of [
+    "Do deep research, then write result.md.",
+    "Do deep research, then run Python to verify the data.",
+    "Do deep research and return JSON only.",
+    "Do deep research and return exactly two lines.",
+    "Read the current notes/source.md before research.",
+  ]) assert.equal(retainedReadOnlyResearchAnswer({ ...run.config, goal }, initial), null, goal);
+});
+
+test("failed or dry research cannot expose assessment quotations as an accepted answer", async t => {
+  const run = await fixture(t, { repairedClaim: incorrect, configOverrides: { goal: `${question} Include an exact quote.` } });
+  assert.equal(run.result.ok, false);
+  assert.equal(run.result.answer, "");
+  const dry = await deepResearch({ ...run.args, researchId: "dry-quotes", dryRun: true }, run.config, run.store);
+  assert.equal(dry.scopeReview.status, "not_performed");
+  assert.ok(!dry.answer.includes("Selected exact quotations"));
+});
+
+test("reader truncation limitations come from native state without a model claim or repair", async t => {
+  for (const truncated of [false, true]) {
+    const run = await fixture(t, { initialClaim: correct, readerTruncated: truncated });
+    assert.equal(run.result.ok, true, run.result.error);
+    assert.equal(run.state.sources[0].readTruncated, truncated);
+    const markdown = await fs.readFile(run.markdown, "utf8");
+    assert.equal(markdown.includes("Reader retained truncated text for S1; this report is limited to retained evidence."), truncated);
+    assert.deepEqual(run.state.synthesis.uncertainties, []);
+    assert.equal(run.counts.synthesize, 1);
+    assert.equal(run.counts.review, 1);
+  }
+});
+
+test("a true native reader flag cannot self-authorize an uncited model uncertainty", async t => {
+  const model = report(correct);
+  model.uncertainties = [{ text: "The reader truncated its retained input.", evidenceIds: [] }];
+  const run = await fixture(t, { initialClaim: correct, readerTruncated: true, initialReport: model, repairedReport: model, allowSynthesisRetry: true });
+  assert.equal(run.result.ok, false);
+  assert.equal(run.result.answer, "");
+  assert.equal(run.result.reportPath, "");
+  assert.equal(run.counts.review, 0);
+});
+
+test("a source citation does not bless unsupported model provenance prose", async t => {
+  const model = report(correct), repaired = report(correct);
+  const invented = "The reader retained every possible detail without truncation.";
+  model.uncertainties = [{ text: invented, evidenceIds: ["S1-C1"] }];
+  const run = await fixture(t, { initialClaim: correct, readerTruncated: true, initialReport: model, repairedReport: repaired,
+    review: ({ input, decision }) => {
+      input.input.statements.forEach((row, index) => {
+        if (row.text === invented) decision.decisions[index] = { statementId: row.statementId, verdict: "unsupported", reason: "not_in_source", supportingQuotes: [] };
+      });
+      return decision;
+    } });
+  assert.equal(run.result.ok, true, run.result.error);
+  assert.equal(run.counts.review, 2);
+  const markdown = await fs.readFile(run.markdown, "utf8");
+  assert.ok(!markdown.includes(invented));
+  assert.ok(markdown.includes("Reader retained truncated text for S1"));
+});
+
+test("a same-provider schema retry can bind a missing note citation without approving the invalid report", async t => {
+  const initial = report(correct), repaired = report(correct);
+  initial.uncertainties = [{ text: correct, evidenceIds: [] }];
+  repaired.uncertainties = [{ text: correct, evidenceIds: ["S1-C1"] }];
+  const run = await fixture(t, { initialClaim: correct, initialReport: initial, repairedReport: repaired, allowSynthesisRetry: true });
+  assert.equal(run.result.ok, true, run.result.error);
+  assert.equal(run.counts.synthesize, 2);
+  assert.equal(run.counts.review, 1);
+  assert.deepEqual(run.state.synthesis.uncertainties[0].evidenceIds, ["S1-C1"]);
+  const request = run.observed.filter(row => /Synthesize a source-grounded/.test(row.input.task))[1].input;
+  assert.equal(request.json_schema.properties.uncertainties.items.properties.evidenceIds.minItems, 1);
+});
+
+test("citation-looking prose cannot authorize an uncited factual research note", async t => {
+  const candidate = report(correct);
+  candidate.nextQuestions = [{ text: `${correct} [S1-C1]`, evidenceIds: [] }];
+  const run = await fixture(t, { initialClaim: correct, initialReport: candidate, repairedReport: candidate,
+    review: ({ input, decision }) => {
+      input.input.statements.forEach((row, index) => {
+        if (row.kind === "note") {
+          assert.deepEqual(row.evidenceIds, []);
+          assert.deepEqual(row.sourceIds, []);
+          decision.decisions[index] = { statementId: row.statementId, verdict: "unsupported", reason: "not_in_source", supportingQuotes: [] };
+        }
+      });
+      return decision;
+    } });
+  assert.equal(run.result.ok, false);
+  assert.equal(run.result.answer, "");
+  assert.equal(run.result.reportPath, "");
+  assert.equal(run.counts.review, 1);
+  assert.equal(run.counts.synthesize, 2);
+});
+
+test("unknown evidence on any structured note fails before assessment instead of disappearing", async t => {
+  for (const field of ["contradictions", "uncertainties", "nextQuestions"]) {
+    const model = report(correct);
+    model[field] = [{ text: correct, evidenceIds: ["S1-C999"] }];
+    const run = await fixture(t, { initialClaim: correct, initialReport: model });
+    assert.equal(run.result.ok, false);
+    assert.match(run.result.error, /note cites unknown or unverified evidence/);
+    assert.equal(run.counts.review, 0);
+    assert.equal(run.result.answer, "");
+    assert.equal(run.result.reportPath, "");
+  }
+});
+
+test("invalid string-note model reports cannot silently complete through deterministic fallback", async t => {
+  const model = report(correct);
+  model.uncertainties = ["An uncited source assertion must not disappear behind fallback."];
+  for (const emptySpare of [false, true]) {
+    const run = await fixture(t, { initialClaim: correct, initialReport: model, repairedReport: model, allowSynthesisRetry: true, emptySpare });
+    assert.equal(run.result.ok, false);
+    assert.match(run.result.error, /synthesis was unavailable or invalid/);
+    assert.equal(run.result.answer, "");
+    assert.equal(run.result.reportPath, "");
+    assert.equal(run.counts.synthesize, 2);
+    assert.equal(run.counts.review, 0);
+  }
+});
+
+test("version15 string-note checkpoints are refused without mutation or model dispatch", async t => {
+  const run = await fixture(t, { initialClaim: correct });
+  run.state.version = 15;
+  run.state.synthesis.uncertainties = [`${correct} [S1-C1]`];
+  await fs.writeFile(run.file, JSON.stringify(run.state));
+  const before = await fs.readFile(run.file), markdown = await fs.readFile(run.markdown), counts = { ...run.counts };
+  const result = await run.execute();
+  assert.equal(result.ok, false);
+  assert.match(result.error, /older or unsupported schema/);
+  assert.deepEqual(run.counts, counts);
+  assert.deepEqual(await fs.readFile(run.file), before);
+  assert.deepEqual(await fs.readFile(run.markdown), markdown);
+});
+
+test("structured note text, ID or source-binding tampering invalidates cached review", async t => {
+  for (const mutate of [
+    note => { note.text = incorrect; },
+    note => { note.evidenceIds = ["S1-C999"]; },
+    note => { note.sourceIds = ["S999"]; },
+  ]) {
+    const model = report(correct);
+    model.uncertainties = [{ text: correct, evidenceIds: ["S1-C1"] }];
+    const run = await fixture(t, { initialClaim: correct, initialReport: model });
+    assert.equal(run.result.ok, true, run.result.error);
+    mutate(run.state.synthesis.uncertainties[0]);
+    await fs.writeFile(run.file, JSON.stringify(run.state));
+    const before = await fs.readFile(run.file), markdown = await fs.readFile(run.markdown), counts = { ...run.counts };
+    const result = await run.execute();
+    assert.equal(result.ok, false);
+    assert.deepEqual(run.counts, counts);
+    assert.deepEqual(await fs.readFile(run.file), before);
+    assert.deepEqual(await fs.readFile(run.markdown), markdown);
+  }
+});
+
+test("structured note planner rejects hostile records and arrays before invoking hooks", () => {
+  let hooks = 0;
+  const options = { query: question, sources: [{ id: "S1", content: source }], evidence: [{ sourceId: "S1", claims: [{ evidenceId: "S1-C1", quote, quoteVerified: true }] }] };
+  for (const make of [
+    () => new Proxy({}, { get() { hooks++; throw new Error("trap"); } }),
+    () => Object.defineProperty({ evidenceIds: [] }, "text", { enumerable: true, get() { hooks++; throw new Error("getter"); } }),
+    () => ({ text: correct, evidenceIds: new Proxy([], { get() { hooks++; throw new Error("array trap"); } }) }),
+    () => ({ text: correct, evidenceIds: new Array(1) }),
+    () => ({ text: correct, evidenceIds: [], [Symbol("extra")]: true }),
+    () => ({ text: correct, evidenceIds: [], extra: true }),
+    () => ({ text: correct, evidenceIds: [], sourceIds: new Proxy([], { get() { hooks++; throw new Error("source trap"); } }) }),
+    () => `${correct} [S1-C1]`,
+  ]) {
+    const synthesis = report(correct);synthesis.uncertainties = [make()];
+    assert.throws(() => buildResearchScopeReviewPlan({ ...options, synthesis }), { code: "DEEP_RESEARCH_SCOPE_REVIEW_INVALID" });
+  }
+  for (const make of [
+    () => new Proxy([], { get() { hooks++; throw new Error("notes trap"); } }),
+    () => Object.assign([], { [Symbol.iterator]() { hooks++; throw new Error("iterator"); } }),
+    () => new Array(1),
+    () => Object.defineProperty([], "0", { enumerable: true, configurable: true, get() { hooks++; throw new Error("row getter"); } }),
+  ]) {
+    const synthesis = report(correct);synthesis.uncertainties = make();
+    assert.throws(() => buildResearchScopeReviewPlan({ ...options, synthesis }), { code: "DEEP_RESEARCH_SCOPE_REVIEW_INVALID" });
+  }
+  assert.equal(hooks, 0);
+});
+
 test("Chinese and Japanese retained context and exact quotes reach the same bounded gate", async t => {
   for (const [original, claim] of [
     ["归档项目\n\n仅对于归档项目，读取操作在此验证条件下不需要重试。\n\n活动项目\n\n活动项目在发生并发更新时必须重新读取。", "仅对于归档项目，读取操作在此验证条件下不需要重试。"],
     ["アーカイブ済みの案件\n\nアーカイブ済みの案件に限り、検証条件内の読み取り操作は再試行を必要としません。\n\n進行中の案件では同時更新時に再試行が必要です。", "アーカイブ済みの案件に限り、検証条件内の読み取り操作は再試行を必要としません。"],
   ]) {
-    const run = await fixture(t, { source: original, quote: claim, initialClaim: claim });
+    const model = report(claim);
+    model.uncertainties = [{ text: claim, evidenceIds: ["S1-C1"] }];
+    const run = await fixture(t, { source: original, quote: claim, initialClaim: claim, initialReport: model });
     assert.equal(run.result.ok, true, run.result.error);
     assert.equal(run.result.answer, claim);
+    assert.deepEqual(run.state.synthesis.uncertainties[0].sourceIds, ["S1"]);
   }
 });
 
@@ -346,6 +602,9 @@ test("outer-session reuse refuses quotation-only/dry results and preserves curre
   assert.deepEqual(reused.scopeReview, run.result.scopeReview);
   record.result.scopeReview.status = "not_performed";
   assert.equal(completedDeepResearchReuse(state, run.args, run.config), null);
+  record.result.scopeReview.status = "passed";
+  record.result.answer += "Corrupt cached answer.";
+  assert.equal(completedDeepResearchReuse(state, run.args, run.config), null);
 });
 
 test("malformed and future checkpoints are preserved without new source/model work", async t => {
@@ -368,7 +627,10 @@ test("context budgets count UTF-8 bytes rather than truncating multibyte source 
 });
 
 test("persisted runAgent delegates research and finishes only after scoped replacement passes", { timeout: 15_000 }, async t => {
-  const run = await fixture(t, { defer: true });
+  const initial = report(incorrect), repaired = report(correct);
+  initial.uncertainties = [{ text: incorrect, evidenceIds: ["S1-C1"] }];
+  repaired.uncertainties = [{ text: correct, evidenceIds: ["S1-C1"] }];
+  const run = await fixture(t, { defer: true, initialReport: initial, repairedReport: repaired });
   const workspace = path.join(run.root, "workspace"); await fs.mkdir(workspace);
   const goal = "Please research the read retry rule and keep its conditions clear. Use the approved document. Don't create or modify files.";
   let parentCalls = 0;
@@ -399,6 +661,8 @@ test("persisted runAgent delegates research and finishes only after scoped repla
   const state = JSON.parse(await fs.readFile(path.join(session, "artifacts/deep-research-scope-contract.json"), "utf8"));
   assert.equal(state.scopeReview.status, "passed");
   assert.equal(state.synthesis.executiveSummary, correct);
+  assert.equal(state.synthesis.uncertainties[0].text, correct);
+  assert.deepEqual(state.synthesis.uncertainties[0].sourceIds, ["S1"]);
   const events = (await fs.readFile(path.join(session, "events.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
   assert.ok(events.some(event => event.type === "tool.completed" && event.data?.toolName === "deep_research"));
   assert.deepEqual(await fs.readdir(workspace), []);

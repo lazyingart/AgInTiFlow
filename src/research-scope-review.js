@@ -114,11 +114,23 @@ export function buildResearchScopeReviewPlan({ query, synthesis, sources, eviden
   for (const finding of synthesis.keyFindings || []) add("finding", finding.claim, finding.evidenceIds || []);
   for (const recommendation of synthesis.recommendations || []) add("recommendation", recommendation.text, recommendation.evidenceIds || []);
   for (const kind of ["contradictions", "uncertainties", "nextQuestions"]) {
-    for (const note of synthesis[kind] || []) {
-      // A factual note can cite existing evidence explicitly. Uncited notes,
-      // titles and headings may pass only as non-factual metadata/questions.
-      const ids = [...evidenceMap.keys()].filter(id => typeof note === "string" && note.includes(`[${id}]`));
-      add("note", note, ids);
+    const notes = denseArray(synthesis[kind] || [], RESEARCH_SCOPE_REVIEW_LIMITS.statements);
+    for (let index = 0; index < notes.length; index += 1) {
+      const note = notes[index];
+      // Structured IDs alone bind a note; citation-looking prose grants no
+      // authority. Uncited notes still require a non-factual reviewer decision.
+      const keys = ["text", "evidenceIds"];
+      if (note && typeof note === "object" && !types.isProxy(note) && Object.hasOwn(note, "sourceIds")) keys.push("sourceIds");
+      exactObject(note, keys);
+      denseArray(note.evidenceIds, 64);
+      if (kind !== "nextQuestions" && note.evidenceIds.length === 0) fail("Research factual notes require evidence IDs; native run limitations are rendered separately.");
+      if (note.evidenceIds.some(id => typeof id !== "string")) fail("Research note evidence IDs must be strings.");
+      if (keys.includes("sourceIds")) {
+        denseArray(note.sourceIds, 64);
+        const derived = [...new Set(note.evidenceIds.map(id => evidenceMap.get(id)?.sourceId))];
+        if (note.sourceIds.length !== derived.length || note.sourceIds.some((id, index) => typeof id !== "string" || id !== derived[index])) fail("Research note source binding is inconsistent.");
+      }
+      add("note", note.text, note.evidenceIds);
     }
   }
   if (!statements.some(statement => statement.evidenceIds.length)) fail("Research has no quotation-backed statement to assess.");

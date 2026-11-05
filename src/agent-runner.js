@@ -15826,6 +15826,11 @@ function hasCurrentResearchAssessment(result = {}) {
     review.rejectedStatements === 0 && typeof review.repairAttempted === "boolean";
 }
 
+function hasCurrentResearchCacheAnswer(result = {}) {
+  return hasCurrentResearchAssessment(result) && typeof result.answer === "string" &&
+    result.answerDigest === crypto.createHash("sha256").update(result.answer).digest("hex");
+}
+
 export function rememberCompletedDeepResearch(state = {}, args = {}, config = {}, result = {}) {
   if (result.ok !== true || !result.reportPath || !hasCurrentResearchAssessment(result)) return null;
   state.meta = state.meta || {};
@@ -15850,6 +15855,8 @@ export function rememberCompletedDeepResearch(state = {}, args = {}, config = {}
       coverage: result.coverage || {},
       audit: result.audit || {},
       answer: result.answer || "",
+      answerDigest: crypto.createHash("sha256").update(result.answer || "").digest("hex"),
+      evidenceAppendixRequested: result.evidenceAppendixRequested === true,
       artifactPath: result.artifactPath || "",
       reportPath: result.reportPath,
       scopeReview: {
@@ -15875,7 +15882,7 @@ export function completedDeepResearchReuse(state = {}, args = {}, config = {}) {
   const records = Array.isArray(state.meta?.completedDeepResearch) ? state.meta.completedDeepResearch : [];
   const match = [...records].reverse().find((item) => {
     if (item.goalKey !== goalKey) return false;
-    if (!hasCurrentResearchAssessment(item.result)) return false;
+    if (!hasCurrentResearchCacheAnswer(item.result)) return false;
     return Boolean(
       (identity.requestedOutputPath && item.requestedOutputPath === identity.requestedOutputPath) ||
       (identity.researchId && item.researchId === identity.researchId) ||
@@ -15891,6 +15898,30 @@ export function completedDeepResearchReuse(state = {}, args = {}, config = {}) {
     duplicateSuppressed: true,
     note: "A completed deep-research result for this goal and report is being reused. Do not run deep_research again; validate the existing report if needed, then finish.",
   };
+}
+
+export function retainedReadOnlyResearchAnswer(config = {}, state = {}) {
+  const goal = completionContractGoal(config, state);
+  if (isResponseOnlyEvidenceScope(goal) || state.meta?.artifactProgress) return null;
+  // Keep compound actions and caller-specified output formats on their normal
+  // completion path. This policy owns only a plain, read-only cited answer.
+  if (/\b(?:return|respond|output|format|present|provide|give|write|include)\b[^.!?;\n]{0,80}\b(?:json|yaml|csv|tabular|table|exactly)\b|\btranslate\b|(?:以|用|按|输出|輸出|返回|给出|給出|写成|寫成)[^。；\n]{0,20}(?:json|yaml|csv|表格|表形式)|(?:翻译|翻譯|翻訳)(?:为|為|成|に|して)/u.test(goal.toLowerCase())) return null;
+  const contract = completionTaskContract(config, state);
+  if (contract.requiresWorkspaceMutation || contract.requiresFileMutation ||
+    ["exactOutputPaths", "exactInputPaths", "declaredSourceRoots", "requiredArtifactKinds", "requiredGitActions", "requiredProjectCommands", "requiredTextTerms", "requiredExecutableTerms", "requiredEvidence"]
+      .some(key => contract[key]?.length) ||
+    (contract.requiredToolCalls || []).some(name => name !== "deep_research")) return null;
+  const records = (state.meta?.completedDeepResearch || []).filter(record => record.goalKey === currentGoalKey(state));
+  if (records.length !== 1) return null;
+  const result = records[0].result || {};
+  if (result.ok !== true || result.status !== "completed" || !hasCurrentResearchAssessment(result) ||
+    result.evidenceAppendixRequested !== true || typeof result.answer !== "string" || !result.answer.trim() ||
+    result.answerDigest !== crypto.createHash("sha256").update(result.answer).digest("hex") ||
+    Buffer.byteLength(result.answer, "utf8") > 65536 ||
+    !Number.isSafeInteger(result.coverage?.verifiedClaimCount) || result.coverage.verifiedClaimCount < 1 ||
+    !Array.isArray(result.coverage?.missingQuestions) || result.coverage.missingQuestions.length ||
+    !result.reportPath || !fsSync.existsSync(result.reportPath)) return null;
+  return Object.freeze({ researchId: result.researchId, answer: result.answer });
 }
 
 export function reopenedArtifactRepairPending(state = {}) {
@@ -19367,7 +19398,7 @@ function currentWorkHasCompletedDeepResearch(state = {}, config = {}) {
     const result = record?.result || {};
     if (
       result.ok !== true ||
-      !hasCurrentResearchAssessment(result) ||
+      !hasCurrentResearchCacheAnswer(result) ||
       !String(result.reportPath || "").trim() ||
       !fsSync.existsSync(String(result.reportPath))
     ) {
@@ -19394,6 +19425,9 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       ...(retainedDataDiscoveryReady ? { dataProjectDiscoveryReady: true } : {}),
       ...(currentWorkHasCompletedDeepResearch(state, config)
         ? { deepResearchCompletedForCurrentWork: true }
+        : {}),
+      ...(retainedReadOnlyResearchAnswer(config, state)
+        ? { verifiedCompletionPending: true, nativeResearchCompletionPending: true }
         : {}),
     },
     state
@@ -26091,7 +26125,22 @@ async function enforceToolCapableOutputContract({
   return { action: "stop", detail, result };
 }
 
-async function completionEvidenceDecision({ config, state, store, observers, step, mode, candidateResult = "" }) {
+async function completionEvidenceDecision(args) {
+  const { config, state, store, observers, step, mode, candidateResult = "" } = args;
+  const retained = !finishResultClaimsIncompleteWork(candidateResult) && !finishResultClaimsBlocker(candidateResult)
+    ? retainedReadOnlyResearchAnswer(config, state) : null;
+  if (!retained) return completionEvidenceDecisionInner(args);
+  // Reuse assessed native content; do not promote an unconstrained parent
+  // paraphrase into new evidence. Every existing completion gate still runs.
+  const decision = await completionEvidenceDecisionInner({ ...args, candidateResult: retained.answer });
+  if (decision.action !== "accept") return decision;
+  const detail = { step, mode, researchId: retained.researchId, policy: "native-assessed-readonly-quote-answer-v1", parentCandidateUsed: false };
+  await store.appendEvent("completion.native_research_answer_selected", detail);
+  observers.event("completion.native_research_answer_selected", detail);
+  return { ...decision, resultOverride: decision.resultOverride || retained.answer };
+}
+
+async function completionEvidenceDecisionInner({ config, state, store, observers, step, mode, candidateResult = "" }) {
   if (state.meta?.artifactProgress?.complete) {
     await refreshArtifactValidationPreflight(state, store, observers, config, {
       force: true,
@@ -27059,6 +27108,8 @@ function completionCommandOutputRecords(scoped = {}) {
 
 function verifiedCompletionFallback(assessment = {}, state = {}) {
   const contract = assessment.contract || {};
+  const nativeResearch = retainedReadOnlyResearchAnswer({ goal: contract.outcome || state.goal || "" }, state);
+  if (nativeResearch) return nativeResearch.answer;
   const ledger = assessment.ledger || {};
   const paths = Array.isArray(contract.exactOutputPaths)
     ? contract.exactOutputPaths.filter(Boolean).map((item) => portableArtifactPath(item, state))

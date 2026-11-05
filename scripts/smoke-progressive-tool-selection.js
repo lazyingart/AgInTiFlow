@@ -5398,6 +5398,8 @@ const timeoutCompactedResearchRepairState = {
         result: {
           ok: true,
           version: RESEARCH_VERSION,
+          answer: "Assessed research fixture.",
+          answerDigest: crypto.createHash("sha256").update("Assessed research fixture.").digest("hex"),
           scopeReview: {
             policy: RESEARCH_SCOPE_REVIEW_POLICY,
             assessmentKind: "model-assisted-source-context",

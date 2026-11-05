@@ -1010,7 +1010,7 @@ async function main() {
                   keyFindings: [],
                   recommendations: [],
                   contradictions: [],
-                  uncertainties: ["The exact source was inaccessible."],
+                  uncertainties: [],
                   nextQuestions: [],
                 }) } }] };
               }
@@ -1146,7 +1146,7 @@ async function main() {
                   ],
                   recommendations: [],
                   contradictions: [],
-                  uncertainties: ["Benchmark scope remains limited."],
+                  uncertainties: [],
                   nextQuestions: [],
                 }) } }] };
               }
@@ -1716,7 +1716,7 @@ async function main() {
                   }],
                   recommendations: [],
                   contradictions: [],
-                  uncertainties: ["Real throughput depends on local hardware."],
+                  uncertainties: [],
                   nextQuestions: [],
                 };
               } else {
@@ -1890,9 +1890,11 @@ async function main() {
     new Set(fallbackState.synthesis.keyFindings.flatMap((finding) => finding.sourceIds)).size === 3,
     "deterministic fallback overrepresented the earliest source"
   );
-  assert(fallbackState.synthesis.uncertainties.length === 3, "deterministic fallback dropped source limitations");
+  assert(fallbackState.synthesis.uncertainties.length === 0, "unquoted extraction limitations became asserted report facts");
+  assert(fallbackState.evidence.flatMap((item) => item.limitations).length === 3, "fallback lost unverified source limitations from diagnostic state");
   assert(fallbackState.audit.citationCoverage === 1, "deterministic fallback lost claim-level citation coverage");
   const fallbackReport = await fs.readFile(fallbackResearch.reportPath, "utf8");
+  assert(!fallbackReport.includes("bounded methodological limitation"), "unverified extraction limitations escaped as report facts");
   assert(
     ["[S1]", "[S2]", "[S3]"].every((sourceId) => fallbackReport.includes(sourceId)),
     "deterministic fallback report did not preserve source-diverse citations"

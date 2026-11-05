@@ -29,7 +29,16 @@ function isRuntimeUserMessage(content = "") {
 function genuineUserMessages(messages = []) {
   return messages.filter(
     (message) => message?.role === "user" && !isRuntimeUserMessage(messageText(message.content))
-  );
+  ).map((message) => {
+    const text = messageText(message.content);
+    const boundary = text.indexOf("\nUser interface language:");
+    // runAgent's initial user envelope appends runtime instructions, including
+    // AGINTI.md and workspace policy. Those are not requested local sources.
+    if (text.startsWith("Goal: ") && boundary > 6 && text.indexOf("\nRuntime time context:", boundary) > boundary) {
+      return { ...message, content: text.slice(6, boundary) };
+    }
+    return message;
+  });
 }
 
 function currentIntentMessages(messages = []) {
@@ -86,7 +95,11 @@ export function hasLocalResearchWorkspaceIntent(goal = "", messages = []) {
         .slice(-4)
         .map((message) => scopedChatopsEvidenceGoal(messageText(message.content)))
         .join("\n");
-  const text = `${scopedChatopsEvidenceGoal(goal)}\n${recent}`;
+  const text = `${scopedChatopsEvidenceGoal(goal)}\n${recent}`
+    // A generic workspace-preservation prohibition is not a local source.
+    // Remove only that bounded phrase; named inputs and positive read requests
+    // elsewhere still require their normal inspection before research.
+    .replace(/\b(?:do not|don't|dont|must not|never)\s+(?:create|change|modify|edit|write|delete|remove)(?:\s*(?:,|and|or)\s*(?:create|change|modify|edit|write|delete|remove)){0,6}\s+(?:(?:any|the)\s+)?(?:workspace|local|project)\s+files?\b/gi, "");
   return (
     /\b(?:this|current|existing|project|workspace|local)\s+(?:folder|directory|repo(?:sitory)?|files?|notes?|sources?|artifacts?)\b/i.test(text) ||
     /(?:^|[\s`'"(])(?:~\/|\.{1,2}\/|\/)?(?:[^\s`'"()\/]+\/)+[^\s`'"()\/]+\.(?:bib|csv|docx?|json|md|pdf|tex|txt|ya?ml)\b/i.test(text) ||

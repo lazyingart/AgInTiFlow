@@ -22,7 +22,7 @@ import {
   validateResearchScopeReview,
 } from "./research-scope-review.js";
 
-export const RESEARCH_VERSION = 15;
+export const RESEARCH_VERSION = 16;
 export { RESEARCH_SCOPE_REVIEW_POLICY, RESEARCH_SCOPE_REVIEW_LIMITS };
 const DEPTH_BUDGETS = Object.freeze({
   quick: Object.freeze({ maxQueries: 3, maxSources: 6, concurrency: 3, gapPasses: 0 }),
@@ -32,6 +32,7 @@ const DEPTH_BUDGETS = Object.freeze({
 const MAX_QUERY_BYTES = 4_000;
 const MAX_SEARCH_QUERY_BYTES = 480;
 const QUOTE_MATCHING_POLICY = "exact-nfc-whitespace-v1";
+const SYNTHESIS_NOTE_POLICY = "source-bound-notes-native-provenance-v1";
 
 function clampInteger(value, min, max, fallback) {
   const parsed = Number(value);
@@ -333,6 +334,23 @@ const EVIDENCE_SCHEMA = {
   additionalProperties: false,
 };
 
+const SYNTHESIS_NOTE_SCHEMA = {
+  type: "object",
+  properties: {
+    text: { type: "string", minLength: 1, maxLength: RESEARCH_SCOPE_REVIEW_LIMITS.statementChars },
+    evidenceIds: { type: "array", maxItems: 64, items: { type: "string" } },
+  },
+  required: ["text", "evidenceIds"],
+  additionalProperties: false,
+};
+const SYNTHESIS_FACTUAL_NOTE_SCHEMA = {
+  ...SYNTHESIS_NOTE_SCHEMA,
+  properties: {
+    ...SYNTHESIS_NOTE_SCHEMA.properties,
+    evidenceIds: { ...SYNTHESIS_NOTE_SCHEMA.properties.evidenceIds, minItems: 1 },
+  },
+};
+
 const SYNTHESIS_SCHEMA = {
   type: "object",
   properties: {
@@ -387,9 +405,9 @@ const SYNTHESIS_SCHEMA = {
         additionalProperties: false,
       },
     },
-    contradictions: { type: "array", items: { type: "string" } },
-    uncertainties: { type: "array", items: { type: "string" } },
-    nextQuestions: { type: "array", items: { type: "string" } },
+    contradictions: { type: "array", items: SYNTHESIS_FACTUAL_NOTE_SCHEMA },
+    uncertainties: { type: "array", items: SYNTHESIS_FACTUAL_NOTE_SCHEMA },
+    nextQuestions: { type: "array", items: SYNTHESIS_NOTE_SCHEMA },
   },
   required: [
     "title",
@@ -1588,15 +1606,6 @@ function deterministicSynthesis(query, plan, sources, evidence, audit) {
     6
   );
   const keyFindings = selectSourceDiverse(findings, 12);
-  const limitationRecords = evidence.flatMap((item) => {
-    const hasVerifiedClaim = (item.claims || []).some((claim) => claim.quoteVerified);
-    if (!hasVerifiedClaim) return [];
-    return unique(item.limitations).map((limitation) => ({ sourceId: item.sourceId, sourceIds: [item.sourceId], text: limitation }));
-  });
-  const limitations = selectSourceDiverse(limitationRecords, 12)
-    .map((item) => `Evidence limitation (${item.sourceId}): ${conciseLine(item.text, 420)}`);
-  const missingQuestions = (audit.missingQuestions || []).map((question) => `Evidence gap: ${conciseLine(question.question, 320)}`);
-
   return {
     title: `Research report: ${conciseLine(plan?.objective || query, 180)}`,
     executiveSummary: summaryFindings.length
@@ -1613,8 +1622,25 @@ function deterministicSynthesis(query, plan, sources, evidence, audit) {
     })),
     recommendations: [],
     contradictions: [],
-    uncertainties: unique([...missingQuestions, ...limitations]),
-    nextQuestions: (audit.missingQuestions || []).map((question) => conciseLine(question.question, 320)),
+    // Unquoted extraction limitations remain in diagnostic evidence. Native
+    // reader/coverage facts are rendered separately, never promoted as claims.
+    uncertainties: [],
+    nextQuestions: (audit.missingQuestions || []).map((question) => ({ text: conciseLine(question.question, 320), evidenceIds: [] })),
+  };
+}
+
+// Model input must match its closed output schema. Runtime-derived sourceIds
+// are not caller/model citation authority and never belong in a replacement.
+function synthesisForModel(synthesis) {
+  const statement = (row, key) => ({ [key]: row[key], evidenceIds: [...row.evidenceIds] });
+  return {
+    title: synthesis.title,
+    executiveSummary: synthesis.executiveSummary,
+    executiveSummaryEvidenceIds: [...synthesis.executiveSummaryEvidenceIds],
+    sections: synthesis.sections.map((section) => ({ heading: section.heading, paragraphs: section.paragraphs.map((row) => statement(row, "text")) })),
+    keyFindings: synthesis.keyFindings.map((row) => ({ ...statement(row, "claim"), confidence: row.confidence })),
+    recommendations: synthesis.recommendations.map((row) => statement(row, "text")),
+    ...Object.fromEntries(["contradictions", "uncertainties", "nextQuestions"].map((key) => [key, synthesis[key].map((row) => statement(row, "text"))])),
   };
 }
 
@@ -1651,7 +1677,8 @@ async function synthesize(query, plan, sources, evidence, audit, requirements, a
       "Prefer primary sources and give dates when claims may change over time.",
       "Do not cite a source that does not support the sentence.",
       "Preserve every governing condition and exception; an exact quote may depend on its section or surrounding paragraph.",
-      "Keep titles/headings descriptive. Factual contradictions/uncertainties/questions must cite existing evidence IDs inline, such as [S1-C1]; otherwise use only non-factual questions or limitations of this research run.",
+      "Keep titles/headings descriptive. Every contradictions, uncertainties and nextQuestions item is a record with text and evidenceIds. Contradictions and uncertainties require at least one exact supplied evidence ID; inline citation-looking text is not a substitute. Only non-factual nextQuestions may use an empty array.",
+      "Do not repeat reader truncation, source completeness, retrieval or coverage metadata as a source uncertainty. AgInTi renders verified native run limitations separately. Omit such entries, and omit any other note that lacks supporting supplied claim evidence.",
       ...(scopeFeedback ? ["Replace the previous report using the source-context assessment. Correct or remove unsupported assertions throughout; a generic disclaimer or 'unverified' prefix does not repair a separate false factual claim."] : []),
     ].join(" "),
     context: JSON.stringify({ query, plan, audit, requirements }),
@@ -1669,10 +1696,14 @@ async function synthesize(query, plan, sources, evidence, audit, requirements, a
     throw new Error("Research replacement context exceeds the source-scope review budget.");
   }
   let result = await runJsonSpecialist(request, config, store);
+  const invalidCandidate = result.validationErrors?.length > 0;
   if (!result.ok && routeModel && routeModel !== mainModel) {
     result = await runJsonSpecialist({ ...request, model: routeModel }, config, store);
   }
-  return result.ok && result.result ? result.result : { ...fallback, synthesisFallback: result.error || result.validationErrors || "synthesis failed" };
+  if ((!result.ok || !result.result) && (invalidCandidate || result.validationErrors?.length > 0)) {
+    throw new Error("Research synthesis was unavailable or invalid; no reviewed report is available.");
+  }
+  return result.ok && result.result ? result.result : { ...fallback, synthesisFallback: result.error || "synthesis failed" };
 }
 
 function scopeReviewPlan(state) {
@@ -1837,6 +1868,18 @@ export function auditResearchSynthesis(synthesis, sources, evidence = null) {
     .filter((section) => section.paragraphs.length);
   synthesis.keyFindings = (synthesis.keyFindings || []).filter((finding) => acceptStatement(finding));
   synthesis.recommendations = (synthesis.recommendations || []).filter((recommendation) => acceptStatement(recommendation));
+  for (const key of ["contradictions", "uncertainties", "nextQuestions"]) {
+    for (const note of synthesis[key] || []) {
+      // Source-level legacy audit callers do not become native schema16 runs.
+      // The live JSON schema and scope planner separately require typed notes.
+      if (typeof note === "string") continue;
+      const ids = unique(note.evidenceIds);
+      if (key !== "nextQuestions" && ids.length === 0) throw new Error("Research factual notes require verified evidence IDs.");
+      if (ids.some(id => !verifiedEvidence.has(id))) throw new Error("Research note cites unknown or unverified evidence.");
+      if (ids.length) acceptStatement(note);
+      else note.sourceIds = [];
+    }
+  }
 
   if (!summaryAccepted) {
     const supported = [
@@ -1916,13 +1959,14 @@ function renderMarkdown(state) {
     lines.push("");
   }
   if (synthesis.contradictions?.length) {
-    lines.push("## Contradictions", "", ...synthesis.contradictions.map((item) => `- ${item}`), "");
+    lines.push("## Contradictions", "", ...synthesis.contradictions.map((item) => `- ${item.text} ${citationText(item.sourceIds)}`.trim()), "");
   }
   {
     lines.push("## Limitations, Uncertainties, And Coverage Gaps", "");
     const limitations = unique([
-      ...(synthesis.uncertainties || []),
+      ...(synthesis.uncertainties || []).map((item) => `${item.text} ${citationText(item.sourceIds)}`.trim()),
       ...(state.coverage.missingQuestions || []).map((question) => `Unresolved: ${question.question}`),
+      ...(state.sources || []).filter((source) => source.readTruncated === true).map((source) => `Reader retained truncated text for ${source.id}; this report is limited to retained evidence.`),
     ]);
     if (!limitations.length) {
       limitations.push("No additional limitation was extracted as a verified claim; consult the source and coverage audit before generalizing the findings.");
@@ -1931,6 +1975,9 @@ function renderMarkdown(state) {
       lines.push(`- ${item}`);
     }
     lines.push("");
+  }
+  if (synthesis.nextQuestions?.length) {
+    lines.push("## Open Questions", "", ...synthesis.nextQuestions.map((item) => `- ${item.text} ${citationText(item.sourceIds)}`.trim()), "");
   }
   if (state.requirements?.requireVerificationMethod) {
     lines.push(
@@ -2081,6 +2128,45 @@ async function saveState(state, paths, store) {
   }).catch(() => {});
 }
 
+function researchAnswer(state) {
+  if (state.status !== "completed") return "";
+  const summary = state.synthesis?.executiveSummary || "";
+  if (!state.requirements?.includeEvidenceAppendix || state.scopeReview?.status !== "passed") return summary;
+  // The parent may have no workspace file tool. Deliver exact quotations from
+  // its completed native assessment instead of forcing another research pass
+  // merely to recover the requested wording from an internal report path.
+  const lines = [];
+  const seen = new Set();
+  const citedSources = new Set(state.synthesis.executiveSummarySourceIds || []);
+  for (const note of state.synthesis.uncertainties || []) for (const id of note.sourceIds || []) citedSources.add(id);
+  let bytes = 0;
+  outer: for (const batch of state.scopeReview.batches || []) {
+    for (const decision of batch.decisions) {
+      if (decision.verdict !== "supported") continue;
+      for (const quotation of decision.supportingQuotes) {
+        const key = `${quotation.sourceId}\u0000${normalizedQuote(quotation.quote)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const line = `- “${quotation.quote}” [${quotation.sourceId}]`;
+        const size = Buffer.byteLength(line, "utf8");
+        if (lines.length >= 6 || bytes + size > 8192) break outer;
+        lines.push(line);
+        citedSources.add(quotation.sourceId);
+        bytes += size;
+      }
+    }
+  }
+  return lines.length
+    ? [summary,
+      "Selected exact quotations from retained sources:", lines.join("\n"),
+      ...(state.synthesis.uncertainties?.length ? ["Assessed source limitations:", state.synthesis.uncertainties.map(note => `- ${note.text} ${citationText(note.sourceIds)}`.trim()).join("\n")] : []),
+      ...(state.sources.some(source => source.readTruncated === true) ? ["Reader limitation: this answer uses retained source text; at least one source was truncated."] : []),
+      "Sources:", state.sources.filter(source => citedSources.has(source.id)).map(source => `- [${source.id}] ${source.url}`).join("\n"),
+      "The cited report preserves the complete assessment and evidence appendix.",
+    ].join("\n\n")
+    : summary;
+}
+
 function publicResult(state, paths, extra = {}) {
   return {
     ok: state.status === "completed",
@@ -2100,7 +2186,8 @@ function publicResult(state, paths, extra = {}) {
     pdfRequirement: state.pdfRequirement || {},
     coverage: state.coverage || {},
     audit: state.audit || {},
-    answer: state.status === "completed" ? state.synthesis?.executiveSummary || "" : "",
+    answer: researchAnswer(state),
+    evidenceAppendixRequested: state.requirements?.includeEvidenceAppendix === true,
     artifactPath: paths.statePath,
     reportPath: state.status === "completed" ? paths.reportPath : "",
     scopeReview: {
@@ -2133,6 +2220,8 @@ export async function deepResearch(args = {}, config = {}, store = null) {
   const policy = sourcePolicy(args.sourcePolicy);
   const requirements = researchRequirements(args, config);
   const fingerprint = stableHash({
+    researchVersion: RESEARCH_VERSION,
+    synthesisNotePolicy: SYNTHESIS_NOTE_POLICY,
     query,
     budget,
     policy,
@@ -2199,6 +2288,7 @@ export async function deepResearch(args = {}, config = {}, store = null) {
       ...researchModels(config),
       extractionConcurrency: researchExtractionConcurrency(config, budget),
       scopeReviewPolicy: RESEARCH_SCOPE_REVIEW_POLICY,
+      synthesisNotePolicy: SYNTHESIS_NOTE_POLICY,
       scopeReviewMode: args.dryRun || config.deepResearchDryRun || config.provider === "mock" ? "dry_run" : "live",
     },
     createdAt: new Date().toISOString(),
@@ -2460,7 +2550,7 @@ export async function deepResearch(args = {}, config = {}, store = null) {
         const feedback = {
           policy: RESEARCH_SCOPE_REVIEW_POLICY,
           rejectedStatements: review.batches.flatMap(batch => batch.decisions).filter(row => row.verdict === "unsupported" || row.verdict === "uncertain"),
-          previousReport: state.synthesis,
+          previousReport: synthesisForModel(state.synthesis),
           statements: scopeReviewPlan(state).batches.flatMap(batch => batch.payload.statements),
         };
         state.synthesis = await synthesize(query, state.plan, state.sources, state.evidence, state.coverage, requirements, args, config, store, feedback);

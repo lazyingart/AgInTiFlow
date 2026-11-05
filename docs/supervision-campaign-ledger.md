@@ -1,5 +1,74 @@
 # Supervision Campaign Ledger
 
+## Structured research-note authority — candidate, 2026-11-05
+
+The preceding live failure identifies a reusable report contract gap: paragraphs
+carry evidence arrays but contradictions and uncertainties are free-text strings.
+The provider can satisfy the old schema while omitting note citation bindings.
+Two new test-first controlled native cases fail on source45ef0ad: typed notes
+are discarded after schema rejection/fallback, and a missing-binding repair
+does not occur. These fixtures use real SessionStore research state with scripted
+providers; no inference or network is needed for the reproduction.
+
+Native schema16 gives every note an explicit text/evidenceIds record. The audit
+derives its sources; the same source-context gate assesses it and rendering keeps
+its citation. Inline citation-looking prose grants no authority. Missing bindings
+remain rejected until a valid replacement supplies existing evidence and passes
+review. Unknown/unverified IDs, hostile data and cache tampering fail closed.
+Replacement input is projected to its exact schema rather than leaking derived
+runtime fields. A schema-invalid provider report cannot disappear behind a
+deterministic fallback; the existing empty-response fallback is preserved.
+
+New controls cover typed note rendering/restart, binding repair, spoofed inline
+citations, all three note fields, malformed records/arrays, rejected schema15
+replay and unchanged tampered checkpoint bytes. The actual persisted outer-agent
+control now includes a corrected, cited uncertainty. Existing multilingual
+positive controls also carry structured notes.
+
+The ordinary persisted research prompt also exposes three outer-runtime gaps:
+mentioning Python invents a command-execution obligation, the initial runtime
+envelope looks like a requested local source, and a summary-only tool result
+omits explicitly requested quotations. Explanatory intent and native scaffolding
+now retain their proper boundaries; the tool delivers bounded assessed quotes.
+For a simple fully covered read-only quote request, completion keeps the assessed
+native answer rather than a new unreviewed parent paraphrase. Compound/format
+requests and existing completion gates remain in effect. A persisted regression
+supplies a false parent conclusion and verifies that it never becomes the final
+answer. Cache integrity, stale work and incomplete coverage controls fail closed.
+
+The focused controlled set passes 68 groups. Deep-research, scoped-artifact,
+progressive-tools, dynamic-budget, SCS, truthful-completion and wrapper lifecycle
+checks pass, along with syntax and the dependency audit. These are offline
+protocol/regression controls, not proof of general model entailment.
+
+The first full suite fails after 403.487 seconds in the existing model-roles
+static-JSON control. The new positive-execution helper was applied too broadly
+and invented a shell obligation for ordinary file verification. Its use is now
+limited to deciding the explanatory exception; existing file evidence rules stay
+in force. A scoped/unscoped JSON regression and the model-roles smoke pass.
+The failed log is preserved rather than counted as a green run.
+
+The final full suite passes in 427.429 seconds with all 337 tracked runtime,
+test and package inputs unchanged during execution. Syntax checks cover 311
+files. Candidate packaging includes 498 files and no private-state paths;
+the temporary installation qualifies the runtime separately from the installed
+registry release. A separate OS process replays completed native research with
+zero model/source/network calls and unchanged checkpoint/report bytes. Fresh
+public-source retrieval confirms all eight retained quotations, and finite
+Python cases independently check normal, break, return, exception and continue
+behavior. The fresh HTML hash differs; unchanged whole-source bytes are not
+claimed. These component results do not overturn either failed live acceptance.
+
+Live acceptance remains HOLD. The four earlier Python attempts used 26 requests
+in total: instruction routing failed, native provenance/quote handoff needed
+repair, and a six-request structural completion produced an unsafe parent
+paraphrase. Its independent review is failed; the original receipt is retained.
+One final bounded check used eight requests. The reviewer cited runtime metadata
+(`readerTruncated`) as a source quotation; native validation rejected it. No
+reviewed answer completed, and the request cap ended the run. Cumulative Python
+requests are 34, not six. No further paid retry is part of this checkpoint.
+No new version, publication, installation or app activation is claimed.
+
 ## Research source-context assessment — candidate, 2026-11-05
 
 A real public-source comparison passes all 23 exact quotation checks but loses

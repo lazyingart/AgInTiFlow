@@ -1659,6 +1659,30 @@ function goalRequestsPublishAction(goal = "") {
   );
 }
 
+function hasPositiveExecutionRequest(goal = "") {
+  const text = stripForbiddenLanguage(goal);
+  return (
+    /(?:^|[.!?]\s+|[;,\n]\s*|\b(?:and|then|also)\s+)(?:(?:please|kindly|now|actually)\s+)*(?:(?:can|could|would|will)\s+you\s+)?(?:try\s+to\s+)?(?:run|rerun|execute|invoke|launch|test|lint|typecheck|build|compile|install|make|reproduce|benchmark|measure)\b/i.test(text) ||
+    /\b(?:by|and)\s+(?:actually\s+)?(?:running|executing|testing|compiling)\b/i.test(text) ||
+    /\buse\s+(?:python\d*|node|bash|shell|pytest)\s+to\b/i.test(text) ||
+    /\b(?:check|verify|validate|confirm)\b[^.!?;\n]{0,60}\b(?:works?|runs?|passes?|tests?|runtime|output|results?|installation|environment|version|script|program|code)\b/i.test(text) ||
+    /(?:^|[。！？；，\n]|然后|然後|并且|並且|并|並|再)(?:请|請)?(?:实际|實際|真的)?(?:运行|運行|执行|執行|测试|測試|编译|編譯|安装|安裝)/u.test(text) ||
+    /実際に実行|実行してください|テストしてください/u.test(text) ||
+    inferExplicitRequestedCommands(text).length > 0 ||
+    Boolean(inferAuthoritativeReadOnlyRoutine(goal))
+  );
+}
+
+function isExplanatoryOnlyTask(goal = "") {
+  const text = stripForbiddenLanguage(goal);
+  const explanation = /\b(?:explain|describe|discuss|research|tutorial|documentation)\b|解释|解釋|说明|說明|説明|教えて/u.test(text.toLowerCase());
+  // Code repair/review keeps its established verification contract. This
+  // exception only prevents topic names and factual "does it run?" questions
+  // from inventing a process-execution obligation for explanatory answers.
+  const codeInspection = /\.(?:js|jsx|ts|tsx|mjs|cjs|py|rs|go|java|kt|swift|rb|php|cs|cpp|c|h|hpp|sh)\b|\b(?:source code|script|codebase|repository|code review)\b/i.test(text);
+  return explanation && !codeInspection && !goalRequestsWorkspaceMutation(text) && !hasPositiveExecutionRequest(text);
+}
+
 function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCriteria = []) {
   const positiveGoal = stripForbiddenLanguage(goal);
   const text = normalizedText(positiveGoal);
@@ -1680,6 +1704,8 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   const categories = new Set(
     goalRequiresEvidence(positiveGoal, "") ? profileRequirementsForGoal(taskProfile, positiveGoal) : []
   );
+  const explanatoryOnly = isExplanatoryOnlyTask(positiveGoal);
+  if (explanatoryOnly) categories.delete("command");
 
   if (goalRequestsFileMutation(positiveGoal)) {
     categories.add("file");
@@ -1688,13 +1714,13 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
     textHas(
       text,
       /\b(run|command|lint|typecheck|build|compile|install|npm|node|python|pytest|make|xelatex|latexmk|ffmpeg)\b|\btest(?:ing)?\s+(?:the|this|that|it|app|site|code|function|workflow|script|build)\b/
-    ) || /运行|测试|编译|安装/.test(text);
+    ) || /运行|测试|编译|安装|実際に実行|実行してください|テストしてください/.test(text);
   const validationSignal = textHas(text, /\b(check|verify|validate)\b/) || /检查|验证/.test(text);
   // A generic "verify outputs" reminder on a simple document/file request is
   // satisfied by the file + semantic evidence checks below. Requiring a shell
   // command as well makes permission-resumed writes repeat an already-successful
   // create. Substantive code validation still requires command evidence.
-  if (directCommandSignal || (validationSignal && codeProfileRequiresCommand(positiveGoal))) {
+  if (!explanatoryOnly && (directCommandSignal || (validationSignal && codeProfileRequiresCommand(positiveGoal)))) {
     categories.add("command");
   }
   if (goalRequestsTestExecution(positiveGoal)) {

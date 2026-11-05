@@ -174,7 +174,7 @@ recover text the reader did not retain. Each normal batch adds one model call;
 a rejected report may add one replacement call and one further batch sequence.
 No tool authority, wrapper or cross-provider fallback is added for this stage.
 
-Checkpoint schema 15 binds the review policy and live/dry mode. Earlier
+Checkpoint schema 16 binds the review policy, report schema and live/dry mode. Earlier
 quotation-only checkpoints, changed report/source/evidence bytes, malformed
 checkpoints and dry-run results cannot satisfy live completion or outer-session
 cache reuse. An explicit incompatible ID is refused without overwriting the
@@ -188,6 +188,57 @@ they are not authenticated against an actor who can rewrite the same account's
 files. Source admission, hostile-page handling and application access control
 remain separate boundaries. The restricted application SDK and its tools are
 unchanged by this native research workflow.
+
+Contradictions, uncertainties and open questions use the same explicit citation
+binding as report paragraphs: each item is `{ "text": "...", "evidenceIds": [] }`.
+Factual notes require existing quote-verified evidence IDs; the native audit
+derives source IDs, and the source-context assessment checks their meaning.
+Citation-looking text inside a note does not grant authority. An empty ID array
+is reserved for a genuinely non-factual open question, which must still receive
+an appropriate assessment. Contradictions and uncertainties require at least
+one verified ID. Unknown or unverified IDs
+fail instead of silently removing a note. All retained note text is included
+in the assessed document and rendered with its derived citations.
+
+Report replacement input follows the exact model schema, without runtime-derived
+source IDs or other internal fields. A valid replacement may add a missing
+evidence binding, but the changed report must pass assessment again. A parsed
+report that violates its schema cannot be discarded behind deterministic
+fallback after both same-provider attempts fail. The existing empty/unavailable
+synthesis fallback remains explicit diagnostic state and must also pass review.
+Unquoted extraction limitations stay in diagnostic evidence rather than becoming
+asserted fallback prose. Native reader truncation and coverage limitations are
+rendered directly from observed run state, outside model-generated uncertainties.
+Earlier string-note checkpoints are refused without mutation. This is a native
+report schema change; the public integration search wire contract, restricted
+SDK and application-owned stores are unchanged.
+
+When exact quotations are requested, the tool result includes a bounded selection
+of supporting quotations from the passed assessment, source URLs, assessed
+uncertainties and observed reader limitations. The parent does not need to start
+another research run merely to retrieve wording from an internal report path.
+The complete evidence appendix remains in the report.
+
+For a plain read-only answer with exactly one completed current-goal research
+record, full planned-question coverage and requested quotations, native
+completion preserves that assessed answer rather than an unreviewed parent
+paraphrase. It still passes the existing completion gates. Compound execution,
+local inputs, artifact requests, host-managed response scopes and explicit
+output-format or translation requests retain their normal completion paths.
+An unfinished or blocked parent response does not become successful through this
+selection. The cache binds the answer bytes with an integrity digest; altered,
+stale, missing-report or unassessed records cannot authorize the selection.
+This digest is not a MAC and does not protect against same-account forgery.
+
+Explanatory research questions do not request interpreter execution merely by
+mentioning Python, Node, or asking when something runs. Positive execution,
+mixed explanation/action requests, exact verifier commands and code-review
+verification keep their existing evidence requirements. Likewise, a generic
+"do not change workspace files" prohibition does not declare local sources that
+must be inspected. Named inputs and positive workspace-read requests still do.
+The initial native Goal envelope's runtime instructions are excluded from the
+user-intent projection, so references such as AGINTI.md do not invent local
+grounding obligations or suppress an explicitly requested research workflow.
 
 The reader-facing report always includes an explicit limitations section and
 separates quote-verified sources from inspected-but-uncited pages. When the
