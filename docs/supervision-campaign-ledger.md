@@ -1,5 +1,34 @@
 # Supervision Campaign Ledger
 
+## Published browser runtime and online consumer qualification — 2026-11-06
+
+Release 357.0's CI, archive and offline installed tests passed, but the ordinary
+global install failed: its Playwright range resolved 1.65.0 while the required
+playwright-core 1.65.0 was unavailable in the registry at that observation.
+The previous global356.0 installation's506 files and saved DeepSeek preference
+remained unchanged. No forced or offline global install was substituted.
+
+The repository lock had qualified Playwright/core1.59.1. The published manifest
+now pins that exact browser version, with a consumer regression checking the
+actual installed Playwright/core pair. A package lock alone cannot constrain
+global consumer resolution. A fresh online candidate install now succeeds and
+passes16 HTTP/package controls; this is separate from the earlier warmed-cache
+qualification.
+
+`npm run pack:verify-runtime` packs into a temporary directory, resolves public
+dependencies with prefer-online and scripts disabled, verifies both CLI versions,
+then runs the installed browser-pair and model-HTTP controls. It is required by
+the trusted publish workflow before publication. Temporary state is removed;
+there is no provider inference or browser download. The model HTTP repair and
+its two real canonical model probes remain unchanged; no model test is rerun
+merely for the packaging follow-up.
+
+The packaging full suite passes in 420.281 seconds with all 362 selected inputs
+unchanged, including the publish workflow. Audit has zero findings; the new
+script and test pass explicit syntax checks. The exact browser pin changes no
+locked installed runtime version. The follow-up is released separately so the
+357.0 online-install failure remains an immutable, visible checkpoint.
+
 ## Model requests stay on the configured route — 2026-11-06
 
 A local HTTP reproduction found a reusable core transport defect. Before the
