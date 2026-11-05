@@ -283,6 +283,27 @@ arXiv, while `provider=research` combines the general and scholarly lanes.
 index-specific lookup. These public endpoints require no API key; provider
 failures remain visible in `providersTried` rather than being hidden.
 
+Crossref's public list-query pool permits one request per second and one
+concurrent request, as described in its
+[July 2026 limits update](https://community.crossref.org/t/refining-rest-api-limits-for-improved-stability-and-reliability/16137).
+Built-in Crossref calls share one process-local gate: one active callback,
+at most32 queued calls, and a conservative1100ms gap after completion. The slot
+includes response-body reading and parsing. Valid rate/cooldown headers can
+lengthen this delay; higher advertised limits cannot shorten the public default.
+The original request timeout covers queueing. Queued cancellation cannot fetch;
+an active callback ignoring abort remains charged until its promise settles.
+
+HTTP429/503 remains a visible failed attempt; no request is automatically
+retried. Canonical Retry-After seconds or HTTP dates defer later calls. Invalid
+or more-than24h timing closes that process's Crossref lane rather than wrapping
+a timer or dispatching early. Other search providers and ordinary chat retain
+their independent paths. Fixed Crossref requests reject redirects. This does
+not coordinate separate processes, service instances or other clients sharing
+the same public IP, and cannot guarantee source availability or remote-job
+termination. Production deployments still need their own source-budget policy.
+Publication type remains source evidence (`sourceType`), not a claim that every
+Crossref record is a paper or that metadata proves relevance, quality or findings.
+
 An explicit request for official engineering writeups adds one source-class
 query such as an engineering architecture or system-card lookup. This is not a
 hardcoded vendor list: the planner names relevant first-party organizations

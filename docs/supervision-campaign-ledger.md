@@ -1,5 +1,51 @@
 # Supervision Campaign Ledger
 
+## Bounded scholarly-source pacing — 2026-11-05
+
+The installed350 built-in Crossref path reproduces an independent core gap:
+two callers overlap while the first response is pending, so a controlled source
+returns429 to the second. Crossref's July2026 public-list contract is one request
+per second/one concurrent request. Sequential model tools also issued list
+queries less than a second apart in the earlier failed live fixture. Those
+failures remain recorded; an HTTP200 diagnostic was not a task acceptance result.
+
+Built-in Crossref now shares one bounded, body-aware process-local read gate.
+It spaces completed callbacks by1100ms, observes stricter rate/Retry-After
+timing, preserves original queue deadlines and removes cancelled queued work.
+Ignored active cancellation remains charged through original settlement. Close
+drains queued admission and waits active work; no idle wake timer or automatic
+retry is added. Invalid/out-of-bound timing closes only that Crossref lane.
+Other provider routes, privacy/domain checks and tool permissions are preserved.
+The optional read-request-gate export provides the same transport scheduling to
+trusted hosts without HTTP/model/environment authority or persistence.
+
+Ten offline regressions cover FIFO/body lifetime, spacing, cooldown, native
+deadline, cancellation/late rejection, queue capacity, strict options, close,
+malformed source timing and independent providers. The neighboring deep-research
+smoke passes. A two-query live built-in preflight returns200/200, observes the
+public-array1request/1s/concurrency1 headers, and preserves all source kinds.
+
+A separate one-shot typed journal-article profile uses the same ordinary user
+prompt and initial native request bytes as the earlier failed typed fixture.
+Flash makes3 real requests/two searches+two metadata reads, all four source
+responses200. A fresh-process Chinese Pro follow-up makes1 request/no reads and
+preserves both exact references; both years are2026, so this is a stable tie,
+not evidence of a changed chronology. Independent registry reads verify title,
+year, DOI, URL and declared journal kind. Lite replays identical native exchanges
+without inference. The model chose different query text; the controlled test
+isolates the pacing defect, while the live run is a new bounded acceptance case,
+not a deterministic causal/latency comparison. Total real model requests:four.
+
+This qualifies one metadata-only process-local profile, not full-text findings,
+peer review, paper quality, arbitrary sources, production multi-process source
+admission, native SessionStore durability or application activation. Gates do
+not coordinate other processes/clients sharing an IP or persist across restart.
+Existing apps, credentials, LocalLLM/GPU/services and Lite package remain unchanged.
+Full npm test passes in435.242 seconds with frozen source/test/package hashes;
+syntax310 and production audit0 pass. Two existing fixed-port18102 document
+HTTP checks skip locally. No duplicate full suite or additional inference was
+needed after this checkpoint.
+
 ## Safe read-tool failure metadata — 2026-11-05
 
 A normal public-paper request exercised live Crossref discovery with DeepSeek

@@ -12,12 +12,16 @@ import { XMLParser } from "fast-xml-parser";
 import { isDomainAllowed } from "./guardrails.js";
 import { redactSensitiveText } from "./redaction.js";
 import { assessPublicWebQuery } from "./web-query-privacy.js";
+import { createReadRequestGate } from "./read-request-gate.js";
 
 const MAX_QUERY_BYTES = 500;
 const MAX_RESULTS = 10;
 const MAX_PAGE_BYTES = 5 * 1024 * 1024;
 const MAX_PAGE_CHARS = 40_000;
 const MAX_REDIRECTS = 5;
+// Public Crossref list requests: one per second and one in flight. This is
+// shared across callers in this process, not a distributed quota/lease proof.
+const crossrefRequests = createReadRequestGate({ minIntervalMs: 1100, maxPending: 32 });
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const SCHOLARLY_QUERY_STOPWORDS = new Set([
   "about", "agent", "agents", "analysis", "and", "article", "articles", "compare", "current", "deep",
@@ -446,8 +450,50 @@ function timeoutSignal(parentSignal, timeoutMs) {
   return parentSignal ? AbortSignal.any([parentSignal, timeout]) : timeout;
 }
 
+function deferCrossrefResponse(response, defer) {
+  const limit = response.headers?.get?.("x-rate-limit-limit");
+  const interval = response.headers?.get?.("x-rate-limit-interval");
+  const concurrency = response.headers?.get?.("x-concurrency-limit");
+  let delayMs = 1100;
+  if (concurrency !== null && concurrency !== undefined && !/^[1-9][0-9]{0,5}$/.test(concurrency)) {
+    void crossrefRequests.close();
+    throw new Error("Crossref supplied an invalid concurrency limit.");
+  }
+  if ((limit !== null && limit !== undefined) || (interval !== null && interval !== undefined)) {
+    if (!/^[1-9][0-9]{0,5}$/.test(limit || "") || !/^[1-9][0-9]{0,5}s$/.test(interval || "")) {
+      void crossrefRequests.close();
+      throw new Error("Crossref supplied invalid rate-limit headers.");
+    }
+    delayMs = Math.max(delayMs, Math.ceil(Number(interval.slice(0, -1)) * 1000 / Number(limit)));
+  }
+  if (response.status === 429 || response.status === 503) {
+    const retryAfter = response.headers?.get?.("retry-after");
+    let retryMs = 5000;
+    if (retryAfter !== null && retryAfter !== undefined) {
+      if (/^[0-9]{1,9}$/.test(retryAfter)) retryMs = Number(retryAfter) * 1000;
+      else {
+        const until = Date.parse(retryAfter);
+        if (!Number.isFinite(until) || new Date(until).toUTCString() !== retryAfter) {
+          void crossrefRequests.close();
+          throw new Error("Crossref supplied invalid retry timing.");
+        }
+        retryMs = Math.max(0, Math.ceil(until - Date.now()));
+      }
+    }
+    delayMs = Math.max(delayMs, retryMs);
+  }
+  if (!Number.isSafeInteger(delayMs) || delayMs > 86_400_000) {
+    void crossrefRequests.close();
+    throw new Error("Crossref rate-limit timing exceeds the bounded client policy.");
+  }
+  defer(delayMs);
+}
+
 async function fetchSearchProvider(provider, query, args, config) {
   const timeoutMs = Math.min(Math.max(Number(args.timeoutMs) || 12_000, 1_000), 60_000);
+  // Queueing consumes the original request budget; acquisition never creates
+  // another timeout or grants a new deadline.
+  const signal = timeoutSignal(config.abortSignal, timeoutMs);
   const fetchImpl = config.webSearchFetchImpl || config.webFetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("No compatible fetch implementation is available.");
   const headers = {
@@ -497,28 +543,39 @@ async function fetchSearchProvider(provider, query, args, config) {
     throw new Error(`Unsupported search provider: ${provider}`);
   }
 
-  const response = await fetchImpl(url, {
-    signal: timeoutSignal(config.abortSignal, timeoutMs),
-    headers,
-    redirect: "follow",
-  });
-  if (!response.ok) throw new Error(`${provider} returned HTTP ${response.status}.`);
-  const body = (await readBoundedResponse(response, 2 * 1024 * 1024)).toString("utf8");
-  let results;
-  if (provider === "duckduckgo-html") results = parseDuckDuckGoHtml(body);
-  else if (provider === "bing-rss") results = parseBingRss(body);
-  else if (provider === "crossref") results = parseCrossrefJson(body);
-  else if (provider === "arxiv") results = parseArxivAtom(body);
-  else {
-    const payload = JSON.parse(body);
-    results = (payload?.web?.results || []).map((item) => ({
-      title: item.title,
-      url: item.url,
-      snippet: item.description,
-      publishedAt: item.age || item.page_age || "",
-    }));
-  }
-  return { provider, status: response.status, searchUrl: url, results };
+  const fetchAndParse = async ({ defer } = {}) => {
+    const response = await fetchImpl(url, {
+      signal,
+      headers,
+      redirect: provider === "crossref" ? "error" : "follow",
+    });
+    try {
+      if (provider === "crossref") deferCrossrefResponse(response, defer);
+      if (!response.ok) throw new Error(`${provider} returned HTTP ${response.status}.`);
+      const body = (await readBoundedResponse(response, 2 * 1024 * 1024)).toString("utf8");
+      let results;
+      if (provider === "duckduckgo-html") results = parseDuckDuckGoHtml(body);
+      else if (provider === "bing-rss") results = parseBingRss(body);
+      else if (provider === "crossref") results = parseCrossrefJson(body);
+      else if (provider === "arxiv") results = parseArxivAtom(body);
+      else {
+        const payload = JSON.parse(body);
+        results = (payload?.web?.results || []).map((item) => ({
+          title: item.title,
+          url: item.url,
+          snippet: item.description,
+          publishedAt: item.age || item.page_age || "",
+        }));
+      }
+      return { provider, status: response.status, searchUrl: url, results };
+    } catch (error) {
+      // Settle body cancellation before releasing the scheduling slot. This is
+      // client-stream cleanup, not evidence that a remote server stopped work.
+      try { await response.body?.cancel?.(); } catch { /* Preserve the read failure. */ }
+      throw error;
+    }
+  };
+  return provider === "crossref" ? crossrefRequests.run(fetchAndParse, { signal }) : fetchAndParse();
 }
 
 async function readBoundedResponse(response, maxBytes) {
@@ -528,18 +585,23 @@ async function readBoundedResponse(response, maxBytes) {
     const reader = response.body.getReader();
     const chunks = [];
     let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = Buffer.from(value);
-      total += chunk.length;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => {});
-        throw new Error(`Response exceeds the ${maxBytes}-byte research limit.`);
+    let complete = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { complete = true; break; }
+        const chunk = Buffer.from(value);
+        total += chunk.length;
+        if (total > maxBytes) throw new Error(`Response exceeds the ${maxBytes}-byte research limit.`);
+        chunks.push(chunk);
       }
-      chunks.push(chunk);
+      return Buffer.concat(chunks, total);
+    } finally {
+      if (!complete) {
+        try { await reader.cancel(); } catch { /* The read still fails. */ }
+      }
+      reader.releaseLock?.();
     }
-    return Buffer.concat(chunks, total);
   }
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length > maxBytes) throw new Error(`Response exceeds the ${maxBytes}-byte research limit.`);

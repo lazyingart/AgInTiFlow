@@ -308,6 +308,49 @@ title/year do not prove that a result is a paper, peer-reviewed, relevant or
 evidence for a performance claim. Validate metadata against the actual read,
 including publication kind, before accepting the proposal.
 
+## Optional host read scheduling
+
+`@lazyingart/agintiflow/read-request-gate` exports
+`createReadRequestGate({minIntervalMs?,maxPending?})`. This is a lightweight,
+in-memory scheduler for trusted host callbacks. It performs no HTTP request,
+authentication, model invocation, logging, cache, retry or persistent admission.
+It does not import the CLI, Studio or image providers. Lite's package is unchanged.
+
+```js
+import { createReadRequestGate } from "@lazyingart/agintiflow/read-request-gate";
+const sourceGate = createReadRequestGate({ minIntervalMs: 1100, maxPending: 32 });
+
+const data = await sourceGate.run(async ({ signal, defer }) => {
+  // The host owns the approved endpoint, account scope and response/body limits.
+  const response = await authorizedRead({ signal });
+  const result = await validateSourceResponse(response);
+  if (result.cooldownMs !== null) defer(result.cooldownMs);
+  return result.data;
+}, { signal: originalRequestSignal });
+
+await sourceGate.close();
+```
+
+Pass the original cancellation/deadline signal before queue admission; the gate
+does not create a new dispatch deadline. Configuration is descriptor-checked,
+copied by value and server-owned. Interval defaults to1100ms (range1..60,000);
+pending capacity defaults to32 (range1..64), in addition to the sole active job.
+Queued calls are FIFO. Callback-local `defer(0..86,400,000)` can only extend the
+cooldown and is invalid after that callback settles. No idle timer is retained
+without queued work. Full queues reject READ_REQUEST_BUSY; invalid contracts
+throw INVALID_GATE synchronously before admission. Queued or active caller cancellation rejects CANCELLED,
+but an ignoring active callback keeps its slot until original settlement.
+
+Close rejects queued/new work with READ_REQUEST_CLOSED, is idempotent and waits
+for the admitted callback. It does not forcibly stop that callback or remote
+work. Arbitrary host JavaScript is not sandboxed; callback errors remain host
+errors. Classify them explicitly through the restricted SDK's safe failure
+channel rather than returning raw diagnostics to a client. Share one gate for
+one host-approved source budget; do not let model/request fields create gates,
+change limits or select callbacks. Separate instances/processes do not share
+quotas, and restart does not preserve cooldown. This is not a durable worker
+lease, upstream attestation or application authorization boundary.
+
 ## Optional Codex assistance
 
 Trusted standalone CLI work already supports explicitly enabled advisory Codex
