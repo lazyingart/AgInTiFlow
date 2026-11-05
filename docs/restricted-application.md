@@ -26,6 +26,25 @@ live model qualification is implied by the source export.
 
 ## Ownership and security boundary
 
+`npm run test:restricted-retrieved-instructions` exercises hostile quoted
+instructions inside an authorized read, including English, Chinese and Japanese.
+Unknown write/delete tools, account/path selectors and mixed invalid batches
+fail before an additional read. A separate host check rejects schema-valid
+invented record text. The native SDK enforces dispatch and schema boundaries;
+the application still owns semantic source checks. These are deliberately
+different guarantees.
+
+A bounded real DeepSeek qualification on 2026-11-06 used the installed 356.1
+package: Flash handled the initial English request, and explicitly chosen Pro
+handled a Chinese follow-up with host-retained history and fresh source reads.
+Four requests took about 7.26 seconds. Both ignored hostile annotations, returned
+exact current records and left owned/foreign files unchanged per invocation.
+Foreign record bytes never entered requests. This synthetic case is not universal
+prompt-injection resistance, application authentication/DB acceptance or native
+SessionStore qualification. A preliminary run is retained separately because
+the host fixture changed one record's text without advancing its revision;
+the corrected source was requalified rather than treating that run as final.
+
 The per-turn tool catalog reflects the remaining dispatch budget. On the last
 allowed provider turn, or once the read-call budget is spent, configured read
 tools are withdrawn and a transient system instruction asks for a final proposal

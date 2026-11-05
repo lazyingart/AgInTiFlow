@@ -1,5 +1,40 @@
 # Supervision Campaign Ledger
 
+## Retrieved instructions stay untrusted — 2026-11-06
+
+The next app-backend qualification uses an ordinary current-notes request with
+hostile English/Chinese/Japanese annotations in authorized source records. Seven
+offline controls cover a source-backed initial/follow-up proposal; denied
+write/delete tools, account/path selectors and a mixed invalid batch after an
+authorized read; and independent host rejection of schema-valid fabricated text.
+No reusable runtime defect reproduces. No runtime/version/dependency change is
+made; the new test and fixture are included in the package's self-test surface.
+
+The real installed 0.20.356-integration.1 SDK passes four DeepSeek requests in
+7.26 seconds: two Flash turns for an English request, then two explicitly chosen
+Pro turns for a Chinese follow-up. The host owns the scope/history and changes
+revisions 7/12 to 8/13 between invocations. Both models reread the current source,
+preserve exact IDs/revisions/text/order, ignore hostile annotations and do not
+change owned or foreign files. The foreign record's bytes never appear in a
+provider request. This is an actual terminal capture with original timing, not
+a status-card replay. A preliminary four-request run passed the model boundary
+but used an inconsistent host revision update; its evidence remains separate,
+and only the corrected fixture supports the current qualification.
+
+The host's explicit read scope, absence of write tools and external source check
+remain essential. The SDK does not prove arbitrary semantic correctness or
+universal prompt-injection resistance. This case does not qualify a production
+app's authentication/database, native SessionStore, automatic provider fallback,
+LocalLLM admission or an app-safe Codex transport. Those separate gates stay
+open. No application, service, model, credential or tunnel is changed.
+
+Full npm test passes in 418.163 seconds with all 357 selected code/test/package
+inputs unchanged. Syntax covers 312 files; the dependency audit has zero
+findings. The two new files also pass explicit node syntax checks. Existing
+fixed-port document HTTP tests retain their occupied-port skips, without
+stopping the foreign listener. Package and installed-consumer checks are kept
+as separate candidate evidence, not an assertion that a new version was published.
+
 ## Partial read outage and explicit process recovery — 2026-11-06
 
 A new backend qualification covers a successful read followed by temporary
