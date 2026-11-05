@@ -1,5 +1,35 @@
 # Supervision Campaign Ledger
 
+## Consumer boundary qualification — 2026-11-05
+
+Read-only Bunko source review pins64de224a89193512f664f393129a38b6bc9ae858;
+the web worktree050852791340ad2f0118bd53009b1643ef53e2ef has identical adapter
+and test bytes. Its seven focused tests pass in disposable copies with both
+vendored Litepreview1 and the qualified preview6 archive. Module imports are
+allowlisted, fetch denied, model/network attempts zero; application files and
+Git states remain unchanged. No live/deployed app behavior is claimed.
+
+Adversarial probes show why compatibility is not full qualification: the custom
+host parser can discard duplicate final keys, multiple choices and mixed
+tool/final metadata before returning a valid SDK value. Refusal becomes a
+repairable output error. Its24000-code-unit producer can split a surrogate pair;
+both vendors reject a valid whole transcript before provider invocation.
+These are consumer adapter/producer findings, not a demonstrated core bypass or
+an observed live provider incident. Downstream app citation/store checks are
+outside this qualification. App repairs stay with the app owner.
+
+Three generic regression groups document the boundary: native factories reject
+original malformed protocol/duplicate arguments before reads; a trusted generic
+callback owns earlier interpretation; every typed text part must be independently
+Unicode-valid. SDK50 and the same three portable Lite controls pass. No runtime,
+provider, export, dependency or version change is needed. Installed349 and
+private Litepreview6 remain pinned; no new publication/vendor update is implied.
+Full npm test passes in496.944 seconds with frozen runtime/test hashes and
+309-file syntax. Production audit reports zero findings; dry pack contains489
+allowlisted files/no private paths. Two existing occupied18102 document HTTP
+checks skip locally. Executable sources, exports, package metadata and lockfile
+are byte-identical to the349 release.
+
 ## JSON enum equality and public-reference handoff — 2026-11-05
 
 Preparing a bounded reference workflow reproduced a general validator defect:

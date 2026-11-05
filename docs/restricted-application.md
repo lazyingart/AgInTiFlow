@@ -61,6 +61,18 @@ dispatch, but cannot prevent an allowed tool's implementation from escaping its
 scope. Schema validity is not semantic correctness or instruction-following
 proof. Treat prompt injection in retrieved records/images as untrusted content.
 
+A custom `provider.complete` declares an already interpreted SDK response. The
+runner cannot recover discarded native choices, finish/refusal/tool metadata or
+duplicate JSON members after a host has parsed them away. Native wire guards
+apply when the original data reaches the native provider factory; replacing a
+vendor copy does not retrofit those guards into a custom host parser. Qualify
+the actual adapter, including its normalization, repairs, call-ID mapping and
+whole deadline. A refusal, cancellation or ambiguous protocol must not become
+an implicit repair/fallback authorization.
+The native factories inspect a decoded completion envelope and the still-raw
+final/argument JSON strings inside it. HTTP authentication, raw-body decoding,
+byte limits and transport isolation remain host responsibilities.
+
 Credentials belong only in the explicit transport closure. Known secret text
 patterns and credential-shaped JSON fields are rejected, not redacted into an
 apparently successful answer. This is defense in depth, not a universal secret
@@ -121,6 +133,13 @@ also bound dimensions/decompression. No URL, file path, WebP, OCR substitution,
 or history images. Unknown/unsupported parts reject before provider invocation.
 The host must explicitly retain/restage images for a follow-up when appropriate.
 `supportsImages` is a trusted route declaration, not an SDK-generated health proof.
+
+Each text part must independently contain well-formed Unicode. Splitting a
+JavaScript string at an arbitrary UTF-16 index can divide a surrogate pair, even
+when concatenating the slices would recreate a valid string. Emit code-point-safe,
+UTF-8-bounded parts without truncation; respect the aggregate context/part caps.
+The runner rejects an invalid part before any provider call rather than silently
+joining or replacing malformed text.
 
 ## Explicit DeepSeek text profile
 

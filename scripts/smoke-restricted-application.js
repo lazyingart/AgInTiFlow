@@ -1023,3 +1023,89 @@ test("native OpenAI and Flash/Pro accept reordered observed enum records and rej
     }
   }
 });
+
+
+// Generic host-provider interpretation is separate from native wire validation.
+const boundaryObject = properties => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false });
+const boundaryText = { type: "string", minLength: 1, maxLength: 500 };
+const boundarySchema = boundaryObject({ reply: boundaryText });
+const boundaryInput = { input: [{ type: "text", text: "Explain only the supplied public evidence; do not save." }] };
+const boundaryRunner = (provider, extra = {}) => restricted.createRestrictedApplicationRunner({
+  provider, tools: [], instructions: "Proposals only; the host owns scope and saves.", outputSchema: boundarySchema, ...extra,
+});
+const boundaryFactory = (model, complete) => model === "generic-explicit"
+  ? restricted.createRestrictedOpenAIProvider({ model, supportsImages: false, complete })
+  : restricted.createRestrictedDeepSeekProvider({ model, complete });
+
+test("native wire guards cannot be retroactively supplied after a trusted host has discarded raw protocol", async () => {
+  const valid = '{"reply":"Observed proposal"}';
+  const wires = [
+    { choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"reply":"first","reply":"last"}' } }] },
+    { choices: [{ finish_reason: "stop", message: { role: "assistant", content: valid } }, { finish_reason: "stop", message: { role: "assistant", content: '{"reply":"other"}' } }] },
+    { choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: valid,
+      tool_calls: [{ id: "unexecuted", type: "function", function: { name: "unavailable_read", arguments: "{}" } }] } }] },
+    { choices: [{ finish_reason: "stop", message: { role: "assistant", content: valid, refusal: "Refused" } }] },
+  ];
+  for (const model of ["generic-explicit", "deepseek-flash", "deepseek-v4-pro"]) {
+    for (const wire of wires) {
+      const before = JSON.stringify(wire); let nativeCalls = 0, mappedCalls = 0;
+      const provider = boundaryFactory(model, async () => { nativeCalls++; return wire; });
+      await assert.rejects(boundaryRunner(provider).run(boundaryInput),
+        error => ["PROVIDER_FAILED", "TOOL_CALL_INVALID"].includes(error.code));
+      assert.equal(nativeCalls, 1);
+      // This callback is trusted host code declaring an already interpreted
+      // final value. It deliberately erases the evidence needed for wire checks.
+      const projected = JSON.parse(wire.choices[0].message.content);
+      const result = await boundaryRunner({ supportsImages: false, async complete() {
+        mappedCalls++; return { type: "final", value: projected };
+      } }).run(boundaryInput);
+      assert.deepEqual(JSON.parse(JSON.stringify(result.proposal)), projected);
+      assert.equal(mappedCalls, 1);
+      assert.deepEqual(Object.keys(result).sort(), ["proposal", "schemaVersion", "status", "usage"]);
+      assert.equal(JSON.stringify(wire), before);
+    }
+  }
+});
+
+test("native duplicate argument checks precede reads while generic host callbacks own their earlier decoding", async () => {
+  const argumentsText = '{"query":"first","query":"second"}';
+  const wire = { choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null,
+    tool_calls: [{ id: "c1", type: "function", function: { name: "record_read", arguments: argumentsText } }] } }] };
+  for (const model of ["generic-explicit", "deepseek-flash", "deepseek-v4-pro"]) {
+    let reads = 0;
+    const tools = [{ name: "record_read", description: "Read only caller-bound evidence.", readOnly: true,
+      inputSchema: boundaryObject({ query: boundaryText }), outputSchema: boundarySchema,
+      execute: async args => { reads++; assert.equal(args.query, "second"); return { reply: "observed" }; } }];
+    await assert.rejects(boundaryRunner(boundaryFactory(model, async () => wire), { tools }).run(boundaryInput),
+      error => error.code === "PROVIDER_FAILED");
+    assert.equal(reads, 0);
+    let turns = 0;
+    const interpreted = await boundaryRunner({ supportsImages: false, async complete() {
+      if (++turns === 1) return { type: "tool_calls", calls: [{ id: "host_scoped_1", name: "record_read", arguments: JSON.parse(argumentsText) }] };
+      return { type: "final", value: { reply: "observed" } };
+    } }, { tools }).run(boundaryInput);
+    assert.equal(interpreted.usage.toolCalls, 1); assert.equal(reads, 1); assert.equal(turns, 2);
+  }
+});
+
+test("each typed text part must be Unicode-valid even when concatenating broken UTF-16 slices would repair it", async () => {
+  const original = "x".repeat(23999) + "😀中文かな";
+  assert.equal(original.isWellFormed(), true);
+  const broken = [original.slice(0, 24000), original.slice(24000)];
+  assert.equal(broken.join(""), original);
+  assert.ok(broken.every(part => !part.isWellFormed()));
+  let calls = 0;
+  const app = boundaryRunner({ supportsImages: false, async complete(request) {
+    calls++;
+    assert.equal(request.messages.at(-1).content.map(part => part.text).join(""), original);
+    assert.ok(request.messages.at(-1).content.every(part => part.text.isWellFormed()));
+    return { type: "final", value: { reply: "preserved" } };
+  } }, { limits: { maxConcurrency: 1 } });
+  await assert.rejects(app.run({ input: broken.map(text => ({ type: "text", text })) }), error => error.code === "INVALID_DATA");
+  assert.equal(calls, 0);
+  const safe = [original.slice(0, 23999), original.slice(23999)];
+  assert.ok(safe.every(part => part.isWellFormed()));
+  assert.equal((await app.run({ input: safe.map(text => ({ type: "text", text })) })).proposal.reply, "preserved");
+  assert.equal((await app.run({ input: [{ type: "text", text: original }] })).proposal.reply, "preserved");
+  assert.equal(calls, 2, "invalid input must not strand admission capacity");
+});
