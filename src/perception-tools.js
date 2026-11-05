@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import OpenAI from "openai";
+import { createModelHttpClient, isModelHttpRedirect } from "./model-http-client.js";
 import { isDomainAllowed, resolveResearchDomains } from "./guardrails.js";
 import { redactSensitiveText } from "./redaction.js";
 import { isWrapperAvailable, normalizeWrapperName, runAgentWrapper, runCodexImageWrapper } from "./tool-wrappers.js";
@@ -107,7 +107,7 @@ function createPerceptionClient(config, connection) {
   if (typeof config.perceptionClientFactory === "function") {
     return config.perceptionClientFactory({ ...connection });
   }
-  return new OpenAI({
+  return createModelHttpClient({
     apiKey: connection.apiKey,
     baseURL: connection.baseURL,
   });
@@ -384,6 +384,7 @@ async function callOpenAiImageRead(args, images, config) {
       usedModel = model;
       break;
     } catch (error) {
+      if (isModelHttpRedirect(error)) throw error;
       if (payload.reasoning) {
         const retryPayload = { ...payload };
         delete retryPayload.reasoning;
@@ -708,6 +709,7 @@ async function callOpenAiWebResearch(args, config) {
       usedModel = model;
       break;
     } catch (error) {
+      if (isModelHttpRedirect(error)) throw error;
       const message = `${error?.message || ""} ${error?.error?.message || ""}`;
       if (/reasoning\.effort|reasoning|unsupported parameter/i.test(message) && modelPayload.reasoning) {
         const noReasoningPayload = { ...modelPayload };

@@ -1,5 +1,5 @@
 import { types as utilTypes } from "node:util";
-import OpenAI from "openai";
+import { createModelHttpClient } from "./model-http-client.js";
 import { isLocalLLMBaseURL, normalizeProviderBaseURL } from "./provider-contract.js";
 
 export const INTEGRATION_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
@@ -114,7 +114,7 @@ export function integrationModelPayload(payload, binding) {
 export function createIntegrationHostedModelClient(value) {
   const binding = normalizeIntegrationModelBinding(value);
   if (binding.provider !== "deepseek") fail("Hosted integration client requires an explicit DeepSeek binding.");
-  return new OpenAI({
+  return createModelHttpClient({
     apiKey: binding.apiKey,
     baseURL: binding.baseURL,
     maxRetries: 0,

@@ -48,6 +48,7 @@ function providerErrorText(error) {
 
 export function classifyProviderHandoffError(error) {
   const status = Number(error?.status || error?.response?.status || 0);
+  if (status >= 300 && status < 400) return { eligible: false, code: "provider_request_failed", status };
   const code = String(error?.code || "").trim().toUpperCase();
   const name = String(error?.name || "").trim();
   const text = providerErrorText(error);

@@ -92,6 +92,13 @@ The native factories inspect a decoded completion envelope and the still-raw
 final/argument JSON strings inside it. HTTP authentication, raw-body decoding,
 byte limits and transport isolation remain host responsibilities.
 
+AgInTi-owned CLI, safe-chat and perception clients refuse HTTP redirects rather
+than forwarding prompts, image bytes or credentials to another route. A 3xx is
+not a compatibility or provider-handoff signal. Configure the canonical endpoint
+instead. An injected SDK transport remains trusted host code: the examples set
+`fetchOptions.redirect` to `manual`, preserving the non-success status without
+following it. The SDK cannot impose this policy on an arbitrary callback.
+
 Credentials belong only in the explicit transport closure. Known secret text
 patterns and credential-shaped JSON fields are rejected, not redacted into an
 apparently successful answer. This is defense in depth, not a universal secret
@@ -112,6 +119,7 @@ const client = new OpenAI({
   apiKey: serverCredential,
   baseURL: "http://127.0.0.1:8008/v1",
   maxRetries: 0,
+  fetchOptions: { redirect: "manual" }, // Reject redirects; configure the canonical URL.
 });
 const provider = createRestrictedOpenAIProvider({
   model: qualifiedModel,
@@ -177,6 +185,7 @@ const client = new OpenAI({
   apiKey: serverCredential,
   baseURL: "https://api.deepseek.com/v1",
   maxRetries: 0,
+  fetchOptions: { redirect: "manual" },
   timeout: 20_000,
 });
 const provider = createRestrictedDeepSeekProvider({

@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import { createModelHttpClient, isModelHttpRedirect } from "./model-http-client.js";
 import { normalizeWrapperName, wrapperStatusText } from "./tool-wrappers.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { listAuxiliarySkills } from "./auxiliary-tools.js";
@@ -66,7 +66,7 @@ export function createClient(config) {
         )
       : undefined;
 
-  return new OpenAI({
+  return createModelHttpClient({
     apiKey: config.apiKey || (providerRequiresApiKey(config.provider) ? undefined : resolveProviderDefaults(config.provider).apiKey || "local-dev-key"),
     baseURL: config.baseURL,
     ...(defaultHeaders ? { defaultHeaders } : {}),
@@ -148,6 +148,7 @@ function withChatReasoningEffort(payload = {}, config = {}) {
 }
 
 function shouldRetryWithoutReasoningEffort(error, payload = {}) {
+  if (isModelHttpRedirect(error)) return false;
   if (!payload.reasoning_effort) return false;
   const message = `${error?.message || ""} ${error?.error?.message || ""} ${error?.cause?.message || ""}`;
   return /reasoning[_\s.-]?effort|unsupported parameter|unknown parameter|unrecognized request argument/i.test(message);
@@ -185,6 +186,7 @@ const TRANSIENT_PROVIDER_REQUEST_CODES = new Set([
 export function isTransientProviderRequestError(error) {
   if (!error) return false;
   const status = Number(error?.status || error?.response?.status || 0);
+  if (status >= 300 && status < 400) return false;
   if (status === 408 || status === 425 || status === 429 || status >= 500) return true;
 
   const codes = [
@@ -442,6 +444,7 @@ export function usesTextToolProtocol(config = {}) {
 }
 
 export function shouldRetryWithTextToolProtocol(error, config = {}) {
+  if (isModelHttpRedirect(error)) return false;
   if (!providerCanRetryWithTextToolProtocol(config.provider)) return false;
   const message = [
     error?.message,

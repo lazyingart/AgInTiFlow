@@ -1,5 +1,46 @@
 # Supervision Campaign Ledger
 
+## Model requests stay on the configured route — 2026-11-06
+
+A local HTTP reproduction found a reusable core transport defect. Before the
+repair, five redirect-status cases reached another origin; HTTP 307/308 also
+forwarded a synthetic private prompt body. A same-origin redirect silently
+selected another handler. Ordinary completion and cancellation before headers
+and during a stalled body were already correct. Six of ten original controls
+failed; no external provider, credential or model was used for reproduction.
+
+All owned OpenAI-compatible model clients now share a no-follow default. Manual
+redirect handling preserves the 3xx status without an SDK retry, while the
+hosted integration client's existing strict error policy is retained. Redirects
+cannot trigger reasoning/tool-protocol compatibility retries, transient-error
+repair or provider handoff even when the response body impersonates those
+failures. Safe chat returns a bounded non-retryable error with no answer; image
+perception does not forward pixels or repeat a reasoning request. Injected host
+callbacks remain the caller's transport responsibility; documentation examples
+now set their redirect policy explicitly.
+
+Fifteen offline HTTP/policy controls pass, including real test-owned loopback
+servers, unchanged native payload/authentication, socket closure on cancellation,
+safe-chat and image requests, and misleading redirect error bodies. Forty-six
+combined HTTP/lifecycle/completion tests pass. No production listener, app, provider route,
+model, credential, service or LocalLLM admission was changed. This is a model
+transport fix, not a general public-URL downloader or universal privacy claim.
+
+A final review reproduced a stalled redirect body after the first no-follow
+draft. The shared transport now cancels and discards that body and its headers
+before SDK error parsing, preserving only the 3xx status. It neither waits for
+the body nor propagates retry hints or diagnostic instructions. The original
+failure and the passing pre-refinement full suite remain separate evidence;
+the refined source receives a new full-suite gate before release.
+
+The refined full suite passes in 416.158 seconds with 359 selected inputs
+unchanged. Syntax covers 313 files; audit has zero findings. Two existing
+document HTTP tests skip occupied port 18102. A separate native-body-reader
+observation confirms abort rejects and closes its owned socket. Two bounded
+real canonical DeepSeek checks, one Flash and one Pro with retries disabled,
+return the exact requested markers over HTTP 200 with no redirect. These are
+transport checks, not a new broad model-quality or application qualification.
+
 ## Retrieved instructions stay untrusted — 2026-11-06
 
 The next app-backend qualification uses an ordinary current-notes request with

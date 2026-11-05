@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import OpenAI from "openai";
+import { createModelHttpClient } from "./model-http-client.js";
 import { types as utilTypes } from "node:util";
 import { inflateSync } from "node:zlib";
 import { authorityFail } from "./integration-durable-common.js";
@@ -1053,7 +1053,7 @@ async function invokePinnedLocalVision(lane, active, argsInput, runtimeInput) {
     fail("INTEGRATION_VISION_REFERENCE_CONFLICT", "Retained image reference changed before inference.", 409);
   }
   throwIfAborted(runtime.abortSignal);
-  const client = new OpenAI({
+  const client = createModelHttpClient({
     apiKey: lane.connection.apiKey,
     baseURL: lane.connection.baseURL,
     maxRetries: 0,

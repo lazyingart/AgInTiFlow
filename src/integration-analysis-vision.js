@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { types as utilTypes } from "node:util";
 import { inflateSync } from "node:zlib";
 
-import OpenAI from "openai";
+import { createModelHttpClient } from "./model-http-client.js";
 
 import {
   INTEGRATION_ANALYSIS_IMAGE_ATTACHMENT_BYTES_LIMIT,
@@ -906,7 +906,7 @@ function buildClient({ baseURL, apiKey, modelTimeoutMs, readinessTimeoutMs, desc
         if (state.describeImpl) {
           result = validateResultFields(await state.describeImpl(scope, Object.freeze({ prompt, attachments }), options));
         } else {
-          const openai = new OpenAI({ apiKey: state.apiKey, baseURL: state.baseURL, maxRetries: 0 });
+          const openai = createModelHttpClient({ apiKey: state.apiKey, baseURL: state.baseURL, maxRetries: 0 });
           encoded = attachments.map((attachment) => attachment.bytes.toString("base64"));
           let response;
           try {

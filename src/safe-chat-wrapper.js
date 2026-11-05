@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import { createModelHttpClient, isModelHttpRedirect } from "./model-http-client.js";
 import {
   BASELINE_PROVIDER,
   isLoopbackBaseURL,
@@ -365,7 +365,7 @@ function safeChatPayload(request, config) {
 }
 
 function defaultClientFactory(config) {
-  return new OpenAI({
+  return createModelHttpClient({
     apiKey: config.apiKey,
     baseURL: config.baseURL,
     maxRetries: 0,
@@ -390,6 +390,10 @@ function errorText(error) {
 }
 
 function classifyProviderError(error, timedOut = false) {
+  if (isModelHttpRedirect(error)) return {
+    code: "upstream_error", status: 502, retryable: false,
+    error: "Safe chat provider endpoint returned a redirect.",
+  };
   const status = Number(error?.status || error?.response?.status || 0);
   const text = errorText(error);
   if (
