@@ -16,6 +16,7 @@ import {
   unreadProjectInstructionReadPaths,
 } from "../src/progressive-tool-selection.js";
 import { requestNextStep } from "../src/model-client.js";
+import { RESEARCH_VERSION, RESEARCH_SCOPE_REVIEW_POLICY } from "../src/deep-research.js";
 import {
   buildConstrainedRecoveryRequest,
   bindPatchContextRepairArguments,
@@ -5396,7 +5397,15 @@ const timeoutCompactedResearchRepairState = {
         goalKey: "original-research-goal",
         result: {
           ok: true,
-          version: 14,
+          version: RESEARCH_VERSION,
+          scopeReview: {
+            policy: RESEARCH_SCOPE_REVIEW_POLICY,
+            assessmentKind: "model-assisted-source-context",
+            status: "passed",
+            reviewedStatements: 1,
+            rejectedStatements: 0,
+            repairAttempted: false,
+          },
           reportPath: path.join(repoRoot, "package.json"),
         },
       },

@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireSessionRunLock, runAgent } from "../src/agent-runner.js";
-import { RESEARCH_VERSION } from "../src/deep-research.js";
+import { RESEARCH_VERSION, RESEARCH_SCOPE_REVIEW_POLICY } from "../src/deep-research.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { classifyCommand, evaluateCommandPolicy } from "../src/command-policy.js";
 import { createToolContract } from "../src/tool-contract.js";
@@ -14007,6 +14007,14 @@ try {
       reportPath: path.join(workspace, "report.md"),
       artifactPath: path.join(workspace, "research.json"),
       answer: "Verified result.",
+      scopeReview: {
+        policy: RESEARCH_SCOPE_REVIEW_POLICY,
+        assessmentKind: "model-assisted-source-context",
+        status: "passed",
+        reviewedStatements: 1,
+        rejectedStatements: 0,
+        repairAttempted: false,
+      },
     }
   );
   const reusedResearch = completedDeepResearchReuse(

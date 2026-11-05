@@ -147,10 +147,47 @@ every query an unbounded agent swarm:
    question, domain, PDF, and independent primary-source coverage. A second
    audit checks the cleaned synthesis; rejected provider IDs remain diagnostic
    warnings but do not make the delivered report's final audit look dirty.
-10. **Persist**: every stage checkpoints one JSON state file. The final cited
+10. **Assess source context**: a bounded structured call on the active provider
+    compares every report statement with its cited sources' retained text.
+    The assessment checks conditions, exceptions, negation, quantitative
+    direction and section scope. Exact quotes and valid citation IDs alone
+    cannot authorize completion. Supporting assessment quotes must also occur
+    in the retained source, and every requested statement needs one decision.
+    A rejected candidate gets at most one report replacement and reassessment.
+    An unchanged rejected assertion, invalid response, unavailable assessment
+    or unresolved rejection produces no completed answer or public report path.
+    Completed assessment batches are checkpointed for bounded restart recovery.
+    This is model-assisted review, not formal entailment proof; a reviewer can
+    still misinterpret a source or accept an unsupported inference.
+11. **Persist**: every stage checkpoints one JSON state file. The final cited
     Markdown report is saved beside it by default, or written directly to a
     guarded workspace-relative `outputPath` when the caller requests a durable
     filename, then sent to the canvas.
+
+Source-context review accepts at most 128 statements of 6000 characters each,
+32 statements and 96 KiB of UTF-8 JSON per batch, 16 batches and 1 MiB of total
+review input. These are ceilings; long retained sources can reach the byte
+limit first. A batch includes the complete text retained by the reader for
+its cited sources, with the reader's truncation flag. Oversized input fails
+before dispatch instead of silently truncating review context. This does not
+recover text the reader did not retain. Each normal batch adds one model call;
+a rejected report may add one replacement call and one further batch sequence.
+No tool authority, wrapper or cross-provider fallback is added for this stage.
+
+Checkpoint schema 15 binds the review policy and live/dry mode. Earlier
+quotation-only checkpoints, changed report/source/evidence bytes, malformed
+checkpoints and dry-run results cannot satisfy live completion or outer-session
+cache reuse. An explicit incompatible ID is refused without overwriting the
+old artifacts; choose a new ID or explicitly refresh. A cached final rejection
+does not repeatedly spend new assessment calls. Dry/mock runs remain available
+for diagnostics and are labelled as not assessed. Unreadable search excerpts
+remain diagnostic; they do not yield a completed source-backed report.
+
+Assessment receipts and content hashes detect inconsistent retained state;
+they are not authenticated against an actor who can rewrite the same account's
+files. Source admission, hostile-page handling and application access control
+remain separate boundaries. The restricted application SDK and its tools are
+unchanged by this native research workflow.
 
 The reader-facing report always includes an explicit limitations section and
 separates quote-verified sources from inspected-but-uncited pages. When the

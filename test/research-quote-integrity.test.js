@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { deepResearch } from "../src/deep-research.js";
 import { SessionStore } from "../src/session-store.js";
+import { researchScopeApproval } from "./fixtures/research-scope-review.js";
 
 const query = "What temperature change does the document report? Read its exact statement.";
 const original = "The measured temperature change was -10 degrees during the controlled validation.";
@@ -24,6 +25,8 @@ async function fixture(t, source = original, quote = source, options = {}) {
     jsonClientFactory: () => ({ chat: { completions: { create: async body => {
       calls.model++;
       const input = JSON.parse(body.messages[1].content);
+      const approval = researchScopeApproval(input);
+      if (approval) return completion(approval);
       if (/research plan/i.test(input.task)) return completion({ objective: "Report the supplied observation.", sourcePolicy: "primary",
         subquestions: [{ id: "measurement", question: "What was measured?", query: "temperature change controlled validation" }],
         queries: ["temperature change controlled validation"], sourceTypes: ["official documentation"], exclusions: [] });

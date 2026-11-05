@@ -1,5 +1,58 @@
 # Supervision Campaign Ledger
 
+## Research source-context assessment — candidate, 2026-11-05
+
+A real public-source comparison passes all 23 exact quotation checks but loses
+the governing section scope in a standalone finding. The comparison remains
+failed semantic acceptance. A separate controlled native research reproduction
+supplies both conditions in full, yet installed 352 and 354 complete the
+unconditional claim with citation coverage 1. Those fixtures use real
+SessionStore checkpoints and three scripted phases, with no inference or
+network request. The gap is promotion of extracted/synthesized interpretations
+without source-context assessment, not evidence fetching or provider handoff.
+
+The candidate adds a mandatory bounded assessment before native live research
+completion, one replacement at most, and policy/content-bound checkpoint replay.
+It keeps extraction interpretations explicitly unreviewed and labels the
+deterministic citation audit as linkage only. Unsafe or unavailable assessment
+cannot expose an asserted answer/report. Existing raw diagnostic evidence is
+preserved; an old checkpoint is not silently migrated. Schema 15 and the outer
+session cache reject quotation-only and dry-run completion shortcuts.
+
+Controlled tests cover positive and rejected English/Chinese/Japanese scope,
+quantitative direction, disclaimer bypass, cancellation, strict response
+inventory and quote binding, oversized UTF-8 context, partial-batch restart,
+tampered/legacy/malformed checkpoints and persisted outer-agent delegation.
+The protocol-only approval fixture used by older positive mocks is not a
+semantic evaluator. A model-assisted assessment can itself be wrong, and these
+offline cases do not qualify universal entailment or a live provider's quality.
+The final focused set passes 42 groups: 21 new assessment groups, nine quotation
+groups and 12 domain-policy groups. Deep-research, scoped-artifact research,
+dynamic-budget and progressive-tools smokes pass. A domain-cache fixture now
+uses scripted empty search rather than accidentally depending on network
+timing. A stale positive progressive-tools fixture now supplies the current
+assessment metadata; the first full-suite failure at that assertion is preserved.
+
+A new ordinary one-specification question makes six real DeepSeek requests in
+total: one plan, one extraction, one initial synthesis, two assessments across
+candidate-contract refinement, and one replacement. The initial filename-only
+corpus metadata fails strict source selection; explicit publisher metadata
+allows the same checkpoint to proceed without repeating planning. The first
+assessment violates the uncited-row contract and fails closed. The candidate
+then supplies each row's allowed verdicts explicitly. Its next assessment
+rejects factual notes without evidence IDs, but the bounded replacement repeats
+those notes, so the run remains blocked. This is failed task completion, not a
+successful live research answer or open-web discovery test.
+
+Independent Python verification retrieves the original specification again,
+matches its byte hash and all three retained quotes, and confirms no public
+answer, report or workspace file escaped. A fresh OS process replays the blocker
+with zero source/model dispatch and unchanged checkpoint bytes. There is no
+additional paid retry. Package candidate inspection finds 497 files, no private
+paths or credentials, and passes 229 actual temporary-install tests. No registry
+publication, global installation or application activation is qualified by this
+candidate. Live completion remains HOLD even though the safety behavior passes.
+
 ## Durable lock-release observation — 2026-11-05
 
 The tagged 0.20.353-integration.0 release gate fails before publication. An analysis

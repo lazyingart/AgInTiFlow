@@ -152,6 +152,8 @@ test("a research checkpoint cannot be resumed under a different server source sc
   const store = { artifactsDir: root, ensure: async () => {}, appendEvent: async () => {} };
   const config = { ...policy, provider: "openai", model: "scripted-scope", apiKey: "scripted-test-only",
     clientFactory: async () => { modelCalls++; throw new Error("No model work in cache fixture"); },
+    jsonClientFactory: () => { modelCalls++; throw new Error("No specialist work in cache fixture"); },
+    webSearchImpl: async () => ({ ok: true, provider: "fixture", results: [] }),
   };
   try {
     const args = { query: "Compare bounded transaction behavior", researchId: "scope-cache" };

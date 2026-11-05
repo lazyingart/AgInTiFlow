@@ -71,7 +71,7 @@ import {
 import { refreshCodebaseMap } from "./codebase-map.js";
 import { firstJsonObject, readImage, researchWrapper, webResearch } from "./perception-tools.js";
 import { readWebPage, searchWeb } from "./web-search.js";
-import { deepResearch, RESEARCH_VERSION } from "./deep-research.js";
+import { deepResearch, RESEARCH_VERSION, RESEARCH_SCOPE_REVIEW_POLICY, RESEARCH_SCOPE_REVIEW_LIMITS } from "./deep-research.js";
 import {
   assessBoundedTranscriptResponse,
   assessResponseOnlyContextEcho,
@@ -15818,8 +15818,16 @@ function deepResearchRequestIdentity(args = {}, config = {}) {
   };
 }
 
+function hasCurrentResearchAssessment(result = {}) {
+  const review = result.scopeReview;
+  return result.version === RESEARCH_VERSION && review?.policy === RESEARCH_SCOPE_REVIEW_POLICY &&
+    review.status === "passed" && review.assessmentKind === "model-assisted-source-context" &&
+    Number.isSafeInteger(review.reviewedStatements) && review.reviewedStatements > 0 && review.reviewedStatements <= RESEARCH_SCOPE_REVIEW_LIMITS.statements &&
+    review.rejectedStatements === 0 && typeof review.repairAttempted === "boolean";
+}
+
 export function rememberCompletedDeepResearch(state = {}, args = {}, config = {}, result = {}) {
-  if (result.ok !== true || !result.reportPath) return null;
+  if (result.ok !== true || !result.reportPath || !hasCurrentResearchAssessment(result)) return null;
   state.meta = state.meta || {};
   const identity = deepResearchRequestIdentity(args, config);
   const record = {
@@ -15844,6 +15852,11 @@ export function rememberCompletedDeepResearch(state = {}, args = {}, config = {}
       answer: result.answer || "",
       artifactPath: result.artifactPath || "",
       reportPath: result.reportPath,
+      scopeReview: {
+        policy: result.scopeReview.policy, assessmentKind: result.scopeReview.assessmentKind, status: result.scopeReview.status,
+        reviewedStatements: result.scopeReview.reviewedStatements, rejectedStatements: result.scopeReview.rejectedStatements,
+        repairAttempted: result.scopeReview.repairAttempted,
+      },
     },
   };
   const prior = Array.isArray(state.meta.completedDeepResearch) ? state.meta.completedDeepResearch : [];
@@ -15862,7 +15875,7 @@ export function completedDeepResearchReuse(state = {}, args = {}, config = {}) {
   const records = Array.isArray(state.meta?.completedDeepResearch) ? state.meta.completedDeepResearch : [];
   const match = [...records].reverse().find((item) => {
     if (item.goalKey !== goalKey) return false;
-    if (Number(item.result?.version || 0) !== RESEARCH_VERSION) return false;
+    if (!hasCurrentResearchAssessment(item.result)) return false;
     return Boolean(
       (identity.requestedOutputPath && item.requestedOutputPath === identity.requestedOutputPath) ||
       (identity.researchId && item.researchId === identity.researchId) ||
@@ -19354,7 +19367,7 @@ function currentWorkHasCompletedDeepResearch(state = {}, config = {}) {
     const result = record?.result || {};
     if (
       result.ok !== true ||
-      Number(result.version || 0) !== RESEARCH_VERSION ||
+      !hasCurrentResearchAssessment(result) ||
       !String(result.reportPath || "").trim() ||
       !fsSync.existsSync(String(result.reportPath))
     ) {

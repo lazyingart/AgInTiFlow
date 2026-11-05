@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { auditResearchSynthesis, deepResearch, RESEARCH_VERSION } from "../src/deep-research.js";
+import { researchScopeApproval } from "../test/fixtures/research-scope-review.js";
 import { checkToolUse } from "../src/guardrails.js";
 import { flushHousekeeping } from "../src/housekeeping.js";
 import { requestNextStep, toolChoiceForProvider } from "../src/model-client.js";
@@ -792,6 +793,8 @@ async function main() {
             responseFormat: payload.response_format?.type || "prompt",
             thinkingMode: payload.thinking?.type || "auto",
           });
+          const approval = researchScopeApproval(envelope);
+          if (approval) return { choices: [{ message: { content: JSON.stringify(approval) } }] };
           if (/research plan/i.test(envelope.task)) {
             return {
               choices: [{ message: { content: JSON.stringify({
@@ -972,6 +975,8 @@ async function main() {
           completions: {
             create: async (payload) => {
               const envelope = JSON.parse(payload.messages[1].content);
+              const approval = researchScopeApproval(envelope);
+              if (approval) return { choices: [{ message: { content: JSON.stringify(approval) } }] };
               if (/research plan/i.test(envelope.task)) {
                 return { choices: [{ message: { content: JSON.stringify({
                   objective: "Assess the inaccessible retrieval note",
@@ -1038,12 +1043,12 @@ async function main() {
     },
     new SessionStore(path.join(tempRoot, "sessions"), "excerpt-only-smoke")
   );
-  assert(excerptOnlyResearch.ok, `excerpt-only research failed unexpectedly: ${excerptOnlyResearch.error || "unknown"}`);
+  assert(!excerptOnlyResearch.ok, "excerpt-only discovery must not become a completed source-backed answer");
   assert(excerptOnlyResearch.coverage.verifiedClaimCount === 0, "an unreadable search excerpt became quote-verified evidence");
   assert(excerptOnlyResearch.coverage.searchExcerptEvidenceSourceCount === 1, "search-excerpt diagnostics were not retained");
-  const excerptOnlyReport = await fs.readFile(excerptOnlyResearch.reportPath, "utf8");
-  assert(excerptOnlyReport.includes("search-excerpt-only, not cited"), "report did not label excerpt-only discovery evidence");
-  assert(!excerptOnlyReport.includes("unreadable, quote-verified evidence"), "report mislabeled an unreadable source as verified evidence");
+  assert(excerptOnlyResearch.answer === "" && excerptOnlyResearch.reportPath === "", "an unreviewed excerpt-only answer/report escaped");
+  assert(excerptOnlyResearch.sources.every((source) => !source.readable), "unreadable discovery was relabelled as readable evidence");
+  assert(Boolean(excerptOnlyResearch.artifactPath), "failed source assessment lost its diagnostic checkpoint");
 
   const resumed = await deepResearch(
     {
@@ -1093,6 +1098,8 @@ async function main() {
           completions: {
             create: async (payload) => {
               const envelope = JSON.parse(payload.messages[1].content);
+              const approval = researchScopeApproval(envelope);
+              if (approval) return { choices: [{ message: { content: JSON.stringify(approval) } }] };
               if (/research plan/i.test(envelope.task)) {
                 return { choices: [{ message: { content: JSON.stringify({
                   objective: "Assess research-agent citation reliability",
@@ -1524,6 +1531,8 @@ async function main() {
           completions: {
             create: async (payload) => {
               const envelope = JSON.parse(payload.messages[1].content);
+              const approval = researchScopeApproval(envelope);
+              if (approval) return { choices: [{ message: { content: JSON.stringify(approval) } }] };
               if (/research plan/i.test(envelope.task)) {
                 return { choices: [{ message: { content: JSON.stringify({
                   objective: "Recover independent evidence for citation research agents",
@@ -1652,6 +1661,8 @@ async function main() {
               maxActiveLocalCalls = Math.max(maxActiveLocalCalls, activeLocalCalls);
               await new Promise((resolve) => setTimeout(resolve, 10));
               const envelope = JSON.parse(payload.messages[1].content);
+              const approval = researchScopeApproval(envelope);
+              if (approval) return { choices: [{ message: { content: JSON.stringify(approval) } }] };
               let result;
               if (/research plan/i.test(envelope.task)) {
                 result = {
@@ -1793,6 +1804,8 @@ async function main() {
           completions: {
             create: async (payload) => {
               const envelope = JSON.parse(payload.messages[1].content);
+              const approval = researchScopeApproval(envelope);
+              if (approval) return { choices: [{ message: { content: JSON.stringify(approval) } }] };
               if (/research plan/i.test(envelope.task)) {
                 return { choices: [{ message: { content: JSON.stringify({
                   objective: "Preserve diverse evidence after synthesis failure",
