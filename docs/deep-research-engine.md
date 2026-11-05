@@ -115,7 +115,18 @@ every query an unbounded agent swarm:
    active provider's fast routing model handles the parallel first pass. Only
    failed sources are retried, at lower concurrency and a larger output budget,
    with that provider's stronger main model. Every extracted claim receives a
-   stable evidence ID such as `S2-C3`.
+   stable evidence ID such as `S2-C3`. Quote matching preserves case, punctuation,
+   numerical signs, units and comparison operators; only Unicode NFC and
+   whitespace layout are normalized. A quotation shortened or redacted for
+   storage cannot retain proof for its original text. Unmatched quotations
+   remain diagnostic evidence and cannot enter verified synthesis.
+   The matching-policy identifier is part of the research fingerprint. An old
+   punctuation-insensitive checkpoint cannot satisfy the new proof contract:
+   an explicit old research ID is refused without rewriting its artifacts;
+   a new default run gets a new policy-bound ID. Current-policy valid caches
+   remain reusable after restart without another source/model dispatch.
+   Exact textual support still does not prove that a model's interpretation,
+   recommendation or causal inference follows from the passage.
 6. **Verify**: deterministic code checks that quoted passages occur in the
    exact retrieved source. Unverified quotations do not enter synthesis.
 7. **Fill gaps**: standard/deep runs may issue one bounded follow-up pass for

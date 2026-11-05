@@ -1,5 +1,46 @@
 # Supervision Campaign Ledger
 
+## Exact research-quotation integrity — 2026-11-05
+
+Installed352 reproduces a core evidence-verification defect through real
+SessionStore research checkpoints: a source says -10, a scripted extraction
+quotes +10, and the run completes with quoteVerificationRate1. The matcher erased
+symbols/punctuation and lowercased text, so numerical direction, comparisons,
+percent signs and unit case could change while retaining citation authority.
+The reproduction makes no real model or network request; it is not an observed
+live-provider hallucination. A first incomplete fixture lacked SessionStore's
+artifact writer; the decisive reproduction uses the real store.
+
+Matching now normalizes only Unicode NFC and whitespace layout. Case, signs,
+operators, punctuation and units remain exact. The persisted quotation must
+also be unchanged by bounded storage projection before it can be verified.
+The policy binds checkpoint fingerprints, refusing old explicit IDs without
+overwriting their state/report. Current exact evidence remains restart-cacheable.
+Nine regression groups cover English/Chinese/Japanese mutations, scientific
+notation, percentages, case, whitespace/NFC, oversized quotes, unreadable excerpts,
+blocked synthesis, restart and legacy-cache preservation. The initial set has
+one pass/eight failures; all nine pass after the fix, as does deep-research smoke.
+Textual quotation integrity is not semantic entailment or universal research
+quality. Application/source admission and live task acceptance remain separate.
+
+A new ordinary two-document comparison makes four real requests: Flash planning,
+two Flash extractions and Pro synthesis on the explicitly configured same-provider
+main role. All23 quotations pass the stricter matcher. A fresh SessionStore and
+a separate OS-process cache read dispatch no source/model work and preserve
+state/report/event bytes. The host admits a fixed public-document corpus; this
+is not broad web discovery or app activation. Independent semantic review finds
+a standalone finding that loses its source's isolation-level scope. The full
+answer is therefore not accepted as deployment advice despite valid quotations.
+No paid rerun or detailed rescue prompt is used to relabel it. Quote-integrity
+qualification and source-entailment acceptance are recorded separately.
+
+Independent Python rereads match both raw source hashes and all23 quoted
+passages. Six altered-receipt controls pass; the labelled15-second replay states
+the failed semantic acceptance explicitly. Full npm test passes405.612 seconds
+with runtime/test/package hashes frozen; syntax310, production audit0 and diff
+checks pass. Two occupied18102 HTTP checks skip locally without touching the
+foreign listener. No paid task was rerun after the semantic review.
+
 ## Server-owned research scope — 2026-11-05
 
 Installed351 accepts a model-supplied outside domain in place of a configured
