@@ -1,5 +1,59 @@
 # Supervision Campaign Ledger
 
+## Model HTTP responses have a decoded byte budget — 2026-11-06
+
+An installed359 synthetic transport accepts32MiB of assistant text, ignores an
+oversized declared body and materializes a32MiB provider-error message. The
+normal request asks for a short note summary with max_tokens128. No model or
+network request is needed to reproduce this core receive-budget omission; it
+does not establish that a real provider emitted such a response.
+
+Built-in native model HTTP clients now count at most16MiB of decoded response
+bytes, including reasoning, tool arguments and errors. Declared oversize is
+refused early; streamed and decompressed bytes are counted independently.
+Overflow cancels the reader and returns bounded non-retryable local413 with no
+upstream body or retry hints. It cannot authorize SDK/text-tool retries or a
+provider handoff. Accepted bytes and HTTP metadata remain unchanged. Declared
+SSE remains incremental under the same bound, without adding Agent streaming
+semantics. Incomplete bodies avoid extra hidden SDK attempts while preserving
+the core's explicit transient recovery policy.
+
+27 transport controls cover exact/over-limit and UTF-8 bytes, real gzip and
+unknown-length HTTP, socket close, bounded errors, retry/handoff policy, SSE,
+deadline/cancellation/listener cleanup and intrinsic byte-chunk handling. Two
+native persisted-runtime controls use actual core execution in child processes
+and scripted HTTP replies: oversized plan/tool output emits no tool/finish,
+persists bounded failure state without the source marker, releases its lease,
+and resumes in a fresh process to write one externally checked summary.
+These29controls plus23existing HTTP/request-lifecycle tests pass.
+
+Two real canonical DeepSeek requests use the real restricted AgInTi runner,
+Flash in English and Pro in Chinese. Each returns a locally validated JSON
+proposal in one turn/no tools, correctly reporting120to90ms, no deployment and
+the remaining larger-input check. Combined elapsed1.924seconds is this tiny
+example's timing, not a performance benchmark. The first harness attempt
+omitted a mandatory string maxLength and was rejected before any request;
+its failure is preserved and the host schema corrected without a product
+contract change. The successful actual PTY capture is retained.
+
+This qualifies a native transport boundary and bounded examples, not production
+app authorization, remote-generation cancellation or arbitrary custom-JavaScript
+isolation. Lite and custom client factories retain host transport ownership;
+no app, LocalLLM, credential, GPU, tunnel or service is activated. See
+[model response budgets](model-response-budget.md) for exact behavior and limits.
+Full-suite/package/registry/global gates remain separate release evidence.
+
+The first full run stopped after126.686seconds in an existing one-second
+retention smoke, outside the HTTP changes. That fixture could retry after its
+completed receipt legitimately expired. A controlled clock probe confirms live
+pending preservation, replay before expiry and fresh dispatch after expiry.
+The smoke now gates the handler and uses the store's injected logical clock,
+asserts it is still pending during pruning, checks replay inside the window,
+then explicitly checks dispatch after the completed window. No runtime
+idempotency behavior is changed. The original failure is retained; the fixed
+authority smoke passes. The final complete suite passes in463.063seconds with
+all369selected inputs unchanged; syntax315, audit0 and diff checks pass.
+
 ## Native session exclusion survives delayed recovery — 2026-11-06
 
 An installed358.0 filesystem-only reproduction paused a stale reaper, let a

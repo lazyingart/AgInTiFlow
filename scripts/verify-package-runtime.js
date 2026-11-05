@@ -42,11 +42,11 @@ try {
     const version = run(process.execPath, [path.join(installed, actual.bin[name]), "--version"], temporary, 15000).trim();
     assert.equal(version, manifest.version);
   }
-  const log = run(process.execPath, ["--test", "test/package-runtime-dependencies.test.js", "test/model-http-boundary.test.js", "test/remote-image-input.test.js", "test/native-session-run-lock.test.js",
+  const log = run(process.execPath, ["--test", "test/package-runtime-dependencies.test.js", "test/model-http-boundary.test.js", "test/model-response-budget.test.js", "test/model-response-runtime.test.js", "test/remote-image-input.test.js", "test/native-session-run-lock.test.js",
     "test/dependency-security-boundaries.test.js"], installed, 30000);
-  assert.match(log, /# tests 78\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# tests 107\n/); assert.match(log, /# fail 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 78, failures: 0, cliVersionsVerified: true };
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 107, failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });
 }

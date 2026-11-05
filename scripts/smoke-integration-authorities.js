@@ -2319,17 +2319,26 @@ async function smokeIdempotency(root) {
   assert.equal(liveSlowRecoveryCalls, 0);
 
   const livePruneRoot = path.join(root, "idempotency-live-pending-retention-prune");
+  // Separate logical retention from filesystem/runner latency. A completed
+  // receipt may legitimately expire while the test performs its assertions;
+  // that is not evidence that a still-running claim was pruned.
+  let livePruneNowMs = Date.now();
+  const livePruneNow = () => new Date(livePruneNowMs);
+  let finishLivePrune;
+  const livePruneFinish = new Promise((resolve) => { finishLivePrune = resolve; });
   const livePruneA = createFileIntegrationIdempotencyStore({
     rootDir: livePruneRoot,
     retentionMs: 1000,
     pendingLeaseMs: 100,
     lockWaitMs: 5000,
+    now: livePruneNow,
   });
   const livePruneB = createFileIntegrationIdempotencyStore({
     rootDir: livePruneRoot,
     retentionMs: 1000,
     pendingLeaseMs: 100,
     lockWaitMs: 5000,
+    now: livePruneNow,
   });
   const livePruneContext = mutationContext(INTEGRATION_RPC_PATHS.threadsCreate, {}, "phase3-live-prune-owner");
   let livePruneStarted = false;
@@ -2337,24 +2346,31 @@ async function smokeIdempotency(root) {
   const livePruneFirst = livePruneA.runMutation(livePruneContext, async () => {
     livePruneStarted = true;
     livePruneSemanticCalls += 1;
-    await new Promise((resolve) => setTimeout(resolve, 1300));
+    await livePruneFinish;
     return threadResponse("Live pending survived prune");
   });
-  await waitFor(() => livePruneStarted, "live retention-prune handler did not start");
-  await new Promise((resolve) => setTimeout(resolve, 1150));
-  const livePruneTrigger = await livePruneB.runMutation(
-    mutationContext(INTEGRATION_RPC_PATHS.threadsCreate, {}, "phase3-live-prune-trigger"),
-    async () => threadResponse("Retention prune trigger")
-  );
-  assert.equal(livePruneTrigger.thread.title, "Retention prune trigger");
-  const livePrunePending = await livePruneB.inspectRecord(livePruneContext);
-  if (livePrunePending?.state === "pending") {
-    assert.equal(Date.parse(livePrunePending.expiresAt) > Date.now(), true);
-    assert.equal(Date.parse(livePrunePending.leaseExpiresAt) > Date.now(), true);
-  }
+  livePruneFirst.catch(() => {});
+  try {
+    await waitFor(() => livePruneStarted, "live retention-prune handler did not start");
+    livePruneNowMs += 1150;
+    const livePruneTrigger = await livePruneB.runMutation(
+      mutationContext(INTEGRATION_RPC_PATHS.threadsCreate, {}, "phase3-live-prune-trigger"),
+      async () => threadResponse("Retention prune trigger")
+    );
+    assert.equal(livePruneTrigger.thread.title, "Retention prune trigger");
+    const livePrunePending = await livePruneB.inspectRecord(livePruneContext);
+    assert.equal(livePrunePending.state, "pending", "The gated handler must still own its claim");
+    assert.equal(livePrunePending.pendingOwner.pid, process.pid);
+    assert.equal(Date.parse(livePrunePending.expiresAt) > livePruneNowMs, true);
+    // A live process must survive even an expired lease; heartbeat freshness is
+    // not a prerequisite for preserving a proven-live owner.
+  } finally { finishLivePrune(); }
   const livePruneOriginal = await livePruneFirst;
   assert.equal(livePruneOriginal.thread.title, "Live pending survived prune");
   assert.equal(livePruneSemanticCalls, 1);
+  const livePruneCompleted = await livePruneB.inspectRecord(livePruneContext);
+  assert.equal(livePruneCompleted.state, "completed");
+  assert.equal(Date.parse(livePruneCompleted.expiresAt) > livePruneNowMs, true);
   assert.deepEqual(
     await livePruneB.runMutation(livePruneContext, async () => {
       livePruneSemanticCalls += 1;
@@ -2363,6 +2379,13 @@ async function smokeIdempotency(root) {
     livePruneOriginal
   );
   assert.equal(livePruneSemanticCalls, 1);
+  livePruneNowMs = Date.parse(livePruneCompleted.expiresAt) + 1;
+  const livePruneAfterExpiry = await livePruneB.runMutation(livePruneContext, async () => {
+    livePruneSemanticCalls += 1;
+    return threadResponse("New request after retention expiry");
+  });
+  assert.equal(livePruneAfterExpiry.thread.title, "New request after retention expiry");
+  assert.equal(livePruneSemanticCalls, 2, "Expiry must not become indefinite completed-receipt retention");
 
   const sameKeyRetentionRoot = path.join(root, "idempotency-same-key-retention-live");
   const sameKeyRetentionA = createFileIntegrationIdempotencyStore({
