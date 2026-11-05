@@ -15,8 +15,10 @@ import {
   resolveModelTimeoutMs,
 } from "./model-client.js";
 import { SessionStore } from "./session-store.js";
+import { acquireNativeSessionRunLock } from "./session-run-lock.js";
 import {
   assertIntegrationRunAgentInvocation,
+  assertRegisteredIntegrationSessionConfig,
   invokeIntegrationVisionWorkspace,
 } from "./integration-session-persistence.js";
 import {
@@ -30155,7 +30157,6 @@ async function activatePendingProviderQualityRebound({
 }
 
 async function runAgentOnceUnlocked(config) {
-  assertIntegrationRunAgentInvocation(config);
   const incomingConfig = config;
   const sessionId = config.resume || config.sessionId || `web-agent-${crypto.randomUUID()}`;
   const store = new SessionStore(config.sessionsDir, sessionId, {
@@ -32572,92 +32573,14 @@ async function runAgentOnceUnlocked(config) {
   }
 }
 
-function sessionRunOwnerIsAlive(pid) {
-  const ownerPid = Number(pid);
-  if (!Number.isInteger(ownerPid) || ownerPid <= 0) return false;
-  try {
-    process.kill(ownerPid, 0);
-    return true;
-  } catch (error) {
-    return error?.code !== "ESRCH";
-  }
-}
-
 export async function acquireSessionRunLock(config = {}, sessionId = "") {
-  if (!String(sessionId || "").trim() || isRetainedWorkspaceProfile(config)) {
+  if (isRetainedWorkspaceProfile(config)) {
+    // Retained integrations use their own registered session authority. A
+    // caller-provided profile name alone cannot opt out of native exclusion.
+    assertRegisteredIntegrationSessionConfig(config);
     return async () => {};
   }
-  const sessionDir = path.resolve(config.sessionsDir, String(sessionId));
-  const lockPath = path.join(sessionDir, ".agent-run.lock");
-  const token = crypto.randomUUID();
-  await fs.mkdir(sessionDir, { recursive: true });
-
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    let handle;
-    try {
-      handle = await fs.open(lockPath, "wx", 0o600);
-      await handle.writeFile(
-        JSON.stringify({
-          version: 1,
-          sessionId: String(sessionId),
-          pid: process.pid,
-          token,
-          acquiredAt: new Date().toISOString(),
-        }),
-        "utf8"
-      );
-      await handle.sync();
-      await handle.close();
-      handle = null;
-      let released = false;
-      return async () => {
-        if (released) return;
-        released = true;
-        const owner = await fs
-          .readFile(lockPath, "utf8")
-          .then((raw) => JSON.parse(raw))
-          .catch(() => null);
-        if (owner?.token === token && Number(owner?.pid || 0) === process.pid) {
-          await fs.unlink(lockPath).catch((error) => {
-            if (error?.code !== "ENOENT") throw error;
-          });
-        }
-      };
-    } catch (error) {
-      await handle?.close().catch(() => {});
-      if (error?.code !== "EEXIST") throw error;
-      const owner = await fs
-        .readFile(lockPath, "utf8")
-        .then((raw) => JSON.parse(raw))
-        .catch(() => null);
-      if (sessionRunOwnerIsAlive(owner?.pid)) {
-        const activeError = new Error(
-          `Session ${sessionId} is already running in process ${owner.pid}. Queue an interruption or wait for that run instead of starting a concurrent resume.`
-        );
-        activeError.code = "SESSION_RUN_ACTIVE";
-        activeError.sessionId = String(sessionId);
-        activeError.ownerPid = Number(owner.pid);
-        throw activeError;
-      }
-      const stat = await fs.stat(lockPath).catch(() => null);
-      if (!owner && stat && Date.now() - stat.mtimeMs < 1000) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        continue;
-      }
-      const stalePath = `${lockPath}.stale.${process.pid}.${crypto.randomUUID()}`;
-      try {
-        await fs.rename(lockPath, stalePath);
-        await fs.unlink(stalePath).catch(() => {});
-      } catch (renameError) {
-        if (!["ENOENT", "EEXIST"].includes(renameError?.code)) throw renameError;
-      }
-    }
-  }
-  const lockError = new Error(
-    `Could not acquire the durable run lease for session ${sessionId}.`
-  );
-  lockError.code = "SESSION_RUN_LOCK_UNAVAILABLE";
-  throw lockError;
+  return acquireNativeSessionRunLock(config, sessionId);
 }
 
 async function runAgentOnce(config) {
@@ -32674,18 +32597,21 @@ async function runAgentOnce(config) {
 }
 
 export async function runAgent(config) {
+  assertIntegrationRunAgentInvocation(config);
   try {
     return await runAgentOnce(config);
   } catch (error) {
     if (!(error instanceof ProviderHandoffSignal)) throw error;
     const decision = error.decision;
-    return runAgentOnce({
+    const nextConfig = {
       ...config,
       goal: "",
       resume: error.sessionId,
       sessionId: error.sessionId,
       runtimePatch: decision.runtimePatch,
       expectedRuntimeRevision: error.expectedRuntimeRevision,
-    });
+    };
+    assertIntegrationRunAgentInvocation(nextConfig);
+    return runAgentOnce(nextConfig);
   }
 }

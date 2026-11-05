@@ -35,7 +35,7 @@ export function isSafeSessionId(sessionId) {
 function ensureIndexDb() {
   const paths = globalSessionPaths();
   if (indexDbConnections.has(paths.indexDbPath)) return indexDbConnections.get(paths.indexDbPath);
-  fs.mkdirSync(paths.sessionsDir, { recursive: true });
+  fs.mkdirSync(paths.sessionsDir, { recursive: true, mode: 0o700 });
   const DatabaseSync = loadDatabaseSync({ optional: true });
   if (!DatabaseSync) {
     indexDbConnections.set(paths.indexDbPath, null);
@@ -144,7 +144,7 @@ function emptyIndexState() {
 
 function readIndexJson() {
   const paths = globalSessionPaths();
-  fs.mkdirSync(paths.sessionsDir, { recursive: true });
+  fs.mkdirSync(paths.sessionsDir, { recursive: true, mode: 0o700 });
   try {
     const parsed = JSON.parse(fs.readFileSync(paths.indexJsonPath, "utf8"));
     return {
@@ -159,7 +159,7 @@ function readIndexJson() {
 
 function writeIndexJson(state) {
   const paths = globalSessionPaths();
-  fs.mkdirSync(paths.sessionsDir, { recursive: true });
+  fs.mkdirSync(paths.sessionsDir, { recursive: true, mode: 0o700 });
   const tmpPath = `${paths.indexJsonPath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(state, null, 2)}\n`);
   fs.renameSync(tmpPath, paths.indexJsonPath);

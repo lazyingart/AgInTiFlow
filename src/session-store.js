@@ -238,7 +238,7 @@ export class SessionStore {
       }
       if (!this.ensurePromise) {
         this.ensurePromise = (async () => {
-          await fs.mkdir(this.artifactsDir, { recursive: true });
+          await fs.mkdir(this.artifactsDir, { recursive: true, mode: 0o700 });
           if (!this.#integrationSessionClaim) await this.writePointer().catch(() => {});
         })();
       }
@@ -448,7 +448,7 @@ export class SessionStore {
       if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
         return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "acquireInboxLock");
       }
-      await fs.mkdir(this.sessionDir, { recursive: true });
+      await fs.mkdir(this.sessionDir, { recursive: true, mode: 0o700 });
       const token = crypto.randomUUID();
       const ownerPath = path.join(this.sessionDir, `.inbox-lock-owner.${process.pid}.${token}`);
       const owner = {

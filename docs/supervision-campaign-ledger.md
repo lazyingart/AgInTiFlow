@@ -1,5 +1,58 @@
 # Supervision Campaign Ledger
 
+## Native session exclusion survives delayed recovery — 2026-11-06
+
+An installed358.0 filesystem-only reproduction paused a stale reaper, let a
+second caller recover and acquire the session, then resumed the first caller.
+Both claims were accepted while the second was still active. This is a native
+runtime durability defect, independent of model quality or application policy.
+Three initial regression controls failed: delayed recovery, old malformed owner
+handling, and integration invocation rejection before storage creation.
+
+Native leases now publish initialized owner records atomically and retain inode
+identity during removal. A unique hard-link removal claim and exact link-count
+and name checks prevent a delayed reaper from unlinking its successor. Linux
+boot/start identity distinguishes reused PIDs; live or unverifiable owners stay
+protected regardless of age. Invalid records and unknown links fail closed.
+Registered retained integrations keep their own authority; profile strings alone
+cannot bypass exclusion. Integration entry validation precedes native storage.
+
+Thirty-two offline controls cover six actual child-process crash boundaries,
+four processes and48 serialized critical sections, delayed reapers, malformed
+records, PID reuse, release failure, FD cleanup, independent sessions and early
+integration rejection. Five consecutive focused runs and neighboring native
+persistence/handoff/runtime/inbox smokes pass. Tests are included in pretest and
+the fresh online installed-package qualification.
+
+The first full suite stopped at web-api: session producers inherited umask002
+and created group-writable directories that the new lease correctly rejected.
+New index, project/Studio session roots and SessionStore directories use0700; existing unsafe modes stay
+unchanged and rejected. A separate review probe also found that legacy recovery
+cleanup checked the dead original owner instead of the live reaper named on its
+quarantine. The corrected check and three new controls cover both failures.
+The original355.123-second failed full receipt is retained; it is not a release
+gate. The tightened source passes a fresh445.913-second complete suite with all
+366selected inputs unchanged, syntax315, zero audit findings and diff checks.
+
+In a bounded real DeepSeek workflow, Flash read a synthetic note and wrote one
+summary. A concurrent same-session Pro resume was rejected before a provider
+request, with identical state bytes. After completion, a fresh-process Pro resume
+read the summary, preserved its bytes and the input, and answered the latency
+and remaining-check questions. Native runtime revision advanced1 to2 and the
+lease was released. Eight transport calls include two planning calls and six
+step events. Initial harness assertions incorrectly required stopped:false,
+counted runtime-owned .aginti bookkeeping as a model artifact, and equated step
+events with transport calls. Original failed receipts are preserved; independent
+state/event/file verification established success without repeating model work.
+
+This is cooperative local-filesystem exclusion, not distributed locking,
+exactly-once tool execution or retained-descriptor application storage. Older
+unpatched binaries retain their stale-recovery race and need an idle upgrade.
+No app, credential, LocalLLM, GPU, tunnel or production service was changed.
+See [native session leases](native-session-run-lease.md) for supported behavior
+and limitations. Full-suite, registry and global-install gates are recorded
+separately from these source-level results.
+
 ## Remote image acquisition keeps its scope and resource limits — 2026-11-06
 
 Four of five initial controls fail on unchanged357.1: an allowlisted URL follows

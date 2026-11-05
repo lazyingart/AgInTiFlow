@@ -154,7 +154,7 @@ export function sessionStoreOptions(projectRoot = process.cwd(), sessionId = "")
 export async function ensureProjectSessionStorage(projectRoot = process.cwd()) {
   const paths = projectPaths(projectRoot);
   await fsp.mkdir(paths.sessionsDir, { recursive: true });
-  await fsp.mkdir(paths.globalSessionsDir, { recursive: true });
+  await fsp.mkdir(paths.globalSessionsDir, { recursive: true, mode: 0o700 });
   await ensureRuntimeGitExcludes(paths.root, [
     ".aginti-sessions/",
     ".sessions/",
@@ -177,7 +177,7 @@ export async function ensureProjectSessionStorage(projectRoot = process.cwd()) {
       const globalStatePath = path.join(globalDir, "state.json");
       const hasGlobalState = await fsp.stat(globalStatePath).then((stat) => stat.isFile()).catch(() => false);
       if (!hasGlobalState) {
-        await fsp.mkdir(path.dirname(globalDir), { recursive: true });
+        await fsp.mkdir(path.dirname(globalDir), { recursive: true, mode: 0o700 });
         await fsp.cp(legacyDir, globalDir, { recursive: true, force: false, errorOnExist: false });
       }
 
@@ -410,7 +410,7 @@ export async function initProject(projectRoot = process.cwd(), { template = "dis
   await ensureDir(paths.controlDir);
   await ensureDir(paths.notesDir);
   await ensureDir(paths.sessionsDir);
-  await fsp.mkdir(paths.globalSessionsDir, { recursive: true });
+  await fsp.mkdir(paths.globalSessionsDir, { recursive: true, mode: 0o700 });
   await ensureFile(
     paths.agintiInstructionsPath,
     defaultAgintiInstructions(instructionTemplate)
@@ -934,7 +934,7 @@ export async function renameProjectSession(projectRoot, sessionId, title) {
     title: cleanTitle,
     updatedAt,
   };
-  await fsp.mkdir(sessionDir, { recursive: true });
+  await fsp.mkdir(sessionDir, { recursive: true, mode: 0o700 });
   await fsp.writeFile(statePath, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
   const nextPointer = {
     ...pointer,

@@ -2588,7 +2588,7 @@ app.use((error, _req, res, _next) => {
   res.status(500).json({ error: "Internal server error." });
 });
 
-await fs.mkdir(sessionsDir, { recursive: true });
+await fs.mkdir(sessionsDir, { recursive: true, mode: 0o700 });
 await syncStoredSessions();
 
 function listenOnPort(candidatePort) {
