@@ -1,5 +1,40 @@
 # Supervision Campaign Ledger
 
+## Concurrent restricted scopes and cancellation — qualification, 2026-11-05
+
+The current registry-installed 355 SDK passes a new backend interaction test:
+two account-bound conversations share one provider transport, one is cancelled
+during its read, the other completes, and the first explicitly continues on Pro
+after old work settles. Both records use ID 1. Host history/state are synthetic
+and owned by the fixture, not persisted by the SDK or a production application.
+
+Two offline cases cover late read success and late rejection, retained capacity,
+reused scoped tool IDs, independent cancellation and language/history isolation.
+A completion-order assumption in the initial fixture assertion is removed;
+concurrent reads are compared independently of their order. No runtime defect
+reproduces, so only tests, test wiring and documentation change.
+
+The one-shot live run uses five real DeepSeek requests in approximately 5.1s:
+three Flash and two explicit Pro. The cancelled run returns no proposal and
+holds its slot until the gated read settles. The other account returns its own
+English revision31 answer. Pro later reads current revision6 and preserves the
+Chinese subject and newly added remark. Independent request/body/state review
+finds no foreign history/source and confirms no SDK record mutation. Parent
+listeners are removed and no unhandled rejection occurs. This is not a live
+generation-cancel, process restart, database-transaction, app-auth or aggregate
+resource-admission proof. The SDK bytes match published355; no new release is
+needed. Full npm test passes in410.236s with all339 runtime/test/package inputs
+unchanged. Syntax/audit/diff checks pass. The candidate package has501 files,
+no private paths and60 actual temporary-install SDK/recovery/concurrency cases.
+It is an unpublished tests/docs snapshot, not a replacement for the registered
+355 archive. Runtime sources/exports/lockfile and installed355 remain unchanged.
+
+Read-only workstation GETs still report catalog ready but functional readiness
+not_configured/ready:false/fresh:false. The existing Mac SSH route works, while
+loopback8008 health/capability connections remain unavailable. No model,
+credential, service, tunnel or maintenance-fence action is taken. These are
+dated observations, not a granted client profile or permission to infer.
+
 ## Research provenance and bounded correction — release candidate, 2026-11-05
 
 The prior failed live review proves a provider-output protocol problem: runtime
