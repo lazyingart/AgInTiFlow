@@ -1,5 +1,49 @@
 # Supervision Campaign Ledger
 
+## Safe read-tool failure metadata — 2026-11-05
+
+A normal public-paper request exercised live Crossref discovery with DeepSeek
+Flash, followed by a separate-process Chinese Pro continuation. Exact title,
+year and DOI identity passed independent registry checks, but one selected
+record was classified `other`, not an article. The initial structurally valid
+result therefore fails paper-task acceptance. The host research profile had
+omitted publication kind; this was not a fabricated citation or a core schema
+bypass. Its original receipt is preserved, not relabelled as passing.
+
+A typed profile retains the same user prompt and validates article kind on
+discovery and metadata reads. Two attempts stop with TOOL_FAILED during the
+second search; the instrumented attempt captures HTTP429. No Pro continuation
+or answer follows either failed attempt. Total real model requests across the
+three recorded attempts are six; source HTTP attempts are eight. A separate
+read-only diagnostic later returns200 but does not prove the earlier unknown
+HTTP outcome or qualify a successful typed search. Public-paper discovery stays
+HOLD pending a reviewed source-rate/availability contract and successful task
+acceptance. No more live requests were made to chase a green result.
+
+This exposed a reusable SDK capability gap: a host could declare a safe provider
+failure category but had no equivalent read-tool signal. The additive
+createRestrictedToolFailure export preserves TOOL_FAILED plus optional frozen
+toolFailure metadata. Its same-module private brand admits only explicit host
+classification, never raw Error/status fields, JSON/model output, proxies or a
+different SDK copy. Provider and tool channels are separate. Raw errors remain
+opaque; cancellation, deadline and bounded capacity retain precedence. A failed
+read returns no partial proposal, later batch read, retry or extra model turn.
+
+Five new regression groups fail before the API; all55 SDK and57 Lite tests pass
+after it. They cover closed options, zero-hook hostile data, channel separation,
+native OpenAI/Flash/Pro batches, cancellation/late rejection, deadline overrun,
+capacity cleanup and real loopback HTTP error mapping. Recorded native request
+bytes replay exactly in full SDK and Lite; the source429 becomes a safe explicit
+rate_limit only when the host issues it. Six independent evidence-tamper checks
+pass. This is not automatic HTTP classification or a successful live search.
+The dated Nutstore evidence replay records failures and limitations explicitly.
+Application vendors, state, routing and services remain unchanged.
+Full npm test passes in429.910 seconds with frozen runtime/test hashes;
+309-file syntax, production dependency audit and dry packing pass. Two existing
+fixed-port18102 document HTTP checks skip the occupied listener. The additive
+SDK error channel does not qualify successful source-rate handling or a live
+application backend, and does not change LocalLLM admission or Codex routing.
+
 ## Consumer boundary qualification — 2026-11-05
 
 Read-only Bunko source review pins64de224a89193512f664f393129a38b6bc9ae858;

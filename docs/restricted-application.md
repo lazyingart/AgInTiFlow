@@ -273,6 +273,41 @@ monotonic deadline take precedence, even if synchronous callback code exceeds
 the deadline before a timer can run. Capacity remains charged until ignored
 cancellation settles. No default provider, retry, fallback or app routing changes.
 
+## Explicit read-tool failures
+
+Trusted read-only handlers may throw `createRestrictedToolFailure` from the same
+SDK module instance. The invocation still fails with `code:"TOOL_FAILED"`; its
+optional frozen `toolFailure` is exactly
+`{schemaVersion:"aginti-tool-failure-v1",category,retryAfterMs}`. Categories are
+`authentication`, `permission`, `quota`, `not_found`, `conflict`, `rate_limit`,
+`unavailable`, `timeout` and `protocol`. Cooldown uses the provider channel's
+integer bounds and is allowed only for `rate_limit` and `unavailable`.
+
+```js
+import { createRestrictedToolFailure } from "@lazyingart/agintiflow/restricted-application";
+
+// Inside an authorized read handler, after the host verifies the source,
+// response and its documented semantics. Discard any private error body.
+throw createRestrictedToolFailure({ category: "rate_limit", retryAfterMs: 1000 });
+```
+
+This is host metadata, not proof of authentication, quota availability or safe
+retry. The SDK does not map HTTP statuses or inspect raw errors. Unknown errors
+remain opaque. Provider and tool brands are separate: neither callback can
+impersonate the other's failure channel. Serialized, proxied, cross-module or
+model-produced declarations do not carry authority. Cancellation and the overall
+deadline win; uncooperative work remains charged until settlement.
+
+A failed read stops the entire invocation without a partial proposal, later
+batch reads, another model turn or fallback. Earlier successful reads are not
+automatically retained by the stateless SDK. The host decides what authenticated
+evidence may be retained, whether a later invocation is permitted, and how to
+present a truthful blocker. Never interpret an unavailable source as absence.
+Public research also needs source-kind and task-fit checks: a real DOI and exact
+title/year do not prove that a result is a paper, peer-reviewed, relevant or
+evidence for a performance claim. Validate metadata against the actual read,
+including publication kind, before accepting the proposal.
+
 ## Optional Codex assistance
 
 Trusted standalone CLI work already supports explicitly enabled advisory Codex

@@ -15,6 +15,8 @@ export const RESTRICTED_APPLICATION_PROTOCOL = "aginti-restricted-application-v1
 // the private brand. Classification never authorizes a retry or provider switch.
 const providerFailures = new WeakMap();
 const providerFailureCategories = Object.freeze(["authentication", "permission", "quota", "rate_limit", "unavailable", "timeout", "protocol"]);
+const toolFailures = new WeakMap();
+const toolFailureCategories = Object.freeze([...providerFailureCategories, "not_found", "conflict"]);
 
 export function createRestrictedProviderFailure(options) {
   const fields = dataFields(options, ["category", "retryAfterMs"], ["category"]);
@@ -28,6 +30,24 @@ export function createRestrictedProviderFailure(options) {
   const error = new RestrictedApplicationError("PROVIDER_FAILED");
   Object.defineProperty(error, "providerFailure", { value: metadata, enumerable: true });
   providerFailures.set(error, metadata);
+  return Object.freeze(error);
+}
+
+// An explicit host read may report a safe failure without exposing raw source
+// errors. The brand is local to this SDK copy and distinct from provider errors;
+// neither model data nor a status code alone can authorize retry or fallback.
+export function createRestrictedToolFailure(options) {
+  const fields = dataFields(options, ["category", "retryAfterMs"], ["category"]);
+  if (typeof fields.category !== "string" || !toolFailureCategories.includes(fields.category)) fail();
+  const retryAfterMs = Object.hasOwn(fields, "retryAfterMs") ? fields.retryAfterMs : null;
+  if (retryAfterMs !== null) {
+    integer(retryAfterMs, 0, 86_400_000);
+    if (!["rate_limit", "unavailable"].includes(fields.category)) fail();
+  }
+  const metadata = jsonSnapshot({ schemaVersion: "aginti-tool-failure-v1", category: fields.category, retryAfterMs });
+  const error = new RestrictedApplicationError("TOOL_FAILED");
+  Object.defineProperty(error, "toolFailure", { value: metadata, enumerable: true });
+  toolFailures.set(error, metadata);
   return Object.freeze(error);
 }
 
@@ -164,12 +184,12 @@ export function createRestrictedApplicationRunner(options) {
         return result;
       } catch (error) {
         checkpoint();
-        const metadata = code === "PROVIDER_FAILED" ? providerFailures.get(error) : undefined;
+        const metadata = code === "PROVIDER_FAILED" ? providerFailures.get(error) : code === "TOOL_FAILED" ? toolFailures.get(error) : undefined;
         if (metadata) {
           // Rebuild the safe error; never return the callback's stack/cause or
           // inspect properties of an untrusted thrown value (including Proxy).
           const failure = new RestrictedApplicationError(code);
-          Object.defineProperty(failure, "providerFailure", { value: metadata, enumerable: true });
+          Object.defineProperty(failure, code === "PROVIDER_FAILED" ? "providerFailure" : "toolFailure", { value: metadata, enumerable: true });
           throw Object.freeze(failure);
         }
         fail(code); // Never expose raw callback errors, credentials or input.
