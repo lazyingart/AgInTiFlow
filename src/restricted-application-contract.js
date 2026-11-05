@@ -191,9 +191,21 @@ export function checkedSchema(value) {
   return schema;
 }
 
+// Both operands have already passed the bounded strict JSON snapshot boundary.
+// JSON object member order is not part of instance equality; array order and
+// primitive type/value are. Do not reorder or normalize the caller's data.
+function sameJsonInstance(left, right) {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length &&
+    keys.every(key => Object.hasOwn(right, key) && sameJsonInstance(left[key], right[key]));
+}
+
 export function matchesSchema(value, schema) {
   if (schema.anyOf) return schema.anyOf.some((part) => matchesSchema(value, part));
-  if (schema.enum && !schema.enum.some((entry) => JSON.stringify(entry) === JSON.stringify(value))) return false;
+  if (schema.enum && !schema.enum.some((entry) => sameJsonInstance(entry, value))) return false;
   switch (schema.type) {
     case "null": return value === null;
     case "boolean": return typeof value === "boolean";

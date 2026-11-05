@@ -255,6 +255,13 @@ in depth, not a guarantee that arbitrary sensitive content will be detected.
 
 ## Extraction and qualification
 
+Preview 6 fixes object-valued enum equality throughout final proposals and tool
+arguments/results. JSON object key order is irrelevant; array order, exact
+values/types, keys and Unicode spelling remain significant. The validated
+proposal and wire schema are not reordered. Four additional groups cover
+recursive equality, invalid bindings, native transports and strict JSON guards.
+There is no dependency, public export, retry or provider-policy change.
+
 Preview 5 withdraws read tools on the last provider turn and after the read
 budget is spent. A transient system instruction requests final JSON only when
 existing authorized evidence suffices. History/results, schemas and output
