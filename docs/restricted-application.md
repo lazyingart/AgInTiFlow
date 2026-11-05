@@ -369,6 +369,12 @@ uncertain attempt must not silently dispatch another provider. The application
 owns durable attempt/idempotency and fallback allowance; this SDK neither
 authorizes nor proves them. See the official [Codex automation boundary](https://learn.chatgpt.com/docs/non-interactive-mode).
 
+The optional [local admission diagnostic](codex-application-admission.md) inspects
+the installed CLI's first request against a synthetic loopback responder. It
+supplies no real credential and cannot enable a provider. On Codex 0.166.0,
+the tested disabled-feature profile still advertises `request_user_input`;
+the strict no-tools prerequisite remains unsatisfied.
+
 ## Schema and limits
 
 Closed supported JSON Schema subset: `type` (`object,array,string,integer,number,

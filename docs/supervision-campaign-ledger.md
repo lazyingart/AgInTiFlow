@@ -1,5 +1,36 @@
 # Supervision Campaign Ledger
 
+## Restricted Codex admission — prerequisite remains unavailable, 2026-11-05
+
+The remaining optional application fallback is examined with a credential-free
+local transport diagnostic, rather than assuming the trusted wrapper is safe
+for app chat. Installed Codex 0.166.0 makes one synthetic Responses request
+using a temporary home/config/workspace and explicit feature disables. The
+fixture returns an intentional error before any model output. Its advertised
+catalog still contains request_user_input, including with default-mode input
+explicitly disabled. Strict no-tools admission fails; no provider, app, auth,
+model or service is activated. This is not an AgInTi runtime or model-quality
+failure and does not justify changing the trusted wrapper.
+
+Five offline control groups prove that any advertised tool blocks no-tools
+observation, even when tool_choice says none; missing/malformed/hostile catalogs
+fail closed; and even an empty catalog cannot self-attest production readiness.
+The optional diagnostic is separate from ordinary tests and requires an exact
+trusted executable path. It cannot enable a capability or supply credentials.
+See [the admission contract](codex-application-admission.md). Source changes are
+tests/diagnostics/documentation only; runtime/exports/lock/version and installed
+355 remain unchanged. No new npm release is justified by this checkpoint.
+
+Full npm test passes in 407.886 seconds with all 351 selected code/test/package
+input hashes unchanged. Syntax covers 312 files, the production audit has zero
+findings, and all 14 existing optional-wrapper lifecycle cases pass. No hosted
+Codex or DeepSeek inference is performed for this diagnostic slice.
+Two existing fixed-port document HTTP checks skip occupied 18102; the foreign
+listener is preserved and no new live HTTP qualification is inferred. Candidate
+package inspection finds 504 files, no private paths or credential literals,
+and 65 actual temporary-install SDK/recovery/concurrency/admission cases pass.
+This tests/diagnostics archive is not the registered 355 archive.
+
 ## Concurrent restricted scopes and cancellation — qualification, 2026-11-05
 
 The current registry-installed 355 SDK passes a new backend interaction test:
