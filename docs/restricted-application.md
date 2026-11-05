@@ -308,6 +308,17 @@ title/year do not prove that a result is a paper, peer-reviewed, relevant or
 evidence for a performance claim. Validate metadata against the actual read,
 including publication kind, before accepting the proposal.
 
+The partial-read recovery fixture exercises this boundary across two actual
+worker processes. A controlled second-read outage follows a successful read;
+the failed invocation has no proposal and cannot treat unavailability as
+absence. The synthetic host records the failure, changes its own source and
+explicitly authorizes a fresh Pro invocation. That invocation restores only
+host-approved history, rereads both current records and returns a proposal.
+This is host-owned file/history qualification, not native SessionStore recovery,
+production app authorization/transactions or automatic provider fallback.
+Run `npm run test:restricted-partial-read-recovery` for the offline serial and
+batch controls. The fixture has no live-provider/credential CLI option.
+
 ## Optional host read scheduling
 
 `@lazyingart/agintiflow/read-request-gate` exports

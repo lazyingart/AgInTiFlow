@@ -1,5 +1,40 @@
 # Supervision Campaign Ledger
 
+## Partial read outage and explicit process recovery — 2026-11-06
+
+A new backend qualification covers a successful read followed by temporary
+unavailability. Two deterministic controls exercise serial and batched native
+calls in separate worker processes. Both require no partial proposal, an exact
+host-issued unavailable category, unchanged source bytes, and an explicitly
+authorized fresh-process Pro invocation that rereads current source state.
+No core defect reproduces; runtime sources/exports/lock/version are unchanged.
+
+Installed Flow 356 passes the real counterpart with five DeepSeek requests in
+6.29 seconds. Flash makes two turns, reads revision 7, then stops at the injected
+second-read fault. It returns TOOL_FAILED/unavailable and no proposal. After
+that process exits, the synthetic host updates source-a to revision 8 and
+authorizes Pro. A distinct worker restores the original Chinese user history
+and host failure receipt, rereads both records in three turns and returns the
+exact current revisions/text/order, including the new remark. Independent raw
+wire/source/process checks pass; source bytes remain unchanged within each SDK
+invocation. The operator's between-invocation edit is explicit, not an agent
+write. No automatic retry/fallback, model request after the failed read or
+source-absence claim occurs.
+
+An actual PTY capture records the process/model/read/result output with original
+timing. The video derives from that captured terminal stream, not a status-card
+slideshow. It uses synthetic host records/history and an injected read outage;
+it does not qualify production app auth/DB/transactions, remote work termination,
+native SessionStore, LocalLLM admission or an app-safe Codex transport. No model
+or source fixture is rerun merely for a new recording. The existing published
+and installed version remains 0.20.356-integration.0.
+
+Full npm test passes in 417.367 seconds with all 355 selected code/test/package
+input hashes unchanged; syntax covers 312 files, the dependency audit reports
+zero findings and diff checks pass. Two existing fixed-port document HTTP tests
+skip occupied 18102; the foreign listener is preserved. This tests/docs source
+snapshot does not replace the registered 356 archive or enable a provider.
+
 ## Dependency-free root proposal backport — Lite preview 8, 2026-11-06
 
 The lightweight SDK retained the same root-schema mismatch fixed in Flow 356.
