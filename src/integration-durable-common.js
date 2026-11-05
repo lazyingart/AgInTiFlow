@@ -690,8 +690,17 @@ async function releaseDirectoryLock(lockDir, token, testHooks = {}) {
     if (!sameLockIdentity(opened, quarantined) || sameLockIdentity(opened, canonical)) {
       authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock release quarantine identity changed.");
     }
-    const quarantinedPublication = await inspectLockQuarantinePublication(quarantine);
-    if (lockOwnerToken(quarantinedPublication.owner) !== token) {
+    const quarantinedPublication = await inspectLockQuarantinePublication(quarantine, opened);
+    if (!quarantinedPublication) {
+      if (sameLockIdentity(opened, await lockDirectoryIdentity(lockDir))) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Released lock inode was restored unexpectedly.");
+      }
+      return;
+    }
+    // The canonical owner was verified before retiring this exact inode. A
+    // concurrent successor may have removed owner.json while cleaning it; any
+    // owner that remains must still be ours. Never inspect the successor here.
+    if (quarantinedPublication.owner !== null && lockOwnerToken(quarantinedPublication.owner) !== token) {
       authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock release owner changed after quarantine rename.");
     }
     if (typeof testHooks.beforeReleaseQuarantineRemove === "function") {
@@ -726,7 +735,38 @@ async function requirePrivateLockQuarantineDirectory(quarantinePath) {
   return Object.freeze({ dev: stat.dev, ino: stat.ino, ctimeMs: stat.ctimeMs });
 }
 
-async function inspectLockQuarantinePublication(quarantinePath) {
+async function inspectLockQuarantinePublication(quarantinePath, expectedIdentity) {
+  // Release and successor recovery can concurrently remove the same retired
+  // directory. Retry only an unstable metadata observation, never a handler or
+  // an unsafe publication. Bind every attempt to the original retired inode.
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const before = await requirePrivateLockQuarantineDirectory(quarantinePath);
+    if (!before) return null;
+    if (!sameLockIdentity(expectedIdentity, before)) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine identity changed during observation.");
+    }
+    try {
+      const publication = await inspectLockQuarantinePublicationOnce(quarantinePath);
+      const after = await requirePrivateLockQuarantineDirectory(quarantinePath);
+      if (!after) return null;
+      if (!sameLockIdentity(expectedIdentity, after)) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine identity changed during observation.");
+      }
+      return publication;
+    } catch (error) {
+      if (error?.code !== "ENOENT" && error?.code !== "INTEGRATION_AUTHORITY_BUSY") throw error;
+      const current = await requirePrivateLockQuarantineDirectory(quarantinePath);
+      if (!current) return null;
+      if (!sameLockIdentity(expectedIdentity, current)) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine identity changed during observation.");
+      }
+      if (attempt < 31) await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  }
+  authorityFail("INTEGRATION_AUTHORITY_BUSY", "Lock quarantine publication remains unstable.", { status: 503 });
+}
+
+async function inspectLockQuarantinePublicationOnce(quarantinePath) {
   const temporaryPattern = /^\.owner\.json\.([1-9][0-9]{0,11})\.([a-f0-9]{16})\.tmp$/u;
   const names = (await fs.readdir(quarantinePath)).sort();
   if (names.length > 65 || names.some((name) => name !== "owner.json" && !temporaryPattern.test(name))) {
@@ -781,7 +821,7 @@ async function inspectLockQuarantinePublication(quarantinePath) {
       if (
         opened.dev !== ownerStat.dev || opened.ino !== ownerStat.ino
         || opened.nlink !== ownerStat.nlink || opened.size !== ownerStat.size
-      ) authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine owner changed while opening.");
+      ) authorityFail("INTEGRATION_AUTHORITY_BUSY", "Lock quarantine owner changed while opening.", { status: 503 });
       const raw = await handle.readFile("utf8");
       if (Buffer.byteLength(raw, "utf8") !== ownerStat.size) {
         authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine owner changed while reading.");
@@ -790,6 +830,9 @@ async function inspectLockQuarantinePublication(quarantinePath) {
         owner = JSON.parse(raw);
       } catch {
         authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine owner JSON is corrupt.");
+      }
+      if (!owner || typeof owner !== "object" || Array.isArray(owner)) {
+        authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine owner JSON must be an object.");
       }
     } finally {
       await handle?.close().catch(() => {});
@@ -859,7 +902,8 @@ async function reconcileAbandonedDirectoryLockQuarantines(
     const quarantinePath = path.join(parent, entry.name);
     const before = await requirePrivateLockQuarantineDirectory(quarantinePath);
     if (!before) continue;
-    const publication = await inspectLockQuarantinePublication(quarantinePath);
+    const publication = await inspectLockQuarantinePublication(quarantinePath, before);
+    if (!publication) continue;
     const children = publication.names;
     if (kind === "release") {
       if (publication.owner) {
@@ -900,13 +944,16 @@ async function reconcileAbandonedDirectoryLockQuarantines(
       }
     }
     const stable = await requirePrivateLockQuarantineDirectory(quarantinePath);
+    if (!stable) continue;
     if (!sameLockIdentity(before, stable)) {
       authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Lock quarantine changed during recovery.");
     }
     if (typeof testHooks.beforeAbandonedQuarantineRemove === "function") {
       await testHooks.beforeAbandonedQuarantineRemove({ lockDir, quarantinePath, kind });
     }
-    await fs.rm(quarantinePath, { recursive: true, force: false, maxRetries: 5, retryDelay: 10 });
+    await fs.rm(quarantinePath, { recursive: true, force: false, maxRetries: 5, retryDelay: 10 }).catch(error => {
+      if (error?.code !== "ENOENT") throw error;
+    });
     await fsyncDirectory(parent);
   }
 }
@@ -953,7 +1000,13 @@ async function breakStaleDirectoryLock(
   }
 
   const quarantined = await lockDirectoryIdentity(quarantine);
-  const quarantinedPublication = await inspectLockQuarantinePublication(quarantine);
+  const quarantinedPublication = await inspectLockQuarantinePublication(quarantine, before);
+  if (!quarantinedPublication) {
+    if (sameLockIdentity(before, await lockDirectoryIdentity(lockDir))) {
+      authorityFail("INTEGRATION_AUTHORITY_LOCK_CORRUPT", "Stale lock inode was restored unexpectedly.");
+    }
+    return true;
+  }
   const quarantinedOwner = quarantinedPublication.owner;
   if (
     !sameLockIdentity(before, quarantined) ||

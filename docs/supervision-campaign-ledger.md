@@ -1,5 +1,47 @@
 # Supervision Campaign Ledger
 
+## Durable lock-release observation — 2026-11-05
+
+The tagged 0.20.353-integration.0 release gate fails before publication. An analysis
+coordinator operation finishes, but its directory-lock release observes a
+successor concurrently removing the retired lock quarantine. The unstable
+inventory becomes INTEGRATION_AUTHORITY_BUSY and then EXECUTION_UNAVAILABLE.
+The publish step is skipped; the failed immutable tag is not rewritten.
+
+Eleven controlled regressions use real temporary directories and bounded gates.
+Installed 0.20.352-integration.0 fails five, including both directions of concurrent cleanup,
+owner unlink between open and fstat, final binding disappearance, and replacement
+identity classification. The candidate passes all eleven in ten repeated runs.
+Tests also preserve changed-owner, symlink, persistent-instability and EIO
+failures, exact successor-owner bytes, handler call counts and exclusion.
+An independent Python oracle verifies 32 distinct operations from four Node
+processes: contiguous on-disk records, exact responses, one exclusive active
+marker and no residual lock/quarantine directories. No model or network request
+is used in these fixtures.
+
+Only unstable metadata observation is retried, with at most 32 snapshot attempts
+and the original retired device/inode required on every attempt. Exact absence
+after concurrent cleanup is accepted; replacement, unsafe inventory and genuine
+I/O errors remain failures. An existing owner must still match the retired
+owner token. A missing owner in that previously verified retired inode may be
+finished as partial cleanup. Neither the semantic handler nor an external worker
+is redispatched, and the successor's canonical lock is never a cleanup target.
+This does not change retained-descriptor admission, claim same-UID forgery
+protection or enable any public runtime capability.
+
+Pre-release review catches a missing corrupted-owner control in the first
+candidate: JSON null/false could appear absent after retirement. That candidate's
+full suite is stopped and preserved as superseded, not reported as passing.
+Owner files now require an actual object; null, false, zero, strings and arrays
+are explicitly rejected. Only a physically missing owner file is partial cleanup.
+
+The final full npm test passes in425.158 seconds with runtime/test/package hashes
+unchanged throughout the suite. It includes the original failing coordinator,
+authority, session/recovery, CLI and Studio checks. Syntax310, production audit0
+and diff checks pass. Two fixed-port document HTTP checks skip occupied18102;
+the foreign listener is untouched. The final four-process oracle retains its
+synthetic records and binds the frozen runtime hash. No live inference is needed.
+
 ## Exact research-quotation integrity — 2026-11-05
 
 Installed352 reproduces a core evidence-verification defect through real
