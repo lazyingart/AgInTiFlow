@@ -282,6 +282,12 @@ additionalProperties:false`; arrays require `items,maxItems` (optional
 Unknown keywords, `$ref`, regex/format schemas and coercion are rejected.
 Flatten app schema references explicitly and retain app-side domain validation.
 String lengths use Unicode code points; transport/context caps use UTF-8 bytes.
+Enum values use JSON instance equality: object property order is irrelevant,
+array order and exact primitive types/values remain significant, and strings
+are not Unicode-normalized. Validation does not reorder the returned proposal,
+rewrite schemas/wire bytes or weaken strict JSON boundaries. This applies to
+final proposals, tool arguments and tool results. See the
+[JSON Schema instance-equality definition](https://json-schema.org/draft/2020-12/json-schema-core#section-4.2.2).
 No sparse/accessor/proxy/custom-prototype/cyclic/non-JSON values or hidden keys.
 
 | Limit | Default | Maximum |

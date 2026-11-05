@@ -1,5 +1,39 @@
 # Supervision Campaign Ledger
 
+## JSON enum equality and public-reference handoff — 2026-11-05
+
+Preparing a bounded reference workflow reproduced a general validator defect:
+an exact allowed object succeeds in schema key order but fails OUTPUT_INVALID
+when its keys are reordered. This is a core JSON-instance equality bug, not a
+provider error. The correction compares snapshotted JSON structurally: object
+keys are unordered, arrays ordered, primitive types/values and Unicode spelling
+exact. It neither reorders proposals nor changes schema/wire bytes. Four new
+groups reproduce3 failures before the repair; SDK47/Lite52 pass after, including
+tool args/results, mixed-source binding and zero-hook hostile-data controls.
+
+The first ordinary two-reference Flash fixture used two searches followed by
+two metadata reads, exceeding its3-call host budget. It correctly stopped
+STEP_LIMIT after2 requests/two searches, rejecting the whole metadata batch.
+That profile remains failed; it is not a runtime defect or a passing paper lookup.
+A separate explicit4-call profile with the same prompt succeeds: Flash3 HTTP
+requests/four read-only callbacks, then a new-process Chinese Pro follow-up
+reorders both retained references with1 request/zero tools. Titles, years, DOIs
+and links match independently fetched Crossref metadata; the catalog is unchanged.
+Lite replays identical native requests/results without inference. Total real
+requests across both profiles are6. No automatic retry/fallback was added.
+
+This is a bounded cached public bibliography, not broad internet discovery,
+native SessionStore durability, production authorization or app activation.
+The host owns acquisition, reference/ordering checks and retained context.
+Offline key-order twins derived from real responses fail on installed348 and
+pass after the correction; they are not raw observed provider failures.
+Existing app library/index/download/provider policies and LocalLLM roles remain
+unchanged. Optional trusted CLI Codex advice is unaffected.
+Full npm test passes in421.269 seconds with frozen runtime/test hashes and
+309-file syntax; production dependency audit reports zero findings. Two existing
+fixed-port18102 document HTTP checks skip the occupied listener; their local
+HTTP coverage is not claimed.
+
 ## Bounded read-loop finalization — 2026-11-05
 
 The restricted runner advertised reads on a turn whose step/read budget could
