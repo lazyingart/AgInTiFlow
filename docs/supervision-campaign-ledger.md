@@ -1,5 +1,42 @@
 # Supervision Campaign Ledger
 
+## Remote image acquisition keeps its scope and resource limits — 2026-11-06
+
+Four of five initial controls fail on unchanged357.1: an allowlisted URL follows
+a redirect to a forbidden loopback host; a declared oversize response is
+accepted; a32MiB unknown-length response is fully buffered before rejection;
+and a supplied caller signal removes the independent fetch deadline. The
+ordinary allowed-image control already passes. Owned loopback responders,
+native Response streams and a controlled deadline clock establish a core
+image-input defect without external providers or credentials.
+
+Remote image reading now validates every redirect target, preserving allowed
+relative redirects within a five-hop bound. One15-second deadline spans the
+entire acquisition and remains active with caller cancellation. Streaming stops
+at10MiB rather than buffering an unbounded response. Declared oversize,
+redirect and error bodies are cancelled; parent listeners and timers are
+removed. Successful metadata preserves both requested and final source URLs.
+Acquisition errors cannot invoke a perception provider or wrapper fallback.
+
+Twenty-six focused controls pass, including a real stalled HTTP body timing out
+with a live caller signal, cancellation before headers/during the body, allowed
+redirect statuses, later-hop scope rejection, exact/over-limit bytes, cleanup
+and ordered native-client input. A local protocol fixture receives the exact
+PNG bytes once; retained JSON/Markdown stores metadata and a labelled synthetic
+reply without pixel bodies or the fixture credential. This is not a real vision
+quality test. New tests run in pretest and the fresh online packed-consumer gate.
+
+The full suite passes in446.188seconds with363selected inputs unchanged;
+syntax314/audit0/diff checks pass. Existing document HTTP checks skip occupied
+port18102, preserving its foreign listener. Package, registry and installed
+consumer qualification remain separate release gates.
+
+The hostname rule is the existing server-owned allowlist, not DNS pinning or an
+SSRF-proof application gateway. No application, model, GPU, credential, tunnel
+or production service changes. Workstation functional LocalLLM admission stays
+not_configured; the existing Mac route reaches SSH but its loopback8008 refuses
+connections. Neither observation authorizes new LocalLLM inference.
+
 ## Published browser runtime and online consumer qualification — 2026-11-06
 
 Release 357.0's CI, archive and offline installed tests passed, but the ordinary

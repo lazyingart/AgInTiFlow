@@ -16,6 +16,8 @@ export { firstJsonObject } from "./json-extraction.js";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_COUNT = 4;
+const REMOTE_IMAGE_TIMEOUT_MS = 15000;
+const MAX_IMAGE_REDIRECTS = 5;
 const MAX_QUERY_BYTES = 1000;
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const MIME_BY_EXT = new Map([
@@ -281,31 +283,98 @@ async function loadLocalImage(inputPath, config) {
   };
 }
 
+function cancelImageBody(body) {
+  // Discard redirect/error/oversize bodies without waiting for an untrusted
+  // source to finish. Cancellation failure must not mask the original error.
+  try { body?.cancel()?.catch(() => {}); } catch { /* Already consumed or closed. */ }
+}
+
+async function boundedRemoteImageBytes(response, signal) {
+  if (Number(response.headers.get("content-length")) > MAX_IMAGE_BYTES) {
+    throw new Error(`Remote image exceeds the ${MAX_IMAGE_BYTES}-byte limit.`);
+  }
+  if (!response.body?.getReader) throw new Error("Remote image has no readable body.");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0, complete = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      signal.throwIfAborted();
+      if (done) { complete = true; break; }
+      total += value.byteLength;
+      if (total > MAX_IMAGE_BYTES) throw new Error(`Remote image exceeds the ${MAX_IMAGE_BYTES}-byte limit.`);
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, total);
+  } finally {
+    if (!complete) cancelImageBody(reader);
+    reader.releaseLock();
+  }
+}
+
 async function loadRemoteImage(url, config) {
   if (config.allowWebSearch === false) throw new Error("Remote image reading requires web access to be enabled.");
-  if (!/^https?:\/\//i.test(url)) throw new Error("Remote images must use http or https URLs.");
-  if (!isDomainAllowed(url, config.allowedDomains || [])) throw new Error(`Remote image domain is outside the allowlist: ${url}`);
-  const response = await fetch(url, {
-    signal: config.abortSignal || AbortSignal.timeout(15000),
-    headers: {
-      "User-Agent": "AgInTiFlow/1.0 (+https://flow.lazying.art)",
-      Accept: "image/*,*/*;q=0.8",
-    },
-  });
-  if (!response.ok) throw new Error(`Remote image fetch failed with HTTP ${response.status}`);
-  const contentType = response.headers.get("content-type") || "";
-  const mime = imageMimeForPath(url, contentType);
-  if (!mime) throw new Error(`Remote URL did not return a supported image content-type: ${contentType || "unknown"}`);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length > MAX_IMAGE_BYTES) throw new Error(`Remote image is too large: ${buffer.length} bytes`);
-  return {
-    source: "url",
-    url,
-    mime,
-    sizeBytes: buffer.length,
-    sha256: sha256(buffer),
-    dataUrl: `data:${mime};base64,${buffer.toString("base64")}`,
-  };
+  const controller = new AbortController();
+  const parent = config.abortSignal;
+  const onAbort = () => controller.abort(parent.reason);
+  let response, timer;
+  try {
+    parent?.addEventListener("abort", onAbort, { once: true });
+    if (parent?.aborted) onAbort();
+    timer = setTimeout(() => controller.abort(new Error(`Remote image fetch exceeded its ${REMOTE_IMAGE_TIMEOUT_MS}ms deadline.`)), REMOTE_IMAGE_TIMEOUT_MS);
+    timer.unref?.();
+    let currentUrl = url;
+    for (let redirects = 0; redirects <= MAX_IMAGE_REDIRECTS; redirects++) {
+      controller.signal.throwIfAborted();
+      const target = new URL(currentUrl);
+      if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) {
+        throw new Error("Remote images require http or https URLs without embedded credentials.");
+      }
+      if (!isDomainAllowed(target.href, config.allowedDomains || [])) {
+        throw new Error("Remote image domain is outside the configured allowlist.");
+      }
+      response = await fetch(target.href, {
+        redirect: "manual",
+        signal: controller.signal,
+        headers: {
+          "User-Agent": "AgInTiFlow/1.0 (+https://flow.lazying.art)",
+          Accept: "image/*,*/*;q=0.8",
+        },
+      });
+      controller.signal.throwIfAborted();
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        cancelImageBody(response.body);
+        response = null;
+        if (!location) throw new Error("Remote image redirect has no Location.");
+        if (redirects === MAX_IMAGE_REDIRECTS) throw new Error(`Remote image exceeded the ${MAX_IMAGE_REDIRECTS}-redirect limit.`);
+        currentUrl = new URL(location, target).href;
+        continue;
+      }
+      if (!response.ok) throw new Error(`Remote image fetch failed with HTTP ${response.status}`);
+      const contentType = response.headers.get("content-type") || "";
+      const mime = imageMimeForPath(target.pathname, contentType);
+      if (!mime) throw new Error(`Remote URL did not return a supported image content-type: ${contentType || "unknown"}`);
+      const buffer = await boundedRemoteImageBytes(response, controller.signal);
+      return {
+        source: "url",
+        url,
+        finalUrl: target.href,
+        mime,
+        sizeBytes: buffer.length,
+        sha256: sha256(buffer),
+        dataUrl: `data:${mime};base64,${buffer.toString("base64")}`,
+      };
+    }
+  } catch (error) {
+    if (controller.signal.aborted) throw controller.signal.reason;
+    throw error;
+  } finally {
+    cancelImageBody(response?.body);
+    clearTimeout(timer);
+    parent?.removeEventListener("abort", onAbort);
+  }
 }
 
 async function loadImageInputs(args, config) {

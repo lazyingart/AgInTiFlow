@@ -67,7 +67,7 @@ Current LocalLLM request policy starts conservatively:
 - parallel tool calls are disabled;
 - `json_object` plus strict post-validation is preferred over recursive `oneOf`/`$defs` schemas;
 - a bounded text-tool protocol is a fallback path, not the default;
-- remote images are fetched only when web access is enabled and any configured domain allowlist permits them; the provider receives bounded data URLs rather than the original remote URL;
+- remote images require web access and the server's domain allowlist at every redirect hop (at most five). Each acquisition shares one 15-second deadline across headers, redirects and body, alongside caller cancellation. Declared oversize responses are rejected before reading; decoded stream bytes stop at 10 MiB per image. Redirect/error/oversize bodies are cancelled. The provider receives ordered bounded data URLs, while perception artifacts retain requested/final URLs, byte counts and hashes rather than pixel bodies. This is not a DNS-rebinding sandbox, image-decoder validation or an application network-isolation grant;
 - cancellation closes the active HTTP request; it does not imply provider-side rollback;
 - the main agent loop is sequential, but the general runtime does not yet enforce a provider-wide semaphore across sessions; explicitly enabled scouts and specialist batches use their own bounded concurrency.
 
