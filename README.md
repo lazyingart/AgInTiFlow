@@ -25,15 +25,16 @@ Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.4.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.7.tgz
 ```
 
-The package root and `/restricted-application` export the same six names:
+The package root and `/restricted-application` export the same seven names:
 `createRestrictedApplicationRunner`, `createRestrictedOpenAIProvider`,
-`createRestrictedDeepSeekProvider`, `createRestrictedProviderFailure`, `RestrictedApplicationError`, and
+`createRestrictedDeepSeekProvider`, `createRestrictedProviderFailure`, `createRestrictedToolFailure`, `RestrictedApplicationError`, and
 `RESTRICTED_APPLICATION_PROTOCOL`.
 The protocol remains `aginti-restricted-application-v1`, with text-only input.
-Internal modules are not package exports.
+`createRestrictedToolFailure` adds an explicit host-issued read-tool failure
+signal. Internal modules are not package exports.
 
 ```js
 import { createRestrictedApplicationRunner } from "@lazyingart/agintilite";
@@ -212,6 +213,23 @@ clones, another SDK instance and tool callback failures cannot forge the
 channel. Unknown failures stay opaque; the original callback stack/cause is
 never propagated. Cancellation/deadline wins, including a synchronous callback
 that throws after the monotonic budget expires before the timer runs.
+
+Preview7 adds `createRestrictedToolFailure({category,retryAfterMs?})` for trusted
+read-only handlers. A failed invocation retains `code:"TOOL_FAILED"` and an
+optional frozen `toolFailure` exactly
+`{schemaVersion:"aginti-tool-failure-v1",category,retryAfterMs}`. Categories are
+the provider set plus `not_found` and `conflict`; cooldown uses the same bounds
+and eligible categories. The same-module private brand is separate from the
+provider channel. Unknown errors, proxies, serialized copies and another SDK
+instance remain opaque. Neither callback may impersonate the other channel.
+
+Only the host may classify its observed source response. A missing or failed
+read stops the invocation before later batch reads or another provider turn;
+no partial proposal, automatic retry or fallback occurs. The host owns any
+retained evidence, presentation and later attempt policy. Unavailability is
+not authoritative absence. Cancellation/deadline/capacity rules stay intact.
+For public research, verify publication kind and all selected metadata against
+the actual read. A real DOI does not prove task fit, peer review or findings.
 
 ## Bounds and cancellation
 

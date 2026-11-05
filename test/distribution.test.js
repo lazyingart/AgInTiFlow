@@ -10,7 +10,7 @@ import test from "node:test";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const runtimeFiles = ["src/redaction.js", "src/restricted-application-contract.js", "src/restricted-application.js"];
 const packageFiles = ["LICENSE", "NOTICE", "README.md", "package.json", ...runtimeFiles].sort();
-const publicExports = ["RESTRICTED_APPLICATION_PROTOCOL", "RestrictedApplicationError", "createRestrictedApplicationRunner", "createRestrictedOpenAIProvider", "createRestrictedDeepSeekProvider", "createRestrictedProviderFailure"].sort();
+const publicExports = ["RESTRICTED_APPLICATION_PROTOCOL", "RestrictedApplicationError", "createRestrictedApplicationRunner", "createRestrictedOpenAIProvider", "createRestrictedDeepSeekProvider", "createRestrictedProviderFailure", "createRestrictedToolFailure"].sort();
 const metadata = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
 
 test("distribution has a closed, zero-dependency, non-executable package surface", async () => {

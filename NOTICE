@@ -21,3 +21,8 @@ Preview 4 adds the shared explicit host-declared provider-failure channel and
 monotonic exception-deadline correction from AgInTiFlow commit
 18918723d3e68943e83ea22f45edeff3af1da5ba. The private in-process brand adds no
 transport, retry, fallback, credential or application policy authority.
+
+Preview 7 adds the matching explicit host-issued read-tool failure channel from
+AgInTiFlow commit 8193dcf8fe1c30405a7325e8beeb5ddaaf201b09. It preserves the
+existing stop/deadline/capacity rules and adds no HTTP classification, automatic
+retry, provider fallback, source authentication or application activation.
