@@ -1,5 +1,31 @@
 # Supervision Campaign Ledger
 
+## Dependency-free root proposal backport — Lite preview 8, 2026-11-06
+
+The lightweight SDK retained the same root-schema mismatch fixed in Flow356.
+Six of seven targeted groups fail on unchanged Lite preview7; the object-root
+control passes. Preview8 backports only the final transport envelope, retaining
+text-only input, deadlines, cancellation, capacity, schema and callback bounds.
+No new dependency, export, executable, ambient provider or fallback is added.
+
+All64 offline tests pass, including two reproducible package builds and an
+offline installed consumer whose network and non-allowlisted imports are
+forbidden. The exact seven-file archive is69977bytes unpacked; runtime source
+is37112bytes. Each archive file matches the committed Git blob. Four request
+pairs from ordinary English/Chinese list fixtures are byte-identical to the
+registry-installed Flow356 reference under scripted transport. Hosted model
+calls0; existing Flow live evidence does not independently qualify Lite or an
+application's authenticated transport.
+
+Immutable source72a94cf8570ee22469f3e2def6cdb6fe311f05c9 is pushed to the existing
+AgInTiFlow repository's separate sdk/agintilite-root-proposal-20261105 branch.
+Canonical local Lite main fast-forwards cleanly to it; Flow branches are not
+merged. Package SHA-256 is
+b62c9b1a76c09d6664f465c0983e48c7ed259b5091e028bc46280bff1e19ffe2.
+The private local preview is not published to npm or installed globally. App
+owners retain pinned-source adoption, provider/routing consent, account scope,+citations, state and quota ownership. No Bunko or other app source/runtime,
+credential, service, model or tunnel is changed. Flow remains installed356.
+
 ## Root proposal types on native provider wires — 2026-11-05
 
 The restricted SDK accepts list/scalar/root-union proposal schemas, but its
