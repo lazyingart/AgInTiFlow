@@ -19471,6 +19471,48 @@ function currentWorkHasCompletedDeepResearch(state = {}, config = {}) {
   });
 }
 
+function retainedActiveTaskMutationSatisfiesGrounding(config = {}, state = {}) {
+  const goal = state.meta?.goalContract || {};
+  const execution = state.meta?.activeExecutionContract || {};
+  const verification = state.meta?.projectVerification || {};
+  const activeRevision = goal.activeGoalRevision;
+  const currentRevision = goal.revision;
+  const materialRevision = execution.materialMutationRevision;
+  if (
+    goal.version !== 3 || goal.taskRelation !== "same-task" ||
+    !Number.isSafeInteger(activeRevision) || activeRevision <= 0 ||
+    !Number.isSafeInteger(currentRevision) || currentRevision <= activeRevision ||
+    execution.revision !== activeRevision ||
+    typeof state.commandCwd !== "string" || !state.commandCwd ||
+    config.commandCwd !== state.commandCwd ||
+    typeof goal.taskGoal !== "string" || !goal.taskGoal.trim() ||
+    typeof goal.activeGoal !== "string" || !goal.activeGoal.trim() ||
+    !Number.isSafeInteger(execution.startedMutationRevision) || execution.startedMutationRevision < 0 ||
+    !Number.isSafeInteger(materialRevision) || materialRevision <= execution.startedMutationRevision ||
+    !Number.isSafeInteger(verification.mutationRevision) || materialRevision > verification.mutationRevision
+  ) return false;
+  const history = Array.isArray(goal.history) ? goal.history : [];
+  const continuations = history.filter(entry => entry?.revision > activeRevision && entry?.revision <= currentRevision)
+    .sort((left, right) => left.revision - right.revision);
+  const taskHash = hashForLog(goal.taskGoal);
+  const activeHash = hashForLog(goal.activeGoal);
+  if (
+    continuations.length !== currentRevision - activeRevision ||
+    continuations.some((entry, index) => entry.revision !== activeRevision + index + 1 ||
+      entry.kind !== "same-task-continuation" || entry.relation !== "same-task" ||
+      entry.refreshExecutionContract !== false || entry.taskHash !== taskHash || entry.activeHash !== activeHash)
+  ) return false;
+  const mutations = (Array.isArray(verification.mutationHistory) ? verification.mutationHistory : [])
+    .filter(entry => entry?.revision === materialRevision);
+  const mutation = mutations.length === 1 ? mutations[0] : null;
+  if (!mutation || mutation.goalRevision !== activeRevision || mutation.taskHash !== taskHash ||
+      !["apply_patch", "write_file", "run_command"].includes(mutation.toolName)) return false;
+  const ownedPaths = new Set((Array.isArray(mutation.paths) ? mutation.paths : [])
+    .filter(item => typeof item === "string").map(safeTaskOwnedCommitPath).filter(Boolean));
+  return (Array.isArray(execution.materialMutationPaths) ? execution.materialMutationPaths : [])
+    .some(item => typeof item === "string" && ownedPaths.has(safeTaskOwnedCommitPath(item)));
+}
+
 export function nextStepRuntimeConfig(config = {}, state = {}) {
   const staticOrder = Array.isArray(state.meta?.toolLoop?.staticOrder)
     ? state.meta.toolLoop.staticOrder
@@ -19559,8 +19601,12 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     0,
     Number(groundingExecutionContract.materialMutationRevision || 0)
   );
+  // A new conversation turn does not erase completed work from the unchanged
+  // active task. This preserves grounding progress only, never passing tests or
+  // authority to skip a new requirement, source repair, or command policy.
   const groundingFreshMutationSatisfied =
-    groundingMaterialMutationRevision > groundingMutationBaseline;
+    groundingMaterialMutationRevision > groundingMutationBaseline ||
+    retainedActiveTaskMutationSatisfiesGrounding(config, state);
   const currentGroundingGoal = String(
     state.meta?.goalContract?.currentRequest || config.goal || state.goal || ""
   );

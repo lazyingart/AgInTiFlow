@@ -41,6 +41,21 @@ established sibling routines and reference repositories. Do not replace them
 with recursive `grep`; use bounded workspace search or targeted `rg` with an
 explicit path, relevant globs, and a result limit.
 
+## Continuing The Active Task
+
+A generic continuation advances the conversation revision while preserving the
+active execution task. Completed source-grounding progress carries forward when
+the workspace is identical, every intervening continuation binds the same task
+and active intent, and the execution phase has an exact task-owned material
+mutation record. Missing, contradictory or changed scope requires fresh grounding.
+
+This avoids repeating repository discovery solely because the chat turn changed.
+New concrete requirements establish their own execution phase. Existing source
+repair, test freshness, artifact, permission and completion gates still apply;
+filtered test output cannot stand in for a verified passing test. The native
+session's progress markers do not attest external filesystem immutability or
+protection against same-user session-state forgery.
+
 ## Docker Package Installs
 
 Docker package installs are safe when they match the sandbox contract.

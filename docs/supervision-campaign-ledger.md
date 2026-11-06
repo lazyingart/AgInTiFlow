@@ -1,5 +1,42 @@
 # Supervision Campaign Ledger
 
+## Retained execution progress across conversation turns — 2026-11-06
+
+Installed 364 reproduces a tool-selection defect without inference: a saved task
+has active execution revision 1 and a task-owned source mutation, but conversation
+revision 3 offers only inspect_project and finish. The selector discards the
+older execution phase solely because the conversation advanced. After rejection
+of a piped test result, this forces repeated discovery before standard verification.
+
+The runtime now retains completed source-grounding progress only when the same
+workspace, active revision, contiguous continuation hashes and exact owned material
+mutation agree. New requirements, task changes, missing history/hashes, foreign
+mutations and unknown scope still require fresh grounding. Test, source repair,
+permission and completion gates retain their independent authority. This is
+native session progress, not external filesystem immutability or a keyed seal.
+
+Eighteen focused cases cover these boundaries plus actual persisted interruption,
+OpenAI-to-DeepSeek logical handoff and SCS on/off. The latter uses deterministic
+SCS validation and no provider network. A stale piped test still rejects finish;
+the next turn can execute the real suite directly and finish without discovery
+or another source edit. Before repair, three controls fail while 15 negatives
+pass. The first fixture omitted a source-inspection requirement and therefore
+did not enter the relevant phase; that fixture failure is retained separately.
+The first scrubbed full suite catches another fixture issue: the logical provider
+handoff needs its own fake credential. The fixture now supplies and restores that
+synthetic value with network access denied; production auth is unchanged.
+
+The real original session resumes from its existing state with only “Continue
+the same task.” It completes in 8.86 seconds, two actual Flash requests, one git
+status/diff command and finish, with no edits, new adviser or discovery calls.
+The prior adviser receipt and all source/manifest/test bytes are unchanged;
+external node --test passes four tests. npm test is retained evidence from the
+previous turn, not a new invocation in this one. Final prose describes fresh
+verification alongside that reused test result; clearer freshness labels and a
+shorter summary remain model-quality limits. The original three incomplete turns
+remain failures. This successful fourth turn completes the same saved task after
+the general fix, without a new implementation recipe or broader permissions.
+
 ## A once-only adviser is a durable native attempt — 2026-11-06
 
 An unchanged 363 native tool loop dispatches a failed adviser twice despite an
