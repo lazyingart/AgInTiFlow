@@ -44,6 +44,24 @@ audit reports zero vulnerabilities. The earlier 541.937-second suite passed its
 tests but its inputs changed during boundary repairs; it remains intermediate
 evidence and is not the final qualification.
 
+Source `060df7e` and version-only release `4def56e` are pushed with immutable
+tag `v0.20.372-integration.0`.
+[CI 42251269849](https://github.com/lazyingart/AgInTiFlow/actions/runs/42251269849)
+passes its full suite, 498 consumer tests and publish command. Local and actual
+registry consumers each pass 498 cases; the actual global installation passes
+278 cases. All 565 package files match release Git and the archive after tests;
+both CLI commands report 0.20.372-integration.0 and the personal 0600 provider
+preference is unchanged.
+
+The public archive initially returns 404, then matches the tested bytes within
+the bounded readiness window. Installation waits for exact registry verification;
+no republish, tag rewrite or local-archive fallback is used. Registry provenance
+subject and commit are inspected, without independent signature verification.
+Archive SHA-256:
+`602c38ff62b59274a5342b6367be83f71197d8048e3d84a954ae5e3cf5830ad6`.
+Seven machine-ledger cases preserve baseline, candidate and final qualification,
+with 13 actual source-test requests and zero additional release/replay requests.
+
 This is durable reporting of known partial work, not a multi-file transaction,
 automatic rollback or generic exactly-once execution after a pre-receipt crash.
 See [the result and continuation contract](partial-patch-recovery.md).
