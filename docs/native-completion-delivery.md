@@ -77,6 +77,12 @@ The same contract is derived again for a concrete follow-up; a generic
 continuation of completed work does not repeat its write. This is bounded
 instruction inference, not an arbitrary natural-language or shell sandbox.
 
+Direct named-file prohibitions use that same guard: for example,
+"Do not modify note.txt", "不要修改 note.txt" and "别改 note.txt".
+Bounded file lists are supported; the next positive clause remains actionable.
+A restriction on only a field, section or file permission is not treated as a
+whole-file prohibition. This does not infer unnamed files or every paraphrase.
+
 ## Piped interactive input during resume
 
 Non-TTY interactive input begins iteration before asynchronous startup and saved

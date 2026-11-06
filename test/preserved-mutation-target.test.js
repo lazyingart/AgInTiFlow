@@ -8,6 +8,38 @@ import { deriveScsTaskContract } from "../src/scs-evidence.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { closeSessionIndexConnections } from "../src/session-index.js";
 
+for (const goal of [
+  "Do not modify note.txt or settings.json. Create summary.md from note.txt.",
+  "Do not edit note.txt, settings.json, or config.yaml; create summary.md.",
+  "不要修改 note.txt 和 settings.json。生成 summary.md。",
+]) test("named prohibition lists preserve only their inputs: " + goal, () => {
+  const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
+  assert.deepEqual(contract.exactOutputPaths, ["summary.md"]);
+  const expected = ["note.txt", "settings.json", ...(goal.includes("config.yaml") ? ["config.yaml"] : [])];
+  assert.deepEqual(contract.preservedInputPaths, expected);
+  for (const target of expected) assert.equal(preservedInputMutationBlock({ goal }, "apply_patch", { path: target, search: "old", replace: "new" }, { goal })?.category, "preserved-input-mutation");
+});
+
+for (const goal of [
+  "不要修改 note.txt，生成 summary.md。",
+  "别改 note.txt，生成 summary.md。",
+  "Do not modify note.txt, but create summary.md from it.",
+]) test("a prohibition does not erase the next requested output: " + goal, () => {
+  const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
+  assert.deepEqual(contract.exactOutputPaths, ["summary.md"]);
+  assert.deepEqual(contract.preservedInputPaths, ["note.txt"]);
+});
+
+for (const goal of [
+  "Create report.md, then do not modify report.md.",
+  "Read note.txt and update it. Do not modify the requested report format.",
+  "Create report.md explaining the phrase 'do not modify note.txt'.",
+  "Do not change note.txt permissions. Update its contents.",
+  "不要修改 note.txt 中的标题。更新正文。",
+]) test("partial/prose prohibitions do not invent whole-file authority: " + goal, () => {
+  assert.deepEqual(deriveScsTaskContract({ goal, taskProfile: "code" }).preservedInputPaths, []);
+});
+
 test("a preserved manifest is not a repair target when no output filename is supplied", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-preserved-target-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -34,6 +66,12 @@ for (const goal of [
   "Fix the calculation. package.json must remain read-only.",
   "修复计算错误。保持 package.json 不变。",
   "修復計算錯誤。保留 package.json 原樣。",
+  "Fix the calculation. Do not modify package.json.",
+  "Fix the calculation. Don't edit package.json.",
+  "Fix the calculation. Never overwrite package.json.",
+  "修复计算错误。不要修改 package.json。",
+  "修復計算錯誤。請勿更改 package.json。",
+  "修复计算错误，别改 package.json。",
 ]) test(`explicit preservation is independent of output naming: ${goal}`, () => {
   const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
   assert.deepEqual(contract.preservedInputPaths, ["package.json"]);
@@ -66,6 +104,10 @@ for (const goal of [
   "Make summary.md using note.txt. Keep note.txt intact.",
   "Write summary.md based on note.txt. note.txt must remain read-only.",
   "生成 summary.md，使用 note.txt。保持 note.txt 不变。",
+  "Create summary.md from note.txt. Do not modify note.txt.",
+  "Create summary.md from note.txt. Don't change note.txt.",
+  "从 note.txt 生成 summary.md。不要修改 note.txt。",
+  "从 note.txt 生成 summary.md，别改 note.txt。",
 ]) test(`a trailing source clause cannot bypass the preservation guard: ${goal}`, () => {
   const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
   assert.deepEqual(contract.exactOutputPaths, ["summary.md"]);
@@ -78,7 +120,11 @@ for (const goal of [
   assert.equal(preservedInputMutationBlock({ goal }, "write_file", { path: "summary.md", content: "result" }, { goal }), null);
 });
 
-for (const scsActive of [false, true]) test(`trailing-source preservation survives native follow-up (SCS ${scsActive})`, { timeout: 15000 }, async t => {
+for (const [goal, followupGoal] of [
+  ["Create summary.md from note.txt. Leave note.txt unchanged.", "Create checklist.md from note.txt. Leave note.txt unchanged."],
+  ["Create summary.md from note.txt. Do not modify note.txt.", "Create checklist.md from note.txt. Do not edit note.txt."],
+  ["从 note.txt 生成 summary.md，别改 note.txt。", "从 note.txt 生成 checklist.md。不要修改 note.txt。"],
+]) for (const scsActive of [false, true]) test(`source preservation survives native follow-up (SCS ${scsActive}): ${goal}`, { timeout: 15000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-source-role-runtime-"));
   const oldHome = process.env.AGINTIFLOW_HOME;
   process.env.AGINTIFLOW_HOME = path.join(root, "home");
@@ -115,7 +161,6 @@ for (const scsActive of [false, true]) test(`trailing-source preservation surviv
   } } } };
   const clientFactory = async () => client;
   clientFactory.agintiDeterministicTest = true;
-  const goal = "Create summary.md from note.txt. Leave note.txt unchanged.";
   const config = resolveRuntimeConfig({ goal, provider: "openai", model: "scripted-source-roles", routingMode: "manual", taskProfile: "code", enableScs: scsActive ? "on" : "off" }, {
     baseDir: workspace, commandCwd: workspace, packageDir: path.resolve(import.meta.dirname, ".."), sessionId: "source-role", clientFactory,
     sandboxMode: "host", packageInstallPolicy: "block", allowFileTools: true, allowShellTool: false,
@@ -138,7 +183,7 @@ for (const scsActive of [false, true]) test(`trailing-source preservation surviv
   assert.equal(requests.length, before, "completed continuation must not repeat the write");
   const continuationState = JSON.parse(await fs.readFile(path.join(root, "sessions/source-role/state.json")));
   phase = "followup"; step = 0;
-  const followup = await runAgent({ ...config, resume: "source-role", goal: "Create checklist.md from note.txt. Leave note.txt unchanged." });
+  const followup = await runAgent({ ...config, resume: "source-role", goal: followupGoal });
   assert.equal(followup.goalStatus, "completed", JSON.stringify(followup));
   assert.equal(step, 5);
   assert.equal(await fs.readFile(path.join(workspace, "note.txt"), "utf8"), note);

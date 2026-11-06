@@ -1,5 +1,37 @@
 # Supervision Campaign Ledger
 
+## Direct named-file prohibitions — 2026-11-07
+
+Installed 0.20.375 accepted a scripted patch to note.txt despite the ordinary
+instructions "Do not modify note.txt" and "不要修改 note.txt", then completed
+with an unchanged-input claim. The existing "Leave note.txt unchanged" control
+blocked that same patch. These are zero-model adversarial runs, not claims
+that DeepSeek made the bad proposal.
+
+The native preservation classifier now recognizes bounded directly named
+English and Chinese prohibitions, including "别改". It preserves the next
+positive clause, accepts bounded file lists and leaves explicit output
+creation possible. Prose and restrictions on only a field, section or file
+permission do not become whole-file bans. The existing mutation guard and
+provider policy are unchanged; this is not universal language understanding
+or a shell sandbox.
+
+73 focused tests, including 25 new cases, and 12 neighboring preservation
+tests pass. Native initial/follow-up tests cover SCS off and on. The final
+full suite passes in 544.737 seconds with all 409 captured inputs unchanged;
+syntax checks cover 322 files and dependency audit reports zero vulnerabilities.
+Final adversarial replays in English, Chinese and colloquial Chinese are bound
+to the exact same core bytes as the real qualification.
+
+The actual normal prompt "从 note.txt 生成 summary.md，别改 note.txt。" completes
+in five DeepSeek Flash requests. External checks find the correct Chinese
+complete/blocked summary, one output mutation and byte-identical input. A fresh
+process continues the same completed session with zero further requests or
+writes. Those five actual requests are counted once; scripted replays add none.
+No application, LocalLLM/Mac/Codex, credential, service or GPU changes occur.
+Source validation is complete; package publication and installed qualification
+remain separate release gates.
+
 ## Application consumption boundary audit — 2026-11-07
 
 The current registered catalog has no remaining failed/untested core item;

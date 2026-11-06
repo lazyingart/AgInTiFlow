@@ -500,6 +500,20 @@ function filePreservationClauses(goal = "") {
     if (/\b(?:save|write|create|update|modify|edit|generate|output|replace)\b|保存|写入|寫入|创建|建立|生成|更新|修改|编辑|編輯/i.test(withoutFilePathMentions(match[1]))) continue;
     clauses.push({ index: match.index, length: match[0].length, body: match[1] });
   }
+  // Direct prohibitions name the same input authority as "leave X unchanged".
+  // Consume only a bounded file list, not the rest of the instruction: a later
+  // positive action must remain an output. A mention of a command/field or a
+  // restriction on only part of a file is not a whole-file preservation clause.
+  const namedPath = "(?:[\"'\\x60][^\"'\\x60\\n]{1,220}\\.[a-z0-9]{1,8}[\"'\\x60]|[\\w./~\\-\\u4e00-\\u9fff]{1,220}\\.[a-z0-9]{1,8})";
+  const namedPaths = namedPath + "(?:\\s*(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+|[、，]|和|及|与|與|或)\\s*" + namedPath + "){0,15}";
+  const clauseEnd = "(?=\\s*(?:$|[.;!?。！？；\\n,，]|\\b(?:and|but|then|instead)\\b))";
+  const prohibitedPaths = [
+    new RegExp("\\b(?:(?:do|must|should)\\s+not|don't|dont|never)\\s+(?:modify|edit|change|overwrite|rewrite|replace|delete|remove|rename|touch)\\s+(" + namedPaths + ")" + clauseEnd, "gi"),
+    new RegExp("(?:不要|请勿|請勿|不得|禁止|别|別)\\s*(?:改动|改動|修改|更改|编辑|編輯|覆盖|覆蓋|重写|重寫|删除|刪除|移除|重命名|改)\\s*(" + namedPaths + ")" + clauseEnd, "gi"),
+  ];
+  for (const pattern of prohibitedPaths) for (const match of source.matchAll(pattern)) {
+    clauses.push({ index: match.index, length: match[0].length, body: match[1], directProhibition: true });
+  }
   return clauses;
 }
 
@@ -1090,7 +1104,10 @@ function inferPreservedInputPaths(goal = "", outputPaths = []) {
   // create the same deliverable remains valid ("write X, then keep X intact").
   const clauses = filePreservationClauses(goal);
   if (!clauses.length) return [];
-  const outputs = new Set(outputPaths.map(normalizedContractPath));
+  // Forbidden-language stripping can hide an earlier positive declaration
+  // when both clauses name the same path. Keep that explicit output authority;
+  // the raw inference masks only the preservation occurrence, never its verb.
+  const outputs = new Set([...outputPaths, ...inferExactOutputPaths(goal)].map(normalizedContractPath));
   return inferExactInputPaths(clauses
     .map(clause => `read ${clause.body.replace(/\r?\n/g, " ")}`).join("\n"))
     .filter(item => !outputs.has(normalizedContractPath(item)));
@@ -1947,7 +1964,13 @@ function inferRequiredToolCalls(goal = "") {
 }
 
 function stripForbiddenLanguage(goal = "") {
-  return normalizeSoftLineWraps(goal)
+  let source = normalizeSoftLineWraps(goal);
+  // A directly named prohibition ends at its file list. Do not let the broad
+  // negative-language fallback erase the next positive CJK/English clause.
+  for (const clause of filePreservationClauses(source).filter(item => item.directProhibition).sort((a, b) => b.index - a.index)) {
+    source = source.slice(0, clause.index) + source.slice(clause.index, clause.index + clause.length).replace(/[^\r\n]/g, " ") + source.slice(clause.index + clause.length);
+  }
+  return source
     .replace(
       /\b(?:create|attach|return|send|write|generate|produce)(?:\s*,?\s*(?:and|or)\s*(?:create|attach|return|send|write|generate|produce))*\s+no\s+(?:files?|attachments?|artifacts?)\b/gi,
       ""
