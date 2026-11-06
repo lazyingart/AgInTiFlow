@@ -1036,6 +1036,18 @@ function inferExactInputPaths(goal = "") {
   return uniquePathList(paths, 24);
 }
 
+function inferPreservedInputPaths(goal = "", outputPaths = []) {
+  // Read/repair inputs may also be edit targets. Only explicit preservation
+  // clauses grant this narrower no-mutation constraint. An earlier request to
+  // create the same deliverable remains valid ("write X, then keep X intact").
+  const clauses = filePreservationClauses(goal);
+  if (!clauses.length) return [];
+  const outputs = new Set(outputPaths.map(normalizedContractPath));
+  return inferExactInputPaths(clauses
+    .map(clause => `read ${clause.body.replace(/\r?\n/g, " ")}`).join("\n"))
+    .filter(item => !outputs.has(normalizedContractPath(item)));
+}
+
 function inferDeclaredSourceRoots(goal = "") {
   const roots = [];
   for (const match of String(goal || "").matchAll(/`([^`\n]{1,280})`/g)) {
@@ -3028,6 +3040,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     excludedOutputPaths,
     artifactRoot,
     exactInputPaths,
+    preservedInputPaths: inferPreservedInputPaths(evidenceGoal, inferredOutputPaths),
     declaredSourceRoots,
     readOnlyReadiness: isReadOnlyReadinessTask(evidenceGoal),
     readOnlyDiagnostic: isReadOnlyDiagnosticGoal(evidenceGoal, taskProfile),

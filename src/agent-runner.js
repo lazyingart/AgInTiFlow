@@ -17098,6 +17098,35 @@ function documentSourceMutationExplicitlyRequested(state = {}, config = {}, sour
     .some((segment) => namedPath.test(segment) && editIntent.test(segment));
 }
 
+export function preservedInputMutationBlock(state = {}, toolName = "", args = {}, config = {}) {
+  if (!["write_file", "apply_patch", "run_command"].includes(toolName)) return null;
+  const contract = deriveScsTaskContract({
+    goal: completionContractGoal(config, state),
+    taskProfile: config.taskProfile || state.meta?.taskProfile || "auto",
+  });
+  const commandCwd = config.commandCwd || state.commandCwd || process.cwd();
+  const protectedPaths = new Set((contract.preservedInputPaths || [])
+    .flatMap(item => artifactValidationPathKeys(item, commandCwd)));
+  if (!protectedPaths.size) return null;
+  const attemptedPaths = artifactValidationMutationPaths(toolName, args, commandCwd);
+  if (toolName === "run_command") {
+    const extensions = new Set((contract.preservedInputPaths || []).map(item => path.extname(item).toLowerCase()));
+    attemptedPaths.push(...researchReaderShellMutationPaths(args.command || "", 0, extensions)
+      .flatMap(item => artifactValidationPathKeys(item, commandCwd)));
+  }
+  if (!attemptedPaths.some(item => protectedPaths.has(item))) return null;
+  return {
+    category: "preserved-input-mutation",
+    reason: "This operation would change a file that the active request explicitly requires to remain unchanged.",
+    permissionAdvice: {
+      category: "preserved-input-mutation", autoRecover: true,
+      summary: "Preserve the named input and inspect the implementation that actually needs repair.",
+      instruction: "Do not touch or revert a preserved input to satisfy a mutation gate. Inspect the relevant source and tests, then repair only the permitted implementation or requested deliverable.",
+      options: ["Read the relevant implementation.", "Repair an allowed source or deliverable."],
+    },
+  };
+}
+
 export function documentSourceMaterialMutationBlock(
   state = {},
   toolName = "",
@@ -17257,7 +17286,7 @@ export function requiredResearchEvidenceManifestPaths(
   )].slice(0, 8);
 }
 
-function researchReaderShellMutationPaths(command = "", depth = 0) {
+function researchReaderShellMutationPaths(command = "", depth = 0, extensions = RESEARCH_READER_SOURCE_EXTENSIONS) {
   if (depth > 2) return [];
   const source = canonicalizeShellCommand(command);
   if (!source) return [];
@@ -17271,7 +17300,7 @@ function researchReaderShellMutationPaths(command = "", depth = 0) {
       candidate &&
       !candidate.startsWith("-") &&
       !/^(?:&\d+|\/dev\/null)$/u.test(candidate) &&
-      RESEARCH_READER_SOURCE_EXTENSIONS.has(
+      extensions.has(
         path.extname(candidate).toLocaleLowerCase("en-US")
       )
     ) {
@@ -17307,7 +17336,8 @@ function researchReaderShellMutationPaths(command = "", depth = 0) {
         candidates.push(
           ...researchReaderShellMutationPaths(
             operands[shellCommandIndex + 1],
-            depth + 1
+            depth + 1,
+            extensions
           )
         );
       }
@@ -17321,7 +17351,13 @@ function researchReaderShellMutationPaths(command = "", depth = 0) {
       for (const operand of operands) append(operand);
       continue;
     }
-    if (["cp", "install", "mv"].includes(executable)) {
+    if (executable === "mv") {
+      // A move mutates the source name as well as its destination. A copy
+      // merely reading a protected source must remain permitted.
+      for (const operand of operands) append(operand);
+      continue;
+    }
+    if (["cp", "install"].includes(executable)) {
       append(operands.filter((token) => !String(token).startsWith("-")).at(-1));
       continue;
     }
@@ -18231,6 +18267,12 @@ function completionFreshMutationCandidatePaths(state = {}, config = {}) {
     candidates,
     currentContract.excludedOutputPaths || []
   ).filter((candidate) => {
+    // Preservation applies even when the user did not name the eventual fix
+    // or deliverable. Do not let a manifest read force a touch/revert loop.
+    const candidateKeys = artifactValidationPathKeys(candidate, commandCwd);
+    if ((currentContract.preservedInputPaths || []).some(input =>
+      artifactValidationPathKeys(input, commandCwd).some(key => candidateKeys.includes(key))
+    )) return false;
     // Reading an input for a separate deliverable is not permission (or a
     // requirement) to patch that input when the output does not exist yet.
     if (!currentContract.exactOutputPaths?.length) return true;
@@ -24050,6 +24092,15 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       args: safeArgs,
       ...researchManifestMutationBlock,
     };
+    await store.appendEvent("tool.blocked", result);
+    observers.event("tool.blocked", result);
+    return result;
+  }
+
+  const preservedInputBlock = preservedInputMutationBlock(state, toolName, args, config);
+  if (preservedInputBlock) {
+    const result = { ok: false, blocked: true, recoverable: true, needsApproval: false,
+      toolName, args: safeArgs, ...preservedInputBlock };
     await store.appendEvent("tool.blocked", result);
     observers.event("tool.blocked", result);
     return result;

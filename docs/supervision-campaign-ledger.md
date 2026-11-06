@@ -1,5 +1,33 @@
 # Supervision Campaign Ledger
 
+## Preserved repair inputs without named outputs — 2026-11-06
+
+A real trusted CLI coding trial changed and reverted a manifest that the user
+explicitly required to remain unchanged. The runtime had treated that input as
+a mandatory fresh-mutation target because no separate output filename was
+given. Final byte equality did not make this transient mutation acceptable.
+
+Explicit preservation now has its own task-contract paths. Fresh-repair target
+selection excludes them, and the tool dispatcher refuses matching file writes,
+patch paths and recognized direct shell mutations. Ordinary read-then-edit
+requests and independently requested new deliverables remain writable. This is
+an instruction-following guard, not an isolation boundary for arbitrary host
+code; sandbox and permission policies remain necessary.
+
+The regression first fails on unchanged 362 source. Eleven new offline cases
+cover target selection, English and Chinese preservation, patch/rename/write
+and direct-redirection attempts, allowed edits and persisted repair/resume with
+SCS on and off. The latter use deterministic SCS validation: seven tool turns
+repair the implementation, execute a real local assertion, preserve both inputs
+and resume without another mutation. No live provider quality claim follows
+from scripted model responses.
+
+The original trial's optional Codex review timed out after 90 seconds. One CLI
+launch occurred; a second requested launch was cancelled before dispatch. No
+independent review or completed target repair is claimed. This timeout remains
+separate from the proven runtime preservation defect; application no-tools
+Codex admission and LocalLLM role readiness remain unqualified.
+
 ## Lightweight cited reading and host continuation — 2026-11-06
 
 The installed private Lite preview 8 passes a real synthetic reading workflow:
