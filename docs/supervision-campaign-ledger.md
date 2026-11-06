@@ -37,6 +37,24 @@ shorter summary remain model-quality limits. The original three incomplete turns
 remain failures. This successful fourth turn completes the same saved task after
 the general fix, without a new implementation recipe or broader permissions.
 
+Release **0.20.365-integration.0** is published and globally installed. Source
+`1e2b1ec8f3286575e4422c20fc9b7a75417b59f6`, version-only release
+`cc497e808e412e31dda0af3d0fba71d44d53c5f1` and the tag are pushed; exact workflow
+42169455977 succeeds. Final full suite passes in 485.623 seconds with all 384
+input hashes unchanged and bound to source, including the live runtime hash.
+All 541 archive/registry/global files match. Fresh consumer and registry installs
+each pass 311 tests; actual global checks pass 91. Audit is zero and both CLI
+versions match. The first failed full remains recorded as fixture isolation.
+
+Separately, both current Flow and pinned Lite SDKs actually construct 16 offline
+text-only request variants. Bodies and wire/canonical/upstream hashes match the
+unchanged approved LocalLLM S1 vectors, and its pure validator accepts them.
+No model, transport, credential, dependency install or owner-source edit occurs.
+The first harness used an internal result field and was corrected to the public
+proposal interface; that failure is retained. Verified-owner coordination returns
+a concrete read-only next-source plan. Its six-file implementation remains
+unapproved, and neither current-client profile nor runtime admission is inferred.
+
 ## A once-only adviser is a durable native attempt — 2026-11-06
 
 An unchanged 363 native tool loop dispatches a failed adviser twice despite an
