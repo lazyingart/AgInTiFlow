@@ -60,6 +60,16 @@ timing and labels its later independent-review panel separately. On this small
 fixture,60 metadata observations retain22 file descriptors and have p95 below
 1.5ms; no general filesystem or latency guarantee is inferred.
 
+Published and globally installed: **0.20.366-integration.0**. Source9002146 and
+version-only releasefdb8902 are pushed. Exact tagged workflow42176033106 succeeds;
+all542archive/Git/registry/global files match. The local and actual registry
+consumers each pass330tests;110tests pass against the real global installation,
+and both CLI versions match. Personal provider preferences are unchanged.
+Provenance subject and commit match; signature verification is not claimed.
+Both ledgers retain11cases, including the original false success and fixture
+failures. One owned obsolete test server is stopped and its dependency link
+removed; no application service or other project's process is changed.
+
 ## Retained execution progress across conversation turns — 2026-11-06
 
 Installed 364 reproduces a tool-selection defect without inference: a saved task
