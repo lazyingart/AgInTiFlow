@@ -37,6 +37,15 @@ while efficient completion from sufficient existing checks remains a separate
 open capability. There are 13 actual primary requests across these two turns;
 one CLI launch does not prove one upstream Codex inference.
 
+A later plain continuation explicitly permits the existing project tests and
+forbids further edits. It repeats context inspection and executes `npm test`
+successfully, but reaches its six-primary-request driver cap before a final
+answer. No new adviser or mutation occurs. The three real turns total 19 primary
+requests. This post-source qualification remains an incomplete end-to-end case;
+it neither establishes a provider outage nor proves a new core defect by itself.
+The final source receipt guard is live in this third turn. Efficient continuation
+without repeated discovery remains unqualified, and no further paid retry follows.
+
 The receipt uses integrity digests and the native session lock, not protection
 against same-user storage forgery. Natural-language recognition is deliberately
 bounded to direct English and Chinese requests. Arbitrary host-code isolation,
