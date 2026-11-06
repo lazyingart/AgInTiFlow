@@ -2,6 +2,25 @@
 
 ## Native queued-instruction dispatch — 2026-11-06
 
+Release0.20.368-integration.0 is published and globally installed. Source8fee030
+and version-only releasefa39ab8 are pushed with immutable tagv0.20.368-integration.0;
+CI42203304707/job127843658793 succeeds. Local and actual-registry consumers each
+pass383cases. All548archive files match release Git and the global installation;
+163actual-global cases pass and bothCLI commands report the exact version. The
+personal0600provider preference is unchanged. ArchiveSHA256 is
+4539ae98efbd37850df82031c044a85ea5e25f2b86dfea1c2934ec78ef9e9ed6.
+Registry provenance subject/commit are inspected, not independently signature
+verified. Eight machine-ledger cases retain the original failure, qualification,
+checker typo and registry propagation delay; seven real requests are counted once.
+
+The private local scan checker initially copied the wrong digits in the known
+synthetic-token fixture hash and stopped; restoring the exact historical hash
+allows the full local gate to pass without changing product or scan policy.
+After publication, the registry temporarily returns404 for the tarball despite
+valid metadata/provenance. Qualification stops without installation. A bounded
+read-only check later obtains exact archive bytes; fresh registry and global
+gates pass. There is no republish, tag rewrite or fallback-archive installation.
+
 Installed367-integration.1 reproduces a core ordering failure with an offline
 provider: a real durable user correction forbids file changes before the old
 write response returns, but the runner still creates the file and completes
@@ -26,7 +45,7 @@ released run lock. The actual-timing terminal video and synthetic evidence are
 retained separately. Answers are still more verbose than requested.
 
 This is a safe-checkpoint fence, not revocation of effects already admitted.
-Package, registry and global installation remain separate release gates. No
+Package, registry and global installation are independently verified. No
 application, LocalLLM role, Codex admission, credential or service is changed.
 
 ## Provider admission review — 2026-11-06
