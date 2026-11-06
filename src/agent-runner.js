@@ -3550,6 +3550,12 @@ export function repairModelMessageHistory(state, config = {}) {
 
         const completeToolResults = expectedIds.length > 0 && expectedIds.every((id) => seen.has(id));
         if (requiresDeepSeekReasoning || !completeToolResults) {
+          // DeepSeek cannot replay this native assistant frame without its
+          // reasoning metadata. Keep only bounded, confirmed tool evidence in
+          // the existing text format; never invent reasoning or a missing reply.
+          if (requiresDeepSeekReasoning && completeToolResults && expected.size === toolCalls.length && duplicateOrUnexpectedToolMessages.length === 0) {
+            repaired.push(...retainedToolStateTextMessages([message, ...followingToolMessages], expectedIds.length));
+          }
           droppedAssistantMessages += 1;
           droppedToolMessages += followingToolMessages.length + duplicateOrUnexpectedToolMessages.length;
           if (!completeToolResults) incompleteToolCallMessages += 1;
@@ -32409,6 +32415,15 @@ async function runAgentOnceUnlocked(config) {
         postBatchToolResults.push(toolResult);
         recordDurableEvidenceCategories(state, toolResult);
         recordDurableResearchEvidence(state, toolResult);
+        if (toolIndex === toolCalls.length - 1) {
+          // Commit a closed native tool-call frame before post-result callbacks,
+          // reviews or the next request can interrupt this accepted work. The
+          // dispatch contract serializes mutations; partial read batches stay
+          // uncommitted rather than inventing outcomes for unanswered calls.
+          state.stepsCompleted = step;
+          state.updatedAt = new Date().toISOString();
+          await store.saveState(state);
+        }
         if (await fenceQueuedInput(toolCalls.slice(toolIndex + 1), "after-tool")) {
           continueForQueuedInput = true;
           break;

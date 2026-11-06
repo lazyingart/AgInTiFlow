@@ -1,5 +1,40 @@
 # Supervision Campaign Ledger
 
+## Completed native-batch recovery — 2026-11-06
+
+Installed368 can lose a completed producer's model-history receipt when the
+process dies in a post-result callback before the batch save. The event ledger
+and artifact survive. A fresh real DeepSeek resume with only “Continue the same
+task.” completes safely but takes4requests: read, redundant create (blocked by
+the existing guard), read and finish. The source and artifact remain unchanged;
+this is a durable-context/efficiency defect, not an observed duplicate write.
+
+The runner now saves each complete accepted dispatch batch before post-result
+callbacks or reviews. The existing contract serializes mutating calls; partial
+read batches receive no invented results. DeepSeek's compatibility repair also
+preserves complete unambiguous results lacking reasoning metadata through the
+existing bounded text-evidence format. It invents no reasoning or missing result
+and promotes no failed, blocked, skipped, duplicate or foreign outcome. Compatible
+DeepSeek/OpenAI native frames retain their existing representation.
+
+Thirteen focused cases pass: eight history-repair controls and five real native
+child-process scenarios covering hard death, closed read batch, callback error,
+checkpointEIO and ordinary completion. Eleven neighboring suites, syntax320 and
+audit0 pass. The full npm suite exits0 in517.748seconds with392inputs unchanged.
+An equivalent new seed uses actual native tools with offline model responses,
+thenSIGKILL; its fresh real DeepSeek resume takes2requests/4.528seconds, attempts
+no second producer and preserves both files.22external file/session checks pass.
+The before and after recoveries use6actual requests total; seeds use0realmodels.
+Both actual-timing recordings and the initial failures are retained separately.
+
+This is one measured synthetic example, not a general latency benchmark or
+exactly-once guarantee for effects before a checkpoint. The after answer has one
+incorrect abbreviated source-hash tail; external full hashes and saved tool
+metadata remain correct and authoritative. That narrative-metadata quality limit
+is recorded without regenerating a cleaner model answer. No app, optional role,
+credential, LocalLLM or service is activated. Release/package gates follow these
+source checks separately.
+
 ## Native queued-instruction dispatch — 2026-11-06
 
 Release0.20.368-integration.0 is published and globally installed. Source8fee030
