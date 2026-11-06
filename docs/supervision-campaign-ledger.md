@@ -1,5 +1,27 @@
 # Supervision Campaign Ledger
 
+## Lightweight cited reading and host continuation — 2026-11-06
+
+The installed private Lite preview 8 passes a real synthetic reading workflow:
+Flash produces three cited events and a sibling relationship, then fresh-process
+Pro rereads a corrected passage and returns only the requested timeline. Four
+provider requests take 6.636 seconds; six authorized reads preserve foreign
+source rows. The host validates exact quotation/revision bindings and stores
+view revisions 1 then 2. Its separate response replay makes zero model calls.
+This uses host-owned SQLite history/CAS, not a new Lite session store or proof
+of production application authentication, quotas or transaction recovery.
+
+All 64 Lite tests, syntax, immutable seven-file install and focused fixture
+controls pass. All four real wire exchanges/results match Flow 362 under offline
+replay without new inference. The first offline fixture corrected a prototype
+comparison; no runtime failure or rescue prompt was needed. No source behavior
+change, new npm build or application activation is justified. See
+[lightweight cited reading](lightweight-cited-reading.md) for integration boundaries.
+
+Fresh read-only LocalLLM observations still show workstation functional
+`not_configured` and no responding known Mac endpoint. Existing owner admission
+and protected credential prerequisites remain open; no inference was attempted.
+
 ## Complete native turns and preserved inputs — 2026-11-06
 
 Installed 0.20.361-integration.0 reproduces an admission defect: a scripted native write with valid
