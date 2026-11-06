@@ -73,6 +73,86 @@ separate from the CLI, Studio and `/agent/v1` server. It starts no listener,
 loads no application state and mounts no public routes. No package release or
 live model qualification is implied by the source export.
 
+## Start with the qualified DeepSeek text entry
+
+For a new text-only application integration, use the pinned Lite distribution
+above and explicitly select the qualified DeepSeek profile. The runner is the
+AgInTi-owned instruction/tool/schema boundary; the client supplies only bounded
+HTTPS transport. Construct both from trusted server configuration after binding
+the authenticated account and authorized history. Neither constructor discovers
+credentials, chooses a fallback or starts a model request.
+
+```js
+import { createRestrictedApplicationRunner } from "@lazyingart/agintilite";
+import { createRestrictedDeepSeekClient } from "@lazyingart/agintilite/deepseek-http";
+
+const client = createRestrictedDeepSeekClient({
+  apiKey: appOwnedCredential,
+  model: "deepseek-flash", // Explicit alternative: deepseek-v4-pro.
+  userId: hostDerivedOpaquePrincipal, // Cache isolation hint, not authentication.
+  timeoutMs: 30_000,
+  maxConcurrency: 2,
+});
+const runner = createRestrictedApplicationRunner({
+  provider: client.provider,
+  instructions: "Answer from authorized supplied data. Return a proposal, not a committed action.",
+  tools: [],
+  outputSchema: {
+    type: "object",
+    properties: { reply: { type: "string", minLength: 1, maxLength: 2000 } },
+    required: ["reply"], additionalProperties: false,
+  },
+  limits: {
+    timeoutMs: 30_000, maxSteps: 1, maxToolCalls: 1,
+    maxCallsPerStep: 1, maxConcurrency: 2, maxOutputTokens: 1024,
+  },
+});
+try {
+  const result = await runner.run({
+    input: [{ type: "text", text: userText }],
+    history: authorizedAccountHistory,
+  }, { signal: requestAbortSignal });
+  // Validate facts, consent and any requested changes in the application.
+  // result.status === "completed" means proposal generation only.
+} finally {
+  await client.close(); // Owned scope shutdown; local resource drain, not remote kill proof.
+}
+```
+
+The caller supplies the variables in this example. The credential belongs to
+that application, and the opaque principal must satisfy the client's documented
+format; browser input cannot select either. History contains only authorized
+typed user/assistant text. For retrieval, register typed read-only callbacks
+closed over the same account and allow enough turns for a read plus a final
+proposal. Writes and idempotent revision checks remain application-owned.
+
+The full Flow package offers the same text path through
+`@lazyingart/agintiflow/restricted-application` and
+`@lazyingart/agintiflow/restricted-application/deepseek-http`. Its CLI, Studio and
+native workers are separate products; an untrusted application should not
+substitute a broad CLI/web route for this restricted entry.
+
+There is no implicit provider fallback. In particular, LocalLLM/Mac still need
+independent role admission, and application-safe no-tools Codex remains
+unqualified. The later callback-provider example is a host interface, not a
+claim that a local endpoint is available or admitted.
+
+## Qualify the application's actual copy
+
+A global CLI update does not update vendored JavaScript, an immutable container
+image or a separately deployed gateway. Record the exact app-consumed package
+or source digest and its adapter configuration. A matching protocol string or
+version label alone cannot establish parser, cancellation or transport identity.
+Older pins are not automatically broken; assess the features that adapter uses
+before changing a working primary.
+
+Qualify the whole adapter path: authorized history and reads, request/response
+limits, exact model profile, malformed output, cancellation, factual checks and
+revision-checked apply. A custom parser that has already discarded duplicate
+keys or refusal metadata cannot gain native wire checks by swapping a library.
+Keep app-owned provider consent, quotas and commit receipts authoritative.
+Source references and framework tests do not prove a production deployment.
+
 ## Ownership and security boundary
 
 `npm run test:restricted-retrieved-instructions` exercises hostile quoted
@@ -154,7 +234,10 @@ apparently successful answer. This is defense in depth, not a universal secret
 detector: the host must exclude private credentials from instructions, history,
 tool results and images. Pixel contents are not scanned for secrets.
 
-## API example
+## Callback-provider API example
+
+This alternative requires an independently qualified host transport. It is not
+the default DeepSeek profile above, nor proof of LocalLLM readiness.
 
 ```js
 import OpenAI from "openai";
@@ -166,7 +249,7 @@ import {
 // Explicit server configuration; never populate these from a model/request.
 const client = new OpenAI({
   apiKey: serverCredential,
-  baseURL: "http://127.0.0.1:8008/v1",
+  baseURL: qualifiedEndpoint,
   maxRetries: 0,
   fetchOptions: { redirect: "manual" }, // Reject redirects; configure the canonical URL.
 });

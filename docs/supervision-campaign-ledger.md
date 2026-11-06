@@ -1,5 +1,33 @@
 # Supervision Campaign Ledger
 
+## Application consumption boundary audit — 2026-11-07
+
+The current registered catalog has no remaining failed/untested core item;
+LocalLLM functional admission and application-safe Codex remain prerequisite
+gates. This is not proof of every application's readiness. A read-only audit
+of ten tracked-source repository roots distinguishes actual restricted-runner
+imports, older immutable vendor pins, container-absolute imports and app-owned
+CLI/gateway references. Source without such a reference is not evidence that
+an external backend is absent. Concurrent dirty work is preserved; no source
+reference is promoted to a deployment, authentication or provider-ready claim.
+
+No new runtime defect is established, and no real inference is repeated. The
+onboarding guide did still lead its general callback example with an unadmitted
+local endpoint before presenting the qualified DeepSeek entry. The guide now
+starts with the bounded native DeepSeek text client and proposal runner,
+explicit server-owned configuration, authorized history and application-owned
+commit policy. The advanced callback example uses a qualified endpoint supplied
+by its host. A global CLI upgrade is explicitly distinguished from an app's
+vendor/container/gateway identity; older pins are not automatically broken.
+
+Runtime source, package versions and provider preferences remain unchanged.
+The existing user preference already selects DeepSeek. No app source, store,
+runtime, credential or provider is changed, and no new npm release is warranted
+for this documentation-only slice. Private source hashes and per-app findings
+remain outside the public repository. The owner disposition still makes
+LocalLLM S1 a pure local candidate only; later stages remain unapproved. No
+LocalLLM/Mac host probe, model operation or Codex launch is performed.
+
 ## Qualified source-role release — 2026-11-07
 
 Source `eb152a3b1e798c6005573981fee755c2015072bc` and version-only release
