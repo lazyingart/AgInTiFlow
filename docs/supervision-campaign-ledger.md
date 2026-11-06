@@ -1,5 +1,35 @@
 # Supervision Campaign Ledger
 
+## Complete native turns and preserved inputs — 2026-11-06
+
+Installed 0.20.361-integration.0 reproduces an admission defect: a scripted native write with valid
+arguments and `finish_reason:length` still creates a file. The final completion
+guard later refuses, so this is an unsafe dispatch rather than a false successful
+result. The native model boundary now checks the original envelope before tool
+normalization, planning or final-answer use. Missing legacy metadata remains
+compatible; explicit contradictions fail closed without hidden fallback.
+
+The empty-response recovery control exposes a second core defect. “Keep note.txt
+unchanged” was inferred as another output after a save action on the same line.
+Recovery then demanded a fresh mutation of the input. Local preservation clauses
+now contribute input intent while independent explicit output declarations remain
+intact; existing mutation, provenance and path guards are unchanged.
+
+All 54 focused controls pass (34 envelope, eight native persisted runtime and 12
+intent cases). They include tool/plan/finish rejection, exact fresh-process resume,
+one producer, empty/reasoning-only recovery, and multilingual preservation. The
+separate real Flash task reconciles two synthetic notes into one checklist in five
+requests. Fresh-process Pro rereads it and explains the corrected status in
+Chinese in three requests, without edits. Inputs and artifact hashes are externally
+checked; runtime revision advances from 1 to 2. No LocalLLM or shell invocation occurs.
+
+The first live verifier incorrectly required `stopped:false` although successful
+native results omit that field. Its failed receipt is preserved; durable events
+and file bytes verify the original completed Flash run without repeating it.
+These examples do not qualify every provider, application or free-form task.
+See [native assistant turn admission](native-turn-admission.md). Release/package
+and global-install evidence is recorded separately after its gates pass.
+
 ## Native argument JSON has one interpretation — 2026-11-06
 
 Installed360 reproduces a core parsing gap with a normal note-summary request.

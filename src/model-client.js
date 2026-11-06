@@ -32,6 +32,7 @@ import {
 } from "./context-budget-controller.js";
 import { attachToolContract } from "./tool-contract.js";
 import { NativeToolArgumentsError, parseNativeToolArguments } from "./native-tool-arguments.js";
+import { assertNativeTurnAdmission } from "./native-turn-contract.js";
 import { scopedChatopsEvidenceGoal } from "./scs-evidence.js";
 
 function isRetainedWorkspaceProfile(config = {}) {
@@ -295,7 +296,8 @@ export async function requestDirectResponse(client, config, messages = []) {
       : {}),
   };
   assertLocalRequestWithinContext(payload, config, "response-only model request");
-  return createChatCompletion(client, payload, config, "response-only model request");
+  const response = await createChatCompletion(client, payload, config, "response-only model request");
+  return assertNativeTurnAdmission(response, "direct");
 }
 
 function assertLocalRequestWithinContext(payload = {}, config = {}, label = "agent step request") {
@@ -1720,6 +1722,7 @@ export async function createPlan(client, config, state) {
     assertLocalRequestWithinContext(planPayload, planConfig, "compacted plan request");
   }
   const response = await createChatCompletion(client, planPayload, planConfig, "plan request");
+  assertNativeTurnAdmission(response, "plan");
 
   return redactSensitiveText(response.choices[0]?.message?.content?.trim() || "1. Inspect the page.\n2. Use the smallest safe action.\n3. Finish with a concise answer.");
 }
@@ -3094,5 +3097,6 @@ export async function requestNextStep(client, config, messages) {
       throw error;
     }
   }
+  assertNativeTurnAdmission(response, "step");
   return attachToolContract(normalizeTextToolCallResponse(response), requestTools);
 }

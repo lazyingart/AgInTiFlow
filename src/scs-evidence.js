@@ -476,9 +476,39 @@ function normalizeSoftLineWraps(goal = "") {
   );
 }
 
+// A preservation clause is input authority, not a second output declaration.
+// Mask only that occurrence: an earlier explicit request to create/deliver the
+// same path still remains an output. Filenames containing verbs are not actions.
+function withoutFilePathMentions(text = "") {
+  return String(text).replace(
+    /["'`][^"'`\n]+\.[a-z0-9]{1,8}["'`]|[\w./~\-\u4e00-\u9fff]+\.[a-z0-9]{1,8}\b/gi,
+    match => " ".repeat(match.length)
+  );
+}
+
+function filePreservationClauses(goal = "") {
+  const source = String(goal || "");
+  const clauses = [];
+  const patterns = [
+    /\b(?:keep(?:ing)?|leav(?:e|ing)|preserv(?:e|ing)|retain(?:ing)?)\s+([^;；。!?！？]{1,400}?)\s+(?:unchanged|unmodified|untouched|intact|as[- ]is|as (?:it is|they are)|read[- ]only)\b/gi,
+    /(?:保持|保留|維持|维持)\s*([^;；。!?！？]{1,400}?)\s*(?:不变|不變|原样|原樣|不修改)/g,
+    /((?:["'`][^"'`\n]{1,220}["'`]|[\w./~\-]+\.[a-z0-9]{1,8}))\s+(?:must\s+)?(?:remain|stay)\s+(?:unchanged|unmodified|untouched|intact|read[- ]only)\b/gi,
+  ];
+  for (const pattern of patterns) for (const match of source.matchAll(pattern)) {
+    // Do not mask a different positive instruction embedded in a long clause.
+    if (/\b(?:save|write|create|update|modify|edit|generate|output|replace)\b|保存|写入|寫入|创建|建立|生成|更新|修改|编辑|編輯/i.test(withoutFilePathMentions(match[1]))) continue;
+    clauses.push({ index: match.index, length: match[0].length, body: match[1] });
+  }
+  return clauses;
+}
+
 function inferExactOutputPaths(goal = "") {
   const paths = [];
-  const lines = String(goal || "").split(/\n/);
+  let source = String(goal || "");
+  for (const clause of filePreservationClauses(source).sort((a, b) => b.index - a.index)) {
+    source = source.slice(0, clause.index) + source.slice(clause.index, clause.index + clause.length).replace(/[^\r\n]/g, " ") + source.slice(clause.index + clause.length);
+  }
+  const lines = source.split(/\n/);
   const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,220}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
   const pathPattern = new RegExp(
@@ -518,7 +548,7 @@ function inferExactOutputPaths(goal = "") {
   const outputActionIndex = (text = "") => {
     const source = String(text || "");
     directOutputActionGlobal.lastIndex = 0;
-    const matches = [...source.matchAll(directOutputActionGlobal)];
+    const matches = [...withoutFilePathMentions(source).matchAll(directOutputActionGlobal)];
     for (const match of matches) {
       const slice = source.slice(match.index, match.index + 120);
       if (/(?:to|at|in|under|到|至|在)\s*[^\s，,、；;。]*[/.]/i.test(slice)) return match.index;
@@ -958,7 +988,8 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
 
 function inferExactInputPaths(goal = "") {
   const paths = [];
-  const lines = String(goal || "").split(/\n|(?<=[.!?;。！？；])\s+/u);
+  const source = String(goal || "") + filePreservationClauses(goal).map(clause => `\nread ${clause.body.replace(/\r?\n/g, " ")}`).join("");
+  const lines = source.split(/\n|(?<=[.!?;。！？；])\s+/u);
   const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,260}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
   const pathPattern = new RegExp(
@@ -985,7 +1016,7 @@ function inferExactInputPaths(goal = "") {
       !/[.!?。！？;；]$/.test(previousLine) &&
       inputAction.test(previousLine);
     const fullLine = wrappedInputInstruction ? `${previousLine} ${currentLine}`.trim() : currentLine;
-    const outputIndex = fullLine.search(directOutputAction);
+    const outputIndex = withoutFilePathMentions(fullLine).search(directOutputAction);
     const line = outputIndex > 0 ? fullLine.slice(0, outputIndex).trim() : fullLine;
     if (!line || !inputAction.test(line)) continue;
     if (directOutputAction.test(line) && !/\b(read|load|upload|attach|reference|input|from)\b|读取|讀取|加载|載入|上传|上傳|附加|参考|參考|素材|图片|圖片|照片|提示词|提示詞|从|從/i.test(line)) {
