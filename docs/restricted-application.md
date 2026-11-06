@@ -1,5 +1,49 @@
 # Restricted Application SDK (v1)
 
+## Standalone application distribution
+
+For a text-only app backend, AgInTiLite private preview 9 provides the same
+bounded proposal loop without the full CLI, Studio or vision dependency graph.
+Canonical Lite `main` is `e35a36ff56500a76956d56de08f2cbf402b79d14`, also
+available as `sdk/agintilite-deepseek-client-20261106` in the AgInTiFlow repository.
+That ref is a standalone SDK tree, not a branch to merge into Flow's application
+tree. Use the pinned local tarball, not a mutable worktree link. Its SHA-256 is
+`70898a6a962c5dfd7de88ffc1f2a67552e938a306c14eb6298ac76fc42e09e5e`.
+It remains private and unpublished to npm; no application is upgraded implicitly.
+
+The normal `@lazyingart/agintilite` import retains its seven exports and three
+runtime files. The separate `@lazyingart/agintilite/deepseek-http` import exports
+`createRestrictedDeepSeekClient` with the bounded options documented below.
+That leaf opens native HTTPS only after an explicit request. The complete
+package has nine files, zero dependencies and no CLI, install hook or server.
+
+A 2026-11-07 installed-package qualification exercises real Flash and Pro
+requests through Lite itself. Each fresh process performs one account-scoped
+read and two model requests. The Pro follow-up rereads revision 8 and removes
+an item completed since revision 7 rather than trusting stale host history.
+Structured IDs, revisions, labels and statuses match the authorized current
+record; client close leaves no owned TLS/socket/timer resources. This is
+synthetic host-supplied persistence, not native SessionStore or production
+account/transaction acceptance.
+
+Presentation remains a distinct boundary. Pro's JSON preserves the source label,
+but its Markdown translates that label despite a verbatim-copy instruction.
+The strict presentation check fails and is retained. Applications should
+validate proposal IDs/statuses against current host state and render critical
+facts from host-owned source/localization data. Free-form Markdown is a draft,
+not a permission or factual authority. The qualification produces two such
+host-rendered artifacts and rejects seven stale/foreign/altered-data controls;
+it does not declare the failed raw-Markdown policy passed.
+
+All 105 Lite offline tests and exact reproducible packing pass at the canonical
+path. The first live harness stopped on a protected-JSON prototype comparison
+and did not retain enough data to judge its proposal; its two requests remain
+inconclusive. The later four requests qualify the structured path with the
+presentation limitation above. All six actual requests are counted once;
+recorded-output checks and rendering add none. No SDK behavior change, automatic
+retry/fallback, app activation or new Flow npm release is part of this
+consolidation. LocalLLM and application-safe Codex remain separately gated.
+
 The repository includes an offline LocalLLM text-profile conformance suite:
 `npm run test:localllm-text-contract`. It reproduces English/Chinese SDK request
 hashes and host-selected workstation/Mac model aliases, then checks synthetic

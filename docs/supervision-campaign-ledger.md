@@ -1,5 +1,41 @@
 # Supervision Campaign Ledger
 
+## Canonical lightweight native backend — 2026-11-07
+
+The qualified optional DeepSeek client was available only on a Lite SDK branch,
+while the canonical checkout remained preview 8. Canonical Lite `main` now
+fast-forwards to the already-pushed preview-9 source
+`e35a36ff56500a76956d56de08f2cbf402b79d14`. Its three default runtime files and
+seven root exports are unchanged. All 105 tests pass at the canonical path;
+the nine-file, zero-dependency private archive reproduces exactly with SHA-256
+`70898a6a962c5dfd7de88ffc1f2a67552e938a306c14eb6298ac76fc42e09e5e`.
+There is no Lite npm publication or application deployment.
+
+The actual installed Lite package, rather than the larger Flow equivalent,
+executes an ordinary English checklist request and a Chinese follow-up through
+native DeepSeek HTTPS. Flash and explicitly selected Pro each use two requests
+and one scoped read in different processes. Host-retained history contains the
+old revision; Pro reads current revision 8, preserves the blocked item and omits
+the newly completed one. Structured IDs, revisions, labels and statuses pass
+independent host checks. Both clients drain their local resources on close.
+
+The first live harness comparison incorrectly treated protected null-prototype
+JSON as unequal to ordinary JSON and lost its proposal diagnostics. Those two
+requests remain inconclusive. In the later four-request run, Pro's JSON is
+correct but its Markdown localizes a label contrary to a literal-copy policy.
+That presentation failure remains failed; it is not relabeled as a transport
+or core fix. A host-side recorded-output check validates the structured facts,
+renders two Markdown artifacts from host-owned data/localization and rejects
+seven stale/foreign/tampered variants. This adds no model request or rescue
+prompt. Six actual requests across all attempts are counted once.
+
+This closes the canonical distribution/native structured-backend seam, with an
+explicit free-form presentation limit. App owners retain account authentication,
+history, semantic/citation checks, revision CAS, artifact rendering, quota and
+activation. No app vendor, route, credential, runtime or store changes. Flow
+remains installed at 0.20.373-integration.1; runtime code is unchanged, so no new
+Flow release is made. See [the consumption boundary](restricted-application.md).
+
 ## Native observer outcome durability — 2026-11-07
 
 The 0.20.372 native runtime reproduces a callback-versus-outcome defect: a
