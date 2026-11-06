@@ -2288,6 +2288,17 @@ export function selectProgressiveTools(
     ({ name }) => !toolIsConvergenceSuppressed(name, config)
   );
   const finish = baselineEnabled.find(({ name }) => name === "finish")?.tool;
+  if (config.advisoryPrerequisitePending === true) {
+    const readOnlyContext = new Set(["inspect_project", "list_files", "read_file", "search_files", "delegate_agent", "finish"]);
+    return baselineEnabled.filter(({ name }) => readOnlyContext.has(name)).map(({ name, tool }) => name !== "delegate_agent" ? tool : {
+      ...tool, function: { ...tool.function,
+        description: `${tool.function.description} Required review phase: obtain the selected read-only advice once before any edits. Supply the relevant observed evidence. Do not retry or substitute an adviser after failure.`,
+        parameters: { ...tool.function.parameters, properties: { ...tool.function.parameters.properties,
+          wrapper: { ...tool.function.parameters.properties.wrapper, enum: [config.advisoryPrerequisiteWrapper] },
+        } },
+      },
+    });
+  }
   if (!finish) {
     throw new TypeError("An enabled, valid finish function tool must exist in the input tool array");
   }

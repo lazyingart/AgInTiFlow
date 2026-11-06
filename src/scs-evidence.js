@@ -8,6 +8,7 @@ import {
   tokenizeShellWords,
 } from "./shell-syntax.js";
 import { firstJsonObject } from "./json-extraction.js";
+import { deriveAdvisoryInvocationContract } from "./advisory-invocation.js";
 
 const CATEGORY_LABELS = {
   file: "file or workspace change",
@@ -2962,6 +2963,8 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   const packetContract = scopedTaskPacketContract(goal);
   const requirementCategories = inferRequirementCategories(evidenceGoal, taskProfile, acceptanceCriteria);
   const requiredToolCalls = inferRequiredToolCalls(evidenceGoal);
+  const advisoryInvocation = deriveAdvisoryInvocationContract(evidenceGoal);
+  if (advisoryInvocation?.required && !requiredToolCalls.includes("delegate_agent")) requiredToolCalls.push("delegate_agent");
   const requiredGitActions = inferRequiredGitActions(evidenceGoal);
   if (requiredGitActions.length && !requirementCategories.includes("git")) {
     requirementCategories.push("git");
@@ -3041,6 +3044,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     artifactRoot,
     exactInputPaths,
     preservedInputPaths: inferPreservedInputPaths(evidenceGoal, inferredOutputPaths),
+    advisoryInvocation,
     declaredSourceRoots,
     readOnlyReadiness: isReadOnlyReadinessTask(evidenceGoal),
     readOnlyDiagnostic: isReadOnlyDiagnosticGoal(evidenceGoal, taskProfile),

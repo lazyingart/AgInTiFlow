@@ -42,12 +42,13 @@ try {
     const version = run(process.execPath, [path.join(installed, actual.bin[name]), "--version"], temporary, 15000).trim();
     assert.equal(version, manifest.version);
   }
-  const log = run(process.execPath, ["--test", "test/package-runtime-dependencies.test.js", "test/model-http-boundary.test.js", "test/model-response-budget.test.js", "test/model-response-runtime.test.js", "test/native-tool-json.test.js", "test/native-tool-json-runtime.test.js", "test/publish-status-intent.test.js", "test/remote-image-input.test.js", "test/native-session-run-lock.test.js",
+  const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", "test/package-runtime-dependencies.test.js", "test/model-http-boundary.test.js", "test/model-response-budget.test.js", "test/model-response-runtime.test.js", "test/native-tool-json.test.js", "test/native-tool-json-runtime.test.js", "test/publish-status-intent.test.js", "test/remote-image-input.test.js", "test/native-session-run-lock.test.js",
     "test/native-turn-boundary.test.js", "test/native-turn-runtime.test.js", "test/preserved-input-intent.test.js", "test/preserved-mutation-target.test.js",
+    "test/advisory-invocation.test.js", "test/advisory-invocation-runtime.test.js", "test/tool-wrappers-lifecycle.test.js", "test/advisory-mutation-intent.test.js",
     "test/dependency-security-boundaries.test.js"], installed, 60000);
-  assert.match(log, /# tests 220\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# tests 293\n/); assert.match(log, /# fail 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 220, failures: 0, cliVersionsVerified: true };
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 293, failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });
 }

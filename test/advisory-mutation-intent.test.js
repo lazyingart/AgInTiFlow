@@ -9,7 +9,9 @@ import { resolveRuntimeConfig } from "../src/config.js";
 import { runAgent, projectTestVerificationFinishBlock } from "../src/agent-runner.js";
 import { checkToolUse } from "../src/guardrails.js";
 
-const realPrompt = "Please check totals.js against totals.test.js. Ask Codex once for an independent read-only second opinion, then verify the finding and briefly explain the smallest fix. Don't change any file or install anything.";
+// This fixture checks optional tool availability, not an executed peer review.
+// Mandatory/once-only execution is covered by advisory-invocation-runtime.
+const realPrompt = "Please check totals.js against totals.test.js. Ask Codex once if useful for an independent read-only second opinion, then verify the finding and briefly explain the smallest fix. Don't change any file or install anything.";
 const readOnly = [realPrompt,
   "Read index.js and explain a minimal fix without changing files.",
   "Inspect parser.py and recommend the smallest patch. This is review only.",

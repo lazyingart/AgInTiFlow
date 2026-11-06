@@ -9,8 +9,9 @@ export const WRAPPER_NAMES = ["codex", "claude", "gemini", "copilot", "qwen"];
 export const DEFAULT_WRAPPER_NAME = "codex";
 
 const BASE_ADVISORY_PROMPT = [
-  "You are being called as an advisory wrapper tool inside AgInTiFlow.",
+  "You are a bounded read-only adviser. The calling coordinator owns the task, workspace changes and verification.",
   "Do not modify files, run destructive commands, push commits, install packages, or use secrets.",
+  "Do not start, resume, delegate to or contact other agent sessions. Do not operate the coordinator's development workflow.",
   "Return concise findings, commands to consider, or an implementation plan.",
 ].join(" ");
 
@@ -311,7 +312,7 @@ export async function runAgentWrapper({ wrapper, prompt }, config) {
     };
   } catch (error) {
     if (error?.name === "AbortError" || error?.code === "ABORT_ERR") throw error;
-    if (wrapper === "codex" && getModelPresets({ wrapperModel: config.wrapperModel }).codexPrimary.model !== CODEX_CLI_DEFAULT_MODEL && mayTrySpare(error)) {
+    if (config.wrapperAllowSpare !== false && wrapper === "codex" && getModelPresets({ wrapperModel: config.wrapperModel }).codexPrimary.model !== CODEX_CLI_DEFAULT_MODEL && mayTrySpare(error)) {
       const fallbackSpec = wrapperCommand(wrapper, prompt, config, { fallback: true });
       try {
         const fallback = await runOnce(fallbackSpec);

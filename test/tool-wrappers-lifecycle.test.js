@@ -120,6 +120,16 @@ test("an ordinary nonzero exit retains the existing explicit-wrapper spare model
   assert.equal(getEventListeners(abort.signal, "abort").length, 0);
 });
 
+test("an owner once-only budget disables the pinned-wrapper spare without changing the selected model", async (t) => {
+  const { config } = setup(t);
+  config.wrapperAllowSpare = false;
+  const pending = runAgentWrapper(task, config);
+  assert.equal(children[0].args[children[0].args.indexOf("--model") + 1], "explicit-test-model");
+  children[0].emit("close", 1, null);
+  const result = await pending;
+  assert.equal(result.ok, false); assert.equal(children.length, 1);
+});
+
 test("failed spare advice preserves bounded redacted diagnostics from both attempts", async (t) => {
   const { config } = setup(t);
   const pending = runAgentWrapper(task, config);
@@ -143,6 +153,9 @@ test("CLI-default advice omits model override and cannot invent a spare route", 
   const pending = runAgentWrapper(task, config);
   assert.ok(!children[0].args.includes("--model"));
   assert.ok(!children[0].args.includes("cli-default"));
+  assert.match(children[0].args.at(-1), /calling coordinator owns the task/);
+  assert.match(children[0].args.at(-1), /Do not start, resume, delegate to or contact other agent sessions/);
+  assert.ok(!children[0].args.at(-1).includes("AgInTiFlow"), "coordinator branding accidentally recruits its unrelated repository skill");
   children[0].stderr.write("Configured CLI route unavailable.");
   children[0].emit("close", 1, null);
   const result = await pending;

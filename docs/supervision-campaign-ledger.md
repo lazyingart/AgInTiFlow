@@ -1,5 +1,47 @@
 # Supervision Campaign Ledger
 
+## A once-only adviser is a durable native attempt — 2026-11-06
+
+An unchanged 363 native tool loop dispatches a failed adviser twice despite an
+explicit once-only instruction. The reproduction uses a real SessionStore and
+wrapper launcher with only the model and external child simulated. This is a
+runtime instruction and recovery defect, separate from provider response quality.
+
+The native task now reserves and fsyncs an attempt before launch. Its scope binds
+the session, task boundary and selected adviser; an exact successful request can
+replay the persisted result. Failed or uncertain mandatory advice pauses without
+another model repair, CLI retry or spare. A primary-provider handoff and generic
+continuation preserve the same receipt. Explicitly required review before edits
+gets a read-only tool phase. No wrapper or hosted provider is enabled implicitly.
+
+Seventy-three focused cases cover the grammar, unchanged inputs, call ordering,
+spare suppression, request binding, foreign/corrupt state, interruption and
+fresh-process replay. An existing availability-only fixture now says optional
+advice; required invocation is tested by the actual persisted tool loop. Another
+fixture correction preserves existing advisory-batch serialization: the runtime
+defers later calls instead of executing or fabricating replies for them.
+An additional native probe first reproduces false completion from an older
+review after an explicit new grant. Completion now requires the current receipt;
+the persisted two-turn regression rejects the stale claim before fresh advice.
+
+A real Flash trial obtains one configured Codex review before editing, preserves
+tests and the manifest, fixes the implementation and runs the four retained tests.
+External execution confirms all four pass. The run then requests an extra broad
+interpreter command and truthfully pauses on permission. A short fresh-process
+continuation spends four additional primary requests but cannot complete: a
+fresh-test evidence gate does not recognize the piped test command as satisfying
+the named test path. Its bounded driver stops without another adviser launch.
+Both unsuccessful completion receipts remain recorded; no end-to-end success
+or application-safe Codex admission is claimed. The one-attempt mechanism works,
+while efficient completion from sufficient existing checks remains a separate
+open capability. There are 13 actual primary requests across these two turns;
+one CLI launch does not prove one upstream Codex inference.
+
+The receipt uses integrity digests and the native session lock, not protection
+against same-user storage forgery. Natural-language recognition is deliberately
+bounded to direct English and Chinese requests. Arbitrary host-code isolation,
+functional LocalLLM admission and multi-user application authority remain separate.
+
 ## Preserved repair inputs without named outputs — 2026-11-06
 
 A real trusted CLI coding trial changed and reverted a manifest that the user

@@ -30,6 +30,31 @@ ordinary-exit spare policy. This does not disable Codex's internal transport
 behavior or prove a single upstream inference attempt. Failed advice returns
 bounded, redacted diagnostics; it is never converted to a successful answer.
 
+An explicit instruction such as “Ask Codex only once” or “Ask Codex for one
+read-only second opinion before editing” creates a native session-owned attempt
+receipt. The runtime fsyncs that reservation before launching the CLI. A failed
+mandatory review stops with `advisory_unavailable`; optional advice may remain
+unavailable while the primary continues. Neither response loss, a generic
+continuation nor a primary-provider handoff grants another external call. A
+successful exact request can replay its recorded result. A different question,
+workspace or wrapper selection cannot reuse that result as a fresh review.
+Pinned-wrapper spare calls are disabled under this explicit one-attempt limit.
+
+When review is explicitly required before edits, the runtime initially offers
+only read-only context tools, the selected adviser and finish. Existing repair,
+source-grounding and verification phases resume after successful advice. A
+missing reply, disabled wrapper or ambiguous prior reservation does not count
+as completed advice. A new explicit owner request such as “Ask Codex once
+again” can grant another attempt; a generic “continue” cannot.
+
+This bounded grammar recognizes direct English and Chinese requests. Quoted
+examples, code, descriptions and unrelated action counts supply no authority.
+The receipt is private native CLI state with integrity digests, not a keyed MAC
+or proof against same-user storage forgery. It relies on the existing native
+session lock and fsynced SessionStore. A reservation can remain uncertain after
+interruption; it never blindly redispatches. These controls neither attest a
+single upstream inference nor qualify a multi-user application transport.
+
 For an explicitly read-only review, explaining a proposed fix does not create
 a source-edit obligation. A failed diagnostic test remains recorded as failed
 and may be reported as a finding while the current goal's mutation boundary is

@@ -38,6 +38,11 @@ import { checkToolUse } from "./guardrails.js";
 import { ensureDockerSandboxReady, runDockerSandboxCommand } from "./docker-sandbox.js";
 import { normalizeWrapperName, runAgentWrapper, wrapperStatusText } from "./tool-wrappers.js";
 import {
+  createAdvisoryInvocationCheckpoint, advisoryInvocationState,
+  advisoryInvocationRequestHash, reserveAdvisoryInvocation, settleAdvisoryInvocation,
+  reconcileAdvisoryToolReplies,
+} from "./advisory-invocation.js";
+import {
   classifyCommand,
   evaluateCommandPolicy,
   externalValidatorCommandContract,
@@ -3780,6 +3785,7 @@ async function createInitialState(config, sessionId) {
       lastUrl: "",
       taskProfile: config.taskProfile || "auto",
       goalContract: initialGoalContract(config.goal, now),
+      advisoryInvocation: createAdvisoryInvocationCheckpoint(),
       runtimeConfig: captureSessionRuntime(config),
       localAutoMaxPolicy: captureLocalAutoMaxPolicy(config),
       localCodePolicy: captureLocalCodePolicy(config),
@@ -4417,6 +4423,7 @@ function initialGoalContract(goal = "", at = new Date().toISOString()) {
     taskGoal: normalized,
     activeGoal: normalized,
     activeGoalRevision: revision,
+    taskBoundaryRevision: revision,
     taskRelation: "initial",
     updatedAt: at,
     history: normalized
@@ -4569,6 +4576,7 @@ export function updateGoalContract(
     taskGoal,
     activeGoal,
     activeGoalRevision,
+    taskBoundaryRevision: preserveTaskBoundary ? (Number.isSafeInteger(prior.taskBoundaryRevision) ? prior.taskBoundaryRevision : 0) : revision,
     taskRelation: entry.relation,
     updatedAt: at,
     history: [...(Array.isArray(prior.history) ? prior.history : []), entry].slice(-GOAL_HISTORY_LIMIT),
@@ -19485,6 +19493,14 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     },
     state
   );
+  const advisory = currentAdvisoryInvocationState(state, config);
+  if (advisory.contract?.beforeMutation && advisory.kind !== "succeeded") {
+    runtimeConfig.advisoryPrerequisitePending = true;
+    runtimeConfig.advisoryPrerequisiteWrapper = advisory.contract.wrapper;
+    // Keep later repair-only directives out of this phase too. Advertising
+    // read-only tools while instructing the model to patch is contradictory.
+    return runtimeConfig;
+  }
   const suppressedToolNames = convergenceSuppressedToolNames(state, config);
   if (suppressedToolNames.length) {
     runtimeConfig.convergenceSuppressedToolNames = suppressedToolNames;
@@ -20965,6 +20981,38 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     convergenceOutputPhase: true,
     convergenceAllowRunCommand: requiresPerSourceChecks,
   };
+}
+
+function currentAdvisoryInvocationState(state, config) {
+  const rawGoal = state.meta?.goalContract?.taskGoal || state.meta?.goalContract?.activeGoal || config.goal || state.goal || "";
+  const goal = scopedChatopsEvidenceGoal(rawGoal, config.taskProfile || state.meta?.taskProfile || "auto") || rawGoal;
+  return { ...advisoryInvocationState(state, goal), goal };
+}
+
+function advisoryUnavailable(state, config, info = currentAdvisoryInvocationState(state, config)) {
+  if (!info.contract?.required) return false;
+  return ["failed", "uncertain", "invalid"].includes(info.kind) ||
+    config.allowWrapperTools !== true || String(config.preferredWrapper || "codex") !== info.contract.wrapper;
+}
+
+async function stopForAdvisoryUnavailable({ config, state, store, observers, sessionId, step = 0 }) {
+  const info = currentAdvisoryInvocationState(state, config);
+  const result = info.kind === "invalid" || info.kind === "uncertain"
+    ? "The prior advisory attempt cannot be verified as completed. I did not launch another call; this task remains unverified."
+    : config.allowWrapperTools !== true || String(config.preferredWrapper || "codex") !== info.contract?.wrapper
+      ? "The requested adviser is not enabled for this run. I did not substitute another adviser; this task remains unverified."
+      : "I could not obtain the requested independent advice. I did not retry it; this task remains unverified.";
+  state.stepsCompleted = step;
+  state.updatedAt = new Date().toISOString();
+  updateGoalStatus(state, "paused", "advisory_unavailable", state.updatedAt);
+  appendChatEntry(state, "assistant", result);
+  reconcileAdvisoryToolReplies(state);
+  await store.saveState(state);
+  const detail = { reason: "advisory_unavailable", wrapper: info.contract?.wrapper || "", outcome: info.kind };
+  await store.appendEvent("session.stopped", detail);
+  observers.event("session.stopped", { ...detail, sessionId });
+  emitConsole(config, result, { kind: "error", error: true });
+  return { sessionId, result, stopped: true, reason: "advisory_unavailable", ...goalRunMetadata(state) };
 }
 
 export function announceConvergenceOutputPhase(state = {}) {
@@ -23977,6 +24025,36 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     };
   }
 
+  const advisory = currentAdvisoryInvocationState(state, config);
+  if (advisory.contract && toolName === "delegate_agent") {
+    const requestHash = advisoryInvocationRequestHash(args, config);
+    if (requestHash && args.wrapper === advisory.contract.wrapper && ["succeeded", "failed"].includes(advisory.kind) && advisory.attempt.requestHash === requestHash) {
+      const result = { ...advisory.attempt.result, toolName, args: safeArgs, reused: true, advisoryInvocationId: advisory.attempt.id,
+        advisoryUnavailable: advisory.contract.required && !advisory.attempt.result.ok };
+      await store.appendEvent("tool.reused", sanitizeToolResult(result));
+      observers.event("tool.reused", { toolName, wrapper: advisory.contract.wrapper, advisoryInvocationId: advisory.attempt.id });
+      return result;
+    }
+    if (!requestHash || args.wrapper !== advisory.contract.wrapper || advisory.kind !== "unused") {
+      const result = { ok: false, blocked: true, recoverable: true, needsApproval: false, toolName, args: safeArgs,
+        category: "advisory-invocation-limit", reason: "The owner-authorized advisory attempt is unavailable or already consumed; another external call was not dispatched.",
+        advisoryUnavailable: advisory.contract.required,
+        permissionAdvice: { category: "advisory-invocation-limit", autoRecover: true,
+          summary: "Do not spend another advisory attempt.", instruction: "Use the retained result or report the specific limitation. Do not retry, rephrase the question or substitute another adviser." } };
+      await store.appendEvent("tool.blocked", result); observers.event("tool.blocked", result);
+      return result;
+    }
+  }
+  if (advisory.contract?.beforeMutation && advisory.kind !== "succeeded" &&
+      (["write_file", "apply_patch"].includes(toolName) || toolName === "run_command" && commandCanMutateProjectContent(args.command || "", classifyCommand(args.command || "")))) {
+    const result = { ok: false, blocked: true, recoverable: true, needsApproval: false, toolName, args: safeArgs,
+      category: "advisory-before-mutation", reason: "The explicitly required independent advice must succeed before project changes.",
+      permissionAdvice: { category: "advisory-before-mutation", autoRecover: true,
+        summary: "Obtain the required advice before editing.", instruction: "Read only the necessary context and ask the selected adviser once. If it is unavailable, stop truthfully; do not patch first." } };
+    await store.appendEvent("tool.blocked", result); observers.event("tool.blocked", result);
+    return result;
+  }
+
   const documentCompilerSourceBlock = incompatibleDocumentCompilerSourceBlock(
     toolName,
     args
@@ -24436,6 +24514,12 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     observers.event("tool.auto_corrected", detail);
   }
 
+  if (toolName === "delegate_agent" && advisory.contract) {
+    reserveAdvisoryInvocation(state, advisory, advisoryInvocationRequestHash(args, config), toolCall.id);
+    // saveState fsyncs the file and directory. A response loss or cancellation
+    // after this point consumes the grant; ambiguity never authorizes a retry.
+    await store.saveState(state);
+  }
   await store.appendEvent("tool.started", {
     toolName,
     args: safeArgs,
@@ -24965,13 +25049,16 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
             wrapper: String(args.wrapper || ""),
             prompt: String(args.prompt || ""),
           },
-          config
+          advisory.contract ? { ...config, wrapperAllowSpare: false } : config
         );
+        const retainedResult = advisory.contract ? settleAdvisoryInvocation(state, advisory.goal, wrapperResult) : wrapperResult;
         const result = {
-          ok: Boolean(wrapperResult.ok),
+          ok: Boolean(retainedResult.ok),
           toolName: "delegate_agent",
           args: safeArgs,
-          ...wrapperResult,
+          ...retainedResult,
+          ...(advisory.contract ? { advisoryInvocationId: state.meta.advisoryInvocation.attempt.id,
+            advisoryUnavailable: advisory.contract.required && !retainedResult.ok } : {}),
         };
         await store.appendEvent("tool.completed", result);
         observers.event("tool.completed", result);
@@ -25876,6 +25963,17 @@ export async function validateMutatedPythonSourceQuality(config = {}, state = {}
 async function evaluateCompletionEvidence({ config, state, store }) {
   const taskProfile = config.taskProfile || state.meta?.taskProfile || "auto";
   const contract = completionTaskContract(config, state);
+  const advisory = currentAdvisoryInvocationState(state, config);
+  if (advisory.contract?.required && advisory.kind !== "succeeded") {
+    // Historical delegate events cannot satisfy a newly authorized review.
+    // Only this task's current durable receipt establishes completed advice.
+    const reason = "The current owner-authorized independent review has not completed. Obtain the selected advice once; an earlier review cannot satisfy this request.";
+    return {
+      ok: false, contract, ledger: { itemCount: 0, categories: [], toolNames: [] },
+      evaluation: { ok: false, reason, missingToolCalls: ["delegate_agent"] },
+      semantic: { ok: false, checked: true, reason }, progressCount: 0,
+    };
+  }
   if (!contract.requiresExternalEvidence) {
     return {
       ok: true,
@@ -30350,6 +30448,13 @@ async function runAgentOnceUnlocked(config) {
 
   let client;
   try {
+    const recoveredAdvisoryReplies = reconcileAdvisoryToolReplies(state);
+    if (recoveredAdvisoryReplies) {
+      await store.saveState(state);
+      await store.appendEvent("session.advisory_tool_replies_recovered", { count: recoveredAdvisoryReplies, actionsReplayed: false });
+    }
+    if (advisoryUnavailable(state, config))
+      return await stopForAdvisoryUnavailable({ config, state, store, observers, sessionId });
     if (config.allowFileTools || config.allowShellTool) {
       await fs.mkdir(config.commandCwd, { recursive: true });
     }
@@ -32151,6 +32256,9 @@ async function runAgentOnceUnlocked(config) {
           tool_call_id: toolCall.id,
           content: JSON.stringify(toolResultForModel(toolResult)),
         });
+        if (toolResult.advisoryInvocationId) await store.saveState(state);
+        if (toolResult.advisoryUnavailable)
+          return await stopForAdvisoryUnavailable({ config, state, store, observers, sessionId, step });
         postBatchToolResults.push(toolResult);
         recordDurableEvidenceCategories(state, toolResult);
         recordDurableResearchEvidence(state, toolResult);
