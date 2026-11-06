@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fork } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import test from "node:test";
 import { acquireSessionRunLock, runAgent } from "../src/agent-runner.js";
 import { processIdentityForPid } from "../src/integration-durable-common.js";
@@ -344,39 +345,54 @@ test("native run rejects an occupied child-owned session before state or tool ac
 
 test("two completed removal links cannot both authorize canonical unlink", async t => {
   const f = await fixture(t); await deadOwner(f);
-  const aLinked = gate(), bLinked = gate(), finishA = gate(), finishB = gate(), aRemoved = gate(), bReady = gate();
+  const stale = await fs.stat(f.lockPath);
+  const aLinked = gate(), bLinked = gate(), finishA = gate(), finishB = gate(), aRemoved = gate(), canonicalVacant = gate(), aPublished = gate();
+  const actor = new AsyncLocalStorage();
   const nativeLink = fs.link, nativeUnlink = fs.unlink;
-  let attempts = 0, aPath, first, second, releaseA, releaseB;
+  let attempts = 0, canonicalRemovals = 0, aPath, first, second, releaseA, releaseB;
   t.mock.method(fs, "link", async (from, to) => {
     let n;
     if (from === f.lockPath && to.startsWith(f.lockPath + ".reap.")) {
       n = ++attempts;
-      if (n >= 3) await bounded(bReady.promise, "winner published before later removal claims");
+      if (n >= 3) await bounded(canonicalVacant.promise, "old canonical removal before later claims");
     }
     const result = await Reflect.apply(nativeLink, fs, [from, to]);
     if (n === 1) { aPath = to; aLinked.resolve(); await bounded(finishA.promise, "inspect A claim"); }
     if (n === 2) { bLinked.resolve(); await bounded(finishB.promise, "inspect B claim"); }
+    if (to === f.lockPath && actor.getStore() === "A") aPublished.resolve();
     return result;
   });
   t.mock.method(fs, "unlink", async name => {
     const result = await Reflect.apply(nativeUnlink, fs, [name]);
     if (name === aPath) aRemoved.resolve();
+    if (name === f.lockPath && actor.getStore() === "B") {
+      canonicalRemovals++; canonicalVacant.resolve();
+      // Removing a dead canonical name is not a reservation for its remover.
+      // Force the other contender to publish before B resumes acquisition.
+      await bounded(aPublished.promise, "A publishes while B is after unlink");
+    }
     return result;
   });
   try {
-    first = observe(acquireSessionRunLock(f.config, f.sessionId));
+    first = observe(actor.run("A", () => acquireSessionRunLock(f.config, f.sessionId)));
     await bounded(aLinked.promise, "A removal link");
-    second = observe(acquireSessionRunLock(f.config, f.sessionId));
+    second = observe(actor.run("B", () => acquireSessionRunLock(f.config, f.sessionId)));
     await bounded(bLinked.promise, "B removal link");
     assert.equal((await fs.stat(f.lockPath)).nlink, 3);
     finishA.resolve(); await bounded(aRemoved.promise, "A drops nonexclusive claim");
     finishB.resolve();
-    const b = await bounded(second, "B wins"); releaseB = b.value;
-    assert.equal(b.error, undefined); bReady.resolve();
-    const a = await bounded(first, "A observes winner"); releaseA = a.value;
-    assert.equal(a.error?.code, "SESSION_RUN_ACTIVE");
+    const [a, b] = await bounded(Promise.all([first, second]), "one contender wins and the other observes it");
+    releaseA = a.value; releaseB = b.value;
+    assert.equal([a, b].filter(result => typeof result.value === "function").length, 1);
+    assert.deepEqual([a, b].filter(result => result.error).map(result => result.error.code), ["SESSION_RUN_ACTIVE"]);
+    assert.equal(typeof releaseA, "function", "the forced after-unlink schedule lets A publish first");
+    assert.equal(canonicalRemovals, 1, "two removal links authorize only one old canonical unlink");
+    const current = await fs.stat(f.lockPath), bytes = await fs.readFile(f.lockPath, "utf8");
+    assert.notEqual(current.ino, stale.ino); assert.equal(current.nlink, 1);
+    await assert.rejects(acquireSessionRunLock(f.config, f.sessionId), { code: "SESSION_RUN_ACTIVE" });
+    assert.equal(await fs.readFile(f.lockPath, "utf8"), bytes, "the winning lease stays unchanged");
   } finally {
-    finishA.resolve(); finishB.resolve(); bReady.resolve();
+    finishA.resolve(); finishB.resolve(); canonicalVacant.resolve(); aPublished.resolve();
     if (first) releaseA ||= (await bounded(first, "settle A")).value;
     if (second) releaseB ||= (await bounded(second, "settle B")).value;
     await releaseA?.(); await releaseB?.();

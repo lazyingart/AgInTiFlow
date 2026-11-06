@@ -2,6 +2,18 @@
 
 ## Optional bounded DeepSeek application transport — 2026-11-06
 
+The first immutable release candidate,367-integration.0, is not published:
+CI42186478236 stops at an existing native-lock test. Its fixture assumes B must
+win acquisition after removing the dead canonical name. A can legally publish
+first in that interval; B correctly returns SESSION_RUN_ACTIVE. A bounded
+after-unlink gate deterministically reproduces that exact failed assertion.
+The fixture now forces this schedule and asserts one winner, one old canonical
+unlink, unchanged winning lease and refusal of another claimant. No production
+lease guard or runtime code is changed. All32lock cases and20 repeated forced
+races pass. The subsequent complete npm suite passes in490.329seconds with all
+388inputs unchanged. The failed tag/logs stay intact; the new candidate is
+367-integration.1. Existing real provider evidence is reused without more calls.
+
 The restricted application SDK previously required every consumer to implement
 its own HTTP boundary. A separate optional import now supplies the fixed native
 DeepSeek JSON profile with an explicit app credential, model and opaque account
