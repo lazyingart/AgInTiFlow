@@ -45,9 +45,25 @@ immutable and unpublished. The corrected two-CPU gate passes all 508 cases in
 66.438 seconds, and a fresh full suite passes in 550.444 seconds with all 403
 inputs unchanged. The exact native runtime remains byte-identical to the real
 two-request continuation; no model call is repeated for this verifier change.
-The separate 0.20.373-integration.1 candidate still requires registry and installed
-qualification. The demonstration is explicitly a verification replay of the
-completed real task, not inference footage or a latency benchmark.
+Core source `0b18d67`, verifier follow-up `2b3ac31` and version-only release
+`1796008` are pushed. Immutable tag `v0.20.373-integration.1` passes
+[CI 42263327016](https://github.com/lazyingart/AgInTiFlow/actions/runs/42263327016),
+including the full suite, audit, all 508 consumer tests and publishing. Local
+and actual-registry consumers each pass 508 cases; the actual global installation
+passes 288. All 565 package files match release Git and the archive after tests.
+Both CLI commands report 0.20.373-integration.1; the personal 0600 provider
+preference is unchanged.
+
+npm accepts the release for processing before its public archive becomes
+available. Bounded read-only propagation checks initially receive 404, then
+verify exact bytes before installation. No republish, tag rewrite or local-archive
+fallback is used. Provenance subject and commit are inspected, without independent
+signature verification. Archive SHA-256:
+`b58ccbaa080bd523a3444eac12cbe73281634595088691c2f60fb7ba222dc173`.
+Six durable ledger cases retain the baseline, failed candidate, corrected gates
+and installed release. The two real requests are counted once; package checks
+and replay add zero. The demonstration is explicitly a verification replay of
+the completed real task, not inference footage or a latency benchmark.
 
 The change does not repair failed native-store writes, make callbacks
 transactional, stop callback-owned external work, or enable the native public
