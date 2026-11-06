@@ -2,6 +2,18 @@
 
 ## Completed native-batch recovery — 2026-11-06
 
+Release0.20.369-integration.0 is published and globally installed. Source d1eeebb
+and version-only release413022c are pushed with immutable tag7f14f775; tagged
+CI42212991840/job127875962124 succeeds.396local+396actual-registry consumer cases
+and176actual-global cases pass. All551archive/Git/global file bytes match; both
+CLIversions are exact and the personal0600provider preference is unchanged.
+ArchiveSHA256:5a847cf33dc63e4ffb1204f5d9f7078a7143c046ebb06367ce19be9379d6a6e3.
+Provenance subject/commit are inspected, not independently signature-verified.
+The tarball becomes available after bounded read-only propagation checks; there
+is no republish or fallback archive. Eight recovery ledger cases count6actual
+requests once. A separate failed completion-fingerprint observation reuses that
+trace with0newrequests and leaves safe reusable core treatment unassessed.
+
 Installed368 can lose a completed producer's model-history receipt when the
 process dies in a post-result callback before the batch save. The event ledger
 and artifact survive. A fresh real DeepSeek resume with only “Continue the same
@@ -32,8 +44,9 @@ exactly-once guarantee for effects before a checkpoint. The after answer has one
 incorrect abbreviated source-hash tail; external full hashes and saved tool
 metadata remain correct and authoritative. That narrative-metadata quality limit
 is recorded without regenerating a cleaner model answer. No app, optional role,
-credential, LocalLLM or service is activated. Release/package gates follow these
-source checks separately.
+credential, LocalLLM or service is activated. Release/package gates independently
+confirm these source checks. Owned test processes, temporary roots and the
+borrowed dependency link are cleaned; unrelated services remain unchanged.
 
 ## Native queued-instruction dispatch — 2026-11-06
 
