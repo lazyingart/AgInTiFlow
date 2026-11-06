@@ -9,7 +9,8 @@ import test from "node:test";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const runtimeFiles = ["src/redaction.js", "src/restricted-application-contract.js", "src/restricted-application.js"];
-const packageFiles = ["LICENSE", "NOTICE", "README.md", "package.json", ...runtimeFiles].sort();
+const optionalFiles = ["src/restricted-deepseek-client.js", "src/restricted-deepseek-http.js"];
+const packageFiles = ["LICENSE", "NOTICE", "README.md", "package.json", ...runtimeFiles, ...optionalFiles].sort();
 const publicExports = ["RESTRICTED_APPLICATION_PROTOCOL", "RestrictedApplicationError", "createRestrictedApplicationRunner", "createRestrictedOpenAIProvider", "createRestrictedDeepSeekProvider", "createRestrictedProviderFailure", "createRestrictedToolFailure"].sort();
 const metadata = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
 
@@ -21,7 +22,7 @@ test("distribution has a closed, zero-dependency, non-executable package surface
   for (const key of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "bundledDependencies", "bin"]) {
     assert.equal(Object.hasOwn(metadata, key), false, key);
   }
-  assert.deepEqual(Object.keys(metadata.exports).sort(), [".", "./package.json", "./restricted-application"]);
+  assert.deepEqual(Object.keys(metadata.exports).sort(), [".", "./deepseek-http", "./package.json", "./restricted-application"]);
   assert.deepEqual([...metadata.files, "package.json"].sort(), packageFiles);
   for (const key of ["preinstall", "install", "postinstall", "prepare", "prepack", "postpack", "prepublish", "prepublishOnly"]) {
     assert.equal(Object.hasOwn(metadata.scripts, key), false, key);
@@ -37,6 +38,13 @@ test("distribution has a closed, zero-dependency, non-executable package surface
     assert.doesNotMatch(source, /(?:node:)(?:fs|child_process|http|https|net|tls|vm)|integration-analysis-vision|agent-runner|dotenv|playwright/);
   }
   assert.ok(total < 48 * 1024, `runtime source grew to ${total} bytes`);
+  let optionalBytes = 0;
+  for (const file of optionalFiles) {
+    const source = await fs.readFile(path.join(root, file), "utf8"); optionalBytes += Buffer.byteLength(source);
+    assert.doesNotMatch(source, /\bprocess\s*(?:\.|\[)|\b(?:fetch|eval|Function|require)\s*\(|\bimport\s*\(/);
+    assert.doesNotMatch(source, /(?:node:)(?:fs|child_process|net|tls|vm)|integration-analysis-vision|agent-runner|dotenv|playwright|from ["']openai["']/);
+  }
+  assert.ok(optionalBytes < 16 * 1024, `optional HTTP source grew to ${optionalBytes} bytes`);
 });
 
 test("tarball is reproducible, allowlisted, and installs/runs offline without source-tree dependencies", { timeout: 60_000 }, async () => {
@@ -66,7 +74,7 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
       const [manifest] = JSON.parse(command("npm", ["pack", "--json", "--ignore-scripts", "--offline", "--pack-destination", destination]));
       assert.deepEqual(manifest.files.map((file) => file.path).sort(), packageFiles);
       assert.deepEqual(manifest.bundled, []);
-      assert.ok(manifest.unpackedSize < 80 * 1024);
+      assert.ok(manifest.unpackedSize < 96 * 1024);
       tarball = path.join(destination, manifest.filename);
       const bytes = await fs.readFile(tarball);
       hashes.push(createHash("sha256").update(bytes).digest("hex"));
@@ -168,6 +176,16 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
       console.log("INSTALLED_PACKAGE_OK");
     `;
     assert.match(command(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(hook)}`, "--input-type=module", "-e", program], consumer), /INSTALLED_PACKAGE_OK/);
+    // The default consumer above still rejects node:https and the optional
+    // modules in its import graph. Test the opt-in leaf from the installed
+    // archive separately, through the real-loopback, no-TLS offline fixture.
+    let httpTests = await fs.readFile(path.join(root, "test/restricted-deepseek-http.test.js"), "utf8");
+    assert.ok(httpTests.includes('../src/restricted-deepseek-client.js') && httpTests.includes('../src/restricted-application.js'));
+    httpTests = httpTests.replace('../src/restricted-deepseek-client.js', '@lazyingart/agintilite/deepseek-http')
+      .replace('../src/restricted-application.js', '@lazyingart/agintilite');
+    const httpTestPath = path.join(consumer, "native-http.test.mjs"); await fs.writeFile(httpTestPath, httpTests);
+    const httpLog = command(process.execPath, ["--experimental-test-module-mocks", "--test", httpTestPath], consumer);
+    assert.match(httpLog, /# tests 41\n/); assert.match(httpLog, /# fail 0\n/); assert.match(httpLog, /# cancelled 0\n/);
   } finally {
     await fs.rm(temp, { recursive: true, force: true });
   }

@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.8.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.9.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.8.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.9.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -273,6 +273,97 @@ in depth, not a guarantee that arbitrary sensitive content will be detected.
 
 ## Extraction and qualification
 
+## Optional bounded DeepSeek HTTPS client
+
+Applications can opt into a native Node HTTPS client instead of implementing
+the `complete` callback. The normal SDK import does not load this client or
+start network activity.
+
+```js
+import { createRestrictedDeepSeekClient } from "@lazyingart/agintilite/deepseek-http";
+import { createRestrictedApplicationRunner } from "@lazyingart/agintilite";
+
+const client = createRestrictedDeepSeekClient({
+  apiKey: appOwnedCredential,
+  model: "deepseek-flash", // alternatively, explicitly "deepseek-v4-pro"
+  userId: opaqueAppPrincipalToken,
+  timeoutMs: 30000,
+  maxConcurrency: 4,
+});
+try {
+  const runner = createRestrictedApplicationRunner({
+    provider: client.provider,
+    instructions: "Use only the supplied record. Return a proposal; do not save it.",
+    tools: [],
+    outputSchema: {
+      type: "object", properties: { reply: { type: "string", maxLength: 2000 } },
+      required: ["reply"], additionalProperties: false,
+    },
+  });
+  const result = await runner.run({ input: [{ type: "text", text: suppliedRecord }] });
+  // Authenticate, validate facts/revision/consent, then apply in the host.
+} finally {
+  await client.close();
+}
+```
+
+Construction requires an explicit visible-ASCII credential of 16–512 characters,
+one of the two fixed model names, and an opaque `userId` matching
+`[A-Za-z0-9_-]{16,128}`. Derive the latter in the authenticated host; it is a
+provider cache-isolation hint, not authentication. Do not use personal data.
+No environment, config file, URL, proxy, model fallback or credential discovery
+is performed by the client. Never construct options from model or browser input.
+
+The endpoint is fixed to `https://api.deepseek.com:443/v1/chat/completions`.
+Requests use the existing non-thinking JSON-object profile and read-tool loop.
+This leaf is text-only even in the full SDK. Only declared host read callbacks
+can run; the transport adds no tools, sessions, writes or agent semantics.
+
+| HTTP boundary | Limit |
+| --- | --- |
+| Per-request timeout | 100–60000 ms; default 30000 |
+| Concurrent requests per client | 1–32; default 4; no queue |
+| Request UTF-8 bytes | 2 MiB, including the opaque user ID |
+| Response bytes | 256 KiB, including keep-alive whitespace |
+| Response headers | 16 KiB |
+| Requested output tokens | 1–8192, further bounded by the runner |
+
+The runner's total deadline remains independent. Full local capacity refuses
+new requests through the typed `unavailable` provider-failure channel. HTTP
+401/403/402/429 map to authentication/permission/quota/rate-limit respectively;
+408 and 504 map to timeout, 500–503 to unavailable, and other non-200 statuses
+to protocol failure. Numeric Retry-After values from 0–86400 seconds are
+reported in milliseconds only for rate-limit/unavailable; they schedule nothing.
+Redirects, retries, fallback, streaming, compression, non-JSON content, duplicate
+JSON keys, malformed UTF-8, truncated/over-limit responses and incomplete model
+answers fail closed. Blank keep-alive lines count toward the byte/time limits.
+
+Cancellation destroys the owned local request. Its admission slot stays charged
+until the request and response actually close. `close()` blocks new admission,
+aborts owned requests, destroys owned sockets and waits for local close events.
+Repeated calls return the same promise; a cleanup failure remains a cached safe
+failure. A peer that never closes can keep that drain pending: this client does
+not turn a requested destroy into proof of closure. Remote inference termination,
+billing, response-loss idempotency and cross-process exactly-once dispatch are
+not promised. The host owns those policies and must not automatically retry an
+ambiguous request.
+
+The client depends on the trusted Node TLS/DNS/runtime boundary. It offers no
+OS sandbox or protection from a compromised same-process dependency. Credentials
+are retained only in the client closure and authorization header, with literal
+reflection checks on request/response data; this is not memory zeroization or
+a universal privacy filter. Apps retain authentication, account-scoped history,
+read authorization, factual/citation checks, revision CAS, writes, quotas and
+provider consent. Existing callback providers and app routes remain unchanged.
+
+Preview 9 adds only this optional HTTPS import and two runtime files. The
+default seven exports and three-file core import graph are unchanged. The
+nine-file package remains private, dependency-free and without install hooks.
+It passes 105 offline tests, including the 41 HTTP cases and reproducible
+packing with separately installed default and optional consumers. The HTTP
+fixtures use real loopback sockets with a test-only Node module mock; they
+do not prove TLS, a live provider or application deployment readiness.
+
 Preview 8 backports AgInTiFlow's non-object final proposal adaptation from
 `0d43f40e008f8624a03548222857d0416da167f2`. Arrays, scalars and root `anyOf`
 schemas use exactly `{"proposal": VALUE}` on the native provider wire. The
@@ -291,7 +382,7 @@ imports. No dependency, export, deadline, cancellation, retry or provider-policy
 change is introduced. This preview does not update an application's vendored
 copy or qualify its live transport. Reviewed Flow evidence is separate from
 Lite/package/application qualification; no new live model call is claimed here.
-The current preview passes 64 offline tests, including reproducible seven-file
+Preview 8 passed 64 offline tests, including reproducible seven-file
 packing and a disposable installed consumer with network and unapproved imports
 forbidden. The two-model list fixture has four byte-identical request pairs
 against the registry-installed Flow 0.20.356 reference using scripted transport;
@@ -330,7 +421,7 @@ Offline tests cover account isolation, context reuse only when explicitly
 supplied, unknown tools, atomic batch rejection, mutable aliases, schema/secret
 boundaries, deadlines, abort propagation, late rejection/capacity, native JSON
 responses and text-only refusal. Package tests pack twice, compare archive
-hashes, verify an exact seven-file surface, install offline into a disposable
+hashes, verify the exact package surface, install offline into a disposable
 consumer and enforce the closed runtime import graph. No model is invoked.
 
 These checks do not qualify live model quality, transport authentication,
