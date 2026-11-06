@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { XMLValidator } from "fast-xml-parser";
+import { publishWorkspaceTextFile } from "./workspace-file-publication.js";
 import { hasSensitiveText, redactSensitiveText } from "./redaction.js";
 
 export const WORKSPACE_TOOL_NAMES = ["inspect_project", "list_files", "read_file", "search_files", "write_file", "apply_patch"];
@@ -1091,7 +1092,7 @@ function compactDiff(relativePath, beforeText, afterText) {
   return lines.join("\n");
 }
 
-async function writeChange(target, nextContent, action, details = {}) {
+async function writeChange(target, nextContent, action, details = {}, preconditions = {}) {
   const content = String(nextContent ?? "");
   if (Buffer.byteLength(content, "utf8") > MAX_WRITE_BYTES) {
     throw new Error(`Write is too large for safe workspace tools: ${target.relativePath}`);
@@ -1099,30 +1100,13 @@ async function writeChange(target, nextContent, action, details = {}) {
   const contentPolicy = secretContentPolicy(content);
   if (!contentPolicy.allowed) throw new Error(contentPolicy.reason);
 
-  await fs.mkdir(path.dirname(target.absolutePath), { recursive: true });
-  let beforeText = "";
-  let beforeHash = null;
-  let beforeBytes = 0;
-  let existed = false;
-
-  try {
-    const before = await fs.readFile(target.absolutePath);
-    if (before.length > MAX_READ_BYTES) throw new Error(`Existing file is too large to overwrite safely: ${target.relativePath}`);
-    if (before.includes(0)) throw new Error(`Binary files cannot be overwritten through this tool: ${target.relativePath}`);
-    existed = true;
-    beforeText = before.toString("utf8");
-    beforeHash = hashBuffer(before);
-    beforeBytes = before.length;
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-    // Missing files are valid for create/overwrite actions.
-  }
-
-  await fs.writeFile(target.absolutePath, content, "utf8");
-  const afterBuffer = await fs.readFile(target.absolutePath);
-  const afterText = afterBuffer.toString("utf8");
+  const afterBuffer = Buffer.from(content, "utf8");
+  const afterText = content;
   const afterHash = hashBuffer(afterBuffer);
   const artifactValidation = validateSvgArtifact(target.relativePath, afterText);
+  const published = await publishWorkspaceTextFile(target, afterBuffer, preconditions);
+  const beforeText = published.beforeBytes.toString("utf8");
+  const beforeHash = published.created ? null : hashBuffer(published.beforeBytes);
 
   return {
     ok: true,
@@ -1130,9 +1114,10 @@ async function writeChange(target, nextContent, action, details = {}) {
     path: target.relativePath,
     beforeHash,
     afterHash,
-    beforeBytes,
+    beforeBytes: published.beforeBytes.length,
     afterBytes: afterBuffer.length,
-    created: !existed,
+    created: published.created,
+    publication: published.publication,
     diff: compactDiff(target.relativePath, beforeText, afterText),
     contentSha256: hashText(content),
     ...(artifactValidation ? { artifactValidation } : {}),
@@ -1167,14 +1152,14 @@ async function writeFile(config, args) {
   const exists = await fs
     .stat(target.absolutePath)
     .then(() => true)
-    .catch(() => false);
+    .catch((error) => { if (error.code === "ENOENT") return false; throw error; });
   if (exists && mode !== "overwrite") {
     throw new Error(`File already exists. Use mode=overwrite to modify it: ${target.relativePath}`);
   }
 
   const change = await writeChange(target, args.content || "", mode === "overwrite" ? "overwrite_file" : "create_file", {
     mode,
-  });
+  }, { createOnly: mode === "create" });
   return {
     ok: change.artifactValidation ? change.artifactValidation.ok : true,
     toolName: "write_file",
@@ -1212,7 +1197,7 @@ async function applyPatch(config, args) {
     replacements: matches,
     searchPreview: compactPreview(search),
     replacePreview: compactPreview(replace),
-  });
+  }, { expectedBeforeHash: hash });
 
   return {
     ok: true,
@@ -1436,7 +1421,7 @@ async function applyPatchDocument(config, args) {
       continue;
     }
 
-    const { content: beforeText } = await readTextFile(target);
+    const { content: beforeText, hash: beforeHash } = await readTextFile(target);
     let afterText = beforeText;
     for (const hunk of operation.hunks || []) {
       if (!hunk.search) throw new Error(`Patch hunk for ${target.relativePath} has no removable/context lines.`);
@@ -1447,7 +1432,7 @@ async function applyPatchDocument(config, args) {
       afterText = replaceOnce(afterText, hunk.search, hunk.replace);
     }
     if (afterText === beforeText && !operation.newPath) throw new Error(`Patch made no changes to ${target.relativePath}.`);
-    planned.push({ operation, target, afterText });
+    planned.push({ operation, target, afterText, beforeHash });
   }
 
   const changes = [];
@@ -1461,7 +1446,7 @@ async function applyPatchDocument(config, args) {
       const newTarget = resolveWorkspacePath(config, operation.newPath, { writeAccess: true });
       const policy = pathPolicy("apply_patch", newTarget.relativePath);
       if (!policy.allowed) throw new Error(policy.reason);
-      changes.push(await writeChange(newTarget, item.afterText, "apply_patch_move", { fromPath: target.relativePath, patchFormat: "multi-file" }));
+      changes.push(await writeChange(newTarget, item.afterText, "apply_patch_move", { fromPath: target.relativePath, patchFormat: "multi-file" }, { createOnly: true }));
       await fs.unlink(target.absolutePath);
       continue;
     }
@@ -1470,7 +1455,10 @@ async function applyPatchDocument(config, args) {
       : operation.type === "add"
         ? "apply_patch_add"
         : "apply_patch_update";
-    changes.push(await writeChange(target, item.afterText, action, { patchFormat: "multi-file" }));
+    changes.push(await writeChange(target, item.afterText, action, { patchFormat: "multi-file" }, {
+      createOnly: operation.type === "add" && !item.replaceExisting,
+      ...(item.beforeHash ? { expectedBeforeHash: item.beforeHash } : {}),
+    }));
   }
 
   return {

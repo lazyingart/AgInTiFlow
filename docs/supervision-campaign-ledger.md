@@ -1,5 +1,37 @@
 # Supervision Campaign Ledger
 
+## Workspace file publication — 2026-11-06
+
+A normal spelling-correction task through installed 0.20.370 reproduces native
+file-tool data loss: a controlled partial disk write followed by EIO leaves only
+twelve bytes of the original document. A separate real create-only tool probe
+overwrites a file created by another writer after its initial existence check.
+Both failures belong to AgInTi's workspace publication boundary, not to model
+instructions or an application adapter. An earlier create fixture correctly
+blocked a not-yet-offered tool and is excluded from failure evidence.
+
+The file tools now verify and sync sibling staging files before per-file
+publication, use kernel no-clobber creation, and bind patches to their read
+hashes. The original bytes survive controlled partial EIO/ENOSPC failures.
+Thirty-three focused cases cover staging failures, native receipts, races,
+permissions, unsafe targets, cleanup and same-session continuation. Three fresh
+native sessions pass 42 external checks with exact output bytes and one
+successful patch per task, including recovery in a new process. Model replies
+are explicitly scripted offline; this slice makes zero paid provider calls.
+
+The final full `npm test` passes in 520.887 seconds with all 400 captured
+inputs unchanged. Syntax checks cover 322 files and the production dependency
+audit reports zero vulnerabilities. Candidate review findings include a
+concurrent creator's transient second link and an oversized staging filename;
+both are repaired before qualification. Earlier full-run results are retained
+as intermediate evidence and do not substitute for the frozen final run.
+
+The actual-timing terminal demonstration and private synthetic session receipts
+are retained separately. No application data, provider routes, LocalLLM service
+or public integration capability is changed. This bounded repair does not claim
+multi-file transactions, hostile external-writer CAS or retained-storage
+authority. See [the publication contract and limits](workspace-file-publication.md).
+
 ## Native file-checksum completion consistency — 2026-11-06
 
 The preceding recovery example exposes a provider prose error: an abbreviated
