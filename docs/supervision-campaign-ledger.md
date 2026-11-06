@@ -1,5 +1,55 @@
 # Supervision Campaign Ledger
 
+## Durable completion delivery and named-file intent — 2026-11-07
+
+Installed 0.20.373-integration.1 reproduces a native terminal-delivery defect:
+a normal summary task writes the correct file and saves `session.finished`,
+then a throwing final observer changes the saved goal to failed and appends a
+contradictory failure event. A synthetic callback-private marker also reaches
+history. The baseline uses a scripted provider and zero actual model requests.
+This is a core outcome-versus-delivery boundary, not a provider failure.
+
+All five completion paths now save the completed state and native event before
+notifying observers. Callback throws, rejections and a bounded asynchronous
+timeout preserve the completed result and return a separate safe delivery
+receipt. Warning-write failure cannot rewrite completion; failure writing the
+actual completion remains failure. Callback exception text is not inspected or
+promoted. Generic completed-task continuation avoids repeating model/tool work.
+
+The first actual acceptance run exposes a second core gap: “Make a short
+summary.md” is interpreted as invoking the `make` program, and its filename
+stem is stripped as chat narration. Although the model reads, writes and checks
+the requested summary, the runtime demands shell evidence while shell access
+is disabled. Six requests reach the acceptance cap; the failure is preserved.
+A bounded named-file creation grammar fixes the classification without changing
+explicit command or no-file chat authority. The first full suite catches an
+overbroad sentence-punctuation guard; narrowing it to actual filename
+extensions restores the existing chat-only research contract.
+
+The exact same ordinary prompt then completes in five actual Flash requests.
+The final callback deliberately rejects, while the returned and persisted task
+remain completed with a separate diagnostic. External checks verify the input
+bytes, generated Markdown and one file-change event. A fresh-process “Continue
+the same task.” adds zero model requests or file mutations. The recorded real
+assistant sequence also replays on the final narrowed-classifier source with
+the same artifact hash and no extra command/tool loop. Replay adds zero calls;
+eleven actual requests across the failed and qualified runs are counted once.
+
+Twenty-one persisted terminal-delivery regressions, fifteen intent controls and
+the existing twenty-three checkpoint cases pass. The final full `npm test`
+passes in 536.893 seconds with all 406 captured inputs unchanged; syntax covers
+322 files and production dependency audit reports zero vulnerabilities. The
+local document-server smoke explicitly skips its fixed port because an
+existing foreign LocalLLM relay owns it; that service is left untouched. An
+isolated release gate must cover the test before publication. Release and
+installation remain gated at this source checkpoint.
+
+This is native-core reliability, not production app activation or universal
+exactly-once execution. Synchronous callback work is not sandboxed; timeout
+does not stop callback-owned work. Cleanup I/O, other nonterminal callbacks,
+atomic state/event commits, generic source/output path parsing and app-owned
+transactions remain separate boundaries. See [the native delivery contract](native-completion-delivery.md).
+
 ## Canonical lightweight native backend — 2026-11-07
 
 The qualified optional DeepSeek client was available only on a Lite SDK branch,

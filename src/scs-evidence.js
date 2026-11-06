@@ -503,9 +503,24 @@ function filePreservationClauses(goal = "") {
   return clauses;
 }
 
+function normalizeFileCreationIntent(goal = "") {
+  const source = String(goal || "");
+  // Natural creation is not invocation of the make executable. Restrict this
+  // normalization to a named file or explicit file/artifact noun; "make sure",
+  // chat summaries and explicit/quoted command invocations keep their meaning.
+  return source.replace(
+    /\bmake(?=\s+(?:(?:me|us)\s+)?(?:(?:a|an|the|one|two|three|four)\s+)?(?:(?:short|brief|concise|new|simple|small|standalone|downloadable|self-contained)\s+){0,4}(?:["'`]?[\w./~\-\u4e00-\u9fff]+\.(?:md|txt|json|csv|ya?ml|tex|pdf|docx|xlsx|pptx|svg|png|jpe?g|webp)\b|(?:files?|artifacts?|markdown\s+files?|text\s+files?)\b))/gi,
+    (match, index) => {
+      const prefix = source.slice(Math.max(source.lastIndexOf("\n", index - 1) + 1, 0), index);
+      if ((prefix.match(/`/g) || []).length % 2 || /\b(?:run|rerun|execute|invoke|launch|use)\s+(?:(?:the|this)\s+)?(?:command\s+)?["']?\s*$/i.test(prefix)) return match;
+      return "create";
+    }
+  );
+}
+
 function inferExactOutputPaths(goal = "") {
   const paths = [];
-  let source = String(goal || "");
+  let source = normalizeFileCreationIntent(goal);
   for (const clause of filePreservationClauses(source).sort((a, b) => b.index - a.index)) {
     source = source.slice(0, clause.index) + source.slice(clause.index, clause.index + clause.length).replace(/[^\r\n]/g, " ") + source.slice(clause.index + clause.length);
   }
@@ -1461,13 +1476,13 @@ function goalRequestsExplicitTestMutation(text = "") {
 
 function stripHostManagedResponseNarration(goal = "") {
   return String(goal || "").replace(
-    /\b(?:and\s+)?(?:write|return|provide)\s+(?:(?:a|the)\s+)?(?:(?:concise|final|normal|structured)\s+)?(?:(?:agent|task)\s+)?(?:answer|response|result)\b(?!\s+(?:as|at|file|in|into|json|markdown|pdf|text|to|under)\b)/gi,
+    /\b(?:and\s+)?(?:write|return|provide)\s+(?:(?:a|the)\s+)?(?:(?:concise|final|normal|structured)\s+)?(?:(?:agent|task)\s+)?(?:answer|response|result)\b(?!\.[a-z0-9]{1,8}\b|[/\\]|\s+(?:as|at|file|in|into|json|markdown|pdf|text|to|under)\b)/gi,
     ""
   ).replace(
-    /\b(?:create|draft|generate|produce|prepare)\s+(?:(?:a|an|the|one)\s+)?[^.\n;]{0,120}?\b(?:answer|response|reply|message|inspiration(?:\s+point)?|summary|chat\s+text)\b/gi,
+    /\b(?:create|draft|generate|produce|prepare)\s+(?:(?:a|an|the|one)\s+)?[^.\n;]{0,120}?\b(?:answer|response|reply|message|inspiration(?:\s+point)?|summary|chat\s+text)\b(?!\.[a-z0-9]{1,8}\b|[/\\])/gi,
     ""
   ).replace(
-    /\b(?:correct|fix|repair|replace|revise|rewrite|regenerate|update)\s+(?:(?:a|an|the)\s+)?(?:(?:prior|previous|earlier|last|current|invalid|incorrect|bad|old|failed)\s+)*(?:answer|response|reply|message|inspiration|summary|chat\s+text)\b/gi,
+    /\b(?:correct|fix|repair|replace|revise|rewrite|regenerate|update)\s+(?:(?:a|an|the)\s+)?(?:(?:prior|previous|earlier|last|current|invalid|incorrect|bad|old|failed)\s+)*(?:answer|response|reply|message|inspiration|summary|chat\s+text)\b(?!\.[a-z0-9]{1,8}\b|[/\\])/gi,
     ""
   );
 }
@@ -1496,7 +1511,7 @@ function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
   const text = normalizedText(
     stripAdvisoryMutationNarration(
       stripHostManagedResponseNarration(
-        stripCompletedWorkNarration(stripForbiddenLanguage(goal))
+        stripCompletedWorkNarration(stripForbiddenLanguage(normalizeFileCreationIntent(goal)))
       )
     )
   );
@@ -1749,7 +1764,7 @@ function isExplanatoryOnlyTask(goal = "") {
 }
 
 function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCriteria = []) {
-  const positiveGoal = stripForbiddenLanguage(goal);
+  const positiveGoal = stripForbiddenLanguage(normalizeFileCreationIntent(goal));
   const text = normalizedText(positiveGoal);
   const artifactSignalText = text
     .replace(
@@ -2957,7 +2972,7 @@ export function inferAuthoritativeReadOnlyRoutine(goal = "") {
 
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
   const evidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
-  const positiveEvidenceGoal = stripForbiddenLanguage(evidenceGoal);
+  const positiveEvidenceGoal = stripForbiddenLanguage(normalizeFileCreationIntent(evidenceGoal));
   const authoritativeRoutine = inferAuthoritativeReadOnlyRoutine(goal);
   const artifactRoot = scopedArtifactRoot(goal);
   const packetContract = scopedTaskPacketContract(goal);

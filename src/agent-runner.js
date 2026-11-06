@@ -4225,12 +4225,64 @@ function createToolResultObservers(observers) {
 
 function emitConsole(config, value = "", options = {}) {
   if (typeof config.onConsole === "function") {
-    config.onConsole(String(value), options);
-    return;
+    return config.onConsole(String(value), options);
   }
 
   if (options.error) console.error(value);
   else console.log(value);
+}
+
+async function deliverCompletedRun({ config, store, observers, events, outcome }) {
+  // Call only after BOTH the completed state and native session.finished event
+  // are durable. Delivery is then an observation of that outcome, not authority
+  // to fail it, trigger provider handoff, or repeat an already completed task.
+  const failed = new Set();
+  const pending = new Map();
+  const notify = (label, callback) => {
+    try {
+      const value = callback();
+      if (value === undefined) return;
+      const delivery = Promise.resolve(value).then(
+        () => pending.delete(delivery),
+        () => { pending.delete(delivery); failed.add(label); }
+      );
+      pending.set(delivery, label);
+    } catch {
+      // Callback exceptions may contain secrets or hostile getters. Never read
+      // or promote them into native history, provider errors or model context.
+      failed.add(label);
+    }
+  };
+  for (const event of events) notify(event.type, () => observers.event(event.type, event.data));
+  notify("console", () => emitConsole(config, outcome.result, { kind: "assistant", markdown: true }));
+  let timer;
+  try {
+    if (pending.size) await Promise.race([
+      Promise.all([...pending.keys()]),
+      new Promise(resolve => { timer = setTimeout(resolve, 1000); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+  if (!failed.size && !pending.size) return outcome;
+  const observerDelivery = {
+    status: "incomplete",
+    failed: [...failed],
+    timedOut: [...new Set(pending.values())],
+    diagnosticPersisted: false,
+  };
+  try {
+    await store.appendEvent("session.observer_delivery_failed", {
+      failed: observerDelivery.failed,
+      timedOut: observerDelivery.timedOut,
+      completedResultPreserved: true,
+    });
+    observerDelivery.diagnosticPersisted = true;
+  } catch {
+    // The native completion is already durable. A failed warning write must
+    // not turn it into failure; the caller still gets the safe delivery receipt.
+  }
+  return { ...outcome, observerDelivery };
 }
 
 async function maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger = "near-limit" }) {
@@ -4822,17 +4874,10 @@ async function finishCompletedContinuationNoop({ config, state, store, observers
     result,
     mode: "completed-continuation-noop",
   });
-  observers.event("session.finished", {
-    result,
-    sessionId,
-    mode: "completed-continuation-noop",
+  return deliverCompletedRun({ config, store, observers,
+    events: [{ type: "session.finished", data: { result, sessionId, mode: "completed-continuation-noop" } }],
+    outcome: { sessionId, result, ...goalRunMetadata(state) },
   });
-  emitConsole(config, result, { kind: "assistant", markdown: true });
-  return {
-    sessionId,
-    result,
-    ...goalRunMetadata(state),
-  };
 }
 
 async function finishWithDirectAnswer({ config, state, store, observers, sessionId, intent }) {
@@ -4857,18 +4902,13 @@ async function finishWithDirectAnswer({ config, state, store, observers, session
       requiresTools: intent.requiresTools,
     },
   });
-  observers.event("intent.classified", intent);
-  observers.event("session.finished", {
-    result,
-    sessionId,
-    mode: "direct-answer",
+  return deliverCompletedRun({ config, store, observers,
+    events: [
+      { type: "intent.classified", data: intent },
+      { type: "session.finished", data: { result, sessionId, mode: "direct-answer" } },
+    ],
+    outcome: { sessionId, result, ...goalRunMetadata(state) },
   });
-  emitConsole(config, result, { kind: "assistant", markdown: true });
-  return {
-    sessionId,
-    result,
-    ...goalRunMetadata(state),
-  };
 }
 
 function responseOnlyResultFromMessage(message = {}) {
@@ -6581,22 +6621,13 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     result,
     mode: "response-only",
   });
-  observers.event("model.responded", {
-    step: finalResponseStep,
-    content: result,
-    mode: "response-only",
+  return deliverCompletedRun({ config, store, observers,
+    events: [
+      { type: "model.responded", data: { step: finalResponseStep, content: result, mode: "response-only" } },
+      { type: "session.finished", data: { result, sessionId, mode: "response-only" } },
+    ],
+    outcome: { sessionId, result, ...goalRunMetadata(state) },
   });
-  observers.event("session.finished", {
-    result,
-    sessionId,
-    mode: "response-only",
-  });
-  emitConsole(config, result, { kind: "assistant", markdown: true });
-  return {
-    sessionId,
-    result,
-    ...goalRunMetadata(state),
-  };
 }
 
 export function resetGoalScopedRuntimeState(state = {}) {
@@ -32513,24 +32544,18 @@ async function runAgentOnceUnlocked(config) {
         }
         if (await fenceQueuedInput([], "before-completion")) continue;
         appendChatEntry(state, "assistant", fallback);
-        updateGoalStatus(state, "completed", "assistant_content");
+        state.stepsCompleted = step;
+        state.updatedAt = new Date().toISOString();
+        updateGoalStatus(state, "completed", "assistant_content", state.updatedAt);
+        await store.saveState(state);
         await store.appendEvent("session.finished", {
           result: fallback,
           mode: "assistant-content",
         });
-        observers.event("session.finished", {
-          result: fallback,
-          sessionId,
+        return await deliverCompletedRun({ config, store, observers,
+          events: [{ type: "session.finished", data: { result: fallback, sessionId } }],
+          outcome: { sessionId, result: fallback, ...goalRunMetadata(state) },
         });
-        emitConsole(config, fallback, { kind: "assistant", markdown: true });
-        state.stepsCompleted = step;
-        state.updatedAt = new Date().toISOString();
-        await store.saveState(state);
-        return {
-          sessionId,
-          result: fallback,
-          ...goalRunMetadata(state),
-        };
       }
 
       let continueForQueuedInput = false;
@@ -32783,16 +32808,10 @@ async function runAgentOnceUnlocked(config) {
             result: completionResult,
             mode: "finish-tool",
           });
-          observers.event("session.finished", {
-            result: completionResult,
-            sessionId,
+          return await deliverCompletedRun({ config, store, observers,
+            events: [{ type: "session.finished", data: { result: completionResult, sessionId } }],
+            outcome: { sessionId, result: completionResult, ...goalRunMetadata(state) },
           });
-          emitConsole(config, completionResult, { kind: "assistant", markdown: true });
-          return {
-            sessionId,
-            result: completionResult,
-            ...goalRunMetadata(state),
-          };
         }
       }
 
