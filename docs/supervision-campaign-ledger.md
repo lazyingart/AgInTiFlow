@@ -1,5 +1,43 @@
 # Supervision Campaign Ledger
 
+## Qualified native completion and CLI release — 2026-11-07
+
+Core source `c7c51786ef1e55636b19c9fbec012d2bdeec1177`, CLI follow-up
+`413624ba7f2eabb8e347090665f9fd71ac33e7a9` and version-only release
+`73efed0186dd13844beec63fcfa83b7aefd7d1ac` are pushed on
+`fix/native-terminal-delivery-20261107`. Immutable
+`v0.20.374-integration.1` passes
+[CI 42288964516](https://github.com/lazyingart/AgInTiFlow/actions/runs/42288964516),
+including the full suite, unchanged interactive stale-CAS smoke, isolated
+document-server smoke, audit and all 547 package-consumer checks. The failed
+0.20.374-integration.0 candidate remains immutable and unpublished.
+
+Registry propagation initially returns 404. The bounded readiness check waits
+for the exact archive without republishing, rewriting a tag or substituting a
+local package. The actual registry archive then passes 547 tests; the installed
+global package passes 327. Neither test group skips a case. All 572 packaged
+files match release Git, the archive and the global installation after tests.
+Both natural CLI commands report `0.20.374-integration.1`; the owner-private
+provider preference is unchanged. Archive SHA-256 is
+`d65fdb8d1354190a2c68aa78fe719641927111856f95945cdc491548f7b65656`.
+Registry provenance subject and commit are inspected; an independent signature
+verification is not claimed.
+
+The final local full suite passes in 517.967 seconds with all 409 captured
+inputs unchanged. Twenty-one terminal-delivery, fifteen intent, twenty-three
+checkpoint and three actual-CLI startup cases retain their safety assertions.
+Ten durable campaign cases preserve the baseline, failed candidates and final
+qualification. Eleven actual DeepSeek requests are counted once: six in the
+failed named-file run and five in the qualified run. Fresh-process completed
+continuation, recorded replay, CLI repair and release checks add zero actual
+model requests. The supplied input and generated summary are independently
+verified; the video is a labeled verification replay, not inference footage.
+
+No app service, credential, LocalLLM/Mac role, Codex backend or GPU activation
+changes. The restricted SDK's eight-file static source closure is unchanged;
+this supplies no new functional admission. Atomic session commits, other
+callback/cleanup boundaries and app-owned transactions remain separate gates.
+
 ## Native interactive startup input ownership — 2026-11-07
 
 Immutable candidate 0.20.374-integration.0 fails isolated CI in the existing
