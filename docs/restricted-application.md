@@ -11,6 +11,11 @@ tree. Use the pinned local tarball, not a mutable worktree link. Its SHA-256 is
 `70898a6a962c5dfd7de88ffc1f2a67552e938a306c14eb6298ac76fc42e09e5e`.
 It remains private and unpublished to npm; no application is upgraded implicitly.
 
+Returned JSON snapshots are deeply frozen and may use null prototypes. Consume
+their own data fields or compare JSON values, rather than relying on ordinary
+object prototype identity or mutating them. This is not permission to normalize
+raw untrusted inputs before the SDK's descriptor/schema validation.
+
 The normal `@lazyingart/agintilite` import retains its seven exports and three
 runtime files. The separate `@lazyingart/agintilite/deepseek-http` import exports
 `createRestrictedDeepSeekClient` with the bounded options documented below.
