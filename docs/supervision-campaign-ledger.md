@@ -1,5 +1,34 @@
 # Supervision Campaign Ledger
 
+## Native queued-instruction dispatch — 2026-11-06
+
+Installed367-integration.1 reproduces a core ordering failure with an offline
+provider: a real durable user correction forbids file changes before the old
+write response returns, but the runner still creates the file and completes
+goal revision1. This is a runtime defect, independent of provider quality.
+
+The runner now applies queued input through the existing continuation contract
+and checks after model responses, between tools and before completion. Skipped
+native calls get unsuccessful replies before the user message; they produce no
+execution evidence. Twelve persisted-runtime regressions pass, including
+English/Chinese/Japanese, mid-batch reads, stale finish, completion-time input,
+additional requirements, event failure/restart, capped resume and file-text
+negative controls. Inbox/session/runtime/truthful-completion and retained-context
+neighbors pass. The full npm suite exits0 in513.786seconds with all390inputs
+unchanged; the dependency audit reports0vulnerabilities.
+
+An actual DeepSeek native session queues the correction while an older request
+is in flight, discards that response, reads the note and answers without writing.
+A second fresh process resumes the same session in Chinese. Seven real requests
+take19.672seconds across both phases. Twenty external file/session checks confirm
+one inbox application, goal revisions1->2->3, unchanged input, no output file and
+released run lock. The actual-timing terminal video and synthetic evidence are
+retained separately. Answers are still more verbose than requested.
+
+This is a safe-checkpoint fence, not revocation of effects already admitted.
+Package, registry and global installation remain separate release gates. No
+application, LocalLLM role, Codex admission, credential or service is changed.
+
 ## Provider admission review — 2026-11-06
 
 After the qualified 367-integration.1 checkpoint, the ledger's remaining

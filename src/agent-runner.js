@@ -23648,19 +23648,45 @@ async function buildSnapshot(browserState, store, step, config) {
   return captureSyntheticSnapshot(store, step, config);
 }
 
-async function injectQueuedUserMessages(store, state, observers) {
+async function injectQueuedUserMessages(store, state, observers, { config = {}, pendingToolCalls = [] } = {}) {
   const inbox = await store.drainInbox();
   if (inbox.length === 0) return 0;
 
-  for (const item of inbox) {
-    const content = String(item.content || "").trim();
-    if (!content) continue;
+  // Close accepted but unexecuted native calls before adding a user message.
+  // These are explicit skipped replies, never tool effects or evidence.
+  for (const toolCall of pendingToolCalls) {
+    state.messages.push({
+      role: "tool",
+      tool_call_id: toolCall.id,
+      content: JSON.stringify({ ok: false, skipped: true, reason: "queued_user_input", toolName: toolCall.function.name }),
+    });
+  }
+  const applied = inbox.map(item => ({ item, content: String(item.content || "").trim() })).filter(entry => entry.content);
+  const cleanup = removeSupersededCompletionRepairInstructions(state.messages);
+  state.messages = cleanup.messages;
+  const goalUpdate = applied.length
+    ? applyContinuationContractTransition(state, applied.map(entry => entry.content).join("\n\n"))
+    : null;
+  // Incorporate the complete claimed batch before an event write can fail.
+  // SessionStore acknowledges these IDs only after its durable state save.
+  for (const { item, content } of applied) {
     appendChatEntry(state, "user", content);
     state.messages.push({
       role: "user",
-      content: `Additional user message received while this run was active:\n${content}`,
+      content: [
+        `Additional user message received while this run was active:\n${content}`,
+        "Reconcile this with the saved conversation: preserve still-applicable requirements, but the latest user correction supersedes conflicting earlier requests. Unexecuted calls from the previous response are not completed work.",
+        continuationExecutionContractDirective(state, config, { supersededCompletionRepair: cleanup.removed > 0 }),
+      ].filter(Boolean).join("\n"),
     });
     store.markInboxApplied(item);
+  }
+  if (goalUpdate) {
+    const detail = { revision: goalUpdate.revision, previousHash: goalUpdate.previousHash, currentHash: goalUpdate.currentHash, source: "inbox" };
+    await store.appendEvent("goal.updated", detail);
+    observers.event("goal.updated", detail);
+  }
+  for (const { item, content } of applied) {
     await store.appendEvent("conversation.queued_input_applied", {
       id: item.id || "",
       prompt: content,
@@ -31184,7 +31210,20 @@ async function runAgentOnceUnlocked(config) {
     while (state.stepsCompleted < stepBudget.currentMaxSteps) {
       const step = state.stepsCompleted + 1;
       throwIfAborted(config);
-      await injectQueuedUserMessages(store, state, observers);
+      if (await injectQueuedUserMessages(store, state, observers, { config })) config = { ...config, goal: state.goal };
+      const fenceQueuedInput = async (pendingToolCalls = [], boundary = "model-response") => {
+        const count = await injectQueuedUserMessages(store, state, observers, { config, pendingToolCalls });
+        if (!count) return false;
+        config = { ...config, goal: state.goal };
+        const detail = { step, reason: "queued_user_input", boundary, queuedCount: count, skippedToolCalls: pendingToolCalls.length };
+        await store.appendEvent("model.response_superseded", detail);
+        observers.event("model.response_superseded", detail);
+        state.stepsCompleted = step;
+        state.updatedAt = new Date().toISOString();
+        await maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger: "queued-input" });
+        await store.saveState(state);
+        return true;
+      };
       const localFailureRecovery = activateLocalFailureRecovery(config, state);
       if (localFailureRecovery.active) {
         config = applyLocalFailureRecovery(config, state);
@@ -31630,6 +31669,9 @@ async function runAgentOnceUnlocked(config) {
           requestMessages = timeoutRecovery.requestMessages;
         }
       }
+      // A response was generated without these newly committed instructions.
+      // Fence it before argument repair, history insertion or any dispatch.
+      if (await fenceQueuedInput()) continue;
       const rawAssistantMessage = response.choices[0]?.message;
       if (!rawAssistantMessage) {
         throw new Error("Model returned no assistant message.");
@@ -32181,8 +32223,9 @@ async function runAgentOnceUnlocked(config) {
       }
 
       if (toolCalls.length === 0) {
-        const queuedCount = await injectQueuedUserMessages(store, state, observers);
+        const queuedCount = await injectQueuedUserMessages(store, state, observers, { config });
         if (queuedCount > 0) {
+          config = { ...config, goal: state.goal };
           state.stepsCompleted = step;
           state.updatedAt = new Date().toISOString();
           await maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger: "queued-input" });
@@ -32308,6 +32351,7 @@ async function runAgentOnceUnlocked(config) {
           }
           emitConsole(config, `SCS: finish approved (${Math.round((decision.confidence || 0) * 100)}%).`, { kind: "meta" });
         }
+        if (await fenceQueuedInput([], "before-completion")) continue;
         appendChatEntry(state, "assistant", fallback);
         updateGoalStatus(state, "completed", "assistant_content");
         await store.appendEvent("session.finished", {
@@ -32340,6 +32384,10 @@ async function runAgentOnceUnlocked(config) {
       for (let toolIndex = 0; toolIndex < toolCalls.length; toolIndex += 1) {
         const toolCall = toolCalls[toolIndex];
         throwIfAborted(config);
+        if (await fenceQueuedInput(toolCalls.slice(toolIndex), "before-tool")) {
+          continueForQueuedInput = true;
+          break;
+        }
         const toolResult = await executeTool(
           browserState,
           toolCall,
@@ -32361,6 +32409,10 @@ async function runAgentOnceUnlocked(config) {
         postBatchToolResults.push(toolResult);
         recordDurableEvidenceCategories(state, toolResult);
         recordDurableResearchEvidence(state, toolResult);
+        if (await fenceQueuedInput(toolCalls.slice(toolIndex + 1), "after-tool")) {
+          continueForQueuedInput = true;
+          break;
+        }
 
         if (toolResult.toolName === "run_command") {
           observers.log("command.output", {
@@ -32526,8 +32578,9 @@ async function runAgentOnceUnlocked(config) {
             }
             emitConsole(config, `SCS: finish approved (${Math.round((decision.confidence || 0) * 100)}%).`, { kind: "meta" });
           }
-          const queuedCount = await injectQueuedUserMessages(store, state, observers);
+          const queuedCount = await injectQueuedUserMessages(store, state, observers, { config });
           if (queuedCount > 0) {
+            config = { ...config, goal: state.goal };
             state.stepsCompleted = step;
             state.updatedAt = new Date().toISOString();
             await maybeExtendStepBudget({ client, config, state, store, observers, stepBudget, step, trigger: "queued-input" });
@@ -32574,7 +32627,7 @@ async function runAgentOnceUnlocked(config) {
         });
       }
 
-      if (continueForCompletionRepair) continue;
+      if (continueForQueuedInput || continueForCompletionRepair) continue;
 
       for (const toolResult of postBatchToolResults) {
         await applyToolLoopGuard(state, toolResult, store, observers, toolBatchRuntimeConfig);
@@ -32688,8 +32741,6 @@ async function runAgentOnceUnlocked(config) {
         });
       }
 
-      if (continueForQueuedInput) continue;
-
       if (config.scsActive && shouldReviewScsProgress(step, state)) {
         const decision = await reviewScsProgress(client, config, state, {
           events: await store.loadEvents(),
@@ -32738,7 +32789,7 @@ async function runAgentOnceUnlocked(config) {
         }
       }
 
-      await injectQueuedUserMessages(store, state, observers);
+      if (await injectQueuedUserMessages(store, state, observers, { config })) config = { ...config, goal: state.goal };
 
       state.stepsCompleted = step;
       state.updatedAt = new Date().toISOString();
