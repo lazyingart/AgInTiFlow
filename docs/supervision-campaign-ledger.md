@@ -40,14 +40,21 @@ tests and binds all 556 public files to release Git; private-path and credential
 scans pass. [CI 42223797334](https://github.com/lazyingart/AgInTiFlow/actions/runs/42223797334)
 passes, including its full suite, 449 consumer cases and npm's publish command.
 
-Public distribution verification is on hold: twenty canonical archive checks
-over ten minutes return 404. Version metadata and a fresh-cache official npm
-client also cannot find 0.20.370; the observed integration tag remains 0.20.369.
-The cause of this visibility discrepancy is unproven. Registry-consumer and
-global-install gates have not run, and the working 0.20.369 installation is
-retained. There is no republish, tag rewrite or local-archive installation.
-The machine ledger records this external verification failure separately from
-the qualified source behavior. No public/global qualification is claimed.
+Public distribution verification initially pauses: twenty canonical archive
+checks over ten minutes return 404, as do version metadata and a fresh-cache
+official npm client. The previous installation stays intact. The cause of this
+visibility discrepancy is unproven and the failed checks are retained.
+
+Fresh public metadata later exposes the exact release commit, and its canonical
+archive matches the locally qualified bytes. Actual registry-consumer tests pass
+449 cases, followed by 229 actual-global cases. All 556 archive/Git/global files
+match after tests; both CLI commands report 0.20.370-integration.0 and the personal
+0600 provider preference is unchanged. No republish, tag rewrite or local-archive
+fallback is used. Registry provenance subject and commit are inspected, without
+independent signature verification. Archive SHA-256:
+`1a57566027e1077230a6cc132a2ab14463b80e64a574deddc3ba23b0e52bcbb5`.
+Nine machine-ledger cases preserve the original observation, candidate findings,
+external visibility failure and final qualification, with zero new paid calls.
 
 This is a bounded contradiction check for adjacent labeled SHA-256 metadata
 with a scoped native receipt. It does not validate all prose or other algorithms,
