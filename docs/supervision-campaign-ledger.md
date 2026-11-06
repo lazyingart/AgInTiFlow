@@ -2,6 +2,21 @@
 
 ## Direct named-file prohibitions — 2026-11-07
 
+Release 0.20.376-integration.0 is published and globally installed. Source
+9e6ba6c5ee7c5d71dc90eaef9f8ef7516f512558 and version-only release
+20a004b0e5094711774eb81f6990f943a25f630a are pushed. Trusted CI
+42307799670 passes full validation, the unchanged stale-CAS regression,
+the isolated document-server smoke and 594 consumer checks before publishing.
+Actual registry and global installations each pass 594 cases with zero skips;
+all 572 release Git/archive/global files match after the global tests. Both
+natural CLI commands report the exact version, and the saved 0600 DeepSeek
+preference is unchanged. Initial registry 404 responses resolve inside the
+bounded readiness window without republishing, rewriting the tag or using a
+local-archive fallback. Provenance subject and commit match; this is not
+independent signature verification. Six new slice cases count the five actual
+Flash requests once; release checks add no model calls. No app activation
+or LocalLLM/Mac/Codex/GPU change is implied by publication.
+
 Installed 0.20.375 accepted a scripted patch to note.txt despite the ordinary
 instructions "Do not modify note.txt" and "不要修改 note.txt", then completed
 with an unchanged-input claim. The existing "Leave note.txt unchanged" control
