@@ -1,5 +1,42 @@
 # Supervision Campaign Ledger
 
+## Qualified source-role release — 2026-11-07
+
+Source `eb152a3b1e798c6005573981fee755c2015072bc` and version-only release
+`4fee15b5cb351f791fc627f904b84dabc6167038` are pushed on
+`fix/source-output-roles-20261107`. Immutable `v0.20.375-integration.0`
+passes [CI 42296198006](https://github.com/lazyingart/AgInTiFlow/actions/runs/42296198006),
+including the full suite, original interactive stale-CAS smoke, isolated
+document-server smoke, audit and all 569 package-consumer cases. No source or
+assertion changes follow the frozen source qualification.
+
+The actual registry archive matches the local archive, registry SRI and release
+Git. Initial 404 processing resolves inside the bounded readiness window,
+without republishing, tag rewriting or substituting a local archive. Actual
+registry and global consumers each pass 569 cases with no skips. All 572
+public files match release Git/archive/global after testing. Both `aginti` and
+`aginti-cli` report `0.20.375-integration.0`; the private provider preference is
+unchanged. Archive SHA-256 is
+`5d30912064035bee44767964a2087c9134aafa7dd74bd3c0c29a6348b7cba550`.
+Provenance subject and release commit are inspected, without claiming an
+independent cryptographic signature verification.
+
+Six durable ledger cases preserve two passing controls, the scripted source
+mutation failure, final source qualification, actual Flash acceptance and
+release qualification. Five actual model requests are counted once. A final
+byte-bound adversarial replay and labeled 15-second verification video add no
+model requests; the original earlier candidate receipt is retained separately.
+The real input and summary hashes are independently checked, and fresh-process
+completed continuation performs no request or repeated write. The full source
+suite passes in 536.078 seconds with 409 inputs unchanged; syntax checks cover
+322 files and audit reports zero vulnerabilities.
+
+No application or service is restarted. The restricted SDK's eight-file static
+closure stays unchanged from reviewed 365/374; that is not live admission for
+LocalLLM, Mac or Codex. Bounded clause inference and existing explicit input
+preservation are qualified; arbitrary ambiguous prose, shell isolation and
+app-owned transactional authority retain their separate gates.
+
 ## Trailing source clauses preserve input authority — 2026-11-07
 
 Installed 0.20.374-integration.1 reproduces a core preservation failure under
