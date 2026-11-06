@@ -518,6 +518,32 @@ function normalizeFileCreationIntent(goal = "") {
   );
 }
 
+// An input clause can follow its deliverable: "create X from Y". Track the
+// clause's role until a new output action, rather than declaring every later
+// filename an output. Blank filenames before finding verbs so path components
+// (from.md, inputs/read.txt) and quoted paths cannot change the role.
+function inputFileClauseSpans(text = "", outputAction) {
+  const actions = withoutFilePathMentions(text);
+  const markers = [
+    ...[...actions.matchAll(new RegExp(outputAction.source, "gi"))]
+      .map(match => ({ index: match.index, input: false })),
+    ...[...actions.matchAll(/\b(?:from|using|based\s+on)\b|(?:^|\b(?:and|then|after|before|while|by)\b|[,;])\s*(?:use|read(?:ing)?|load(?:ing)?|reference|referencing)\b(?!-)|从|從|根据|根據|依据|依據|读取|讀取|使用|参考|參考/gi)]
+      .map(match => ({ index: match.index, input: true })),
+  ].sort((a, b) => a.index - b.index);
+  const spans = [];
+  let start = null;
+  for (const marker of markers) {
+    if (marker.input) {
+      if (start === null) start = marker.index;
+    } else if (start !== null) {
+      spans.push({ start, end: marker.index });
+      start = null;
+    }
+  }
+  if (start !== null) spans.push({ start, end: text.length });
+  return spans;
+}
+
 function inferExactOutputPaths(goal = "") {
   const paths = [];
   let source = normalizeFileCreationIntent(goal);
@@ -604,11 +630,14 @@ function inferExactOutputPaths(goal = "") {
     const directOutputIndex = outputActionIndex(line);
     const hasDirectOutputAction = directOutputIndex >= 0;
     if (!isOutputListItem && !hasDirectOutputAction) continue;
-    const sourceLine = !isOutputListItem && hasDirectOutputAction ? line.slice(directOutputIndex) : line;
+    let sourceLine = !isOutputListItem && hasDirectOutputAction ? line.slice(directOutputIndex) : line;
     if (!isOutputListItem && negatedOutputLine.test(sourceLine)) continue;
     const verifierIndex = line.search(/\b(?:validate|verify|check|compile|run|execute)\b/i);
     if (!isOutputListItem && nonOutputToolLine.test(line) && verifierIndex >= 0 && verifierIndex < directOutputIndex) {
       continue;
+    }
+    for (const span of inputFileClauseSpans(sourceLine, directOutputActionGlobal).reverse()) {
+      sourceLine = sourceLine.slice(0, span.start) + sourceLine.slice(span.start, span.end).replace(/[^\r\n]/g, " ") + sourceLine.slice(span.end);
     }
     if (!isOutputListItem && /\boutput\s+(?:subfolders?|directories|folders?|paths?)\b/i.test(sourceLine)) continue;
     const outputDirMatch = sourceLine.match(/(?:to|at|in|under|到|至|在)\s*([^\s，,、；;。]+\/)/i);
@@ -1015,7 +1044,7 @@ function inferExactInputPaths(goal = "") {
     "gi"
   );
   const inputAction =
-    /\b(?:use|using|read|load|fill|upload|attach|import|select|choose|reference|input|from|retain(?:ed|ing)?|fix|repair|patch|correct)\b|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|保留|修复|修正|更正|从|從/i;
+    /\b(?:use|using|based\s+on|read|load|fill|upload|attach|import|select|choose|reference|input|from|retain(?:ed|ing)?|fix|repair|patch|correct)\b|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|保留|修复|修正|更正|从|從/i;
   const directOutputAction =
     /\b(?:sav(?:e|es|ing)|writ(?:e|es|ing)|rewrit(?:e|es|ing)|output(?:s|ting)?|creat(?:e|es|ing)|rebuild(?:s|ing)?|replac(?:e|es|ing)|regenerat(?:e|es|ing)|generat(?:e|es|ing)|stor(?:e|es|ing)|updat(?:e|es|ing)|modif(?:y|ies|ying)|edit(?:s|ing)?)\b|保存|写入|寫入|重写|重寫|输出|輸出|创建|建立|重建|替换|替換|重新生成|生成|更新|修改|编辑|編輯/i;
   const pushPath = (raw = "") => {
@@ -1033,7 +1062,10 @@ function inferExactInputPaths(goal = "") {
       inputAction.test(previousLine);
     const fullLine = wrappedInputInstruction ? `${previousLine} ${currentLine}`.trim() : currentLine;
     const outputIndex = withoutFilePathMentions(fullLine).search(directOutputAction);
-    const line = outputIndex > 0 ? fullLine.slice(0, outputIndex).trim() : fullLine;
+    const line = [
+      outputIndex >= 0 ? fullLine.slice(0, outputIndex) : fullLine,
+      ...inputFileClauseSpans(fullLine, directOutputAction).map(span => fullLine.slice(span.start, span.end)),
+    ].join("\n").trim();
     if (!line || !inputAction.test(line)) continue;
     if (directOutputAction.test(line) && !/\b(read|load|upload|attach|reference|input|from)\b|读取|讀取|加载|載入|上传|上傳|附加|参考|參考|素材|图片|圖片|照片|提示词|提示詞|从|從/i.test(line)) {
       continue;

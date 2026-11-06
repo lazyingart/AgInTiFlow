@@ -62,6 +62,21 @@ This classifier changes neither workspace permissions nor shell, package,
 publication, provider or sandbox policy. Existing source and artifact validation
 remain required.
 
+Input and output roles follow clauses rather than filename order. For example,
+`Create summary.md from note.txt. Leave note.txt unchanged.` declares one output
+and one protected input. `using` and `based on`, coordinated reads and common
+Chinese source clauses follow the same bounded rule. A later explicit output
+action starts a new deliverable clause, so multiple outputs remain possible.
+Source paths cannot accidentally supply an output-directory prefix.
+
+Only explicit preservation establishes the narrower mutation prohibition. A
+provider proposal to patch that input is rejected before the tool executes;
+the model can still create and inspect the permitted output. Genuine requests
+to edit a source or create a file and then keep it unchanged remain supported.
+The same contract is derived again for a concrete follow-up; a generic
+continuation of completed work does not repeat its write. This is bounded
+instruction inference, not an arbitrary natural-language or shell sandbox.
+
 ## Piped interactive input during resume
 
 Non-TTY interactive input begins iteration before asynchronous startup and saved

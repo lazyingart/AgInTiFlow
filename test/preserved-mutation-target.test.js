@@ -61,6 +61,104 @@ for (const goal of [
     assert.equal(preservedInputMutationBlock({ goal }, "write_file", { path: target }, { goal }), null);
 });
 
+for (const goal of [
+  "Create summary.md from note.txt. Leave note.txt unchanged.",
+  "Make summary.md using note.txt. Keep note.txt intact.",
+  "Write summary.md based on note.txt. note.txt must remain read-only.",
+  "生成 summary.md，使用 note.txt。保持 note.txt 不变。",
+]) test(`a trailing source clause cannot bypass the preservation guard: ${goal}`, () => {
+  const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
+  assert.deepEqual(contract.exactOutputPaths, ["summary.md"]);
+  assert.deepEqual(contract.preservedInputPaths, ["note.txt"]);
+  for (const [tool, args] of [
+    ["write_file", { path: "note.txt", content: "changed" }],
+    ["apply_patch", { path: "note.txt", search: "old", replace: "new" }],
+    ["run_command", { command: "printf changed > note.txt" }],
+  ]) assert.equal(preservedInputMutationBlock({ goal }, tool, args, { goal })?.category, "preserved-input-mutation");
+  assert.equal(preservedInputMutationBlock({ goal }, "write_file", { path: "summary.md", content: "result" }, { goal }), null);
+});
+
+for (const scsActive of [false, true]) test(`trailing-source preservation survives native follow-up (SCS ${scsActive})`, { timeout: 15000 }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-source-role-runtime-"));
+  const oldHome = process.env.AGINTIFLOW_HOME;
+  process.env.AGINTIFLOW_HOME = path.join(root, "home");
+  t.after(async () => {
+    closeSessionIndexConnections();
+    if (oldHome === undefined) delete process.env.AGINTIFLOW_HOME; else process.env.AGINTIFLOW_HOME = oldHome;
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const workspace = path.join(root, "workspace");
+  await fs.mkdir(workspace);
+  const note = "Accessibility review: complete.\nOffline route: blocked.\n";
+  const summary = "# Summary\nAccessibility review is complete. The offline route remains blocked.\n";
+  const checklist = "# Checklist\n- [x] Accessibility review\n- [ ] Offline route\n";
+  await fs.writeFile(path.join(workspace, "note.txt"), note);
+  let phase = "start", step = 0;
+  const requests = [];
+  const client = { chat: { completions: { create: async request => {
+    requests.push(request);
+    if (!request.tools) return { choices: [{ message: { role: "assistant", content: "Read the note, produce the requested file, verify and finish." }, finish_reason: "stop" }] };
+    step++;
+    const output = phase === "start" ? "summary.md" : "checklist.md";
+    const content = phase === "start" ? summary : checklist;
+    const call = (name, args) => ({ choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null,
+      tool_calls: [{ id: `source_role_${phase}_${step}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] } }] });
+    if (step === 1) return call("read_file", { path: "note.txt" });
+    // A mistaken provider proposal must not become authority to alter an input.
+    if (step === 2) return call("apply_patch", { path: "note.txt", search: "Accessibility review: complete.", replace: "Accessibility review: incomplete." });
+    if (step === 3) return request.tools.some(tool => tool.function.name === "write_file")
+      ? call("write_file", { path: output, content, mode: "create" })
+      : call("apply_patch", { patch: `*** Begin Patch\n*** Add File: ${output}\n` + content.trimEnd().split("\n").map(line => "+" + line).join("\n") + "\n*** End Patch" });
+    if (step === 4) return call("read_file", { path: output });
+    assert.equal(step, 5, "the source was incorrectly required to change or another producer loop began");
+    return call("finish", { result: `Created ${output}: accessibility review is complete and the offline route is blocked. note.txt is unchanged.` });
+  } } } };
+  const clientFactory = async () => client;
+  clientFactory.agintiDeterministicTest = true;
+  const goal = "Create summary.md from note.txt. Leave note.txt unchanged.";
+  const config = resolveRuntimeConfig({ goal, provider: "openai", model: "scripted-source-roles", routingMode: "manual", taskProfile: "code", enableScs: scsActive ? "on" : "off" }, {
+    baseDir: workspace, commandCwd: workspace, packageDir: path.resolve(import.meta.dirname, ".."), sessionId: "source-role", clientFactory,
+    sandboxMode: "host", packageInstallPolicy: "block", allowFileTools: true, allowShellTool: false,
+    allowWrapperTools: false, allowAuxiliaryTools: false, allowMcpTools: false, allowWebSearch: false, allowParallelScouts: false,
+  });
+  Object.assign(config, { clientFactory, apiKey: "synthetic-only", sessionsDir: path.join(root, "sessions"), projectSessionsDir: path.join(root, "pointers"),
+    scsActive, scsValidationMode: "deterministic", useDockerSandbox: false, quiet: true, maxSteps: 6, dynamicSteps: "off",
+    executionPolicy: { tier: "focused", requiresPlan: false, reason: "Offline source/output role regression." } });
+  const initial = await runAgent(config);
+  assert.equal(initial.goalStatus, "completed", JSON.stringify(initial));
+  assert.equal(step, 5);
+  assert.equal(await fs.readFile(path.join(workspace, "note.txt"), "utf8"), note);
+  assert.equal(await fs.readFile(path.join(workspace, "summary.md"), "utf8"), summary);
+  const initialState = JSON.parse(await fs.readFile(path.join(root, "sessions/source-role/state.json")));
+  assert.equal(initialState.meta.projectVerification.mutationRevision, 1);
+  assert.deepEqual(initialState.meta.projectVerification.mutationHistory.flatMap(item => item.paths), ["summary.md"]);
+  const before = requests.length;
+  const noop = await runAgent({ ...config, resume: "source-role", goal: "Continue the same task." });
+  assert.equal(noop.goalStatus, "completed");
+  assert.equal(requests.length, before, "completed continuation must not repeat the write");
+  const continuationState = JSON.parse(await fs.readFile(path.join(root, "sessions/source-role/state.json")));
+  phase = "followup"; step = 0;
+  const followup = await runAgent({ ...config, resume: "source-role", goal: "Create checklist.md from note.txt. Leave note.txt unchanged." });
+  assert.equal(followup.goalStatus, "completed", JSON.stringify(followup));
+  assert.equal(step, 5);
+  assert.equal(await fs.readFile(path.join(workspace, "note.txt"), "utf8"), note);
+  assert.equal(await fs.readFile(path.join(workspace, "summary.md"), "utf8"), summary);
+  assert.equal(await fs.readFile(path.join(workspace, "checklist.md"), "utf8"), checklist);
+  const events = (await fs.readFile(path.join(root, "sessions/source-role/events.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+  assert.deepEqual(events.filter(event => event.type === "file.changed").map(event => event.data.path), ["summary.md", "checklist.md"]);
+  assert.equal(events.filter(event => event.type === "tool.blocked" && event.data.category === "preserved-input-mutation").length, 2);
+  const state = JSON.parse(await fs.readFile(path.join(root, "sessions/source-role/state.json")));
+  assert.equal(state.meta.goalContract.status, "completed");
+  assert.equal(state.meta.goalContract.revision, continuationState.meta.goalContract.revision + 1);
+  assert.equal(state.meta.projectVerification.mutationRevision, 1, "mutation revisions are scoped to the new goal");
+  assert.deepEqual(state.meta.projectVerification.mutationHistory.flatMap(item => item.paths), ["checklist.md"]);
+  if (scsActive) {
+    assert.deepEqual(state.meta.scs.taskContract.exactOutputPaths, ["checklist.md"]);
+    assert.deepEqual(state.meta.scs.taskContract.exactInputPaths, ["note.txt"]);
+  }
+  await assert.rejects(fs.stat(path.join(root, "sessions/source-role/.agent-run.lock")), { code: "ENOENT" });
+});
+
 for (const scsActive of [false, true]) test(`persisted repair preserves inputs and resumes (SCS ${scsActive})`, { timeout: 15000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-preserved-runtime-"));
   const oldHome = process.env.AGINTIFLOW_HOME;

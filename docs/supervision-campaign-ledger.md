@@ -1,5 +1,49 @@
 # Supervision Campaign Ledger
 
+## Trailing source clauses preserve input authority — 2026-11-07
+
+Installed 0.20.374-integration.1 reproduces a core preservation failure under
+the ordinary request: “Create summary.md from note.txt. Leave note.txt
+unchanged.” Normal scripted read/create/finish is a passing control, and the
+separate whole-file overwrite policy already blocks a bad replacement. But an
+exact `apply_patch` proposal to the source executes and the run completes with
+a false unchanged-source claim. Persisted events and actual changed bytes
+prove the failure without an actual model request. This is task-contract
+authority, not evidence that a particular provider generated the bad proposal.
+
+The output classifier treated every path after “create” as a deliverable,
+including the source after “from”. That also removed the source from the
+explicit preservation set. Input clauses now keep their role until a later
+output action. Paths are masked before detecting actions, and read/load/reference
+verbs require context so filename stems and output nouns do not change roles.
+Trailing source directories cannot supply an invented output-directory prefix.
+Only explicit preservation prohibits mutation; genuine source edits, multiple
+outputs and create-then-preserve requests remain supported. The existing
+mutation guard, workspace permissions and provider policy are unchanged.
+
+Sixty focused cases pass, including twenty-two new cases. Native persisted
+tests with SCS off and on reject the bad source patch before execution, create
+and inspect the requested output, reuse completed work without another call,
+and apply the same rule to a concrete same-session follow-up. Exact bytes and
+file-change events rule out touch/revert. Existing evidence visibility,
+truthful completion, progressive tools, dynamic budget and native turn tests
+also pass. The final full suite passes in 536.078 seconds with all 409 captured
+inputs unchanged; syntax checks cover 322 files and audit reports zero issues.
+The existing local document-server occupied-port skip remains explicit;
+publication still requires the isolated gate to run that test.
+
+The identical ordinary prompt also completes through actual DeepSeek Flash in
+five requests. External inspection verifies the input hash and Markdown's two
+source-grounded statuses, one output change and one durable completion. A
+fresh process continues the saved session with zero requests or writes. These
+five actual requests are counted once; scripted adversaries and replay add
+none. No rescue prompt, shell authority, wrapper or fallback is used.
+
+This source checkpoint does not activate an application or qualify LocalLLM,
+Mac or Codex. Release/package installation remains a separate gate. The change
+is bounded file-role inference and explicit-preservation enforcement, not a
+claim to understand arbitrary ambiguous instructions or sandbox shell effects.
+
 ## Qualified native completion and CLI release — 2026-11-07
 
 Core source `c7c51786ef1e55636b19c9fbec012d2bdeec1177`, CLI follow-up

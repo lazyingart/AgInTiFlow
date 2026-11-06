@@ -41,3 +41,27 @@ for (const goal of [
   const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
   assert.ok(contract.requiredEvidence.some(item => item.category === "command"));
 });
+
+for (const [goal, outputs, inputs, preserved] of [
+  ["Create summary.md from note.txt. Leave note.txt unchanged.", ["summary.md"], ["note.txt"], ["note.txt"]],
+  ["Create summary.md from note.txt.", ["summary.md"], ["note.txt"], []],
+  ["Make report.md using notes.txt.", ["report.md"], ["notes.txt"], []],
+  ["Write report.md based on notes.txt. Keep notes.txt intact.", ["report.md"], ["notes.txt"], ["notes.txt"]],
+  ["Create summary.md from inputs/note.txt. Leave inputs/note.txt unchanged.", ["summary.md"], ["inputs/note.txt"], ["inputs/note.txt"]],
+  ["Create report.md and checklist.md from a.txt and b.txt.", ["report.md", "checklist.md"], ["a.txt", "b.txt"], []],
+  ["Write report.md from a.txt, then write checklist.md using b.txt.", ["report.md", "checklist.md"], ["a.txt", "b.txt"], []],
+  ["Create report.md and read note.txt. Keep note.txt unchanged.", ["report.md"], ["note.txt"], ["note.txt"]],
+  ["Create `report.md` from `inputs/current notes.txt`.", ["report.md"], ["inputs/current notes.txt"], []],
+  ["Create from.md and using.txt.", ["from.md", "using.txt"], [], []],
+  ["Create a read-only report.md.", ["report.md"], [], []],
+  ["Create a reference document reference.md.", ["reference.md"], [], []],
+  ["Create a load test load-test.py.", ["load-test.py"], [], []],
+  ["从 note.txt 生成 summary.md。保持 note.txt 不变。", ["summary.md"], ["note.txt"], ["note.txt"]],
+  ["生成 summary.md，使用 note.txt。保持 note.txt 不变。", ["summary.md"], ["note.txt"], ["note.txt"]],
+  ["Create intermediate.md. Then use intermediate.md to write final.md.", ["intermediate.md", "final.md"], [], []],
+]) test(`input/output roles follow the clause, not path order: ${goal}`, () => {
+  const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
+  assert.deepEqual(contract.exactOutputPaths, outputs);
+  assert.deepEqual(contract.exactInputPaths, inputs);
+  assert.deepEqual(contract.preservedInputPaths, preserved);
+});
