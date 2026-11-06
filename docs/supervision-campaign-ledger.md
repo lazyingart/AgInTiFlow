@@ -1,5 +1,53 @@
 # Supervision Campaign Ledger
 
+## Durable partial-patch recovery — 2026-11-06–07
+
+Installed 0.20.371 reproduces a separate gap beyond per-file publication: a
+native multi-file patch creates its first requested checklist, then a controlled
+later-file EIO fails the tool. The saved failure loses the completed change
+receipt, emits no file-change event and leaves mutation revision zero despite
+the created file. This is a core partial-result and continuation defect; the
+existing per-file data-integrity protection works correctly.
+
+The tool now returns an incomplete partial result with confirmed changes and
+the exact failed/unattempted operation boundary. The native runtime records
+those changes and invalidates stale verification before checkpointing the failed
+tool frame. Provider history repair retains bounded partial facts without
+claiming that the entire patch completed or replaying raw patch bodies. Candidate
+review also finds and fixes retirement of older reads across separately repaired
+native frames. A failed move removal records only its published destination
+copy, with source removal still unconfirmed.
+
+Sixteen focused cases cover preflight/no-effect failures, partial writes,
+deletions, incomplete moves, bounded repeated retention, malformed progress,
+mutation revisions and fresh-process continuation. An offline HTTP handoff
+fixture covers DeepSeek-to-LocalLLM continuity with its own readiness DTOs and
+origin fence; it contacts no real LocalLLM service and admits no provider role.
+
+A final real DeepSeek Flash resume uses only “Continue the same task.” It
+finishes in four actual model requests: the original README and first checklist
+remain byte-identical, only the remaining checklist is created, and one final
+completion is persisted. The earlier partial failure remains recorded. Its
+request count is recorded once; offline seed and regressions make zero paid
+calls. Earlier live candidates remain distinct evidence: a four-request success
+and a five-request task completion that unnecessarily restyled the first
+checklist. The latter fails the efficiency acceptance; compacted recovery
+guidance had lost the keep-confirmed-bytes instruction. That instruction is now
+fixed and retained, while legitimate evidence-backed repairs remain allowed.
+The three runs total 13 actual model requests, without recounting any during
+replay or release verification. External verification, the original transcripts and a clearly
+labeled verification replay are retained separately.
+
+The final frozen-source full `npm test` passes in 567.962 seconds with all 403
+captured inputs unchanged. Syntax covers 322 files and the production dependency
+audit reports zero vulnerabilities. The earlier 541.937-second suite passed its
+tests but its inputs changed during boundary repairs; it remains intermediate
+evidence and is not the final qualification.
+
+This is durable reporting of known partial work, not a multi-file transaction,
+automatic rollback or generic exactly-once execution after a pre-receipt crash.
+See [the result and continuation contract](partial-patch-recovery.md).
+
 ## Workspace file publication — 2026-11-06
 
 A normal spelling-correction task through installed 0.20.370 reproduces native

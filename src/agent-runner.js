@@ -957,15 +957,17 @@ function summarizeRetainedSourceEvidence(messages = [], limit = 28) {
     const retained = parseRetainedToolEvidenceMessage(message);
     if (message?.role !== "tool" && !retained) continue;
     const payload = retained?.payload || safeParseToolContent(message.content);
-    if (!payload || payload.ok === false || payload.blocked || payload.skipped) continue;
+    const partial = isRetainablePartialWorkspaceResult(retained?.name || payload?.toolName, payload);
+    if (!payload || (payload.ok === false && !partial) || payload.blocked || payload.skipped) continue;
     const toolName = String(retained?.name || payload.toolName || payload.name || "");
     const args = retained?.args || payload.args || {};
     const sourcePath = String(payload.path || args.path || "").trim();
-    if (["apply_patch", "write_file"].includes(toolName) && sourcePath) {
+    const changedPaths = partial ? payload.changes.flatMap(change => [change.path, change.fromPath]).filter(Boolean) : [sourcePath];
+    if (["apply_patch", "write_file"].includes(toolName) && changedPaths.some(Boolean)) {
       for (const [key, record] of bySource.entries()) {
         if (
           record.toolName === "read_file" &&
-          retainedPathMatchesAny(record.sourcePath, [sourcePath])
+          (partial && payload.changesTruncated === true || retainedPathMatchesAny(record.sourcePath, changedPaths))
         ) {
           bySource.delete(key);
         }
@@ -1068,6 +1070,31 @@ function compactPathItems(items, limit = 24, fields = ["path", "type", "size", "
   });
 }
 
+function isRetainablePartialWorkspaceResult(toolName, payload = {}) {
+  if (!payload || typeof payload !== "object") return false;
+  const progress = payload.partialPatch;
+  return toolName === "apply_patch" && payload.ok === false && payload.partial === true &&
+    !payload.blocked && !payload.skipped && progress?.schemaVersion === 1 &&
+    Number.isSafeInteger(progress.totalOperations) && progress.totalOperations > 0 &&
+    Number.isSafeInteger(progress.completedOperations) && progress.completedOperations >= 0 &&
+    progress.completedOperations < progress.totalOperations &&
+    progress.failedOperationIndex === progress.completedOperations &&
+    progress.unattemptedOperations === progress.totalOperations - progress.failedOperationIndex - 1 &&
+    ["add", "update", "delete", "move"].includes(progress.failedOperation?.type) &&
+    typeof progress.failedOperation.path === "string" && progress.failedOperation.path.length > 0 &&
+    (progress.failedOperation.newPath === undefined || typeof progress.failedOperation.newPath === "string") &&
+    Array.isArray(payload.changes) && payload.changes.length > 0 &&
+    (payload.confirmedChangeCount === undefined || (Number.isSafeInteger(payload.confirmedChangeCount) && payload.confirmedChangeCount >= payload.changes.length)) &&
+    payload.changes.every(change => change?.ok === true && typeof change.path === "string" && change.path &&
+      ["apply_patch_add", "apply_patch_update", "apply_patch_replace", "apply_patch_delete", "apply_patch_move", "apply_patch_move_destination"].includes(change.action) &&
+      ["created", "deleted", "movePending"].every(field => change[field] === undefined || typeof change[field] === "boolean") &&
+      ["fromPath", "sourcePath"].every(field => change[field] === undefined || typeof change[field] === "string") &&
+      (change.beforeHash === null || /^[a-f0-9]{64}$/.test(change.beforeHash || "")) &&
+      Number.isSafeInteger(change.beforeBytes) && change.beforeBytes >= 0 &&
+      Number.isSafeInteger(change.afterBytes) && change.afterBytes >= 0 &&
+      (change.deleted === true ? change.afterHash === null : /^[a-f0-9]{64}$/.test(change.afterHash || "")));
+}
+
 function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
   const result = {
     ok: payload.ok !== false,
@@ -1092,7 +1119,25 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
   if (payload.reason) result.reason = compactSingleLine(payload.reason, 500);
   if (payload.error) result.error = compactSingleLine(payload.error, 500);
 
-  if (toolName === "inspect_project") {
+  if (isRetainablePartialWorkspaceResult(toolName, payload)) {
+    result.partial = true;
+    result.recoveryInstruction = "Confirmed changes are whole-file publications, not stubs. Preserve their bytes unless fresh evidence proves an original requirement is unmet or the user asks for revision. Do not restyle completed output solely for consistency; inspect and finish only remaining work. A truncated receipt view does not prove omitted files were untouched.";
+    const progress = payload.partialPatch;
+    result.partialPatch = {
+      schemaVersion: 1, totalOperations: progress.totalOperations,
+      completedOperations: progress.completedOperations, failedOperationIndex: progress.failedOperationIndex,
+      failedOperation: {
+        type: compactSingleLine(progress.failedOperation?.type, 32),
+        path: compactSingleLine(progress.failedOperation?.path, 500),
+        ...(progress.failedOperation?.newPath ? { newPath: compactSingleLine(progress.failedOperation.newPath, 500) } : {}),
+      },
+      unattemptedOperations: progress.totalOperations - progress.failedOperationIndex - 1,
+    };
+    result.changes = compactPathItems(payload.changes, 24,
+      ["ok", "action", "path", "beforeHash", "afterHash", "beforeBytes", "afterBytes", "created", "deleted", "fromPath", "sourcePath", "movePending"]);
+    result.confirmedChangeCount = Number(payload.confirmedChangeCount || payload.changes.length);
+    if (payload.changesTruncated || payload.changes.length > 24) result.changesTruncated = true;
+  } else if (toolName === "inspect_project") {
     result.summary = compactSingleLine(payload.summary, 500);
     result.counts = payload.counts && typeof payload.counts === "object" ? payload.counts : {};
     result.recommendedReads = compactPathItems(payload.recommendedReads, 24, ["path"]);
@@ -1191,13 +1236,15 @@ function retainedToolStateMessages(messages = [], limit = 12, outputPaths = [], 
   let ordinal = 0;
   const retainRecord = (name, args = {}, payload = {}) => {
     if (!COMPACTION_STATE_TOOL_NAMES.has(name)) return;
-    if (!payload || payload.ok === false || payload.blocked || payload.skipped) return;
+    const partial = isRetainablePartialWorkspaceResult(name, payload);
+    if (!payload || (payload.ok === false && !partial) || payload.blocked || payload.skipped) return;
     const sourcePath = String(payload.path || args?.path || "").trim();
-    if (["apply_patch", "write_file"].includes(name) && sourcePath) {
+    const changedPaths = partial ? payload.changes.flatMap(change => [change.path, change.fromPath]).filter(Boolean) : [sourcePath];
+    if (["apply_patch", "write_file"].includes(name) && changedPaths.length) {
       for (const [key, record] of recordsByKey.entries()) {
         if (
           record.name === "read_file" &&
-          retainedPathMatchesAny(record.sourcePath, [sourcePath])
+          (partial && payload.changesTruncated === true || retainedPathMatchesAny(record.sourcePath, changedPaths))
         ) {
           recordsByKey.delete(key);
         }
@@ -1213,7 +1260,7 @@ function retainedToolStateMessages(messages = [], limit = 12, outputPaths = [], 
       ordinal: ordinal += 1,
       name,
       sourcePath,
-      args: redactValue(args),
+      args: partial ? { patch: "Partial patch arguments omitted; inspect confirmed changes and remaining work." } : redactValue(args),
       payload: compactRetainedToolPayload(name, payload, args),
     });
   };
@@ -1290,7 +1337,9 @@ function retainedToolStateTextMessages(messages = [], limit = 12, outputPaths = 
     retained.push({
       role: "user",
       content: [
-        "Retained runtime tool evidence. This operation already completed; use its result and do not repeat it solely because context was compacted.",
+        safeParseToolContent(toolMessage.content)?.partial === true
+          ? "Retained runtime tool evidence. This patch is incomplete. Confirmed files were fully published, not left as stubs. Keep their bytes unless a fresh check shows an unmet original requirement. The listed receipts may be truncated; inspect remaining work instead of replaying or restyling completed work."
+          : "Retained runtime tool evidence. This operation already completed; use its result and do not repeat it solely because context was compacted.",
         `Tool: ${String(call.function?.name || "tool")}`,
         `Arguments: ${String(call.function?.arguments || "{}")}`,
         `Verified result: ${String(toolMessage.content || "{}")}`,
@@ -1331,7 +1380,8 @@ function latestCompleteReadFileEvidence(messages = [], maxChars = 16000) {
   const accept = (name, args = {}, payload = {}) => {
     const sourcePath = String(payload.path || args.path || "").trim();
     if (["apply_patch", "write_file"].includes(name)) {
-      if (latest && retainedPathMatchesAny(latest.path, [sourcePath])) latest = null;
+      const changedPaths = [sourcePath, ...(Array.isArray(payload.changes) ? payload.changes.flatMap(change => [change?.path, change?.fromPath]) : [])].filter(Boolean);
+      if (latest && (payload.changesTruncated === true || !changedPaths.length || retainedPathMatchesAny(latest.path, changedPaths))) latest = null;
       return;
     }
     if (
@@ -3512,6 +3562,15 @@ export function repairModelMessageHistory(state, config = {}) {
   let incompleteToolCallMessages = 0;
   let reorderedInterleavedMessages = 0;
 
+  const retirePartialReads = (name, payload) => {
+    if (!isRetainablePartialWorkspaceResult(name, payload)) return;
+    const changedPaths = payload.changes.flatMap(change => [change.path, change.fromPath]).filter(Boolean);
+    for (let priorIndex = repaired.length - 1; priorIndex >= 0; priorIndex -= 1) {
+      const prior = parseRetainedToolEvidenceMessage(repaired[priorIndex]);
+      if (prior?.name === "read_file" && (payload.changesTruncated === true || retainedPathMatchesAny(prior.payload.path || prior.args.path, changedPaths))) repaired.splice(priorIndex, 1);
+    }
+  };
+
   for (let index = 0; index < state.messages.length; index += 1) {
     const message = state.messages[index];
     if (message.role === "assistant") {
@@ -3555,6 +3614,12 @@ export function repairModelMessageHistory(state, config = {}) {
           // reasoning metadata. Keep only bounded, confirmed tool evidence in
           // the existing text format; never invent reasoning or a missing reply.
           if (requiresDeepSeekReasoning && completeToolResults && expected.size === toolCalls.length && duplicateOrUnexpectedToolMessages.length === 0) {
+            // Retire reads using the complete native result before its bounded
+            // retention view omits any paths from a large partial patch.
+            for (const toolMessage of followingToolMessages) {
+              const call = toolCalls.find(item => String(item.id) === String(toolMessage.tool_call_id));
+              retirePartialReads(call?.function?.name, safeParseToolContent(toolMessage.content));
+            }
             repaired.push(...retainedToolStateTextMessages([message, ...followingToolMessages], expectedIds.length));
           }
           droppedAssistantMessages += 1;
@@ -3604,6 +3669,8 @@ export function repairModelMessageHistory(state, config = {}) {
       continue;
     }
 
+    const retained = parseRetainedToolEvidenceMessage(message);
+    if (retained) retirePartialReads(retained.name, retained.payload);
     repaired.push(message);
   }
 
@@ -24944,8 +25011,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           return result;
         }
 
-        await store.appendEvent("tool.completed", eventResult);
-        observers.event("tool.completed", eventResult);
+        const eventType = result.ok === false ? "tool.failed" : "tool.completed";
+        await store.appendEvent(eventType, eventResult);
+        observers.event(eventType, eventResult);
         const changes = Array.isArray(result.changes) && result.changes.length ? result.changes : result.change ? [result.change] : [];
         for (const item of changes) {
           const change = {

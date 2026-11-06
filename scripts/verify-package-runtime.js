@@ -46,13 +46,14 @@ try {
     "test/native-turn-boundary.test.js", "test/native-turn-runtime.test.js", "test/inbox-dispatch-fence.test.js", "test/native-tool-checkpoint-runtime.test.js", "test/file-checksum.test.js", "test/file-checksum-runtime.test.js", "test/preserved-input-intent.test.js", "test/preserved-mutation-target.test.js",
     "test/advisory-invocation.test.js", "test/advisory-invocation-runtime.test.js", "test/tool-wrappers-lifecycle.test.js", "test/advisory-mutation-intent.test.js",
     "test/workspace-file-publication.test.js", "test/workspace-file-publication-runtime.test.js",
+    "test/partial-patch-recovery.test.js", "test/partial-patch-runtime.test.js",
     "test/retained-execution-context.test.js",
     "test/verification-input-freshness.test.js",
     "test/restricted-deepseek-http.test.js",
     "test/dependency-security-boundaries.test.js"], installed, 60000);
-  assert.match(log, /# tests 482\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# tests 498\n/); assert.match(log, /# fail 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 482, failures: 0, cliVersionsVerified: true };
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 498, failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });
 }

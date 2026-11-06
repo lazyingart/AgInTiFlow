@@ -1436,29 +1436,59 @@ async function applyPatchDocument(config, args) {
   }
 
   const changes = [];
-  for (const item of planned) {
+  for (const [index, item] of planned.entries()) {
     const { operation, target } = item;
-    if (item.delete) {
-      changes.push(await deleteChange(target, "apply_patch_delete", { patchFormat: "multi-file" }));
-      continue;
+    try {
+      if (item.delete) {
+        changes.push(await deleteChange(target, "apply_patch_delete", { patchFormat: "multi-file" }));
+        continue;
+      }
+      if (operation.newPath) {
+        const newTarget = resolveWorkspacePath(config, operation.newPath, { writeAccess: true });
+        const policy = pathPolicy("apply_patch", newTarget.relativePath);
+        if (!policy.allowed) throw new Error(policy.reason);
+        const destination = await writeChange(newTarget, item.afterText, "apply_patch_move_destination", {
+          sourcePath: target.relativePath, movePending: true, patchFormat: "multi-file",
+        }, { createOnly: true });
+        changes.push(destination);
+        await fs.unlink(target.absolutePath);
+        const { sourcePath, movePending, ...completed } = destination;
+        changes[changes.length - 1] = { ...completed, action: "apply_patch_move", fromPath: sourcePath };
+        continue;
+      }
+      const action = item.replaceExisting
+        ? "apply_patch_replace"
+        : operation.type === "add"
+          ? "apply_patch_add"
+          : "apply_patch_update";
+      changes.push(await writeChange(target, item.afterText, action, { patchFormat: "multi-file" }, {
+        createOnly: operation.type === "add" && !item.replaceExisting,
+        ...(item.beforeHash ? { expectedBeforeHash: item.beforeHash } : {}),
+      }));
+    } catch (error) {
+      if (!changes.length) throw error;
+      // Per-file publication is already committed. Never erase those receipts,
+      // report the whole patch as complete, or blindly roll other files back.
+      return {
+        ok: false, toolName: "apply_patch", partial: true,
+        path: changes.length === 1 ? changes[0].path : "", changes, change: changes[0],
+        partialPatch: {
+          schemaVersion: 1, totalOperations: planned.length, completedOperations: index,
+          failedOperationIndex: index,
+          failedOperation: { type: operation.newPath ? "move" : operation.type,
+            path: target.relativePath, ...(operation.newPath ? { newPath: operation.newPath } : {}) },
+          unattemptedOperations: planned.length - index - 1,
+        },
+        error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+        category: "workspace-partial-patch", recoverable: true,
+        summary: `${index} of ${planned.length} patch operations completed; ${changes.length} confirmed file changes; patch incomplete.`,
+        permissionAdvice: {
+          category: "workspace-partial-patch", autoRecover: true,
+          summary: "The patch partially applied; confirmed changes remain on disk.",
+          instruction: "Confirmed receipts describe whole files already published, not partial fragments or stubs. Keep their exact bytes unless a fresh check proves an original requirement is unmet, or the user requests a revision. Do not restyle or expand already-confirmed output solely for consistency. Inspect the failed operation and apply only remaining necessary work. Do not replay the entire patch, overwrite a competing file, or roll back unrelated changes. A pending move destination is only a copy; source removal is not confirmed.",
+        },
+      };
     }
-    if (operation.newPath) {
-      const newTarget = resolveWorkspacePath(config, operation.newPath, { writeAccess: true });
-      const policy = pathPolicy("apply_patch", newTarget.relativePath);
-      if (!policy.allowed) throw new Error(policy.reason);
-      changes.push(await writeChange(newTarget, item.afterText, "apply_patch_move", { fromPath: target.relativePath, patchFormat: "multi-file" }, { createOnly: true }));
-      await fs.unlink(target.absolutePath);
-      continue;
-    }
-    const action = item.replaceExisting
-      ? "apply_patch_replace"
-      : operation.type === "add"
-        ? "apply_patch_add"
-        : "apply_patch_update";
-    changes.push(await writeChange(target, item.afterText, action, { patchFormat: "multi-file" }, {
-      createOnly: operation.type === "add" && !item.replaceExisting,
-      ...(item.beforeHash ? { expectedBeforeHash: item.beforeHash } : {}),
-    }));
   }
 
   return {
