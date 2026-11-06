@@ -4159,10 +4159,66 @@ async function maybePrepareSurgicalContext(config, state, store, observers) {
 function createObservers(config) {
   return {
     log(message, data = {}) {
-      if (typeof config.onLog === "function") config.onLog(message, data);
+      if (typeof config.onLog === "function") return config.onLog(message, data);
     },
     event(type, data = {}) {
-      if (typeof config.onEvent === "function") config.onEvent(type, data);
+      if (typeof config.onEvent === "function") return config.onEvent(type, data);
+    },
+  };
+}
+
+async function waitForObserverDelivery(value, signal) {
+  const settled = Promise.resolve(value);
+  if (!signal) return settled;
+  let onAbort;
+  try {
+    return await new Promise((resolve, reject) => {
+      onAbort = () => reject(new Error("Run interrupted by user."));
+      signal.addEventListener("abort", onAbort, { once: true });
+      settled.then(resolve, reject);
+      if (signal.aborted) onAbort();
+    });
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function createToolResultObservers(observers) {
+  // A delivery callback is not the tool's outcome. Keep its failure out of
+  // executeTool's catch and preserve the closed native frame before surfacing
+  // it. A failed read-only batch still finishes its bounded accepted reads;
+  // mutations are already serialized by the native dispatch contract.
+  let failed = false;
+  const pending = new Set();
+  const notify = (method, args) => {
+    if (failed) return;
+    try {
+      const value = observers[method](...args);
+      if (value !== undefined) {
+        const delivery = Promise.resolve(value).then(
+          () => pending.delete(delivery),
+          () => { pending.delete(delivery); failed = true; }
+        );
+        pending.add(delivery);
+      }
+    } catch {
+      failed = true;
+    }
+  };
+  return {
+    observers: {
+      log: (...args) => notify("log", args),
+      event: (...args) => notify("event", args),
+    },
+    async drain(signal) {
+      await waitForObserverDelivery(Promise.all([...pending]), signal);
+      if (failed) {
+        // Do not persist arbitrary callback exceptions, interpret them as a
+        // provider failure, or expose callback secrets in model history.
+        const error = new Error("Tool result observer delivery failed; native outcomes are preserved. Resume after restoring the observer.");
+        error.code = "OBSERVER_DELIVERY_FAILED";
+        throw error;
+      }
     },
   };
 }
@@ -23799,7 +23855,7 @@ export function integrationTextWorkspaceToolExecutionBlock(config = {}, requeste
   });
 }
 
-async function executeTool(browserState, toolCall, snapshot, config, store, observers, state, registeredConfig = config) {
+async function executeTool(browserState, toolCall, snapshot, config, store, observers, state, registeredConfig = config, resultObservers = null) {
   throwIfAborted(config);
   const requestedToolName = toolCall.function.name;
   const integrationProfileBlock = integrationTextWorkspaceToolExecutionBlock(config, requestedToolName);
@@ -24716,11 +24772,13 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     args: safeArgs,
     ...(autoCorrection ? { requestedToolName } : {}),
   });
-  observers.event("tool.started", {
+  await waitForObserverDelivery(observers.event("tool.started", {
     toolName,
     args: safeArgs,
     ...(autoCorrection ? { requestedToolName } : {}),
-  });
+  }), config.abortSignal);
+
+  if (resultObservers) observers = resultObservers.observers;
 
   try {
     if (isMcpBridgeTool(toolName)) {
@@ -32479,6 +32537,7 @@ async function runAgentOnceUnlocked(config) {
       let continueForCompletionRepair = false;
       let pendingPermissionPause = null;
       const postBatchToolResults = [];
+      const resultObservers = createToolResultObservers(observers);
       const toolBatchRuntimeConfig = {
         ...stepRuntimeConfig,
         artifactValidationAcceptedAtBatchStart: artifactValidationAcceptanceIsCurrent(state),
@@ -32487,6 +32546,7 @@ async function runAgentOnceUnlocked(config) {
         const toolCall = toolCalls[toolIndex];
         throwIfAborted(config);
         if (await fenceQueuedInput(toolCalls.slice(toolIndex), "before-tool")) {
+          await resultObservers.drain(config.abortSignal);
           continueForQueuedInput = true;
           break;
         }
@@ -32498,7 +32558,8 @@ async function runAgentOnceUnlocked(config) {
           store,
           observers,
           state,
-          incomingConfig
+          incomingConfig,
+          resultObservers
         );
         state.messages.push({
           role: "tool",
@@ -32521,12 +32582,13 @@ async function runAgentOnceUnlocked(config) {
           await store.saveState(state);
         }
         if (await fenceQueuedInput(toolCalls.slice(toolIndex + 1), "after-tool")) {
+          await resultObservers.drain(config.abortSignal);
           continueForQueuedInput = true;
           break;
         }
 
         if (toolResult.toolName === "run_command") {
-          observers.log("command.output", {
+          resultObservers.observers.log("command.output", {
             command: redactSensitiveText(toolResult.args?.command || ""),
             stdout: toolResult.stdout || "",
             stderr: toolResult.stderr || "",
@@ -32539,11 +32601,11 @@ async function runAgentOnceUnlocked(config) {
         }
 
         if (WORKSPACE_TOOLS.has(toolResult.toolName)) {
-          observers.log("workspace.output", sanitizeToolResult(toolResult));
+          resultObservers.observers.log("workspace.output", sanitizeToolResult(toolResult));
         }
 
         if (toolResult.toolName === "delegate_agent") {
-          observers.log("wrapper.output", {
+          resultObservers.observers.log("wrapper.output", {
             wrapper: toolResult.wrapper,
             ok: toolResult.ok,
             fallback: Boolean(toolResult.fallback),
@@ -32552,6 +32614,8 @@ async function runAgentOnceUnlocked(config) {
             error: toolResult.error,
           });
         }
+
+        if (toolIndex === toolCalls.length - 1) await resultObservers.drain(config.abortSignal);
 
         if (toolResult.stopRun && toolResult.category === "malformed-tool-arguments") {
           return await stopForRepeatedMalformedToolArguments({
@@ -32592,6 +32656,12 @@ async function runAgentOnceUnlocked(config) {
               priorBlockedTool: skippedResult.priorBlockedTool,
             });
           }
+          if (toolIndex !== toolCalls.length - 1) {
+            state.stepsCompleted = step;
+            state.updatedAt = new Date().toISOString();
+            await store.saveState(state);
+          }
+          await resultObservers.drain(config.abortSignal);
           if (shouldPauseForPermissionAdvice(toolResult)) pendingPermissionPause = toolResult;
           break;
         }

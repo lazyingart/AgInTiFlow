@@ -1,5 +1,49 @@
 # Supervision Campaign Ledger
 
+## Native observer outcome durability — 2026-11-07
+
+The 0.20.372 native runtime reproduces a callback-versus-outcome defect: a
+normal summary task writes its output correctly, then a `tool.completed`
+observer throws. The tool catch rewrites that successful write as `ok:false`
+and the scripted run still reports completion. Exact filesystem bytes and the
+saved native reply disagree. This is a reusable runtime defect, not a provider
+failure or application-specific instruction issue.
+
+Result-event and post-result-log failures now remain separate from the tool
+outcome. Native events and closed tool history are saved before surfacing the
+stable `OBSERVER_DELIVERY_FAILED` error. No further provider request or task
+completion is allowed after a failed delivery. Rejected callback promises are
+handled, callback exception text is not promoted into history, and cancellation
+interrupts a pending delivery wait with listener cleanup. Pre-dispatch observer
+failure prevents the tool from running.
+
+Twenty-three focused cases cover synchronous and asynchronous failure,
+file-change delivery, hostile thrown values, bounded read batches, pre-dispatch
+refusal, cancellation, checkpoint failure and fresh-process resume. Existing
+partial-patch, publication and checksum regressions retain their original
+filesystem and safety assertions; callback interruption uses the new stable
+runtime error instead of exposing fixture-specific exception codes.
+
+A real DeepSeek Flash continuation receives only “Continue the same task.”
+and completes in two requests. It rereads the source and summary, then finishes
+without repeating the write. External checks verify byte-identical input and
+output, one file-change event, one completion and mutation revision one. Offline
+seed, regression and verification-replay steps add zero paid calls. The first
+seed harness omitted the existing planning response; it is corrected and
+excluded from product-failure evidence. A replay assertion is also tightened
+to require the actual retained write receipt; no inference is repeated.
+
+The final full `npm test` passes in 534.348 seconds with all 403 captured inputs
+unchanged. Syntax covers 322 files and the production dependency audit reports
+zero vulnerabilities. Publication and installed qualification remain gated on
+exact package verification. The demonstration is explicitly a verification
+replay of the completed real task, not inference footage or a latency benchmark.
+
+The change does not repair failed native-store writes, make callbacks
+transactional, stop callback-owned external work, or enable the native public
+integration mount. LocalLLM and application-safe Codex admission remain separate
+owner-controlled prerequisites. See [the checkpoint contract](native-tool-checkpoints.md).
+
 ## Durable partial-patch recovery — 2026-11-06–07
 
 Installed 0.20.371 reproduces a separate gap beyond per-file publication: a

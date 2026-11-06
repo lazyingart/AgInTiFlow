@@ -43,7 +43,7 @@ for (const mode of ["EIO", "ENOSPC", "normal"]) test(`persisted native file publ
   };
   let result = await invoke(); const session = root + "/sessions/file-publication-" + mode;
   if (mode !== "normal") {
-    assert.equal(result.injected, true); assert.equal(result.error.code, "PAUSE_AFTER_FAILED_WRITE");
+    assert.equal(result.injected, true); assert.equal(result.error.code, "OBSERVER_DELIVERY_FAILED");
     assert.equal(await fs.readFile(root + "/workspace/note.txt", "utf8"), original);
     assert.equal(JSON.parse(await fs.readFile(session + "/state.json")).meta.goalContract.status, "failed");
     await assert.rejects(fs.stat(session + "/.agent-run.lock"), { code: "ENOENT" });

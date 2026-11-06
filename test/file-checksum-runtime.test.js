@@ -46,7 +46,7 @@ for (const mode of ["correct", "repair", "fail-closed", "abbreviation-repair", "
       return JSON.parse(result.stdout.trim().split("\n").at(-1));
     };
     let result = await invoke();
-    if (mode === "resume") { assert.equal(result.errorCode, "PAUSE_AFTER_READ"); phase = "resume"; step = 0; result = await invoke(); }
+    if (mode === "resume") { assert.equal(result.errorCode, "OBSERVER_DELIVERY_FAILED"); phase = "resume"; step = 0; result = await invoke(); }
     assert.deepEqual(errors, []);
     const dir = root + "/sessions/checksum-" + mode;
     const state = JSON.parse(await fs.readFile(dir + "/state.json"));

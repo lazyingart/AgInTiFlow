@@ -51,9 +51,9 @@ try {
     "test/verification-input-freshness.test.js",
     "test/restricted-deepseek-http.test.js",
     "test/dependency-security-boundaries.test.js"], installed, 60000);
-  assert.match(log, /# tests 498\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# tests 508\n/); assert.match(log, /# fail 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 498, failures: 0, cliVersionsVerified: true };
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 508, failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });
 }

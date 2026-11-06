@@ -109,7 +109,8 @@ test("retained mutation evidence preserves exact recorded scope revisions", () =
   assert.equal(proof.changed, true); assert.equal(proof.path, "summary.md");
 });
 
-for (const mode of ["crash", "read-batch", "callback-error", "save-error", "normal"]) test(`completed native batch checkpoint: ${mode}`, { timeout: 25000 }, async t => {
+for (const mode of ["crash", "read-batch", "callback-error", "save-error", "normal", "event-error", "event-async-error", "change-error", "event-hostile-error", "read-batch-event-error", "read-batch-async-error", "log-async-error", "observer-abort", "start-event-error", "start-async-error"]) test(`completed native batch checkpoint: ${mode}`, { timeout: 25000 }, async t => {
+  const readBatch = mode.startsWith("read-batch"), preDispatch = mode.startsWith("start-"), deliveryError = !preDispatch && !["crash", "read-batch", "normal", "save-error", "observer-abort"].includes(mode);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-tool-checkpoint-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(root + "/workspace"); await fs.writeFile(root + "/workspace/note.txt", note); await fs.writeFile(root + "/workspace/other.txt", "Other note remains open.\n");
@@ -123,14 +124,14 @@ for (const mode of ["crash", "read-batch", "callback-error", "save-error", "norm
         step++;
         if (phase === "resume") {
           const proofs = confirmedPayloads(body.messages);
-          const requiredPaths = mode === "read-batch" ? ["note.txt", "other.txt"] : ["summary.md"];
-          for (const target of requiredPaths) assert.ok(proofs.some(p => p.path === target && (mode === "read-batch" ? p.toolName === "read_file" : ["write_file", "apply_patch"].includes(p.toolName))), "confirmed completed outcome absent: " + target);
-          message = step === 1 && mode !== "read-batch" ? { tool_calls: [call("read_file", { path: "summary.md" }, "resume_verify")] }
-            : { tool_calls: [call("finish", { result: mode === "read-batch" ? "The first note reports latency improving from 120 ms to 90 ms; the other note remains open." : "Saved summary.md with the latency improvement from 120 ms to 90 ms; note.txt is unchanged." }, "resume_finish")] };
+          const requiredPaths = readBatch ? ["note.txt", "other.txt"] : ["summary.md"];
+          for (const target of requiredPaths) assert.ok(proofs.some(p => p.path === target && (readBatch ? p.toolName === "read_file" : ["write_file", "apply_patch"].includes(p.toolName))), "confirmed completed outcome absent: " + target);
+          message = step === 1 && !readBatch ? { tool_calls: [call("read_file", { path: "summary.md" }, "resume_verify")] }
+            : { tool_calls: [call("finish", { result: readBatch ? "The first note reports latency improving from 120 ms to 90 ms; the other note remains open." : "Saved summary.md with the latency improvement from 120 ms to 90 ms; note.txt is unchanged." }, "resume_finish")] };
         } else if (step === 1) {
           message = { tool_calls: [call("read_file", { path: "note.txt" }, "checkpoint_read")] };
-          if (mode === "read-batch") message.tool_calls.push(call("read_file", { path: "other.txt" }, "checkpoint_other"));
-        } else if (step === 2 && mode !== "read-batch") {
+          if (readBatch) message.tool_calls.push(call("read_file", { path: "other.txt" }, "checkpoint_other"));
+        } else if (step === 2 && !readBatch) {
           const write = body.tools.some(t => t.function.name === "write_file") ? call("write_file", { path: "summary.md", content: summary, mode: "create" }, "checkpoint_write")
             : call("apply_patch", { patch: "*** Begin Patch\n*** Add File: summary.md\n" + summary.trimEnd().split("\n").map(x => "+" + x).join("\n") + "\n*** End Patch" }, "checkpoint_write");
           message = { tool_calls: [write, call("read_file", { path: "summary.md" }, "deferred_verify")] };
@@ -150,12 +151,40 @@ for (const mode of ["crash", "read-batch", "callback-error", "save-error", "norm
     c.once("error", reject); c.once("exit", (code, signal) => { clearTimeout(timer); resolve({ code, signal, expired, stdout, stderr }); });
   });
   const first = await run(); assert.equal(first.expired, false); assert.deepEqual(errors, []);
+  let state = JSON.parse(await fs.readFile(session + "/state.json"));
+  const firstEvidence = { first, results: state.messages.filter(m => m.role === "tool"),
+    summaryBytes: readBatch || preDispatch ? null : await fs.readFile(root + "/workspace/summary.md", "utf8") };
+  if (mode.includes("error") && mode !== "save-error") assert.doesNotMatch(first.stderr, /unhandled|Synthetic.*observer failure\n\s+at/, "observer rejection must be reported by the runtime, not escape the process");
   if (["crash", "read-batch"].includes(mode)) assert.equal(first.signal, "SIGKILL");
-  else assert.equal(first.code, mode === "normal" ? 0 : 1, JSON.stringify(first));
-  let state = JSON.parse(await fs.readFile(session + "/state.json")); assertClosed(state.messages);
-  const required = mode === "read-batch" ? ["checkpoint_read", "checkpoint_other"] : ["checkpoint_write"];
+  else assert.equal(first.code, ["normal", "observer-abort"].includes(mode) ? 0 : 1, JSON.stringify(firstEvidence));
+  if (preDispatch) {
+    assert.equal(step, 2); assert.equal(first.stderr, "");
+    await assert.rejects(fs.stat(root + "/workspace/summary.md"), { code: "ENOENT" });
+    assert.equal(state.messages.some(m => m.tool_call_id === "checkpoint_write"), false);
+    const events = (await fs.readFile(session + "/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
+    assert.equal(events.some(e => e.type === "file.changed" || e.type === "session.finished" || e.type === "tool.failed"), false);
+    assert.equal(await fs.readFile(root + "/workspace/note.txt", "utf8"), note);
+    await assert.rejects(fs.stat(session + "/.agent-run.lock"), { code: "ENOENT" });
+    return;
+  }
+  assertClosed(state.messages);
+  const required = readBatch ? ["checkpoint_read", "checkpoint_other"] : ["checkpoint_write"];
   for (const id of required) assert.ok(state.messages.some(m => m.role === "tool" && m.tool_call_id === id && JSON.parse(m.content).ok === true), "completed outcome missing after callback/death: " + id);
-  assert.ok(state.stepsCompleted >= (mode === "read-batch" ? 1 : 2));
+  assert.ok(state.stepsCompleted >= (readBatch ? 1 : 2));
+  if (mode === "observer-abort") {
+    const report = JSON.parse(first.stdout.trim().split("\n").at(-1));
+    assert.equal(report.reason, "user_interrupt"); assert.equal(report.observerAbortListeners, 0);
+    assert.equal(step, 2); assert.equal(state.meta.goalContract.status, "paused");
+  }
+  if (deliveryError) {
+    const report = JSON.parse(first.stdout.trim().split("\n").at(-1));
+    assert.equal(report.error.code, "OBSERVER_DELIVERY_FAILED"); assert.equal(report.observerTrapReads, 0);
+    assert.equal(step, readBatch ? 1 : 2, "delivery failure must stop before another provider request");
+    assert.doesNotMatch(JSON.stringify(state), /CALLBACK_PRIVATE_SENTINEL/);
+    const savedEvents = await fs.readFile(session + "/events.jsonl", "utf8");
+    assert.doesNotMatch(savedEvents, /CALLBACK_PRIVATE_SENTINEL/);
+    assert.equal(savedEvents.split("\n").filter(Boolean).map(JSON.parse).some(e => e.type === "tool.failed"), false, "callback failure is not a failed tool");
+  }
   if (mode === "save-error") await assert.rejects(fs.stat(root + "/post-result-callback.json"), { code: "ENOENT" });
   if (mode !== "normal") {
     const events = (await fs.readFile(session + "/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
@@ -165,8 +194,8 @@ for (const mode of ["crash", "read-batch", "callback-error", "save-error", "norm
   }
   state = JSON.parse(await fs.readFile(session + "/state.json")); assertClosed(state.messages); assert.equal(state.meta.goalContract.status, "completed");
   const events = (await fs.readFile(session + "/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
-  assert.equal(events.filter(e => e.type === "tool.started" && ["write_file", "apply_patch"].includes(e.data.toolName)).length, mode === "read-batch" ? 0 : 1);
-  if (mode !== "read-batch") assert.equal(await fs.readFile(root + "/workspace/summary.md", "utf8"), summary);
+  assert.equal(events.filter(e => e.type === "tool.started" && ["write_file", "apply_patch"].includes(e.data.toolName)).length, readBatch ? 0 : 1);
+  if (!readBatch) assert.equal(await fs.readFile(root + "/workspace/summary.md", "utf8"), summary);
   assert.equal(await fs.readFile(root + "/workspace/note.txt", "utf8"), note);
   await assert.rejects(fs.stat(session + "/.agent-run.lock"), { code: "ENOENT" });
 });

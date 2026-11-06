@@ -24,6 +24,23 @@ an uncertain outcome. Partial read-only work may need repeating. Existing
 permission, create-only, task-provenance and completion gates remain necessary;
 a successful tool checkpoint does not mark the whole user task complete.
 
+Tool-result observer delivery has a separate failure boundary. Synchronous
+exceptions and rejected promises from result events and post-result logs cannot
+change a successful tool into a failed tool. Native events and the closed saved
+tool frame retain the actual outcome. Once that checkpoint is saved, a delivery
+failure stops the run with `OBSERVER_DELIVERY_FAILED`, before another model
+request or a completion claim. Restore the observer before resuming the same
+session; confirmed work remains available to the existing continuation guards.
+Callback exception text is not copied into model history or native error events.
+
+Pre-dispatch `tool.started` delivery must succeed before the tool runs. Accepted
+read-only batches finish their bounded reads before surfacing result-delivery
+failure; mutations remain serialized. Cancellation interrupts a pending observer
+wait and removes its abort listener, without discarding confirmed outcomes.
+Callbacks remain responsible for stopping their own asynchronous external work.
+This does not make external delivery transactional, repair a failed native-store
+write, or qualify an application-owned event ledger or integration mount.
+
 Run `npm run test:native-tool-checkpoint` for offline regressions. They kill only
 test-owned child processes, verify closed saved/request history and exact output
 bytes, resume from a fresh process, inject checkpoint/callback failures, and

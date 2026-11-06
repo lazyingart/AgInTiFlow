@@ -49,7 +49,7 @@ for (const mode of ["EIO", "ENOSPC", "normal", "local-handoff"]) test(`persisted
   let result = await invoke(); const dir = root + "/sessions/partial-patch-" + mode;
   const read = async () => ({ state: JSON.parse(await fs.readFile(dir + "/state.json")), events: (await fs.readFile(dir + "/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse) });
   if (mode !== "normal") {
-    assert.equal(result.injected, true); assert.equal(result.error.code, "PAUSE_AFTER_PARTIAL_PATCH");
+    assert.equal(result.injected, true); assert.equal(result.error.code, "OBSERVER_DELIVERY_FAILED");
     const { state, events } = await read(); const failure = events.find(e => e.type === "tool.failed" && e.data.toolName === "apply_patch");
     assert.equal(failure.data.partial, true); assert.equal(failure.data.changes[0].path, "planning.md"); assert.equal(failure.data.partialPatch.failedOperation.path, "review.md");
     assert.equal(state.meta.projectVerification.mutationRevision, 1); assert.deepEqual(state.meta.projectVerification.mutationHistory.at(-1).paths, ["planning.md"]);
