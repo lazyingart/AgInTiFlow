@@ -35,9 +35,19 @@ to require the actual retained write receipt; no inference is repeated.
 
 The final full `npm test` passes in 534.348 seconds with all 403 captured inputs
 unchanged. Syntax covers 322 files and the production dependency audit reports
-zero vulnerabilities. Publication and installed qualification remain gated on
-exact package verification. The demonstration is explicitly a verification
-replay of the completed real task, not inference footage or a latency benchmark.
+zero vulnerabilities. The first CI also passes its full suite and audit, then
+hits the package verifier's fixed 60-second consumer deadline without a failed
+test. A two-CPU reproduction confirms `ETIMEDOUT` after 312 passing cases; the
+old assertion hides that cause behind the child's exit code. The verifier now
+keeps all 508 tests, caps file concurrency at two, allows a bounded 180 seconds
+and surfaces spawn errors explicitly. The failed 0.20.373-integration.0 tag is
+immutable and unpublished. The corrected two-CPU gate passes all 508 cases in
+66.438 seconds, and a fresh full suite passes in 550.444 seconds with all 403
+inputs unchanged. The exact native runtime remains byte-identical to the real
+two-request continuation; no model call is repeated for this verifier change.
+The separate 0.20.373-integration.1 candidate still requires registry and installed
+qualification. The demonstration is explicitly a verification replay of the
+completed real task, not inference footage or a latency benchmark.
 
 The change does not repair failed native-store writes, make callbacks
 transactional, stop callback-owned external work, or enable the native public
