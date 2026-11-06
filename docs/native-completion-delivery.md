@@ -61,3 +61,17 @@ creation and response-only summaries do not gain file mutation authority.
 This classifier changes neither workspace permissions nor shell, package,
 publication, provider or sandbox policy. Existing source and artifact validation
 remain required.
+
+## Piped interactive input during resume
+
+Non-TTY interactive input begins iteration before asynchronous startup and saved
+history rendering. Lines received during that work, between questions or while
+the previous task is running remain queued, including lines followed by EOF.
+They are processed in order through the same native prompt and runtime-revision
+checks. A stale prompt cannot bypass CAS or become a silent successful exit.
+
+Interactive pipes are line-oriented. Use the one-shot `run --stdin` interface
+when one request contains multiple lines. The TTY composer and live input path
+retain their existing behavior; this change adds no application authorization
+or inference fallback. Application integrations should use the restricted SDK
+or their qualified native contract rather than expose a broad interactive CLI.

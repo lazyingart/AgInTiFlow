@@ -1,5 +1,43 @@
 # Supervision Campaign Ledger
 
+## Native interactive startup input ownership — 2026-11-07
+
+Immutable candidate 0.20.374-integration.0 fails isolated CI in the existing
+interactive stale-runtime smoke. The prompt arrives while saved history is
+being rendered, before the first readline question owns it. The CLI drops the
+line and EOF, exits normally, and never reports the expected runtime-revision
+conflict. The document-server smoke that was locally occupied does run and pass
+on this isolated runner. Publishing and global installation stop; the failed
+tag, source, local archive and CI evidence remain unchanged and unpublished.
+
+A deterministic reproduction on the installed 373.1 package confirms the
+older core bug independently of the new terminal-delivery helper. A test-only
+history-read barrier waits for stdin EOF. Submitting a stale prompt during that
+barrier proves silent input loss with zero model calls. This is input ownership,
+not a slow-CI deadline or an excuse to weaken the stale-revision assertion.
+
+Non-TTY interactive input now begins Node readline async iteration before
+asynchronous startup/history work. Buffered lines and EOF remain available
+between questions and while a previous task is processing. Startup and iterator
+cleanup share the existing finally boundary. TTY composition, provider policy,
+runtime CAS and the native task engine are unchanged.
+
+Three deterministic actual-CLI/mock-provider regressions prove stale-CAS
+refusal before prompt persistence, both buffered file tasks executing, and empty
+EOF exiting cleanly. They check saved provider/model, absent ambient credential
+material, preserved seed bytes, actual file changes and run-lock cleanup. The
+existing CLI smoke passes without an assertion or deadline change. A first
+test-only unused gate promise is given a rejection sink before qualification;
+that harness error is not presented as another product failure.
+
+The fresh full `npm test` passes in 517.967 seconds with all 409 captured inputs
+unchanged. Syntax covers 322 files and the production audit is clean. Native
+agent and evidence-validation bytes remain identical to the prior five-request
+real Flash qualification and its final-source replay; no paid inference is
+repeated. Eleven actual requests across the original failed and successful
+examples remain counted once. A new 374.1 candidate still requires fresh
+package, isolated publishing and installed-consumer gates.
+
 ## Durable completion delivery and named-file intent — 2026-11-07
 
 Installed 0.20.373-integration.1 reproduces a native terminal-delivery defect:

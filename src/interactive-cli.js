@@ -1819,13 +1819,21 @@ function readTtyPrompt(options = {}) {
   });
 }
 
-async function readPromptAnswer(rl, state = {}) {
+async function readPromptAnswer(rl, state = {}, inputLines = null) {
   if (input.isTTY && output.isTTY && typeof input.setRawMode === "function") {
     return readTtyPrompt({
       commandCwd: state.commandCwd || process.cwd(),
       language: state.language || cliLanguage,
       footerStatus: modeFooterStatus(state),
     });
+  }
+  if (inputLines) {
+    output.write(userPrompt());
+    const next = await inputLines.next();
+    if (!next.done) return next.value;
+    const error = new Error("CLI input is closed.");
+    error.code = "ERR_USE_AFTER_CLOSE";
+    throw error;
   }
   return rl.question(userPrompt());
 }
@@ -4758,19 +4766,23 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
           terminal: false,
           completer: commandCompleter,
         });
-
-  await renderLaunchHeader(packageVersion, state.language, state.webAppUrl, state.webAppNotice);
-  printSystemLine(`${tr("project")}: ${process.cwd()}`);
-  await maybeOnboardDeepSeekKey(state);
-  printAgentMessage(tr("interactiveIntro"));
-  printStatus(state);
-  await printResumeHistory(state);
+  // Begin iteration before any asynchronous startup/history work. A one-shot
+  // question listener otherwise drops pipe lines (and EOF) arriving before the
+  // first question or while the preceding prompt is still being processed.
+  const inputLines = rl?.[Symbol.asyncIterator]();
 
   try {
+    await renderLaunchHeader(packageVersion, state.language, state.webAppUrl, state.webAppNotice);
+    printSystemLine(`${tr("project")}: ${process.cwd()}`);
+    await maybeOnboardDeepSeekKey(state);
+    printAgentMessage(tr("interactiveIntro"));
+    printStatus(state);
+    await printResumeHistory(state);
+
     while (true) {
       let answer = "";
       try {
-        answer = await readPromptAnswer(rl, state);
+        answer = await readPromptAnswer(rl, state, inputLines);
       } catch (error) {
         if (error?.code === "ERR_USE_AFTER_CLOSE") break;
         if (isAbortError(error)) {
@@ -4814,6 +4826,7 @@ export async function startInteractiveCli(args = {}, { packageDir, packageVersio
   } finally {
     detachProcessInterrupts();
     rl?.close();
+    await inputLines?.return();
     restoreTerminalForExit();
   }
 }
