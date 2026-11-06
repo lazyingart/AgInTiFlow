@@ -2,6 +2,21 @@
 
 ## Optional bounded DeepSeek application transport — 2026-11-06
 
+Final release0.20.367-integration.1 is published and globally installed. The
+immutable release5866cd832ec7d443eb2a5145473d91cc44f5efc2 follows test-fix
+sourcef574fe5fb702f6883505964c5575f1e2595745b0; the original optional-client
+source8b02ee7 is unchanged. Tagged CI42190361422/job127800569396 succeeds.
+Local and actual-registry consumers each pass371cases. All545archive files
+match committed release Git and the installed package. The optional public
+import is checked from installed packages; bothglobal CLI commands report the
+exact version,151actualglobal tests pass, and the personal0600provider
+preference is unchanged. ArchiveSHA256 is
+f7b12aadbbd99b432dc1dbe02bf095fa5f024a7c4d9e7578c35bb68df41a2a14.
+Registry provenance subject/commit are inspected, not independently signature
+verified. Publication/propagation and fresh install each complete before the
+next gate. No app service or backend routing is changed. Own full-suite test
+servers are stopped with exact process identity checks; dependency link removed.
+
 The first immutable release candidate,367-integration.0, is not published:
 CI42186478236 stops at an existing native-lock test. Its fixture assumes B must
 win acquisition after removing the dead canonical name. A can legally publish
