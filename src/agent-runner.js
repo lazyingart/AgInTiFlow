@@ -57,6 +57,7 @@ import {
 } from "./shell-syntax.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 import {
+  captureWorkspaceVerificationFingerprint,
   executeWorkspaceTool,
   normalizeWorkspaceInputPath,
   parsePatchDocument,
@@ -9314,6 +9315,8 @@ function currentTurnImplementationOpen(state = {}) {
   );
 }
 
+const freshlyObservedTestRuns = new WeakSet();
+
 function testRunMatchesVerificationRevision(run = {}, verification = {}) {
   return Boolean(
     Number(run?.mutationRevision || 0) ===
@@ -10210,6 +10213,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         requiredCommandFailure: failedRequiredCommand,
         ...failedEvidence,
       };
+      if (passed) freshlyObservedTestRuns.add(testRun);
       const repositoryStateRepairMarker = state.meta?.repositoryStateRepair;
       if (
         repositoryStateRepairMarker &&
@@ -10857,6 +10861,45 @@ export function buildTaskOwnedCommitCommand(
     `git add -- ${quotedPaths.join(" ")}`,
     `git commit -m ${quotedSubject}`,
   ].join(" && ");
+}
+
+async function revalidateProjectTestEvidence({ state, config, store, observers }) {
+  const verification = state.meta?.projectVerification;
+  const runs = Array.isArray(verification?.testRuns) ? verification.testRuns : [];
+  const latest = new Map();
+  for (const run of runs) {
+    if (testRunMatchesVerificationRevision(run, verification) && !testRunRepresentsInvalidInvocation(run)) {
+      latest.set(projectTestCommandKey(run.command), run);
+    }
+  }
+  // Do not erase an unresolved real failure by moving its verifier revision.
+  if ([...latest.values()].some(run => run.passed !== true)) return null;
+  const passing = [...latest.values()].filter(run => run.passed === true);
+  if (!passing.length) return null;
+  if (passing.every(run => !run.workspaceFingerprint && freshlyObservedTestRuns.has(run))) return null;
+  const current = await captureWorkspaceVerificationFingerprint(config);
+  const valid = value => value?.version === 1 && /^[a-f0-9]{64}$/.test(value.rootDigest) &&
+    /^[a-f0-9]{64}$/.test(value.digest) && Number.isSafeInteger(value.entryCount) && value.entryCount > 0 && value.entryCount <= 4097;
+  const stale = passing.some(run => {
+    const prior = run.workspaceFingerprint;
+    // Legacy/oversized workspaces may report a just-observed test, but cannot
+    // lend that result to another invocation without a complete observation.
+    if (!prior) return !freshlyObservedTestRuns.has(run);
+    return !valid(prior) || !valid(current) || prior.rootDigest !== current.rootDigest ||
+      prior.digest !== current.digest || prior.entryCount !== current.entryCount;
+  });
+  if (!stale) return null;
+  verification.privateMutationRevision = verificationPrivateMutationRevision(verification) + 1;
+  const detail = { version: 1, reason: current ? "workspace-verification-changed" : "workspace-verification-unavailable",
+    mutationRevision: verification.mutationRevision, privateMutationRevision: verification.privateMutationRevision };
+  verification.privateMutationHistory = [...(verification.privateMutationHistory || []), {
+    revision: verification.privateMutationRevision, projectMutationRevision: verification.mutationRevision,
+    at: new Date().toISOString(), toolName: "runtime_verification_revalidation", paths: [],
+  }].slice(-32);
+  delete state.meta.verifiedCompletionCandidate;
+  await store.appendEvent("verification.workspace_invalidated", detail);
+  observers.event("verification.workspace_invalidated", detail);
+  return detail;
 }
 
 export function projectTestVerificationFinishBlock(state = {}, candidateResult) {
@@ -24988,6 +25031,10 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           ...(permissionAdvice ? { permissionAdvice } : {}),
         };
         recordProjectVerificationOutcome(state, result, config);
+        if (result.projectTest?.passed === true) {
+          const fingerprint = await captureWorkspaceVerificationFingerprint(config);
+          if (fingerprint) result.projectTest.workspaceFingerprint = fingerprint;
+        }
         const repositoryStateRepair = recordAlreadyCommittedRepositoryRepair(
           state,
           result
@@ -26449,6 +26496,7 @@ async function completionEvidenceDecisionInner({ config, state, store, observers
   // SCS is an additional semantic reviewer, never a substitute for the
   // deterministic execution, project-test, and artifact gates below. A model
   // narrative must not become successful merely because SCS is active.
+  await revalidateProjectTestEvidence({ state, config, store, observers });
   let assessment = await evaluateCompletionEvidence({ config, state, store });
   const projectTestBlock = projectTestVerificationFinishBlock(state, candidateResult);
   if (projectTestBlock) {
@@ -30486,6 +30534,11 @@ async function runAgentOnceUnlocked(config) {
     await store.appendEvent(runtimeResolutionEvent.type, runtimeResolutionEvent.data);
   }
 
+  if (await revalidateProjectTestEvidence({ state, config, store, observers })) {
+    completedContinuationNoop = false;
+    updateGoalStatus(state, "active", "workspace_verification_stale");
+    await store.saveState(state);
+  }
   if (completedContinuationNoop) {
     return finishCompletedContinuationNoop({ config, state, store, observers, sessionId });
   }

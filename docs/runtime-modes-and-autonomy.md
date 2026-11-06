@@ -197,6 +197,29 @@ This would support durable tmux, dev servers, long installs, notebooks, and lang
 
 ## Long-Running Autonomy
 
+Passing project tests carry a bounded workspace metadata observation. Resume and
+completion recheck that observation before reusing the pass. Changes to visible
+source, tests, manifests, generated inputs or vendored dependencies invalidate
+the verifier revision; they do not manufacture an agent-owned edit. AgInTi must
+run fresh verification and repair a genuine failure before claiming completion.
+Even a previously completed task cannot use its no-op continuation shortcut
+after this observation changes.
+
+The observer excludes exact configured private runtime storage, reads metadata
+only, stores hashes and counts, and follows the
+existing sensitive-path and task-scope policy. It visits at most 4,096 entries
+and 12 directory levels, rejects child symlinks and incomplete observations,
+and never persists source bytes or filenames in its fingerprint. Old sessions
+without a complete observation, and oversized or unobservable workspaces, need
+a newly observed test in each invocation. An unchanged observable workspace can
+retain its pass without running tests again. An unresolved failed test remains
+a failure; revalidation cannot erase it by advancing the verifier revision.
+
+This is ordinary workspace-change detection, not a content seal, atomic file
+transaction, same-user forgery defense or proof about private/cache trees,
+external dependencies, services or environment variables. Those remain separate
+verification boundaries.
+
 Large tasks should not stop because an early high-level plan ran out. AgInTiFlow should use rolling plans:
 
 1. Orient: inspect project instructions, git status, manifests, and current files.

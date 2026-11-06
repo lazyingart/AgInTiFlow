@@ -1,5 +1,65 @@
 # Supervision Campaign Ledger
 
+## External workspace changes invalidate retained passing tests — 2026-11-06
+
+Installed365 reproduces a native false completion without inference: a real npm
+test passes, the session is interrupted, another process changes the source,
+and an independent test now exits1. Resume nevertheless accepts its first finish
+claiming npm test passes, with no new command and no rejection. The unchanged
+agent-owned mutation revision is insufficient evidence about current files.
+
+Passing native tests now retain a bounded metadata fingerprint of the permitted
+workspace. Resume and completion compare it before reusing the pass; additions,
+removals, edits, replacements, generated inputs, dependency files and restored
+mtime edits invalidate only the verifier revision. No agent edit is invented.
+Unknown, legacy, symlink, scoped or oversized observations cannot lend a pass to
+another invocation. Fresh direct verification remains available, unchanged
+observable work can finish without retesting, and real current failures remain
+blocking. Source bytes and names are not persisted in the fingerprint.
+
+Nineteen focused tests include source changes between processes and in-flight,
+SCS on/off, completed-task no-op refusal, legacy migration, fresh repair and
+unchanged continuation. The original recovery fixture attempted an edit before
+the required fresh test; three tool-contract failures are retained. The fixture
+now follows the offered order: test the current source, read and repair its real
+failure, rerun the test and finish. No tool or permission contract was weakened.
+The first full suite exposed self-invalidation when runtime storage is inside
+the project; exact configured private roots are now excluded and their policy
+is hash-bound. Ordinary siblings remain inputs, and excluding the whole root
+cannot create a reusable observation. This is a production fix, not a fixture
+relocation. Full, package and actual-provider acceptance remain separate gates.
+
+The unchanged installed Codex0.166.0 and its existing diagnostic still do not
+establish an application no-tools transport; no duplicate launch was made.
+LocalLLM S2 remains unapproved. No application, service, credential, model or GPU
+configuration is changed by this workspace verification repair.
+
+The final source passes52 focused cases (19new,18 retained-progress and15 native
+adviser), neighboring progressive/session/truthful checks, syntax318, audit0 and
+the full npm suite in497.102seconds. All385 recorded runtime/test/package inputs
+remain unchanged. Package dry-run has542 files. Registry and installed-release
+qualification remain separate steps.
+
+A fresh process continues the persisted synthetic line-counter task with only
+“Continue the same task.” Six real Flash requests take12.714seconds for the whole
+process: stale proof is invalidated, current tests fail, source is read/repaired,
+fresh npm test passes and the task finishes. A malformed model call is recovered
+before dispatch. The seed uses no model calls but does execute real passing
+tests before the controlled outside source fault; this is not a claim of an
+all-live initial task or live OpenAI handoff. The real continuation explicitly
+patches the saved scripted provider to DeepSeekFlash at runtime revision2.
+
+The original acceptance harness exits1 because it demands the reference source
+formatting. Its output is preserved. Independent review accepts the different
+correct implementation: four existing tests and ten extra semantic checks pass,
+test/manifest bytes are unchanged and only source is repaired. A first review
+also omitted the pre-existing native codebase-map cache from its expected file
+inventory; the final review verifies that cache predates the live run. There is
+no second provider run or paid retry. The21.8-second video preserves actual PTY
+timing and labels its later independent-review panel separately. On this small
+fixture,60 metadata observations retain22 file descriptors and have p95 below
+1.5ms; no general filesystem or latency guarantee is inferred.
+
 ## Retained execution progress across conversation turns — 2026-11-06
 
 Installed 364 reproduces a tool-selection defect without inference: a saved task

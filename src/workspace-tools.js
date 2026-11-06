@@ -415,6 +415,61 @@ function isSensitivePath(relativePath) {
   return /(^|\/)(secrets?|tokens?|passwords?|private[-_]?keys?|credentials?)(\/|\.|$)/i.test(lowerPath);
 }
 
+// A bounded metadata observation of the public workspace, not a sandbox or a
+// proof of external services/dependencies. Never read contents, follow child
+// symlinks, or persist names. Incomplete/racing observations cannot be reused.
+export async function captureWorkspaceVerificationFingerprint(config) {
+  try {
+    const target = resolveWorkspacePath(config, ".");
+    const root = await fs.realpath(target.absolutePath);
+    const runtimeRoots = [config.sessionsDir, config.projectSessionsDir, process.env.AGINTIFLOW_HOME]
+      .filter(value => typeof value === "string" && value).map(value => path.resolve(value));
+    if (runtimeRoots.includes(target.absolutePath)) return null;
+    const excluded = [...new Set(runtimeRoots.filter(value => isInside(target.absolutePath, value))
+      .map(value => normalizeRelative(path.relative(target.absolutePath, value))))].sort();
+    const rows = [];
+    let entries = 0;
+    const identity = stat => [stat.dev, stat.ino, stat.mode, stat.nlink, stat.size, stat.mtimeNs, stat.ctimeNs].map(String);
+    async function visit(directory, relative = "", depth = 0) {
+      if (depth > 12) throw Error("observation limit");
+      const before = await fs.lstat(directory, { bigint: true });
+      if (!before.isDirectory() || await fs.realpath(directory) !== directory) throw Error("unavailable directory");
+      const children = [];
+      for await (const child of await fs.opendir(directory)) {
+        if (++entries > 4096) throw Error("observation limit");
+        children.push(child);
+      }
+      children.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+      rows.push([relative, "directory", ...[before.dev, before.ino, before.mode].map(String)]);
+      for (const child of children) {
+        const name = relative ? `${relative}/${child.name}` : child.name;
+        if (excluded.some(value => name === value || name.startsWith(`${value}/`))) continue;
+        const publicInputTree = ["dist", "build", "coverage", "output", "outputs", "artifacts", "node_modules", "venv", ".venv", ".conda"].includes(child.name);
+        if ((shouldSkipTraversalEntry(child) && !publicInputTree) || isSensitivePath(name)) continue;
+        // Retain the existing task path policy even for metadata-only reads.
+        resolveWorkspacePath(config, name);
+        const absolute = path.join(directory, child.name);
+        const stat = await fs.lstat(absolute, { bigint: true });
+        if (stat.isDirectory()) await visit(absolute, name, depth + 1);
+        else if (stat.isFile() && !child.isSymbolicLink()) rows.push([name, "file", ...identity(stat)]);
+        else throw Error("unavailable entry");
+      }
+      const after = await fs.lstat(directory, { bigint: true });
+      if (JSON.stringify(identity(before)) !== JSON.stringify(identity(after))) throw Error("directory changed");
+    }
+    await visit(root);
+    if (await fs.realpath(target.absolutePath) !== root) return null;
+    return {
+      version: 1,
+      rootDigest: crypto.createHash("sha256").update(JSON.stringify({ root, excluded })).digest("hex"),
+      digest: crypto.createHash("sha256").update(JSON.stringify(rows)).digest("hex"),
+      entryCount: rows.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function isNodeModulesPath(relativePath) {
   return pathSegments(relativePath).includes("node_modules");
 }
