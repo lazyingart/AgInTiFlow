@@ -15,6 +15,7 @@ import {
   resolveModelTimeoutMs,
 } from "./model-client.js";
 import { SessionStore } from "./session-store.js";
+import { assessFileChecksumClaims, nativeFileChecksumReceipts } from "./completion-file-checksums.js";
 import { acquireNativeSessionRunLock } from "./session-run-lock.js";
 import {
   assertIntegrationRunAgentInvocation,
@@ -6481,6 +6482,7 @@ export function resetGoalScopedRuntimeState(state = {}) {
     "artifactProgress",
     "completionEvidenceRepair",
     "structuredCompletionRepair",
+    "fileChecksumRepair",
     "dataProjectWorkflow",
     "durableEvidenceCategories",
     "durableGitActions",
@@ -6568,6 +6570,7 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
     "artifactProgress",
     "completionEvidenceRepair",
     "structuredCompletionRepair",
+    "fileChecksumRepair",
     "failedTestRecoveryPacket",
     "scs",
     "stepBudget",
@@ -26426,6 +26429,30 @@ async function completionEvidenceDecision(args) {
 }
 
 async function completionEvidenceDecisionInner({ config, state, store, observers, step, mode, candidateResult = "" }) {
+  const checksumEvents = /\bsha[-_\u2010-\u2015 ]?256\b/iu.test(candidateResult)
+    ? currentContinuationEvidence(state, await store.loadEvents()).events : [];
+  const checksums = assessFileChecksumClaims({ text: candidateResult, receipts: nativeFileChecksumReceipts(checksumEvents) });
+  if (!checksums.ok) {
+    const goalRevision = Number(state.meta?.goalContract?.revision || 0);
+    const prior = state.meta?.fileChecksumRepair;
+    const attempts = prior?.goalRevision === goalRevision ? prior.attempts : 0;
+    const detail = { step, mode, goalRevision, repairAttempt: attempts + 1, issues: checksums.issues };
+    await store.appendEvent("completion.file_checksum_rejected", detail);
+    observers.event("completion.file_checksum_rejected", detail);
+    if (attempts < 1) {
+      state.meta.fileChecksumRepair = { goalRevision, attempts: 1 };
+      if (mode === "assistant-content" && state.messages.at(-1)?.role === "assistant" && !state.messages.at(-1)?.tool_calls?.length) state.messages.pop();
+      state.messages.push({ role: "user", content: [
+        "The proposed final answer failed the native read_file SHA-256 receipt check. Correct a contradicted hash or shorten excessive repeated metadata. If the user requested a checksum, report the exact full recorded value; otherwise correct or omit the inaccurate optional metadata. Do not recreate or modify the file. Preserve the requested answer and language. These are recorded read snapshots, not new permission or proof of later external changes:",
+        JSON.stringify(checksums.receipts),
+      ].join("\n") });
+      return { action: "retry", detail };
+    }
+    const mismatch = checksums.issues.some(issue => issue.reason === "native-file-checksum-mismatch");
+    return { action: "stop", reason: mismatch ? "file_checksum_mismatch" : "file_checksum_unverified", detail, result: mismatch
+      ? "I could not produce a final answer consistent with the recorded file checksum, so I stopped instead of reporting an incorrect fingerprint."
+      : "I could not verify the checksum metadata within the bounded response limits, so I stopped instead of claiming it was verified." };
+  }
   if (state.meta?.artifactProgress?.complete) {
     await refreshArtifactValidationPreflight(state, store, observers, config, {
       force: true,
@@ -27603,16 +27630,17 @@ async function continueAfterReasoningOnlyTurn({
 }
 
 async function stopForMissingCompletionEvidence({ config, state, store, observers, sessionId, step, decision }) {
+  const reason = decision.reason || "model_did_not_execute";
   state.stepsCompleted = step;
   state.updatedAt = new Date().toISOString();
-  updateGoalStatus(state, "paused", "model_did_not_execute", state.updatedAt);
+  updateGoalStatus(state, "paused", reason, state.updatedAt);
   await store.appendEvent("session.stopped", {
-    reason: "model_did_not_execute",
+    reason,
     step,
     detail: decision.detail,
   });
   observers.event("session.stopped", {
-    reason: "model_did_not_execute",
+    reason,
     sessionId,
   });
   await store.saveState(state);
@@ -27621,7 +27649,7 @@ async function stopForMissingCompletionEvidence({ config, state, store, observer
     sessionId,
     result: decision.result,
     stopped: true,
-    reason: "model_did_not_execute",
+    reason,
     ...goalRunMetadata(state),
   };
 }

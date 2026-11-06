@@ -1,5 +1,44 @@
 # Supervision Campaign Ledger
 
+## Native file-checksum completion consistency — 2026-11-06
+
+The preceding recovery example exposes a provider prose error: an abbreviated
+file checksum disagrees with the exact native receipt while the file itself is
+correct. A separate offline probe of installed 0.20.369 reproduces a reusable
+runtime gap: both a wrong full SHA-256 and that wrong abbreviation are accepted
+as completed despite a contradicting native read receipt.
+
+The native completion gate now checks explicit labeled file-checksum claims
+against active-task read receipts. It allows one correction, preserves language
+and task requirements, and pauses repeated contradictions with
+`file_checksum_mismatch`. It grants no new tool permission and never regenerates
+the file to make a claim true. Earlier snapshots are retired at read admission
+and actual native read errors, or after possible mutation/unknown effects.
+
+Fifty-three focused controls cover full and abbreviated hashes, English,
+Chinese and Japanese, quotations, historical/expected/negated/unrelated values,
+actual native event shapes, bounded work, native finish/plain content, and
+fresh-process same-task continuation. Three fresh native sessions with a
+scripted loopback provider pass 24 external checks: correct hash accepted,
+optional abbreviation corrected, stubborn false checksum paused with no
+successful completion. Input bytes stay unchanged and no producer is called.
+There are no new paid model calls; the original real-model observation is not
+regenerated or counted again. A labeled actual-timing offline demo is retained.
+
+Candidate review also catches historical/quotation false positives, excessive
+repeated-input work and a mismatch with the actual failed-read event envelope.
+Those findings and earlier passing suites are retained as intermediate evidence;
+they do not substitute for the final source-bound qualification. The final full
+`npm test` exits zero in 526.019 seconds with all 396 captured inputs unchanged;
+syntax checks cover 321 files. Neighboring truthful-completion, session-runtime,
+inbox and native-checkpoint suites pass. Package, registry and global-install
+qualification is recorded separately after publication.
+
+This is a bounded contradiction check for adjacent labeled SHA-256 metadata
+with a scoped native receipt. It does not validate all prose or other algorithms,
+certify unobserved files, or prove a file remained unchanged after its read.
+See [the contract and limits](completion-file-checksums.md).
+
 ## Completed native-batch recovery — 2026-11-06
 
 Release0.20.369-integration.0 is published and globally installed. Source d1eeebb
