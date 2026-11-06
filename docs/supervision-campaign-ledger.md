@@ -26,6 +26,24 @@ concurrent creator's transient second link and an oversized staging filename;
 both are repaired before qualification. Earlier full-run results are retained
 as intermediate evidence and do not substitute for the frozen final run.
 
+Source `18e7e00` and version-only release `46c097f` are pushed with immutable
+tag `v0.20.371-integration.0`.
+[CI 42239263204](https://github.com/lazyingart/AgInTiFlow/actions/runs/42239263204)
+passes its full suite, consumer qualification and publish command. Local and
+actual-registry consumers each pass 482 cases; the actual global installation
+passes 262 cases. All 561 package files match release Git and the archive after
+testing. Both CLI commands report 0.20.371-integration.0 and the personal 0600
+provider preference is unchanged.
+
+The public archive initially returns 404, then becomes available within the
+bounded readiness window with exact matching bytes. Installation waits for that
+verification; no republish, tag rewrite or local-archive fallback is used.
+Registry provenance subject and commit are inspected, without independent
+signature verification. Archive SHA-256:
+`a6829b8eb4915bd5a33cc40d9113592c6959e241027f984bd50188256bd69551`.
+Seven machine-ledger cases preserve baseline and candidate failures, source
+qualification and release verification; all new paid model-call counts are zero.
+
 The actual-timing terminal demonstration and private synthetic session receipts
 are retained separately. No application data, provider routes, LocalLLM service
 or public integration capability is changed. This bounded repair does not claim
