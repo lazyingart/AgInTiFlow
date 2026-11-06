@@ -1,5 +1,45 @@
 # Supervision Campaign Ledger
 
+## Optional bounded DeepSeek application transport — 2026-11-06
+
+The restricted application SDK previously required every consumer to implement
+its own HTTP boundary. A separate optional import now supplies the fixed native
+DeepSeek JSON profile with an explicit app credential, model and opaque account
+hint. The existing default SDK import and read-only loop remain unchanged.
+There is no ambient discovery, redirect, retry, fallback, session store or write
+authority. Host authentication, scoped reads, history, revision validation,
+transactions, quotas and provider consent remain application responsibilities.
+
+Forty-one offline cases exercise actual loopback request/response/socket closure
+through a test-only Node HTTPS module mock. They cover typed status boundaries,
+fatal UTF-8 and duplicate JSON, header/body limits, credential reflection,
+cancellation, delayed close and retained capacity, mutable/hostile construction,
+concurrent callers, tool withdrawal, ambiguous disconnect and cached cleanup
+failure. The mock does not qualify TLS. Lite preview9 adds the same two optional
+source files, keeps its default three-file graph and seven exports unchanged,
+and passes105 offline cases including nine-file reproducible packaging and
+separate default/optional installed consumers. It remains a private local package.
+
+Actual native HTTPS qualification uses two fresh processes and four provider
+requests in5.624seconds: Flash reads the host's synthetic current note and drafts
+an English-requested time correction in the original Chinese; explicitly chosen
+Pro receives host-supplied history and revision8, reads again, and applies the
+Chinese follow-up while retaining the unrelated sentence. Each makes one scoped
+read and two requests. No saves, automatic retries or application changes occur.
+Twenty-four independent checks verify scope, revisions, content, request counts,
+Flow/Lite optional bytes and absence of owned sockets/timers after close. Two
+initial harness schema/call-shape errors made zero requests and are preserved.
+
+The captured demo and redacted receipts are retained in Nutstore Projects/AgInTi.
+This is a host-owned session fixture, not native SessionStore, durable billing,
+remote inference termination, live Lite/app activation or OS isolation proof.
+LocalLLM and app-safe Codex prerequisites remain unchanged. The complete Flow
+npm suite passes in506.891seconds with388 recorded inputs unchanged; syntax320,
+neighboring SDK/recovery checks, audit0 and diff validation pass. Release and
+installed-package acceptance remain independent gates for this slice. A direct
+zero-network probe also confirms newline credentials/scope values are already
+rejected; no extra runtime change or false detector claim is needed.
+
 ## External workspace changes invalidate retained passing tests — 2026-11-06
 
 Installed365 reproduces a native false completion without inference: a real npm

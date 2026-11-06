@@ -477,6 +477,89 @@ qualified fallback only under its own policy and commits neither partial nor
 invalid primary results. The SDK does not provide durable idempotency, billing,
 session storage, transaction rollback or exactly-once app writes.
 
+## Optional bounded DeepSeek HTTPS client
+
+Applications can opt into a native Node HTTPS client instead of implementing
+the `complete` callback. The normal SDK import does not load this client or
+start network activity.
+
+```js
+import { createRestrictedDeepSeekClient } from "@lazyingart/agintiflow/restricted-application/deepseek-http";
+import { createRestrictedApplicationRunner } from "@lazyingart/agintiflow/restricted-application";
+
+const client = createRestrictedDeepSeekClient({
+  apiKey: appOwnedCredential,
+  model: "deepseek-flash", // alternatively, explicitly "deepseek-v4-pro"
+  userId: opaqueAppPrincipalToken,
+  timeoutMs: 30000,
+  maxConcurrency: 4,
+});
+try {
+  const runner = createRestrictedApplicationRunner({
+    provider: client.provider,
+    instructions: "Use only the supplied record. Return a proposal; do not save it.",
+    tools: [],
+    outputSchema: {
+      type: "object", properties: { reply: { type: "string", maxLength: 2000 } },
+      required: ["reply"], additionalProperties: false,
+    },
+  });
+  const result = await runner.run({ input: [{ type: "text", text: suppliedRecord }] });
+  // Authenticate, validate facts/revision/consent, then apply in the host.
+} finally {
+  await client.close();
+}
+```
+
+Construction requires an explicit visible-ASCII credential of 16–512 characters,
+one of the two fixed model names, and an opaque `userId` matching
+`[A-Za-z0-9_-]{16,128}`. Derive the latter in the authenticated host; it is a
+provider cache-isolation hint, not authentication. Do not use personal data.
+No environment, config file, URL, proxy, model fallback or credential discovery
+is performed by the client. Never construct options from model or browser input.
+
+The endpoint is fixed to `https://api.deepseek.com:443/v1/chat/completions`.
+Requests use the existing non-thinking JSON-object profile and read-tool loop.
+This leaf is text-only even in the full SDK. Only declared host read callbacks
+can run; the transport adds no tools, sessions, writes or agent semantics.
+
+| HTTP boundary | Limit |
+| --- | --- |
+| Per-request timeout | 100–60000 ms; default 30000 |
+| Concurrent requests per client | 1–32; default 4; no queue |
+| Request UTF-8 bytes | 2 MiB, including the opaque user ID |
+| Response bytes | 256 KiB, including keep-alive whitespace |
+| Response headers | 16 KiB |
+| Requested output tokens | 1–8192, further bounded by the runner |
+
+The runner's total deadline remains independent. Full local capacity refuses
+new requests through the typed `unavailable` provider-failure channel. HTTP
+401/403/402/429 map to authentication/permission/quota/rate-limit respectively;
+408 and 504 map to timeout, 500–503 to unavailable, and other non-200 statuses
+to protocol failure. Numeric Retry-After values from 0–86400 seconds are
+reported in milliseconds only for rate-limit/unavailable; they schedule nothing.
+Redirects, retries, fallback, streaming, compression, non-JSON content, duplicate
+JSON keys, malformed UTF-8, truncated/over-limit responses and incomplete model
+answers fail closed. Blank keep-alive lines count toward the byte/time limits.
+
+Cancellation destroys the owned local request. Its admission slot stays charged
+until the request and response actually close. `close()` blocks new admission,
+aborts owned requests, destroys owned sockets and waits for local close events.
+Repeated calls return the same promise; a cleanup failure remains a cached safe
+failure. A peer that never closes can keep that drain pending: this client does
+not turn a requested destroy into proof of closure. Remote inference termination,
+billing, response-loss idempotency and cross-process exactly-once dispatch are
+not promised. The host owns those policies and must not automatically retry an
+ambiguous request.
+
+The client depends on the trusted Node TLS/DNS/runtime boundary. It offers no
+OS sandbox or protection from a compromised same-process dependency. Credentials
+are retained only in the client closure and authorization header, with literal
+reflection checks on request/response data; this is not memory zeroization or
+a universal privacy filter. Apps retain authentication, account-scoped history,
+read authorization, factual/citation checks, revision CAS, writes, quotas and
+provider consent. Existing callback providers and app routes remain unchanged.
+
 ## Qualification
 
 `npm run smoke:restricted-application` uses synthetic accounts and offline
