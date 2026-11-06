@@ -51,6 +51,15 @@ against same-user storage forgery. Natural-language recognition is deliberately
 bounded to direct English and Chinese requests. Arbitrary host-code isolation,
 functional LocalLLM admission and multi-user application authority remain separate.
 
+Release **0.20.364-integration.0** is published and globally installed. Source
+`341799715cf2a8e955e4c3a8a29956884eb74612` and version-only release
+`220bb560b13bdbba44ea8c4b37a896c6401c5787` are pushed; tagged workflow
+42163474695 succeeds. Both full suites pass; the final 383 recorded inputs match
+source Git blobs. All 540 archive files match the registry and global install;
+293 fresh-consumer tests, 293 registry-installed tests and 73 actual global tests
+pass. Audit reports zero vulnerabilities. The original incomplete live turns
+remain failures in both ledgers. No application, model or LocalLLM role activated.
+
 ## Preserved repair inputs without named outputs — 2026-11-06
 
 A real trusted CLI coding trial changed and reverted a manifest that the user
