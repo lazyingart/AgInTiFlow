@@ -34,6 +34,21 @@ syntax checks cover 321 files. Neighboring truthful-completion, session-runtime,
 inbox and native-checkpoint suites pass. Package, registry and global-install
 qualification is recorded separately after publication.
 
+Source `ff425f7` and version-only release `934626d` are pushed, with immutable
+tag `v0.20.370-integration.0`. Local package qualification passes 449 consumer
+tests and binds all 556 public files to release Git; private-path and credential
+scans pass. [CI 42223797334](https://github.com/lazyingart/AgInTiFlow/actions/runs/42223797334)
+passes, including its full suite, 449 consumer cases and npm's publish command.
+
+Public distribution verification is on hold: twenty canonical archive checks
+over ten minutes return 404. Version metadata and a fresh-cache official npm
+client also cannot find 0.20.370; the observed integration tag remains 0.20.369.
+The cause of this visibility discrepancy is unproven. Registry-consumer and
+global-install gates have not run, and the working 0.20.369 installation is
+retained. There is no republish, tag rewrite or local-archive installation.
+The machine ledger records this external verification failure separately from
+the qualified source behavior. No public/global qualification is claimed.
+
 This is a bounded contradiction check for adjacent labeled SHA-256 metadata
 with a scoped native receipt. It does not validate all prose or other algorithms,
 certify unobserved files, or prove a file remained unchanged after its read.
