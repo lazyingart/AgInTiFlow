@@ -1,5 +1,27 @@
 # Supervision Campaign Ledger
 
+## Provider admission review — 2026-11-06
+
+After the qualified 367-integration.1 checkpoint, the ledger's remaining
+prerequisites are LocalLLM functional role admission and an app-safe no-tools
+Codex transport. Current owner packets still approve only LocalLLM S1; S2 is a
+plan, not an implementation grant. Installed Codex remains 0.166.0. Its retained
+zero-model admission probe advertises request_user_input, so no duplicate model
+or transport probe is justified by an unchanged executable version alone.
+
+Existing native-session Flash/Pro evidence already covers a real saved-session
+handoff at 362, alongside current offline regression coverage. The 367 SDK live
+example instead uses host-supplied history. These are separate evidence scopes;
+neither is rerun or relabeled as a fresh native-session trial in this review.
+
+Official OpenAI documentation now supplies a separate future app-registration
+route, with distinct identity and streaming requirements. The admission guide
+records that target and the remaining proof obligations without turning the
+trusted CLI wrapper into an app provider. No authentication, model or service
+operation is performed. This documentation change does not qualify the route,
+change runtime behavior or require another npm release. Machine capability
+states remain prerequisite_missing for both dependencies.
+
 ## Optional bounded DeepSeek application transport — 2026-11-06
 
 Final release0.20.367-integration.1 is published and globally installed. The

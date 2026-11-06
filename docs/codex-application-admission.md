@@ -55,3 +55,37 @@ an isolated authenticated process/transport, followed by schema, ambiguity,
 cancellation, output-cap and cross-principal acceptance. Durable app attempts,
 consent and fallback policy remain host-owned. LocalLLM admission is a separate
 prerequisite and is not changed by this observation.
+
+## Separate future route: Sign in with ChatGPT
+
+The [official overview](https://developers.openai.com/siwc/token-sharing-open-source)
+describes app registration, user consent and an account/workspace-bound client
+for open-source and locally hosted applications. Paid or remotely hosted use
+has a separate interest path. An existing CLI login is not evidence that an
+application has completed that flow. No credentials are migrated by AgInTi.
+
+The [inference guide](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
+uses the public Responses endpoint with the selected account's authorized token.
+It explicitly excludes ChatGPT backend-api endpoints and requires a completed
+terminal event before success. A catalog alone does not establish model access.
+
+The [preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+require streaming and disabled server storage, caller-supplied HTTP history,
+and do not support `max_output_tokens`. This needs a bounded stream decoder, deadline,
+schema and failure handling; the existing non-streaming Chat Completions adapter
+is not a substitute. App-server still owns local tools and exposes RPC inputs
+rather than arbitrary Responses parameters.
+
+The [app-server guide](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)
+describes explicit app-owned token delivery and renewal, with success determined
+from the completed turn status. It supplies no no-tools attestation for AgInTi's
+installed CLI. Direct Responses tool selection and the CLI's generated catalog
+are distinct boundaries; setting a no-tools instruction is insufficient.
+
+This is a qualification target, not an implemented adapter or admission grant.
+It requires separately authorized credentials, exact tool denial and stream/
+lifecycle/isolation tests before any app fallback can be enabled. Do not extract
+the CLI user's auth file, redirect its bearer token, downgrade the contract or
+share its session across accounts. Current app routing and the trusted opt-in
+CLI adviser remain unchanged. AgInTi performs no sign-in, registration, token
+refresh, request, model selection or provider activation for this route.
