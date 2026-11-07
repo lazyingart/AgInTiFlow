@@ -2,7 +2,21 @@
 
 ## Resolved file-read scope and required-source stop — 2026-11-07
 
-Installed 0.20.377 follows innocent workspace aliases to an unadmitted synthetic
+Release 0.20.378-integration.0 is published and globally installed. Source
+d76597588658de4c2554fe8e2aecffdd83adac5c and version-only release
+ce2a9ab32bfd38942f449ab7a3abf2d06a3fa483 are pushed. Trusted CI
+42326348895 passes the full suite, unchanged stale-CAS check, isolated
+document-server smoke without a skip, audit and 710 consumer checks. Actual
+registry and global installations each pass 710 checks without skips; all
+574 release Git/archive/global files match after global testing. Both CLI
+commands report the exact version and the owner-only DeepSeek preference is
+byte-unchanged. Ten initial archive 404 responses resolve within the bounded
+readiness window, without republishing, changing the tag or substituting a local
+archive. Provenance subject and commit are inspected without claiming independent
+signature verification. Nine new ledger cases retain the failed evidence and
+count the 21 real Flash requests once. Release and demo add zero model requests.
+
+Baseline installed 0.20.377 follows innocent workspace aliases to an unadmitted synthetic
 file or protected file. An offline native run forwards the outside marker into
 scripted model context, its saved session and the completed report. No private
 data or real provider is used for this adversary. Invalid UTF-8 also decodes
@@ -44,7 +58,7 @@ These are native path-policy observations, not retained descriptors, openat2
 or adversarial same-UID filesystem isolation. Trusted project control files
 and arbitrary shell/browser authority remain separate. No application,
 LocalLLM, Mac, Codex, service, GPU or provider preference changes. Publication
-and installed qualification remain separate gates.
+and installed qualification are recorded separately above.
 
 ## Literal source-file preservation — 2026-11-07
 
