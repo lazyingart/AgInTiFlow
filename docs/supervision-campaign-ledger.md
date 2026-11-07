@@ -2,6 +2,21 @@
 
 ## Literal source-file preservation — 2026-11-07
 
+Release 0.20.377-integration.0 is published and globally installed. Source
+a6f8b93fc81ecb3424098b471544271c06b32e96 and version-only release
+8e490f441c3ac7cb4645a186604fb3954a5fbbf9 are pushed. Trusted CI
+42316961846 passes full validation, the unchanged stale-CAS check, the isolated
+document-server smoke without a skip, audit and 642 consumer checks. Actual
+registry and global installations each pass 642 cases with zero skips; all
+572 release Git/archive/global files match after global testing. Both CLI
+commands report the exact version and the owner-only DeepSeek preference is
+byte-unchanged. Ten initial archive 404 responses resolve within the bounded
+readiness window without republishing, changing the tag or substituting a local
+archive. Provenance subject and commit are inspected without claiming independent
+signature verification. Nine new ledger cases count the five real Flash
+requests once; release checks add no model calls. No application activation or
+LocalLLM, Mac, Codex, service or GPU change is implied.
+
 Installed 0.20.376 accepts scripted bad patches to explicitly protected C++,
 Rust and extensionless README inputs, then completes with an unchanged-source
 claim. The existing TXT control blocks the same proposal. Two initial harness
