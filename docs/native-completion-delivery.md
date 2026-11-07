@@ -129,6 +129,22 @@ control files and application authentication are separate contracts. Untrusted
 application execution still needs qualified process/filesystem isolation; the
 restricted application SDK does not gain native filesystem or browser tools.
 
+## Generated project overview
+
+The generated `.aginti/codebase-map.json` overview is optional project metadata.
+It uses the guarded atomic text publisher, with a 220,000-byte limit. Child
+directory aliases, final symlinks, hardlinks and unsafe existing file identities
+cannot redirect or truncate its publication. Readers require an owned, singly
+linked regular entry, validate resolved scope and reject invalid UTF-8 or
+oversized data. A selected workspace-root alias remains supported.
+
+A refused cache, failed staged write or pending staging cleanup does not claim
+cache readiness. Native review continues through the existing optional-context
+failure path and must inspect actual source. A map remains an orientation aid,
+not evidence of source correctness. This protects the generated-cache path;
+other project control files, Git metadata, authentication and same-UID isolation
+are separate contracts.
+
 ## Piped interactive input during resume
 
 Non-TTY interactive input begins iteration before asynchronous startup and saved

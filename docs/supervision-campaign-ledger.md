@@ -1,5 +1,51 @@
 # Supervision Campaign Ledger
 
+## Generated project-cache publication — 2026-11-07
+
+Installed 0.20.378 can overwrite an unrelated file when the automatically
+generated `.aginti/codebase-map.json` is a file link, directory link or hard
+link. A normal native review startup does this before its first model request,
+with zero model tools. The baseline intentionally stops at that first scripted
+request; it proves a core startup side effect, not task completion or provider
+misconduct. Only temporary synthetic files are used, with no real provider.
+
+The cache now reuses the existing guarded atomic text publisher. Child
+directory aliases, final symlinks, hardlinks and unsafe incumbents are refused
+without truncation. Reads require an owned, singly linked regular entry and
+use the resolved boundary with a 220,000-byte snapshot and strict UTF-8. A
+selected workspace-root alias still works. Readers see complete old or new
+JSON, and failed staging preserves the previous cache. Pending staging cleanup
+is reported as unavailable with its publication receipt. The existing optional
+context-failure path keeps source review usable; no new runner semantics are
+added. The generated map remains an overview, not source-correctness evidence.
+
+The normal live prompt is `Could you have a quick look at main.py? Put a short
+review in review.md and leave the code alone.` Flash preserves both source and
+the unrelated file and creates the review, but spends its deliberately short
+seven-step fixture budget on inspection, report edits and delivery before
+calling finish. That eight-request run remains recorded as paused, not passed.
+The same persisted task then finishes in three additional requests with only
+`Continue the same task.` as prompt and an explicit bounded max-step patch
+7 -> 12, runtime revision 1 -> 2. Fresh completed continuation adds zero
+requests or writes. The 2,208-byte report, original source, outside record and
+cache alias are independently verified. Several legal revisions of one review
+are not multiple artifacts. Eleven actual requests are counted once; the
+sample does not establish single-pass efficiency or eliminate model polishing.
+
+All 26 new checks and 101 neighboring checks pass, including initial/concrete
+follow-up native runs with SCS disabled and enabled. Coding-tools smoke passes.
+Full `npm test` passes in 552.24 seconds with all 412 captured inputs unchanged;
+syntax checks cover 323 files and audit finds zero vulnerabilities. The package
+has 575 files, adding only the regression test. Two existing fixed-port document
+checks skip locally; isolated release CI must actually pass the document-server
+smoke before publication.
+
+Only `src/codebase-map.js` changes runtime behavior. Other project control files,
+Git metadata, retained descriptors and adversarial same-UID isolation remain
+separate contracts. No application, LocalLLM, Mac, Codex, credential, service,
+GPU or provider preference is changed. Publication and installed qualification
+remain separate gates.
+
 ## Resolved file-read scope and required-source stop — 2026-11-07
 
 Release 0.20.378-integration.0 is published and globally installed. Source

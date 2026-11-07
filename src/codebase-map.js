@@ -4,9 +4,22 @@ import path from "node:path";
 import { ensureRuntimeGitExcludes, projectPaths } from "./project.js";
 import { redactSensitiveText } from "./redaction.js";
 import { executeWorkspaceTool } from "./workspace-tools.js";
+import { publishWorkspaceTextFile } from "./workspace-file-publication.js";
+import { createWorkspaceReadBoundary, readWorkspaceFileSnapshot } from "./workspace-read-boundary.js";
 
 const MAP_VERSION = 1;
 const DEFAULT_CONTEXT_PACK_CHARS = 3800;
+// Same bound as the existing native atomic text publisher. The overview is
+// optional; an oversized/unsafe cache must not grant broader write authority.
+const MAX_MAP_BYTES = 220_000;
+
+async function assertCacheEntry(file) {
+  const stat = await fs.lstat(file, { bigint: true });
+  if (!stat.isFile() || stat.nlink !== 1n || (stat.mode & 0o7000n) !== 0n ||
+      typeof process.geteuid === "function" && stat.uid !== BigInt(process.geteuid())) {
+    throw Object.assign(new Error("Project cache must be an owned, singly linked regular file without special permission bits."), { code: "PROJECT_CACHE_UNSAFE" });
+  }
+}
 
 function stableHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
@@ -77,7 +90,14 @@ export function codebaseMapToContextPack(map, { maxChars = DEFAULT_CONTEXT_PACK_
 export async function readCodebaseMap(projectRoot = process.cwd()) {
   const paths = projectPaths(projectRoot);
   try {
-    const raw = await fs.readFile(paths.codebaseMapPath, "utf8");
+    // A generated cache is a specific project-owned entry, never a read-only
+    // root or a user-authorized alias to another control file. The selected
+    // workspace root may itself be an alias, as with ordinary native files.
+    const boundary = await createWorkspaceReadBoundary({ root: paths.root, writeAccess: true });
+    const canonical = await boundary.resolve(paths.codebaseMapPath);
+    await assertCacheEntry(canonical);
+    const { content: raw } = await readWorkspaceFileSnapshot(paths.codebaseMapPath, boundary, { maxBytes: MAX_MAP_BYTES, text: true });
+    await assertCacheEntry(canonical);
     return {
       ok: true,
       path: paths.codebaseMapPath,
@@ -141,8 +161,18 @@ export async function refreshCodebaseMap(config, options = {}) {
   };
 
   await ensureRuntimeGitExcludes(projectRoot, [".aginti/codebase-map.json"]).catch(() => {});
-  await fs.mkdir(paths.controlDir, { recursive: true });
-  await fs.writeFile(paths.codebaseMapPath, `${JSON.stringify(map, null, 2)}\n`, "utf8");
+  // Reuse the guarded native publisher: child directory symlinks, final
+  // symlinks/hardlinks and unsafe incumbents are refused before truncation.
+  // It stages and syncs complete JSON before atomic publication. These are
+  // path-policy checks, not retained-descriptor or same-UID isolation proof.
+  const { publication } = await publishWorkspaceTextFile({
+    root: paths.root, absolutePath: paths.codebaseMapPath,
+    relativePath: ".aginti/codebase-map.json", outsideWorkspace: false,
+  }, Buffer.from(`${JSON.stringify(map, null, 2)}\n`));
+  if (publication.stagingCleanupPending) {
+    return { ok: false, path: paths.codebaseMapPath, publication,
+      reason: "Project cache was published, but staging cleanup is pending; the optional cache is not ready." };
+  }
   return {
     ok: true,
     path: paths.codebaseMapPath,
