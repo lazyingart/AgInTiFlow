@@ -2,6 +2,22 @@
 
 ## Current-source data continuation — 2026-11-07
 
+Release **0.20.381-integration.0** is published and globally installed. Source
+`f7866285a5bab7e3f396c6796bf52d3d0f373f6a` and version-only release
+`f6f29176800ba48788bd9e88626194c423a5dcc4` are pushed. Trusted CI
+`42341494397` passes the full suite, unchanged stale-CAS, actual isolated
+document-server smoke and 904 consumer checks. Actual registry and global
+consumers each pass 904 checks with zero skips; all 578 release files match
+after testing. Both CLI commands report the exact version. The personal
+DeepSeek preference remains unchanged. Ten initial archive 404s resolve within
+the bounded readiness check, without republishing or substituting an archive.
+Provenance subject and commit match; independent signature verification is not
+claimed. Archive SHA-256:
+`7020681aa0e71774bbc9ee3233b69a5cecdc4255596400c6370db5b08dc315ec`.
+Seven machine-ledger cases preserve the failures and count 42 actual requests
+once. Release qualification adds no model calls. The source and release evidence
+packets in Nutstore are sealed; the 16-second video is a saved-evidence replay.
+
 A normal CSV-cleaning task and a Chinese same-session correction exposed three
 native defects: safe section-printing `sed` was refused; a unique source named
 with an original-input preservation alias became a mandatory edit target; and
@@ -36,7 +52,7 @@ partial-patch, progressive-tool, local-recovery and truthful-completion checks
 pass. Full `npm test` passes in 554.808 seconds with all 415 captured inputs
 unchanged; syntax checks cover 323 files and audit finds zero vulnerabilities.
 Two fixed-port document checks skip locally; actual isolated CI document-server
-and archive/registry/global consumer qualification remain release gates.
+and archive/registry/global qualification subsequently pass.
 No LocalLLM, Codex, app, service, credential or GPU activation is added.
 
 ## Optional project-map data validation — 2026-11-07
