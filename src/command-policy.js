@@ -32,7 +32,6 @@ const READ_ONLY_PATTERNS = [
   /^stat(?:\s+[-\w./~*]+)+$/,
   /^sha256sum(?:\s+[-\w./~*]+)+$/,
   /^pdfinfo\s+(?:"[^"\n]+"|'[^'\n]+'|[-\w./~]+)$/,
-  /^sed\s+-n\s+['"0-9,:p\s-]+(?:\s+[-\w./~*]+)?$/,
   /^git\s+(status|branch|log|show|diff(?:\s+--stat)?|remote\s+-v)(?:\s+.+)?$/,
   /^git\s+rev-parse(?:\s+(?:--show-toplevel|--git-dir|--is-inside-work-tree|--show-prefix|--show-cdup|--abbrev-ref|--verify|--short(?:=\d+)?|[-\w./@^{}~:]+))+$/,
   /^git\s+ls-files(?:\s+(?:--(?:cached|deleted|modified|others|ignored|stage|unmerged|exclude-standard)|[-\w./*]+))*$/,
@@ -91,6 +90,46 @@ function isReadOnlyPrintfCommand(command = "") {
   // command. Ordinary printf writes only to stdout and is safe once expansion
   // and redirection checks have passed.
   return !tokens.slice(1).some((token) => token === "-v" || /^-v[A-Za-z_]/.test(token));
+}
+
+function isReadOnlySedPrintCommand(command = "") {
+  // One print command, with optional line/pattern addresses. Parsing the
+  // program keeps pattern text distinct from sed's write/execute commands;
+  // accepting arbitrary -e/-f/-i arguments would grant different authority.
+  const normalized = stripBenignRedirections(command);
+  if (normalized.length > 8192 || hasActiveShellExpansion(normalized)) return false;
+  const sequence = parseTopLevelShellSequence(normalized);
+  if (sequence.openQuote || sequence.trailingEscape || sequence.trailingSeparator || sequence.commands.length !== 1) return false;
+  const tokens = tokenizeShellWords(normalized);
+  if (tokens[0] !== "sed" || tokens[1] !== "-n" || typeof tokens[2] !== "string") return false;
+  const program = tokens[2].trim();
+  if (!program || program.length > 1024 || /[\u0000-\u001f\u007f]/u.test(program)) return false;
+  let index = 0;
+  const spaces = () => { while (program[index] === " ") index++; };
+  function address() {
+    if (/\d/.test(program[index] || "")) {
+      while (/\d/.test(program[index] || "")) index++;
+      return true;
+    }
+    if (program[index] === "$") { index++; return true; }
+    if (program[index] !== "/") return false;
+    const start = ++index;
+    while (index < program.length) {
+      if (program[index] === "\\") { index += 2; continue; }
+      if (program[index] === "/") { const nonempty = index > start; index++; return nonempty; }
+      index++;
+    }
+    return false;
+  }
+  if (program[index] !== "p") {
+    if (!address()) return false;
+    spaces();
+    if (program[index] === ",") { index++; spaces(); if (!address()) return false; spaces(); }
+  }
+  if (program.slice(index) !== "p") return false;
+  const files = tokens.slice(tokens[3] === "--" ? 4 : 3);
+  // Literal operands only: a glob could expand to an option such as -i.
+  return files.length <= 16 && files.every(file => file && !file.startsWith("-") && /^[\p{L}\p{N}_./ +@%=:,-]+$/u.test(file));
 }
 
 function isReadOnlyTrDeleteFilter(command = "") {
@@ -1894,6 +1933,7 @@ function classifySimpleCommand(normalized) {
 
   if (
     matchAny(READ_ONLY_PATTERNS, commandForPatternMatching) ||
+    isReadOnlySedPrintCommand(commandForPatternMatching) ||
     isReadOnlyPrintfCommand(commandForPatternMatching) ||
     isReadOnlyTrDeleteFilter(commandForPatternMatching) ||
     isReadOnlyUniqFilter(commandForPatternMatching) ||

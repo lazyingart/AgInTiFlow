@@ -54,14 +54,15 @@ try {
     "test/workspace-read-authority.test.js",
     "test/project-cache-authority.test.js",
     "test/project-map-shape.test.js",
+    "test/readonly-sed-inspection.test.js", "test/source-alias-preservation.test.js",
     "test/partial-patch-recovery.test.js", "test/partial-patch-runtime.test.js",
     "test/retained-execution-context.test.js",
     "test/verification-input-freshness.test.js",
     "test/restricted-deepseek-http.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 805\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# tests 904\n/); assert.match(log, /# fail 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 805, testConcurrency, consumerTimeoutMs,
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 904, testConcurrency, consumerTimeoutMs,
     failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });

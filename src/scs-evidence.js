@@ -591,7 +591,7 @@ function inputFileClauseSpans(text = "", outputAction, literalCandidates = []) {
   const markers = [
     ...[...actions.matchAll(new RegExp(outputAction.source, "gi"))]
       .map(match => ({ index: match.index, input: false })),
-    ...[...actions.matchAll(/\b(?:from|using|based\s+on)\b|(?:^|\b(?:and|then|after|before|while|by)\b|[,;])\s*(?:use|read(?:ing)?|load(?:ing)?|reference|referencing)\b(?!-)|从|從|根据|根據|依据|依據|读取|讀取|使用|参考|參考/gi)]
+    ...[...actions.matchAll(/\b(?:from|using|based\s+on|according\s+to|as\s+per)\b|(?:^|\b(?:and|then|after|before|while|by)\b|[,;])\s*(?:use|read(?:ing)?|load(?:ing)?|reference|referencing)\b(?!-)|从|從|按(?:照)?|根据|根據|依据|依據|读取|讀取|使用|参考|參考/gi)]
       .map(match => ({ index: match.index, input: true })),
   ].sort((a, b) => a.index - b.index);
   const spans = [];
@@ -1113,7 +1113,7 @@ function inferExactInputPaths(goal = "", declaredPreservedPaths = []) {
     "gi"
   );
   const inputAction =
-    /\b(?:use|using|based\s+on|read|load|fill|upload|attach|import|select|choose|reference|input|from|retain(?:ed|ing)?|fix|repair|patch|correct)\b|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|保留|修复|修正|更正|从|從/i;
+    /\b(?:use|using|based\s+on|according\s+to|as\s+per|read|load|fill|upload|attach|import|select|choose|reference|input|from|retain(?:ed|ing)?|fix|repair|patch|correct)\b|按(?:照)?|根据|根據|依据|依據|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|保留|修复|修正|更正|从|從/i;
   const directOutputAction =
     /\b(?:sav(?:e|es|ing)|writ(?:e|es|ing)|rewrit(?:e|es|ing)|output(?:s|ting)?|creat(?:e|es|ing)|rebuild(?:s|ing)?|replac(?:e|es|ing)|regenerat(?:e|es|ing)|generat(?:e|es|ing)|stor(?:e|es|ing)|updat(?:e|es|ing)|modif(?:y|ies|ying)|edit(?:s|ing)?)\b|保存|写入|寫入|重写|重寫|输出|輸出|创建|建立|重建|替换|替換|重新生成|生成|更新|修改|编辑|編輯/i;
   const pushPath = (raw = "") => {
@@ -1123,7 +1123,7 @@ function inferExactInputPaths(goal = "", declaredPreservedPaths = []) {
   };
   const literalCandidates = uniquePathList([...declaredPreservedPaths, ...filePreservationClauses(goal).flatMap(clause =>
     preservationFileReferences(clause.body).map(reference => normalizedContractPath(reference.path)))], 24);
-  const explicitReadAction = /\b(?:use|using|based\s+on|read|load|fill|upload|attach|import|select|choose|reference|input|from)\b|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|从|從/i;
+  const explicitReadAction = /\b(?:use|using|based\s+on|according\s+to|as\s+per|read|load|fill|upload|attach|import|select|choose|reference|input|from)\b|按(?:照)?|根据|根據|依据|依據|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|从|從/i;
   // Generic literals require a real source/read clause. Do not turn a
   // protection-only declaration (especially a dotfile) into a required read.
   for (const pass of [{ rows: lines, literals: false }, { rows: String(goal || "").split(/\n|(?<=[.!?;。！？；])\s+/u), literals: true }]) {
@@ -1143,7 +1143,7 @@ function inferExactInputPaths(goal = "", declaredPreservedPaths = []) {
         ...inputFileClauseSpans(fullLine, directOutputAction, candidates).map(span => fullLine.slice(span.start, span.end)),
       ].join("\n").trim();
       if (!line || !inputAction.test(line)) continue;
-      if (directOutputAction.test(line) && !/\b(read|load|upload|attach|reference|input|from)\b|读取|讀取|加载|載入|上传|上傳|附加|参考|參考|素材|图片|圖片|照片|提示词|提示詞|从|從/i.test(line)) {
+      if (directOutputAction.test(line) && !/\b(read|load|upload|attach|reference|input|from|according\s+to|as\s+per)\b|按(?:照)?|根据|根據|依据|依據|读取|讀取|加载|載入|上传|上傳|附加|参考|參考|素材|图片|圖片|照片|提示词|提示詞|从|從/i.test(line)) {
         continue;
       }
       if (pass.literals) {
@@ -1207,14 +1207,57 @@ function explicitlyCreatedPreservationPaths(goal = "") {
   return uniquePathList(paths.map(normalizedContractPath), 24);
 }
 
+function preservedSourceAliasPaths(goal = "") {
+  // Resolve a whole-source prohibition only when this request names exactly
+  // one read input. Do not guess from history, two sources, partial attributes,
+  // or quoted prose. Output creation and explicit named edits remain separate.
+  const closers = { '"': '"', "'": "'", "`": "`", "“": "”", "‘": "’", "「": "」", "『": "』" };
+  let quote = "", visible = "";
+  const text = String(goal || "");
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (quote) {
+      visible += char === "\n" ? "\n" : " ";
+      if (char === "\\" && index + 1 < text.length) { visible += " "; index++; }
+      else if (char === quote) quote = "";
+    } else if (Object.hasOwn(closers, char) && !(char === "'" && /[\p{L}\p{N}_]/u.test(text[index - 1] || "") && /[\p{L}\p{N}_]/u.test(text[index + 1] || ""))) {
+      quote = closers[char]; visible += " ";
+    } else visible += char;
+  }
+  const start = "(?:^|[\\n.;!?。！？；,，])\\s*(?:(?:and|then|but|please)\\s+|请|請){0,2}";
+  const end = "(?=\\s*(?:$|[\\n.;!?。！？；,，]))";
+  const english = "(?:(?:the|my|our)\\s+)?(?:(?:original|raw)\\s+)?(?:source|input|data|export|original)(?:\\s+(?:file|data|document|export))?";
+  const chinese = "(?:原(?:始)?(?:导出|導出|数据|數據|资料|資料|输入|輸入|文件|檔案)|源(?:文件|数据|數據|资料|資料)|输入|輸入)(?:文件|檔案|資料|数据|數據)?";
+  const patterns = [
+    "(?:keep|leave|preserve|retain)\\s+" + english + "\\s+(?:unchanged|unmodified|untouched|intact|as-is|read-only)",
+    "(?:do\\s+not|don['’]?t|never)\\s+(?:modify|edit|change|overwrite|rewrite|delete|touch)\\s+" + english,
+    chinese + "\\s*(?:别动|別動|别改|別改|不要修改|不要更改|不修改|不变|不變|不动|不動)",
+    "(?:保持|保留|維持|维持)\\s*" + chinese + "\\s*(?:不变|不變|原样|原樣|不修改)",
+    "(?:不要|请勿|請勿|别|別)\\s*(?:改动|改動|修改|更改|编辑|編輯|覆盖|覆蓋|改|动|動|删除|刪除)\\s*" + chinese,
+  ];
+  if (!patterns.some(pattern => new RegExp(start + pattern + end, "i").test(visible))) return [];
+  const outputs = new Set(inferExactOutputPaths(goal).map(normalizedContractPath));
+  // Restore quoted filenames, not source instructions quoted as sample prose.
+  // The masking preserves offsets, so a filename's complete literal can be
+  // put back without exposing the surrounding quoted instruction words.
+  let sourceReferences = visible;
+  for (const input of inferExactInputPaths(goal)) {
+    for (const match of text.matchAll(literalFileReferencePattern(input))) {
+      if (match[1]) sourceReferences = sourceReferences.slice(0, match.index) + match[0] + sourceReferences.slice(match.index + match[0].length);
+    }
+  }
+  const inputs = uniquePathList(inferExactInputPaths(sourceReferences).map(normalizedContractPath), 24).filter(item => !outputs.has(item));
+  return inputs.length === 1 ? inputs : [];
+}
+
 function inferPreservedInputPaths(goal = "") {
   // Read/repair inputs may also be edit targets. Only explicit preservation
   // clauses grant this narrower no-mutation constraint. An earlier request to
   // create the same deliverable remains valid ("write X, then keep X intact").
   const clauses = filePreservationClauses(goal);
-  if (!clauses.length) return [];
-  const candidates = uniquePathList(clauses.flatMap(clause =>
-    preservationFileReferences(clause.body).map(reference => normalizedContractPath(reference.path))), 24);
+  const candidates = uniquePathList([...clauses.flatMap(clause =>
+    preservationFileReferences(clause.body).map(reference => normalizedContractPath(reference.path))), ...preservedSourceAliasPaths(goal)], 24);
+  if (!candidates.length) return [];
   // Only an explicit new-file declaration can relax preservation. An incidental
   // mention in prose, a source clause or a verification command is not one.
   const outputs = new Set(explicitlyCreatedPreservationPaths(goal));

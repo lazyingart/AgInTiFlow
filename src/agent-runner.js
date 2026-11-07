@@ -22251,6 +22251,11 @@ export function activePatchContextRefresh(state = {}) {
   ) {
     return null;
   }
+  // Retained recovery evidence cannot authorize a mutation forbidden by the
+  // current request, including same-task continuations with a stronger boundary.
+  if (preservedInputMutationBlock(state, "apply_patch", { path: markerPath })) {
+    return null;
+  }
   const mutationRevision = Math.max(
     0,
     Number(state.meta?.projectVerification?.mutationRevision || 0)
@@ -22292,6 +22297,11 @@ export function activePatchContextRepair(state = {}) {
     !String(marker.search || "") ||
     !String(marker.searchHash || "")
   ) {
+    return null;
+  }
+  // Use the same boundary both for tool selection and for argument binding.
+  // A stale repair must never narrow the turn to a now-protected input.
+  if (preservedInputMutationBlock(state, "apply_patch", { path: markerPath })) {
     return null;
   }
   const mutationRevision = Math.max(

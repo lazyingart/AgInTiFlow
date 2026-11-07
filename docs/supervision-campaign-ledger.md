@@ -1,5 +1,44 @@
 # Supervision Campaign Ledger
 
+## Current-source data continuation — 2026-11-07
+
+A normal CSV-cleaning task and a Chinese same-session correction exposed three
+native defects: safe section-printing `sed` was refused; a unique source named
+with an original-input preservation alias became a mandatory edit target; and
+a retained patch-repair marker continued forcing that protected input. These
+are command-policy and execution-contract defects, not app-specific policy.
+
+Print-only `sed` now has a bounded program/operand grammar. It accepts literal
+section inspection while refusing extra scripts, execution, writes and globs
+that can expand to `-i`. Whole-source preservation aliases bind only one
+explicit read input in the current request, excluding quoted instruction prose
+and ambiguous sources. Retained repair selectors and argument binding respect
+that same preservation boundary; writable-file repairs retain their guards.
+
+The original task produced ten usable and five rejected latest readings, mean
+6.11. After a source correction, the same native session produced nine usable
+and six rejected readings, mean 7, minimum -2.5 and maximum 15, with a Chinese
+report. Independent CSV/Decimal verification checks every selected timestamp,
+value and annotation. The input bytes remain unchanged; a fresh completed
+continuation makes zero model requests and leaves artifact identities unchanged.
+
+The final recovery uses six Pro requests in 74.060 seconds, following 36 earlier
+requests retained as failures or the first-task recovery. This is bounded task
+evidence, not a general latency claim. The external verifier initially lacked
+the Chinese label `数量`; correcting the verifier required no paid retry. A
+copied harness also overwrote its earlier aggregate receipt filename; the raw
+eight-request failure, terminal capture and machine-ledger row remain available.
+No reconstructed byte-identical aggregate is claimed.
+
+99 focused regressions cover shell-policy boundaries, source aliases, protected
+retained anchors and persisted SCS-on/off continuation. Adjacent preservation,
+partial-patch, progressive-tool, local-recovery and truthful-completion checks
+pass. Full `npm test` passes in 554.808 seconds with all 415 captured inputs
+unchanged; syntax checks cover 323 files and audit finds zero vulnerabilities.
+Two fixed-port document checks skip locally; actual isolated CI document-server
+and archive/registry/global consumer qualification remain release gates.
+No LocalLLM, Codex, app, service, credential or GPU activation is added.
+
 ## Optional project-map data validation — 2026-11-07
 
 Release 0.20.380-integration.0 is published and globally installed. Source
