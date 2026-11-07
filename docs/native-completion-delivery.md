@@ -92,6 +92,43 @@ reading a dotfile or change the secret-file guard. Only an explicit new-file
 declaration can exempt the created output from this preservation rule; an
 incidental mention or verification command cannot authorize a source overwrite.
 
+## Resolved native file reads
+
+Workspace text, image, preview and canvas readers check the actual resolved
+target against the host's roots and blocked-path policy. A harmless filename
+cannot grant access through a link to an unadmitted directory, an excluded
+credential file or repository internals. In-scope links, an aliased workspace
+root and explicitly configured read-only roots remain supported. An active
+path scope still narrows those roots. Missing optional roots grant no access
+and do not disable ordinary workspace reads.
+
+Text reads use a bounded live-handle snapshot, compare identity and named
+bindings before returning, and reject invalid UTF-8 instead of replacing
+source bytes. A literal UTF-8 replacement character and BOM remain valid.
+Large text still requires the supported bounded line-read path. Conversion
+requires an explicit tool; the text reader does not guess an encoding or
+overwrite a source. Artifact downloads retain their original bytes when an
+inline text preview cannot decode them faithfully.
+
+The loopback static preview server checks each resolved request, excludes
+blocked aliases, caps a file at 32 MiB and refuses a successor workspace after
+its original root binding changes. Refused native preview paths are checked
+before browser launch. Browser scripting and arbitrary shell tools remain
+separate host capabilities.
+
+When a required named source is refused by this read policy, the native loop
+pauses immediately with `required_source_unavailable`, preserves verified work
+and stops the remaining tool batch. It does not spend another model turn
+looking for a bypass or request stronger write permissions. An incidental
+refused read does not stop an otherwise authorized task. Once the host supplies
+an authorized source, the same persisted task can resume.
+
+These checks are not retained descriptors, openat2 or protection against an
+adversarial process with the same filesystem identity. Trusted project/runtime
+control files and application authentication are separate contracts. Untrusted
+application execution still needs qualified process/filesystem isolation; the
+restricted application SDK does not gain native filesystem or browser tools.
+
 ## Piped interactive input during resume
 
 Non-TTY interactive input begins iteration before asynchronous startup and saved

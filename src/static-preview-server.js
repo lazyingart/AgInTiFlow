@@ -1,10 +1,12 @@
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { createWorkspaceReadBoundary, readWorkspaceFileSnapshot } from "./workspace-read-boundary.js";
 
 const root = path.resolve(process.argv[2] || process.cwd());
 const port = Number(process.argv[3] || 0);
 const host = "127.0.0.1";
+const MAX_PREVIEW_BYTES = 32 * 1024 * 1024;
 const idleTtlMs = Math.max(Number(process.env.AGINTIFLOW_PREVIEW_TTL_MS) || 6 * 60 * 60 * 1000, 1000);
 let lastRequestAt = Date.now();
 
@@ -63,6 +65,9 @@ function isBlockedPath(relativePath) {
   return /(^|\/)(secrets?|tokens?|passwords?|private[-_]?keys?|credentials?)(\/|\.|$)/i.test(lowerPath);
 }
 
+const boundary = await createWorkspaceReadBoundary({
+  root, blockedPath: (canonical, canonicalRoot) => isBlockedPath(path.relative(canonicalRoot, canonical)),
+});
 const server = http.createServer(async (req, res) => {
   lastRequestAt = Date.now();
   if (!["GET", "HEAD"].includes(req.method || "")) {
@@ -77,34 +82,44 @@ const server = http.createServer(async (req, res) => {
       send(res, 403, "Forbidden");
       return;
     }
+    await boundary.verifyRoots();
 
     let filePath = target;
-    const stat = await fs.stat(filePath).catch(() => null);
+    const canonical = await boundary.resolve(filePath);
+    const stat = await fs.stat(canonical);
     if (stat?.isDirectory()) {
       filePath = path.join(filePath, "index.html");
     }
 
-    const finalStat = await fs.stat(filePath).catch(() => null);
+    const finalCanonical = await boundary.resolve(filePath);
+    const finalStat = await fs.stat(finalCanonical);
     if (!finalStat?.isFile()) {
       send(res, 404, "Not Found");
       return;
     }
 
     const contentType = MIME_TYPES.get(path.extname(filePath).toLowerCase()) || "application/octet-stream";
-    res.writeHead(200, {
+    if (finalStat.size > MAX_PREVIEW_BYTES) { send(res, 413, "Preview file is too large."); return; }
+    await boundary.revalidate(filePath, finalCanonical);
+    const headers = {
       "Content-Type": contentType,
       "Content-Length": finalStat.size,
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
-    });
+    };
     if (req.method === "HEAD") {
-      res.end();
+      send(res, 200, undefined, headers);
       return;
     }
-    const content = await fs.readFile(filePath);
-    res.end(content);
+    const { buffer } = await readWorkspaceFileSnapshot(filePath, boundary, { maxBytes: MAX_PREVIEW_BYTES });
+    send(res, 200, buffer, { ...headers, "Content-Length": buffer.length });
   } catch (error) {
-    send(res, 500, error instanceof Error ? error.message : String(error));
+    if (res.headersSent) { res.destroy(); return; }
+    const code = error?.code;
+    send(res, code === "WORKSPACE_READ_SCOPE" ? 403 : ["ENOENT", "ENOTDIR"].includes(code) ? 404
+      : code === "WORKSPACE_READ_TOO_LARGE" ? 413 : 500,
+    code === "WORKSPACE_READ_SCOPE" ? "Forbidden" : ["ENOENT", "ENOTDIR"].includes(code) ? "Not Found"
+      : code === "WORKSPACE_READ_TOO_LARGE" ? "Preview file is too large." : "Preview unavailable.");
   }
 });
 

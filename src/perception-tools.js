@@ -6,7 +6,8 @@ import { isDomainAllowed, resolveResearchDomains } from "./guardrails.js";
 import { redactSensitiveText } from "./redaction.js";
 import { isWrapperAvailable, normalizeWrapperName, runAgentWrapper, runCodexImageWrapper } from "./tool-wrappers.js";
 import { searchWeb } from "./web-search.js";
-import { resolveWorkspacePath } from "./workspace-tools.js";
+import { resolveWorkspaceReadTarget } from "./workspace-tools.js";
+import { isWorkspaceReadScopeDenial } from "./workspace-read-boundary.js";
 import { LOCALLLM_MODEL_TIERS, normalizeReasoningEffort } from "./model-routing.js";
 import { normalizeProviderBaseURL, normalizeProviderId, resolveProviderDefaults } from "./provider-contract.js";
 import { probeProviderRuntime } from "./provider-runtime.js";
@@ -15,6 +16,7 @@ import { firstJsonObject } from "./json-extraction.js";
 export { firstJsonObject } from "./json-extraction.js";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const localImageScopeInputs = new WeakMap();
 const MAX_IMAGE_COUNT = 4;
 const REMOTE_IMAGE_TIMEOUT_MS = 15000;
 const MAX_IMAGE_REDIRECTS = 5;
@@ -265,22 +267,24 @@ function imageMimeForPath(inputPath, contentType = "") {
 }
 
 async function loadLocalImage(inputPath, config) {
-  const target = resolveWorkspacePath(config, inputPath, { allowReadOnlyRoots: true });
-  const stat = await fs.stat(target.absolutePath);
-  if (!stat.isFile()) throw new Error(`Image path is not a file: ${target.relativePath}`);
-  if (stat.size > MAX_IMAGE_BYTES) throw new Error(`Image is too large: ${target.relativePath} (${stat.size} bytes)`);
-  const ext = path.extname(target.absolutePath).toLowerCase();
-  if (!IMAGE_EXTENSIONS.has(ext)) throw new Error(`Unsupported image type: ${target.relativePath}`);
-  const buffer = await fs.readFile(target.absolutePath);
-  return {
-    source: "workspace",
-    path: target.relativePath,
-    absolutePath: target.absolutePath,
-    mime: imageMimeForPath(target.absolutePath),
-    sizeBytes: buffer.length,
-    sha256: sha256(buffer),
-    dataUrl: `data:${imageMimeForPath(target.absolutePath)};base64,${buffer.toString("base64")}`,
-  };
+  try {
+    const target = await resolveWorkspaceReadTarget(config, inputPath);
+    const ext = path.extname(target.absolutePath).toLowerCase();
+    if (!IMAGE_EXTENSIONS.has(ext)) throw new Error(`Unsupported image type: ${target.relativePath}`);
+    const { buffer } = await target.readBytes(MAX_IMAGE_BYTES);
+    return {
+      source: "workspace",
+      path: target.relativePath,
+      absolutePath: target.absolutePath,
+      mime: imageMimeForPath(target.absolutePath),
+      sizeBytes: buffer.length,
+      sha256: sha256(buffer),
+      dataUrl: `data:${imageMimeForPath(target.absolutePath)};base64,${buffer.toString("base64")}`,
+    };
+  } catch (error) {
+    if (isWorkspaceReadScopeDenial(error)) localImageScopeInputs.set(error, inputPath);
+    throw error;
+  }
 }
 
 function cancelImageBody(body) {
@@ -687,9 +691,11 @@ export async function readImage(args = {}, config = {}, store = null) {
     Object.assign(payload, await persistMarkdownArtifact(store, config, "perception", artifactStem, payload));
     return payload;
   } catch (error) {
+    const readScopeRefused = isWorkspaceReadScopeDenial(error);
     payload = {
       ok: false,
-      blocked: error?.code === "HOSTED_TOOL_PROVIDER_NOT_ALLOWED",
+      blocked: readScopeRefused || error?.code === "HOSTED_TOOL_PROVIDER_NOT_ALLOWED",
+      ...(readScopeRefused ? { readScopeRefused: true, readScopeRefusedPath: localImageScopeInputs.get(error) || "" } : {}),
       toolName: "read_image",
       error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
       images: loadedImages.map(({ dataUrl, absolutePath, ...image }) => image),

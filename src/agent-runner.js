@@ -63,9 +63,11 @@ import {
   normalizeWorkspaceInputPath,
   parsePatchDocument,
   resolveWorkspacePath,
+  resolveWorkspaceReadTarget,
   summarizeWorkspaceTools,
   WORKSPACE_TOOL_NAMES,
 } from "./workspace-tools.js";
+import { isWorkspaceReadScopeDenial } from "./workspace-read-boundary.js";
 import { normalizeCanvasPayload, persistCanvasPayloadFile } from "./artifact-tunnel.js";
 import { getTaskProfile } from "./task-profiles.js";
 import { validateWordDocumentArtifacts } from "./document-artifact-quality.js";
@@ -7602,8 +7604,32 @@ export function shouldShortCircuitToolBatch(toolResult) {
     (toolResult?.blocked && toolResult?.permissionAdvice) ||
       toolResult?.category === "malformed-tool-arguments" ||
       toolResult?.category === "document-compiler-source-type" ||
+      toolResult?.category === "required-source-scope" ||
       toolResult?.category === "tool-contract-violation"
   );
+}
+
+function requiredSourceScopeFailure(toolName, args, config, state) {
+  if (!["read_file", "read_image", "open_workspace_file", "preview_workspace", "send_to_canvas"].includes(toolName)) return null;
+  const source = String(args.path || args.file || "");
+  if (!source) return null;
+  const contract = deriveScsTaskContract({ goal: completionContractGoal(config, state), taskProfile: config.taskProfile || "auto" });
+  let required = false;
+  try {
+    const requested = resolveWorkspacePath(config, source, { allowReadOnlyRoots: true }).absolutePath;
+    required = (contract.exactInputPaths || []).some(input => {
+      try { return resolveWorkspacePath(config, input, { allowReadOnlyRoots: true }).absolutePath === requested; }
+      catch { return false; }
+    });
+  } catch { return null; }
+  if (!required) return null;
+  const display = redactSensitiveText(source.replace(/[\r\n]/g, " ").slice(0, 220));
+  return {
+    ok: false, blocked: true, stopRun: true, needsApproval: false, recoverable: false,
+    category: "required-source-scope", toolName, args: sanitizeToolArgs(toolName, args), sourcePath: display,
+    error: "The required source is outside the permitted scope or is protected.",
+    reason: `The requested source ${JSON.stringify(display)} is outside the permitted read scope or is a protected path. The remaining task is paused; existing verified work is preserved. Supply an explicitly authorized source or have the host correct its read scope. Do not rename, copy or follow another path to bypass the restriction; broader write permissions do not authorize this read.`,
+  };
 }
 
 export function shouldPauseForPermissionAdvice(toolResult = {}) {
@@ -13916,12 +13942,14 @@ async function canvasDeliveryFingerprint(payload = {}, config = {}) {
   };
   if (payload.path) {
     try {
-      const target = resolveWorkspacePath(config, payload.path);
-      const stat = await fs.stat(target.absolutePath);
+      const target = await resolveWorkspaceReadTarget(config, payload.path);
+      const stat = await fs.stat(target.canonicalPath);
       if (!stat.isFile()) return "";
       identity.path = target.relativePath;
       identity.bytes = stat.size;
-      identity.sha256 = await hashExactOutputFile(target.absolutePath);
+      await target.revalidate();
+      identity.sha256 = await hashExactOutputFile(target.canonicalPath);
+      await target.revalidate();
     } catch {
       return "";
     }
@@ -24837,6 +24865,10 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       return result;
     }
 
+    const workspaceReadTarget = (["open_workspace_file", "preview_workspace"].includes(toolName) ||
+      toolName === "send_to_canvas" && args.path)
+      ? await resolveWorkspaceReadTarget(config, args.path || args.file || ".")
+      : null;
     if (BROWSER_TOOLS.has(toolName)) {
       await ensureBrowser(browserState, config, store, state, observers);
     }
@@ -24898,6 +24930,14 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         const result = isRetainedVisionWorkspaceProfile(config)
           ? await invokeIntegrationVisionWorkspace(registeredConfig, args)
           : await readImage(args, config, store);
+        const sourceScopeFailure = result.readScopeRefused === true
+          ? requiredSourceScopeFailure(toolName, { path: result.readScopeRefusedPath }, config, state)
+          : null;
+        if (sourceScopeFailure) {
+          await store.appendEvent("tool.failed", sourceScopeFailure);
+          observers.event("tool.failed", sourceScopeFailure);
+          return sourceScopeFailure;
+        }
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
@@ -24963,11 +25003,13 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         return result;
       }
       case "open_workspace_file": {
-        const target = resolveWorkspacePath(config, args.path || args.file || ".", { allowReadOnlyRoots: true });
-        const stat = await fs.stat(target.absolutePath);
+        const target = workspaceReadTarget;
+        const stat = await fs.stat(target.canonicalPath);
         if (!stat.isFile()) throw new Error(`Workspace preview target is not a file: ${target.relativePath}`);
-        const fileUrl = pathToFileURL(target.absolutePath).href;
+        await target.revalidate();
+        const fileUrl = pathToFileURL(target.canonicalPath).href;
         await abortable(browserState.page.goto(fileUrl, { waitUntil: "domcontentloaded" }), config.abortSignal);
+        await target.revalidate();
         const result = {
           ok: true,
           toolName: "open_workspace_file",
@@ -24980,12 +25022,14 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         return result;
       }
       case "preview_workspace": {
-        const target = resolveWorkspacePath(config, args.path || args.file || ".", { allowReadOnlyRoots: true });
-        const stat = await fs.stat(target.absolutePath);
+        const target = workspaceReadTarget;
+        const stat = await fs.stat(target.canonicalPath);
+        await target.revalidate();
         const server = await startPreviewServer(config.commandCwd, args.port || 8765, config.abortSignal);
         const urlPath = stat.isDirectory() ? normalizeUrlPath(target.relativePath === "." ? "" : `${target.relativePath}/`) : normalizeUrlPath(target.relativePath);
         const previewUrl = `${server.url}${urlPath}`;
         await abortable(browserState.page.goto(previewUrl, { waitUntil: "domcontentloaded" }), config.abortSignal);
+        await target.revalidate();
         const result = {
           ok: true,
           toolName: "preview_workspace",
@@ -25571,6 +25615,14 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     return result;
   } catch (error) {
     if (isAbortError(error, config)) throw error;
+    const sourceScopeFailure = isWorkspaceReadScopeDenial(error)
+      ? requiredSourceScopeFailure(toolName, args, config, state)
+      : null;
+    if (sourceScopeFailure) {
+      await store.appendEvent("tool.failed", sourceScopeFailure);
+      observers.event("tool.failed", sourceScopeFailure);
+      return sourceScopeFailure;
+    }
     const errorText = redactSensitiveText(error instanceof Error ? error.message : String(error));
     const noChangePatchFailure =
       toolName === "apply_patch" && /patch made no changes/i.test(errorText);
@@ -32561,6 +32613,7 @@ async function runAgentOnceUnlocked(config) {
       let continueForQueuedInput = false;
       let continueForCompletionRepair = false;
       let pendingPermissionPause = null;
+      let pendingRequiredSourcePause = null;
       const postBatchToolResults = [];
       const resultObservers = createToolResultObservers(observers);
       const toolBatchRuntimeConfig = {
@@ -32687,6 +32740,7 @@ async function runAgentOnceUnlocked(config) {
             await store.saveState(state);
           }
           await resultObservers.drain(config.abortSignal);
+          if (toolResult.category === "required-source-scope") pendingRequiredSourcePause = toolResult;
           if (shouldPauseForPermissionAdvice(toolResult)) pendingPermissionPause = toolResult;
           break;
         }
@@ -32815,6 +32869,21 @@ async function runAgentOnceUnlocked(config) {
         }
       }
 
+      if (pendingRequiredSourcePause) {
+        return await stopForMissingCompletionEvidence({
+          config, state, store, observers, sessionId, step,
+          decision: {
+            reason: "required_source_unavailable",
+            result: pendingRequiredSourcePause.reason,
+            detail: {
+              category: "required-source-scope",
+              sourcePath: pendingRequiredSourcePause.sourcePath,
+              toolName: pendingRequiredSourcePause.toolName,
+              providerFailure: false,
+            },
+          },
+        });
+      }
       if (pendingPermissionPause) {
         return await stopForPermissionAdvice({
           config,

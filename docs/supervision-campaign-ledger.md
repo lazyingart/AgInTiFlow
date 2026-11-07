@@ -1,5 +1,51 @@
 # Supervision Campaign Ledger
 
+## Resolved file-read scope and required-source stop — 2026-11-07
+
+Installed 0.20.377 follows innocent workspace aliases to an unadmitted synthetic
+file or protected file. An offline native run forwards the outside marker into
+scripted model context, its saved session and the completed report. No private
+data or real provider is used for this adversary. Invalid UTF-8 also decodes
+lossily; the existing publication guard already rejects source mutation, so
+this is not evidence of corrupted source bytes.
+
+Native text, image, preview and canvas readers now validate resolved scope and
+blocked paths. Bounded live-handle snapshots check identity and bindings and
+reject invalid UTF-8 rather than inserting replacement characters. Authorized
+internal links, selected root aliases and explicit read-only roots remain
+usable. Missing or unused optional roots do not disable ordinary reads. Static
+preview bounds each file to 32 MiB and refuses a successor workspace. Native
+preview refusal occurs before browser launch.
+
+The first real candidate protects bytes but keeps exploring after a definitive
+required-source refusal. Its six-request allowed run and failed six-request
+blocked run are retained. The runtime now pauses immediately at that refusal
+with `required_source_unavailable`, preserving verified work and stopping the
+remaining batch. Incidental refused reads do not stop permitted work. Once the
+host supplies an authorized source, the same persisted task can resume.
+
+The normal prompt is `Please read note.txt, make a brief report.md from it,
+and don't change note.txt.` Final DeepSeek Flash acceptance completes a verified
+527-byte report in six requests, preserves the source exactly and creates an
+exact canvas copy. Fresh-process continuation adds zero requests or writes.
+The blocked variant takes three total requests, including planning/discovery,
+then pauses at its first refusal with no later model/tool/write event. No
+excluded marker enters real requests or saved sessions. Twenty-one actual
+requests are counted once across the original twelve and final nine.
+
+All 68 new checks and 162 neighboring checks pass. Final `npm test` passes in
+587.669 seconds with all 411 captured inputs unchanged; syntax checks cover
+323 files and audit finds zero vulnerabilities. The package adds exactly the
+read-boundary module and its regression file, for 574 files total. Two existing
+fixed-port document checks skip locally because another listener is present;
+isolated release CI must actually pass the document-server smoke before release.
+
+These are native path-policy observations, not retained descriptors, openat2
+or adversarial same-UID filesystem isolation. Trusted project control files
+and arbitrary shell/browser authority remain separate. No application,
+LocalLLM, Mac, Codex, service, GPU or provider preference changes. Publication
+and installed qualification remain separate gates.
+
 ## Literal source-file preservation — 2026-11-07
 
 Release 0.20.377-integration.0 is published and globally installed. Source

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { XMLValidator } from "fast-xml-parser";
 import { publishWorkspaceTextFile } from "./workspace-file-publication.js";
+import { createWorkspaceReadBoundary, readWorkspaceFileSnapshot, workspaceReadBoundaryError, isSensitiveWorkspacePath as isSensitivePath } from "./workspace-read-boundary.js";
 import { hasSensitiveText, redactSensitiveText } from "./redaction.js";
 
 export const WORKSPACE_TOOL_NAMES = ["inspect_project", "list_files", "read_file", "search_files", "write_file", "apply_patch"];
@@ -74,7 +75,6 @@ const IMPORTANT_MANIFESTS = new Set([
 ]);
 const SOURCE_DIR_NAMES = new Set(["src", "app", "lib", "packages", "apps", "bin", "scripts", "server", "client", "public", "docs"]);
 const TEST_DIR_NAMES = new Set(["test", "tests", "__tests__", "spec", "specs", "e2e"]);
-const SENSITIVE_EXTENSIONS = new Set([".key", ".pem", ".p12", ".pfx", ".crt", ".csr"]);
 const OPAQUE_BINARY_EXTENSIONS = new Set([
   ".3mf",
   ".7z",
@@ -136,17 +136,6 @@ const OPAQUE_BINARY_EXTENSIONS = new Set([
   ".xlsx",
   ".xz",
   ".zip",
-]);
-const SENSITIVE_BASENAMES = new Set([
-  ".env",
-  ".npmrc",
-  ".pypirc",
-  "id_rsa",
-  "id_dsa",
-  "id_ecdsa",
-  "id_ed25519",
-  "credentials",
-  "credentials.json",
 ]);
 
 function normalizeRelative(relativePath) {
@@ -402,19 +391,6 @@ function pathSegments(relativePath) {
     .filter(Boolean);
 }
 
-function isSensitivePath(relativePath) {
-  const segments = pathSegments(relativePath);
-  const basename = segments.at(-1) || "";
-  const lowerBase = basename.toLowerCase();
-  const lowerSegments = segments.map((segment) => segment.toLowerCase());
-  const lowerPath = normalizeRelative(relativePath).toLowerCase();
-  if (segments.includes(".git")) return true;
-  if (lowerSegments.some((segment) => segment === ".env" || segment.startsWith(".env."))) return true;
-  if (lowerBase === ".env" || lowerBase.startsWith(".env.")) return true;
-  if (SENSITIVE_BASENAMES.has(lowerBase)) return true;
-  if (SENSITIVE_EXTENSIONS.has(path.extname(lowerBase))) return true;
-  return /(^|\/)(secrets?|tokens?|passwords?|private[-_]?keys?|credentials?)(\/|\.|$)/i.test(lowerPath);
-}
 
 // A bounded metadata observation of the public workspace, not a sandbox or a
 // proof of external services/dependencies. Never read contents, follow child
@@ -505,6 +481,36 @@ function pathPolicy(toolName, relativePath) {
     };
   }
   return { allowed: true };
+}
+
+async function workspaceReadBoundary(config, target, { writeAccess = false } = {}) {
+  return createWorkspaceReadBoundary({
+    root: workspaceRoot(config),
+    readOnlyRoots: [...(Array.isArray(config.readOnlyRoots) ? config.readOnlyRoots : []),
+      ...(Array.isArray(config.skillReadOnlyRoots) ? config.skillReadOnlyRoots : [])],
+    scopeRoots: configuredWorkspaceScopeRoots(config, workspaceRoot(config), { writeAccess }),
+    writeAccess,
+    allowOutside: target.outsideWorkspace === true && config.allowOutsideWorkspaceFileTools === true &&
+      config.sandboxMode === "host" && config.allowDestructive === true,
+  });
+}
+
+// Shared by native image/browser readers. This is a path-policy observation,
+// never retained-descriptor attestation or application authentication.
+export async function resolveWorkspaceReadTarget(config, inputPath) {
+  const target = resolveWorkspacePath(config, inputPath, { allowReadOnlyRoots: true });
+  if (!pathPolicy("read_file", target.relativePath).allowed) throw workspaceReadBoundaryError();
+  const boundary = await workspaceReadBoundary(config, target);
+  const canonicalPath = await boundary.resolve(target.absolutePath);
+  const revalidate = () => boundary.revalidate(target.absolutePath, canonicalPath);
+  return Object.freeze({ ...target, canonicalPath, revalidate,
+    async readBytes(maxBytes) {
+      await revalidate();
+      const result = await readWorkspaceFileSnapshot(target.absolutePath, boundary, { maxBytes });
+      await revalidate();
+      return result;
+    },
+  });
 }
 
 function secretContentPolicy(content) {
@@ -707,13 +713,11 @@ function sortCounts(map, limit = 16) {
     .map(([name, count]) => ({ name, count }));
 }
 
-async function readJsonFileSafe(absolutePath) {
+async function readJsonFileSafe(absolutePath, config, boundary) {
   try {
-    const stat = await fs.stat(absolutePath);
-    if (!stat.isFile() || stat.size > 120_000) return null;
-    const buffer = await fs.readFile(absolutePath);
-    if (buffer.includes(0)) return null;
-    return JSON.parse(buffer.toString("utf8"));
+    const target = resolveWorkspacePath(config, absolutePath, { allowReadOnlyRoots: true });
+    const { content } = await readTextFile(target, config, { boundary, maxBytes: 120_000 });
+    return JSON.parse(content);
   } catch {
     return null;
   }
@@ -742,20 +746,25 @@ async function fileInfo(absolutePath, root) {
 
 async function listFiles(config, args) {
   const target = resolveWorkspacePath(config, args.path || ".", { allowReadOnlyRoots: true });
+  const boundary = await workspaceReadBoundary(config, target);
+  await boundary.resolve(target.absolutePath);
   const maxDepth = Math.min(Math.max(Number(args.maxDepth) || DEFAULT_MAX_DEPTH, 1), 8);
   const limit = Math.min(Math.max(Number(args.limit) || DEFAULT_LIST_ENTRIES, 1), MAX_LIST_ENTRIES);
   const entries = [];
 
   async function walk(currentPath, depth) {
     if (entries.length >= limit) return;
-    const info = await fileInfo(currentPath, target.root);
+    let canonical;
+    try { canonical = await boundary.resolve(currentPath); }
+    catch (error) { if (error.code === "WORKSPACE_READ_SCOPE") return; throw error; }
+    const info = { ...await fileInfo(canonical, target.root), path: normalizeRelative(path.relative(target.root, currentPath)) };
     const policy = pathPolicy("read_file", info.path);
     if (!policy.allowed) return;
 
     entries.push(info);
     if (info.type !== "directory" || depth >= maxDepth) return;
 
-    const children = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
+    const children = await fs.readdir(canonical, { withFileTypes: true }).catch(() => []);
     children.sort((a, b) => a.name.localeCompare(b.name));
     for (const child of children) {
       if (shouldSkipTraversalEntry(child)) continue;
@@ -765,6 +774,7 @@ async function listFiles(config, args) {
   }
 
   await walk(target.absolutePath, 0);
+  await boundary.verifyRoots();
   return {
     ok: true,
     toolName: "list_files",
@@ -774,29 +784,19 @@ async function listFiles(config, args) {
   };
 }
 
-async function readTextFile(target, { allowLargeLineLimited = false } = {}) {
-  const stat = await fs.stat(target.absolutePath);
-  if (!stat.isFile()) throw new Error(`Path is not a file: ${target.relativePath}`);
-  if (stat.size > MAX_READ_BYTES) {
-    if (!allowLargeLineLimited || stat.size > MAX_LINE_LIMIT_READ_BYTES) {
-      throw new Error(`File is too large to read safely: ${target.relativePath}`);
-    }
-  }
-
-  const buffer = await fs.readFile(target.absolutePath);
-  if (buffer.includes(0)) throw new Error(`Binary files are not readable through this tool: ${target.relativePath}`);
-  return {
-    stat,
-    content: buffer.toString("utf8"),
-    hash: hashBuffer(buffer),
-  };
+async function readTextFile(target, config, { allowLargeLineLimited = false, maxBytes, boundary, writeAccess = false } = {}) {
+  boundary ??= await workspaceReadBoundary(config, target, { writeAccess });
+  const result = await readWorkspaceFileSnapshot(target.absolutePath, boundary, {
+    maxBytes: maxBytes ?? (allowLargeLineLimited ? MAX_LINE_LIMIT_READ_BYTES : MAX_READ_BYTES), text: true,
+  });
+  return { ...result, hash: hashBuffer(result.buffer) };
 }
 
 async function readFile(config, args) {
   const target = resolveWorkspacePath(config, args.path, { allowReadOnlyRoots: true });
   const requestedLineLimit = Number(args.lineLimit || args.limit || 0);
   const lineLimit = Number.isFinite(requestedLineLimit) && requestedLineLimit > 0 ? Math.min(requestedLineLimit, 1000) : 0;
-  const { stat, content, hash } = await readTextFile(target, { allowLargeLineLimited: lineLimit > 0 });
+  const { stat, content, hash } = await readTextFile(target, config, { allowLargeLineLimited: lineLimit > 0 });
   const lines = content.split(/\r?\n/);
   const startLine = Math.min(Math.max(Number(args.startLine) || 1, 1), Math.max(lines.length, 1));
   const selectedLines = lineLimit > 0 ? lines.slice(startLine - 1, startLine - 1 + lineLimit) : lines;
@@ -817,6 +817,8 @@ async function readFile(config, args) {
 
 async function searchFiles(config, args) {
   const target = resolveWorkspacePath(config, args.path || ".", { allowReadOnlyRoots: true });
+  const boundary = await workspaceReadBoundary(config, target);
+  await boundary.resolve(target.absolutePath);
   const query = String(args.query || "").trim();
   if (query.length < 2) throw new Error("Search query must be at least 2 characters.");
 
@@ -851,7 +853,10 @@ async function searchFiles(config, args) {
 
   async function visit(currentPath, depth = 0) {
     if (results.length >= maxResults || depth > DEFAULT_MAX_DEPTH + 2 || !searchBudgetAvailable()) return;
-    const stat = await fs.stat(currentPath).catch(() => null);
+    let canonical;
+    try { canonical = await boundary.resolve(currentPath); }
+    catch (error) { if (["WORKSPACE_READ_SCOPE", "ENOENT", "ENOTDIR"].includes(error.code)) return; throw error; }
+    const stat = await fs.stat(canonical).catch(() => null);
     if (!stat) return;
 
     const relativePath = normalizeRelative(path.relative(target.root, currentPath));
@@ -859,7 +864,7 @@ async function searchFiles(config, args) {
     if (!policy.allowed) return;
 
     if (stat.isDirectory()) {
-      const children = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
+      const children = await fs.readdir(canonical, { withFileTypes: true }).catch(() => []);
       const priority = (entry) => {
         const name = caseSensitive ? entry.name : entry.name.toLowerCase();
         if (name.includes(needle)) return 0;
@@ -895,9 +900,9 @@ async function searchFiles(config, args) {
     }
     filesScanned += 1;
     bytesScanned += stat.size;
-    const buffer = await fs.readFile(currentPath).catch(() => null);
-    if (!buffer || buffer.includes(0)) return;
-    const lines = buffer.toString("utf8").split(/\r?\n/);
+    const text = await readTextFile({ ...target, absolutePath: currentPath, relativePath }, config, { boundary }).catch(() => null);
+    if (!text) return;
+    const lines = text.content.split(/\r?\n/);
     lines.forEach((line, index) => {
       if (results.length >= maxResults) return;
       const haystack = caseSensitive ? line : line.toLowerCase();
@@ -912,6 +917,7 @@ async function searchFiles(config, args) {
   }
 
   await visit(target.absolutePath);
+  await boundary.verifyRoots();
   return {
     ok: true,
     toolName: "search_files",
@@ -927,6 +933,8 @@ async function searchFiles(config, args) {
 
 async function inspectProject(config, args) {
   const target = resolveWorkspacePath(config, args.path || ".", { allowReadOnlyRoots: true });
+  const boundary = await workspaceReadBoundary(config, target);
+  await boundary.resolve(target.absolutePath);
   const maxDepth = Math.min(Math.max(Number(args.maxDepth) || 6, 1), 10);
   const limit = Math.min(Math.max(Number(args.limit) || MAX_INSPECT_ENTRIES, 80), MAX_INSPECT_ENTRIES);
   const includeFiles = Boolean(args.includeFiles);
@@ -948,7 +956,10 @@ async function inspectProject(config, args) {
       return;
     }
 
-    const stat = await fs.stat(currentPath).catch(() => null);
+    let canonical;
+    try { canonical = await boundary.resolve(currentPath); }
+    catch (error) { if (["WORKSPACE_READ_SCOPE", "ENOENT", "ENOTDIR"].includes(error.code)) return; throw error; }
+    const stat = await fs.stat(canonical).catch(() => null);
     if (!stat) return;
     const relativePath = normalizeRelative(path.relative(target.root, currentPath));
     const segments = pathSegments(relativePath);
@@ -967,7 +978,7 @@ async function inspectProject(config, args) {
         sourceDirs.push({ path: relativePath, kind: TEST_DIR_NAMES.has(base) ? "tests" : "source" });
       }
       if (depth >= maxDepth) return;
-      const children = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
+      const children = await fs.readdir(canonical, { withFileTypes: true }).catch(() => []);
       children.sort((a, b) => a.name.localeCompare(b.name));
       for (const child of children) {
         if (shouldSkipTraversalEntry(child)) continue;
@@ -1001,7 +1012,8 @@ async function inspectProject(config, args) {
   await visit(target.absolutePath, 0);
 
   const packageJsonPath = path.join(target.absolutePath, "package.json");
-  const packageJson = await readJsonFileSafe(packageJsonPath);
+  const packageJson = await readJsonFileSafe(packageJsonPath, config, boundary);
+  await boundary.verifyRoots();
   const packageScripts =
     packageJson && packageJson.scripts && typeof packageJson.scripts === "object"
       ? Object.entries(packageJson.scripts)
@@ -1125,11 +1137,8 @@ async function writeChange(target, nextContent, action, details = {}, preconditi
   };
 }
 
-async function deleteChange(target, action = "delete_file", details = {}) {
-  const before = await fs.readFile(target.absolutePath);
-  if (before.length > MAX_READ_BYTES) throw new Error(`Existing file is too large to delete safely: ${target.relativePath}`);
-  if (before.includes(0)) throw new Error(`Binary files cannot be deleted through this tool: ${target.relativePath}`);
-  const beforeText = before.toString("utf8");
+async function deleteChange(target, config, action = "delete_file", details = {}) {
+  const { buffer: before, content: beforeText } = await readTextFile(target, config, { writeAccess: true });
   const beforeHash = hashBuffer(before);
   await fs.unlink(target.absolutePath);
   return {
@@ -1175,7 +1184,7 @@ async function applyPatch(config, args) {
   }
 
   const target = resolveWorkspacePath(config, args.path, { writeAccess: true });
-  const { content: beforeText, hash } = await readTextFile(target);
+  const { content: beforeText, hash } = await readTextFile(target, config, { writeAccess: true });
   if (args.baseHash && args.baseHash !== hash) {
     throw new Error(`Base hash mismatch for ${target.relativePath}; read the file again before patching.`);
   }
@@ -1416,12 +1425,12 @@ async function applyPatchDocument(config, args) {
     }
 
     if (operation.type === "delete") {
-      await readTextFile(target);
+      await readTextFile(target, config, { writeAccess: true });
       planned.push({ operation, target, delete: true });
       continue;
     }
 
-    const { content: beforeText, hash: beforeHash } = await readTextFile(target);
+    const { content: beforeText, hash: beforeHash } = await readTextFile(target, config, { writeAccess: true });
     let afterText = beforeText;
     for (const hunk of operation.hunks || []) {
       if (!hunk.search) throw new Error(`Patch hunk for ${target.relativePath} has no removable/context lines.`);
@@ -1440,7 +1449,7 @@ async function applyPatchDocument(config, args) {
     const { operation, target } = item;
     try {
       if (item.delete) {
-        changes.push(await deleteChange(target, "apply_patch_delete", { patchFormat: "multi-file" }));
+        changes.push(await deleteChange(target, config, "apply_patch_delete", { patchFormat: "multi-file" }));
         continue;
       }
       if (operation.newPath) {
@@ -1451,6 +1460,8 @@ async function applyPatchDocument(config, args) {
           sourcePath: target.relativePath, movePending: true, patchFormat: "multi-file",
         }, { createOnly: true });
         changes.push(destination);
+        const source = await readTextFile(target, config, { writeAccess: true });
+        if (source.hash !== item.beforeHash) throw new Error("Workspace move source changed; keep the pending destination and reread before continuing.");
         await fs.unlink(target.absolutePath);
         const { sourcePath, movePending, ...completed } = destination;
         changes[changes.length - 1] = { ...completed, action: "apply_patch_move", fromPath: sourcePath };

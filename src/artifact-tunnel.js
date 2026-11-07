@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { redactSensitiveText } from "./redaction.js";
-import { checkWorkspaceToolUse, resolveWorkspacePath } from "./workspace-tools.js";
+import { checkWorkspaceToolUse, resolveWorkspacePath, resolveWorkspaceReadTarget } from "./workspace-tools.js";
+import { createWorkspaceReadBoundary, readWorkspaceFileSnapshot } from "./workspace-read-boundary.js";
+
+const artifactReadScopes = new WeakMap();
 
 const MAX_INLINE_TEXT_BYTES = 120_000;
 const MAX_ARTIFACT_TEXT_BYTES = 520_000;
@@ -337,12 +340,18 @@ export async function resolveArtifactFile(item, { store, config } = {}) {
       return { ok: false, error: "Artifact path is outside this session." };
     }
 
-    const stat = await fs.stat(absolutePath).catch(() => null);
+    let canonical, boundary;
+    try {
+      boundary = await createWorkspaceReadBoundary({ root: store.sessionDir });
+      canonical = await boundary.resolve(absolutePath);
+    } catch { return { ok: false, error: "Artifact file is outside its permitted read scope or unavailable." }; }
+    const stat = await fs.stat(canonical).catch(() => null);
     if (!stat?.isFile()) return { ok: false, error: "Artifact file is missing." };
-    const mime = mimeForPath(absolutePath);
-    return {
+    await boundary.revalidate(absolutePath, canonical);
+    const mime = mimeForPath(canonical);
+    const resolved = {
       ok: true,
-      absolutePath,
+      absolutePath: canonical,
       size: stat.size,
       mime,
       kind: mime === "application/pdf" ? "pdf" : mime.startsWith("image/") ? "image" : item.kind,
@@ -351,6 +360,10 @@ export async function resolveArtifactFile(item, { store, config } = {}) {
       downloadName:
         item.downloadName || meaningfulArtifactFilename(item.path, item.title, item.id),
     };
+    artifactReadScopes.set(resolved, {
+      readBytes: maxBytes => readWorkspaceFileSnapshot(absolutePath, boundary, { maxBytes }),
+    });
+    return resolved;
   }
 
   if (item.ref?.type === "workspace-file") {
@@ -360,13 +373,16 @@ export async function resolveArtifactFile(item, { store, config } = {}) {
       return { ok: false, error: guard.reason || "Workspace read blocked." };
     }
 
-    const target = resolveWorkspacePath(itemConfig, item.ref.path);
-    const stat = await fs.stat(target.absolutePath).catch(() => null);
+    let target;
+    try { target = await resolveWorkspaceReadTarget(itemConfig, item.ref.path); }
+    catch { return { ok: false, error: "Workspace artifact is outside its permitted read scope or unavailable." }; }
+    const stat = await fs.stat(target.canonicalPath).catch(() => null);
     if (!stat?.isFile()) return { ok: false, error: "Workspace file is missing." };
+    await target.revalidate();
     const mime = mimeForPath(target.absolutePath);
-    return {
+    const resolved = {
       ok: true,
-      absolutePath: target.absolutePath,
+      absolutePath: target.canonicalPath,
       size: stat.size,
       mime,
       kind: mime === "application/pdf" ? "pdf" : mime.startsWith("image/") ? "image" : item.kind,
@@ -375,6 +391,8 @@ export async function resolveArtifactFile(item, { store, config } = {}) {
       downloadName:
         item.downloadName || meaningfulArtifactFilename(item.path, item.title, item.id),
     };
+    artifactReadScopes.set(resolved, target);
+    return resolved;
   }
 
   return { ok: false, error: "Artifact has no readable file." };
@@ -428,7 +446,12 @@ export async function readArtifactContent(item, { store, config }) {
       };
     }
 
-    const buffer = await fs.readFile(resolved.absolutePath);
+    let buffer;
+    try {
+      const scope = artifactReadScopes.get(resolved);
+      if (!scope) return { ok: false, error: "Artifact read scope is unavailable." };
+      ({ buffer } = await scope.readBytes(maxBytes));
+    } catch { return { ok: false, error: "Artifact changed or is unavailable within its permitted read scope." }; }
     if (isBinaryRenderable) {
       return {
         ...base,
@@ -444,10 +467,13 @@ export async function readArtifactContent(item, { store, config }) {
       };
     }
 
+    let text;
+    try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer); }
+    catch { return { ...base, binary: true, preview: "Non-UTF-8 artifact: download the unchanged original through the streamed artifact endpoint." }; }
     return {
       ...base,
       kind: item.kind,
-      text: redactSensitiveText(buffer.toString("utf8")),
+      text: redactSensitiveText(text),
     };
   }
 
@@ -502,17 +528,18 @@ export async function persistCanvasPayloadFile(payload, { config, store }) {
 
   let target;
   try {
-    target = resolveWorkspacePath(config, payload.path);
+    target = await resolveWorkspaceReadTarget(config, payload.path);
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
 
-  const stat = await fs.stat(target.absolutePath).catch(() => null);
+  const stat = await fs.stat(target.canonicalPath).catch(() => null);
   if (!stat?.isFile()) {
     return { ok: false, reason: `Canvas path does not exist or is not a file: ${payload.path}` };
   }
 
   if (stat.size > MAX_PERSISTED_CANVAS_FILE_BYTES) {
+    await target.revalidate();
     return {
       ok: true,
       payload: {
@@ -525,6 +552,9 @@ export async function persistCanvasPayloadFile(payload, { config, store }) {
     };
   }
 
+  let buffer;
+  try { ({ buffer } = await target.readBytes(MAX_PERSISTED_CANVAS_FILE_BYTES)); }
+  catch (error) { return { ok: false, reason: error instanceof Error ? error.message : "Canvas source read was refused." }; }
   await store.ensure();
   const canvasDir = path.join(store.artifactsDir, "canvas");
   await fs.mkdir(canvasDir, { recursive: true });
@@ -532,7 +562,7 @@ export async function persistCanvasPayloadFile(payload, { config, store }) {
     canvasDir,
     safeCanvasFilename(payload.artifactId, target.relativePath, payload.title)
   );
-  await fs.copyFile(target.absolutePath, sessionFilePath);
+  await fs.writeFile(sessionFilePath, buffer, { flag: "wx" });
 
   return {
     ok: true,
@@ -542,7 +572,7 @@ export async function persistCanvasPayloadFile(payload, { config, store }) {
       sessionPath: normalizeDisplayPath(path.relative(store.sessionDir, sessionFilePath)),
       sessionFilePath,
       artifactPersisted: true,
-      artifactBytes: stat.size,
+      artifactBytes: buffer.length,
     },
   };
 }
