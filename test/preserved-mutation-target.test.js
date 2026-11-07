@@ -8,6 +8,92 @@ import { deriveScsTaskContract } from "../src/scs-evidence.js";
 import { resolveRuntimeConfig } from "../src/config.js";
 import { closeSessionIndexConnections } from "../src/session-index.js";
 
+const literalName = value => /\s/.test(value) || !/[./]/.test(value) && !/^[A-Z]/.test(value) ? JSON.stringify(value) : value;
+for (const source of ["src/amount.cpp", "src/amount.rs", "src/amount.go", "include/amount.h", "schema.sql",
+  "Cargo.toml", "src/App.swift", "src/Main.kt", "types/amount.proto", "project.xml", "README", "LICENSE",
+  ".gitignore", "build/Makefile", "source notes.cpp", "notes", "配置", "src/a.custom-format", "src/write.verylongextension"]) {
+  test("preservation authority is independent of the artifact suffix catalog: " + source, () => {
+    for (const tail of ["Do not modify " + literalName(source) + ".", "Leave " + literalName(source) + " unchanged."]) {
+      const goal = "Create review.md from " + literalName(source) + ". " + tail;
+      const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
+      assert.deepEqual(contract.preservedInputPaths, [source]);
+      assert.deepEqual(contract.exactInputPaths, [source]);
+      assert.deepEqual(contract.exactOutputPaths, ["review.md"]);
+      for (const [tool, args] of [
+        ["write_file", { path: source, content: "bad", mode: "overwrite" }],
+        ["apply_patch", { path: source, search: "old", replace: "bad" }],
+        ["apply_patch", { patch: "*** Begin Patch\n*** Update File: other.cpp\n*** Move to: " + source + "\n@@\n-old\n+bad\n*** End Patch" }],
+        ["run_command", { command: "printf changed > " + JSON.stringify(source) }],
+        ["run_command", { command: "mv " + JSON.stringify(source) + " moved.txt" }],
+      ]) assert.equal(preservedInputMutationBlock({ goal }, tool, args, { goal })?.category, "preserved-input-mutation", tool);
+      assert.equal(preservedInputMutationBlock({ goal }, "read_file", { path: source }, { goal }), null);
+      assert.equal(preservedInputMutationBlock({ goal }, "run_command", { command: "cp " + JSON.stringify(source) + " copy.txt" }, { goal }), null);
+      assert.equal(preservedInputMutationBlock({ goal }, "write_file", { path: "review.md", content: "result" }, { goal }), null);
+    }
+  });
+}
+
+for (const goal of [
+  "Keep it unchanged.", "Keep the tests unchanged.", "KEEP IT UNCHANGED.",
+  "Keep README permissions unchanged.", "Keep the contents of src/a.rs unchanged.",
+  'Do not modify "https://example.org/source.rs".', 'Do not modify "*.rs".',
+  'Keep "npm run build" unchanged.', "Do not modify the total.amount field.",
+]) test("file-list parsing does not turn prose or commands into filenames: " + goal, () => {
+  assert.deepEqual(deriveScsTaskContract({ goal, taskProfile: "code" }).preservedInputPaths, []);
+});
+
+for (const source of ["README", "src/new.cpp", "Cargo.toml", "notes", "source notes.cpp"]) {
+  test("explicit new-file creation remains possible: " + source, () => {
+    for (const declaration of ["Create " + literalName(source) + ".", "Please write " + literalName(source) + ".",
+      "Required outputs:\n- " + literalName(source) + "\n"]) {
+      const goal = declaration + "\nLeave " + literalName(source) + " unchanged.";
+      assert.deepEqual(deriveScsTaskContract({ goal, taskProfile: "code" }).preservedInputPaths, []);
+      assert.equal(preservedInputMutationBlock({ goal }, "write_file", { path: source, content: "new" }, { goal }), null);
+    }
+  });
+}
+
+for (const goal of [
+  'Create review.md from "write". Keep "write" unchanged.',
+  "Create review.md and explain src/a.rs. Leave src/a.rs unchanged.",
+  "Create review.md and run node --check src/a.rs. Leave src/a.rs unchanged.",
+  'Explain the sentence "Create README". Keep README unchanged.',
+  "Do not create README. Keep README unchanged.",
+]) test("incidental mentions do not become authority to overwrite a source: " + goal, () => {
+  const expected = goal.includes('"write"') ? "write" : goal.includes("src/a.rs") ? "src/a.rs" : "README";
+  assert.deepEqual(deriveScsTaskContract({ goal, taskProfile: "code" }).preservedInputPaths, [expected]);
+});
+
+test("creation exceptions respect exact case and separate source/destination directories", () => {
+  for (const goal of ["Create copy/a.rs from original/a.rs. Keep original/a.rs unchanged.",
+    "Create source.rs. Keep Source.rs unchanged."]) {
+    assert.deepEqual(deriveScsTaskContract({ goal, taskProfile: "code" }).preservedInputPaths, [goal.includes("original/") ? "original/a.rs" : "Source.rs"]);
+  }
+});
+
+test("protection alone does not require reading a generic named input", () => {
+  for (const source of [".env", "README", "src/a.cpp"]) {
+    const contract = deriveScsTaskContract({ goal: "Create review.md. Do not modify " + source + ".", taskProfile: "code" });
+    assert.deepEqual(contract.preservedInputPaths, [source]);
+    assert.deepEqual(contract.exactInputPaths, []);
+  }
+});
+
+test("a quoted source name is not an output-action verb", () => {
+  const contract = deriveScsTaskContract({ goal: 'Create review.md from "write". Keep "write" unchanged.', taskProfile: "code" });
+  assert.deepEqual(contract.preservedInputPaths, ["write"]);
+  assert.deepEqual(contract.exactInputPaths, ["write"]);
+  assert.deepEqual(contract.exactOutputPaths, ["review.md"]);
+});
+
+test("an extensionless prohibition cannot absorb the next positive Chinese clause", () => {
+  const goal = "不要修改 README，生成 review.md。";
+  const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
+  assert.deepEqual(contract.preservedInputPaths, ["README"]);
+  assert.deepEqual(contract.exactOutputPaths, ["review.md"]);
+  assert.ok(!contract.excludedOutputPaths.includes("review.md"));
+});
+
 for (const goal of [
   "Do not modify note.txt or settings.json. Create summary.md from note.txt.",
   "Do not edit note.txt, settings.json, or config.yaml; create summary.md.",
@@ -120,10 +206,13 @@ for (const goal of [
   assert.equal(preservedInputMutationBlock({ goal }, "write_file", { path: "summary.md", content: "result" }, { goal }), null);
 });
 
-for (const [goal, followupGoal] of [
+for (const [goal, followupGoal, inputFile = "note.txt"] of [
   ["Create summary.md from note.txt. Leave note.txt unchanged.", "Create checklist.md from note.txt. Leave note.txt unchanged."],
   ["Create summary.md from note.txt. Do not modify note.txt.", "Create checklist.md from note.txt. Do not edit note.txt."],
   ["从 note.txt 生成 summary.md，别改 note.txt。", "从 note.txt 生成 checklist.md。不要修改 note.txt。"],
+  ["Create summary.md from src/amount.cpp. Do not modify src/amount.cpp.", "Create checklist.md from src/amount.cpp. Leave src/amount.cpp unchanged.", "src/amount.cpp"],
+  ["Create summary.md from src/amount.rs. Leave src/amount.rs unchanged.", "Create checklist.md from src/amount.rs. Do not modify src/amount.rs.", "src/amount.rs"],
+  ["Create summary.md from README. Do not modify README.", "不要修改 README，从 README 生成 checklist.md。", "README"],
 ]) for (const scsActive of [false, true]) test(`source preservation survives native follow-up (SCS ${scsActive}): ${goal}`, { timeout: 15000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-source-role-runtime-"));
   const oldHome = process.env.AGINTIFLOW_HOME;
@@ -135,29 +224,31 @@ for (const [goal, followupGoal] of [
   });
   const workspace = path.join(root, "workspace");
   await fs.mkdir(workspace);
-  const note = "Accessibility review: complete.\nOffline route: blocked.\n";
+  await fs.mkdir(path.dirname(path.join(workspace, inputFile)), { recursive: true });
+  const note = inputFile.startsWith("src/") ? "// Accessibility review: complete.\n// Offline route: blocked.\n" : "Accessibility review: complete.\nOffline route: blocked.\n";
   const summary = "# Summary\nAccessibility review is complete. The offline route remains blocked.\n";
   const checklist = "# Checklist\n- [x] Accessibility review\n- [ ] Offline route\n";
-  await fs.writeFile(path.join(workspace, "note.txt"), note);
+  await fs.writeFile(path.join(workspace, inputFile), note);
   let phase = "start", step = 0;
   const requests = [];
   const client = { chat: { completions: { create: async request => {
     requests.push(request);
     if (!request.tools) return { choices: [{ message: { role: "assistant", content: "Read the note, produce the requested file, verify and finish." }, finish_reason: "stop" }] };
+    if (!request.tools.some(tool => tool.function.name === "read_file") && request.tools.some(tool => tool.function.name === "inspect_project")) return { choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: "discovery_" + phase + "_" + requests.length, type: "function", function: { name: "inspect_project", arguments: "{}" } }] } }] };
     step++;
     const output = phase === "start" ? "summary.md" : "checklist.md";
     const content = phase === "start" ? summary : checklist;
     const call = (name, args) => ({ choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null,
       tool_calls: [{ id: `source_role_${phase}_${step}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] } }] });
-    if (step === 1) return call("read_file", { path: "note.txt" });
+    if (step === 1) return call("read_file", { path: inputFile });
     // A mistaken provider proposal must not become authority to alter an input.
-    if (step === 2) return call("apply_patch", { path: "note.txt", search: "Accessibility review: complete.", replace: "Accessibility review: incomplete." });
+    if (step === 2) return call("apply_patch", { path: inputFile, search: "Accessibility review: complete.", replace: "Accessibility review: incomplete." });
     if (step === 3) return request.tools.some(tool => tool.function.name === "write_file")
       ? call("write_file", { path: output, content, mode: "create" })
       : call("apply_patch", { patch: `*** Begin Patch\n*** Add File: ${output}\n` + content.trimEnd().split("\n").map(line => "+" + line).join("\n") + "\n*** End Patch" });
     if (step === 4) return call("read_file", { path: output });
     assert.equal(step, 5, "the source was incorrectly required to change or another producer loop began");
-    return call("finish", { result: `Created ${output}: accessibility review is complete and the offline route is blocked. note.txt is unchanged.` });
+    return call("finish", { result: `Created ${output}: accessibility review is complete and the offline route is blocked. ${inputFile} is unchanged.` });
   } } } };
   const clientFactory = async () => client;
   clientFactory.agintiDeterministicTest = true;
@@ -172,7 +263,7 @@ for (const [goal, followupGoal] of [
   const initial = await runAgent(config);
   assert.equal(initial.goalStatus, "completed", JSON.stringify(initial));
   assert.equal(step, 5);
-  assert.equal(await fs.readFile(path.join(workspace, "note.txt"), "utf8"), note);
+  assert.equal(await fs.readFile(path.join(workspace, inputFile), "utf8"), note);
   assert.equal(await fs.readFile(path.join(workspace, "summary.md"), "utf8"), summary);
   const initialState = JSON.parse(await fs.readFile(path.join(root, "sessions/source-role/state.json")));
   assert.equal(initialState.meta.projectVerification.mutationRevision, 1);
@@ -186,7 +277,7 @@ for (const [goal, followupGoal] of [
   const followup = await runAgent({ ...config, resume: "source-role", goal: followupGoal });
   assert.equal(followup.goalStatus, "completed", JSON.stringify(followup));
   assert.equal(step, 5);
-  assert.equal(await fs.readFile(path.join(workspace, "note.txt"), "utf8"), note);
+  assert.equal(await fs.readFile(path.join(workspace, inputFile), "utf8"), note);
   assert.equal(await fs.readFile(path.join(workspace, "summary.md"), "utf8"), summary);
   assert.equal(await fs.readFile(path.join(workspace, "checklist.md"), "utf8"), checklist);
   const events = (await fs.readFile(path.join(root, "sessions/source-role/events.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
@@ -199,7 +290,7 @@ for (const [goal, followupGoal] of [
   assert.deepEqual(state.meta.projectVerification.mutationHistory.flatMap(item => item.paths), ["checklist.md"]);
   if (scsActive) {
     assert.deepEqual(state.meta.scs.taskContract.exactOutputPaths, ["checklist.md"]);
-    assert.deepEqual(state.meta.scs.taskContract.exactInputPaths, ["note.txt"]);
+    assert.deepEqual(state.meta.scs.taskContract.exactInputPaths, [inputFile]);
   }
   await assert.rejects(fs.stat(path.join(root, "sessions/source-role/.agent-run.lock")), { code: "ENOENT" });
 });

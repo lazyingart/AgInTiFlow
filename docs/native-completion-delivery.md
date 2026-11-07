@@ -83,6 +83,15 @@ Bounded file lists are supported; the next positive clause remains actionable.
 A restriction on only a field, section or file permission is not treated as a
 whole-file prohibition. This does not infer unnamed files or every paraphrase.
 
+Preservation uses bounded literal filenames rather than the output artifact
+format catalog. Source files such as `src/amount.cpp`, `src/amount.rs` and
+extensionless names such as `README` keep the same protection as `note.txt`.
+Quoted filenames may contain spaces. Explicit source clauses remain read
+targets during a concrete follow-up; a protection-only clause does not require
+reading a dotfile or change the secret-file guard. Only an explicit new-file
+declaration can exempt the created output from this preservation rule; an
+incidental mention or verification command cannot authorize a source overwrite.
+
 ## Piped interactive input during resume
 
 Non-TTY interactive input begins iteration before asynchronous startup and saved

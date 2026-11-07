@@ -1,5 +1,43 @@
 # Supervision Campaign Ledger
 
+## Literal source-file preservation — 2026-11-07
+
+Installed 0.20.376 accepts scripted bad patches to explicitly protected C++,
+Rust and extensionless README inputs, then completes with an unchanged-source
+claim. The existing TXT control blocks the same proposal. Two initial harness
+attempts requested tools before disclosure and are retained as inconclusive;
+they are not source-protection passes or provider failures. No real model
+made the adversarial patch proposals.
+
+Native preservation now parses bounded literal filenames independently of the
+artifact-format catalog. Explicit source clauses retain their read role during
+concrete follow-ups. Protection alone does not require dotfile reads or change
+secret-file checks. Only a strong new-file declaration exempts the created
+output; source references, prose and verification commands cannot authorize
+overwriting the source. The existing mutation guard is unchanged.
+
+The focused group passes 133 cases, including 48 new cases and 12 neighboring
+input-preservation cases. The neighboring 12 also pass separately. Native tests
+cover initial and concrete follow-up runs with SCS disabled and enabled. Final
+C++/Rust/README replays reject the bad patch before I/O and complete the
+permitted review. The full suite passes in 539.746 seconds with all 409
+captured inputs unchanged; syntax checks cover 322 files and audit finds zero
+vulnerabilities. The fixed-port document-server smoke is skipped locally because
+the port is already occupied; isolated CI must actually pass it before release.
+
+The normal request `Create review.md from src/amount.cpp. Do not modify
+src/amount.cpp.` completes in five real DeepSeek Flash requests. External
+checks verify the unchanged source, one 5,223-byte review, truthful inspection
+limitations and durable completion. Fresh-process continuation adds zero
+requests or writes. A copied acceptance harness initially imposed an undeclared
+4 KiB review cap; the original successful result is independently verified
+without another model request. The five real requests are counted once.
+
+This is a bounded explicit-filename contract, not universal language
+understanding or a shell sandbox. No application, provider preference, LocalLLM,
+Mac, Codex, credential, service or GPU change is made. Package publication and
+installed qualification remain separate gates.
+
 ## Direct named-file prohibitions — 2026-11-07
 
 Release 0.20.376-integration.0 is published and globally installed. Source
