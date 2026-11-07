@@ -2,6 +2,20 @@
 
 ## Optional project-map data validation — 2026-11-07
 
+Release 0.20.380-integration.0 is published and globally installed. Source
+55d18fdf776a792263794bfdbb6628e080a499ae and version-only release
+43f1db30611b69ed93aa2d6b5882e2036eb0de3e are pushed. Trusted CI
+42335094758 passes the full suite, audit, unchanged stale-CAS, actual isolated
+document-server smoke and 805 consumer checks. Actual registry and global
+consumers each pass 805 checks with zero skips; all 576 release Git/archive/global
+files match after testing. Both CLI commands report the exact version and
+the owner-only DeepSeek preference remains byte-unchanged. Ten initial archive
+404 responses resolve within the bounded readiness check, without republishing,
+rewriting the tag or substituting a local archive. Provenance subject and commit
+match; independent signature verification is not claimed. Four machine-ledger
+cases retain the baseline failures and count zero model requests. Package and
+registry verification use public network; the isolated cache CLI probes do not.
+
 Installed 0.20.379 accepts a JSON `null` project cache and then crashes the
 actual capability CLI with `TypeError`. Scalar, array and unsupported-version
 data can also appear present, exposing incorrectly typed metadata. This is a
