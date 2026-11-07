@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { types } from "node:util";
 import { ensureRuntimeGitExcludes, projectPaths } from "./project.js";
 import { redactSensitiveText } from "./redaction.js";
 import { executeWorkspaceTool } from "./workspace-tools.js";
@@ -23,6 +24,85 @@ async function assertCacheEntry(file) {
 
 function stableHash(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+}
+
+// Cache data is a versioned overview, not authority or evidence of current
+// source correctness. Inspect only own data descriptors; formatting an invalid
+// optional map must not invoke input hooks or break capability discovery.
+function dataProperties(value) {
+  if (!value || typeof value !== "object" || types.isProxy(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const fields = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(fields)) {
+    const field = fields[key];
+    if (typeof key !== "string" || !field.enumerable || !Object.hasOwn(field, "value")) return null;
+  }
+  return fields;
+}
+function record(value, schema) {
+  const fields = dataProperties(value), keys = fields && Reflect.ownKeys(fields);
+  if (!keys || keys.length !== Object.keys(schema).length) return false;
+  for (const key of keys) if (!Object.hasOwn(schema, key) || !schema[key](fields[key].value)) return false;
+  return true;
+}
+const text = (limit, nonblank = false) => value => typeof value === "string" && value.length <= limit &&
+  !value.includes("\0") && (!nonblank || value.trim().length > 0);
+const natural = value => Number.isSafeInteger(value) && value >= 0;
+const boolean = value => typeof value === "boolean";
+const timestamp = value => {
+  if (!text(40, true)(value)) return false;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString() === value;
+};
+const rootPath = value => text(32768, true)(value) && path.isAbsolute(value) && path.resolve(value) === value;
+const relativePath = value => text(32768)(value) && value.length > 0 && !path.isAbsolute(value) &&
+  path.posix.normalize(value) === value && value !== ".." && !value.startsWith("../");
+const list = (limit, item) => value => {
+  if (!value || typeof value !== "object" || types.isProxy(value) || !Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
+  const length = Object.getOwnPropertyDescriptor(value, "length").value;
+  if (!natural(length) || length > limit || Reflect.ownKeys(value).length !== length + 1) return false;
+  for (let i = 0; i < length; i++) {
+    const field = Object.getOwnPropertyDescriptor(value, String(i));
+    if (!field?.enumerable || !Object.hasOwn(field, "value") || !item(field.value)) return false;
+  }
+  return true;
+};
+const topEntry = value => {
+  const fields = dataProperties(value);
+  if (!fields) return false;
+  return fields.type?.value === "directory"
+    ? record(value, { path: relativePath, type: v => v === "directory" })
+    : record(value, { path: relativePath, type: v => v === "file", size: natural });
+};
+const fileEntry = value => record(value, { path: relativePath, size: natural, modifiedAt: timestamp });
+const inspectionData = value => record(value, {
+  summary: text(4096, true), counts: v => record(v, { files: natural, directories: natural, totalBytes: natural }), truncated: boolean,
+  topLevel: list(80, topEntry), manifestFiles: list(80, fileEntry),
+  sourceDirs: list(60, v => record(v, { path: relativePath, kind: k => k === "source" || k === "tests" })),
+  testFiles: list(80, fileEntry), packageManagers: list(20, text(220, true)),
+  packageScripts: list(30, v => record(v, { name: text(120000), command: text(220) })),
+  languageCounts: list(30, v => record(v, { name: text(512), count: natural })),
+  git: v => record(v, { present: boolean, recommendedCommands: list(2, text(220)), workflow: text(2048) }),
+  recommendedReads: list(40, relativePath), engineeringHints: list(20, text(2048, true)),
+});
+function mapFingerprint(inspection) {
+  // Explicit field order keeps existing version-1 producer digests valid even
+  // when a reader reformats JSON object keys. It is consistency, not a MAC.
+  return stableHash({
+    summary: inspection.summary,
+    counts: { files: inspection.counts.files, directories: inspection.counts.directories, totalBytes: inspection.counts.totalBytes },
+    manifests: inspection.manifestFiles.map(item => item.path), sourceDirs: inspection.sourceDirs.map(item => item.path),
+    tests: inspection.testFiles.map(item => item.path),
+    packageScripts: inspection.packageScripts.map(item => ({ name: item.name, command: item.command })),
+    languages: inspection.languageCounts.map(item => ({ name: item.name, count: item.count })),
+  });
+}
+function validMap(value, expectedRoot) {
+  return record(value, { version: v => v === MAP_VERSION, generatedAt: timestamp, projectRoot: rootPath, commandCwd: rootPath,
+    fingerprint: v => typeof v === "string" && /^[a-f0-9]{16}$/.test(v), inspection: inspectionData }) &&
+    value.projectRoot === value.commandCwd && (expectedRoot === undefined || value.projectRoot === expectedRoot) &&
+    value.fingerprint === mapFingerprint(value.inspection);
 }
 
 function truncateText(text, limit = DEFAULT_CONTEXT_PACK_CHARS) {
@@ -62,7 +142,7 @@ function compactInspection(inspected) {
 }
 
 export function codebaseMapToContextPack(map, { maxChars = DEFAULT_CONTEXT_PACK_CHARS } = {}) {
-  if (!map?.inspection) return "Context pack: no durable codebase map available.";
+  if (!validMap(map)) return "Context pack: no durable codebase map available.";
   const inspected = map.inspection;
   const sections = [
     `Context pack for ${map.commandCwd || map.projectRoot}`,
@@ -98,10 +178,13 @@ export async function readCodebaseMap(projectRoot = process.cwd()) {
     await assertCacheEntry(canonical);
     const { content: raw } = await readWorkspaceFileSnapshot(paths.codebaseMapPath, boundary, { maxBytes: MAX_MAP_BYTES, text: true });
     await assertCacheEntry(canonical);
+    let map;
+    try { map = JSON.parse(raw); } catch { /* Invalid optional metadata stays unavailable. */ }
+    if (!validMap(map, paths.root)) return { ok: false, path: paths.codebaseMapPath, reason: "invalid-map" };
     return {
       ok: true,
       path: paths.codebaseMapPath,
-      map: JSON.parse(raw),
+      map,
     };
   } catch (error) {
     return {
@@ -142,15 +225,7 @@ export async function refreshCodebaseMap(config, options = {}) {
   }
 
   const inspection = compactInspection(inspected);
-  const fingerprint = stableHash({
-    summary: inspection.summary,
-    counts: inspection.counts,
-    manifests: inspection.manifestFiles.map((item) => item.path),
-    sourceDirs: inspection.sourceDirs.map((item) => item.path),
-    tests: inspection.testFiles.map((item) => item.path),
-    packageScripts: inspection.packageScripts,
-    languages: inspection.languageCounts,
-  });
+  const fingerprint = mapFingerprint(inspection);
   const map = {
     version: MAP_VERSION,
     generatedAt: new Date().toISOString(),
@@ -159,6 +234,7 @@ export async function refreshCodebaseMap(config, options = {}) {
     fingerprint,
     inspection,
   };
+  if (!validMap(map, paths.root)) throw new Error("Generated project overview has invalid version-1 data.");
 
   await ensureRuntimeGitExcludes(projectRoot, [".aginti/codebase-map.json"]).catch(() => {});
   // Reuse the guarded native publisher: child directory symlinks, final

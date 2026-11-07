@@ -1,5 +1,40 @@
 # Supervision Campaign Ledger
 
+## Optional project-map data validation — 2026-11-07
+
+Installed 0.20.379 accepts a JSON `null` project cache and then crashes the
+actual capability CLI with `TypeError`. Scalar, array and unsupported-version
+data can also appear present, exposing incorrectly typed metadata. This is a
+native metadata-validation defect, independent of providers and app policies.
+Synthetic fixtures, isolated PATH/HOME and an HTTP refusal guard reproduce it
+with zero model requests, external HTTP or available host-tool executables.
+The original frozen 59-case regression set has 57 failures and two passes.
+
+Only `src/codebase-map.js` changes runtime behavior. Cache readers require
+supported version-1 data, bounded typed fields, the selected logical root and
+a consistent legacy overview fingerprint. Invalid optional metadata is
+unavailable instead of breaking discovery. The context formatter refuses
+proxies, accessors, custom prototypes and extended arrays without input hooks.
+Existing version-1 vectors, reordered JSON and multilingual filenames work;
+changing a selected logical root requires refreshing its derived overview.
+The fingerprint is a consistency check, not a MAC or source-freshness proof.
+
+69 new checks and 26 adapted cache-path checks pass. The adapted fixtures use
+valid producer metadata so schema refusal cannot hide earlier path, byte-bound
+or strict UTF-8 regressions. Actual CLI children verify both valid maps and
+unavailable malformed maps. The four original baseline cases now exit zero
+with typed diagnostic JSON; diagnosis leaves cache bytes unchanged.
+Full `npm test` passes in 550.248 seconds with all 413 captured inputs unchanged.
+Syntax checks cover 323 files; audit finds zero vulnerabilities. Capability
+and coding-tool smokes pass. Two existing fixed-port document checks skip
+locally; publication still requires the isolated CI server smoke to pass.
+
+Machine-ledger rows retain the two baseline failures and separate source and
+release qualification. This deterministic metadata slice needs no inference.
+Other project/Git control files, retained descriptors, same-UID isolation and
+application production readiness remain separate gates. No app, Lite,
+LocalLLM, Mac, Codex, credential, service or GPU activation is added.
+
 ## Generated project-cache publication — 2026-11-07
 
 Release 0.20.379-integration.0 is published and globally installed. Source

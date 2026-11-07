@@ -145,6 +145,15 @@ not evidence of source correctness. This protects the generated-cache path;
 other project control files, Git metadata, authentication and same-UID isolation
 are separate contracts.
 
+Readers also require the supported version-1 data schema, bounded typed fields,
+the selected project root and a consistent overview fingerprint. Null, scalar,
+future-version or malformed metadata is unavailable instead of breaking CLI
+capability discovery or exposing incorrectly typed metadata. The formatter
+rejects caller accessors, proxies and extended arrays without invoking them.
+Existing version-1 fingerprints and multilingual filenames remain supported;
+changing the selected logical root requires refreshing its derived overview.
+This consistency check does not authenticate metadata or establish freshness.
+
 ## Piped interactive input during resume
 
 Non-TTY interactive input begins iteration before asynchronous startup and saved

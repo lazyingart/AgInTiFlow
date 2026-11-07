@@ -60,7 +60,10 @@ for (const kind of ["file", "directory", "hardlink", "dangling", "directory-entr
 for (const kind of ["file", "directory", "hardlink"]) {
   test("cache reader refuses " + kind + " alias rather than accepting foreign JSON", async t => {
     const f = await fixture(t);
-    await fs.writeFile(f.foreign, JSON.stringify({ version: 1, inspection: { summary: excluded } }));
+    await fs.writeFile(path.join(f.workspace, "amber meadow.js"), "// Synthetic metadata marker.\n");
+    const { map } = await refreshCodebaseMap(f.config);
+    await fs.writeFile(f.foreign, JSON.stringify(map));
+    await fs.rm(path.dirname(f.cache), { recursive: true });
     await unsafeCache(f, kind);
     const result = await readCodebaseMap(f.workspace);
     assert.equal(result.ok, false); assert.equal("map" in result, false);
@@ -93,10 +96,18 @@ test("a failed staged write preserves the previous cache and cleans its temporar
   assert.deepEqual(await fs.readdir(path.dirname(f.cache)), ["codebase-map.json"]);
 });
 
-for (const bytes of [Buffer.concat([Buffer.from('{"value":"'), Buffer.from([0xff]), Buffer.from('"}')]),
-  Buffer.from('{"value":"\u0000"}'), Buffer.from(JSON.stringify({ value: "x".repeat(220000) }))]) {
-  test("cache reads refuse invalid or oversized bytes (length " + bytes.length + ")", async t => {
-    const f = await fixture(t); await fs.mkdir(path.dirname(f.cache)); await fs.writeFile(f.cache, bytes);
+for (const kind of ["invalid-UTF8", "NUL", "oversize"]) {
+  test("cache reads refuse " + kind + " bytes", async t => {
+    const f = await fixture(t), { map } = await refreshCodebaseMap(f.config);
+    let bytes;
+    if (kind === "oversize") {
+      const json = Buffer.from(JSON.stringify(map)); bytes = Buffer.concat([json, Buffer.alloc(220001 - json.length, 0x20)]);
+    } else if (kind === "invalid-UTF8") {
+      map.inspection.engineeringHints[0] = "encoding-placeholder";
+      const json = Buffer.from(JSON.stringify(map)), index = json.indexOf("encoding-placeholder");
+      bytes = Buffer.concat([json.subarray(0, index), Buffer.from([0xff]), json.subarray(index + "encoding-placeholder".length)]);
+    } else bytes = Buffer.from('{"value":"\u0000"}');
+    await fs.writeFile(f.cache, bytes);
     const result = await readCodebaseMap(f.workspace);
     assert.equal(result.ok, false); assert.equal("map" in result, false);
     assert.deepEqual(await fs.readFile(f.cache), bytes);
@@ -121,12 +132,13 @@ for (const kind of ["file", "directory"]) test("in-workspace " + kind + " aliase
 });
 
 test("valid literal replacement characters and the exact byte bound remain readable", async t => {
-  const f = await fixture(t); await fs.mkdir(path.dirname(f.cache));
-  for (const value of [{ inspection: { summary: "Valid literal \ufffd" } }, { x: "x".repeat(219992) }]) {
-    const bytes = Buffer.from(JSON.stringify(value)); assert.ok(bytes.length <= 220000);
+  const f = await fixture(t); await fs.writeFile(path.join(f.workspace, "valid-\ufffd.js"), "// Valid literal filename.\n");
+  const { map } = await refreshCodebaseMap(f.config), json = Buffer.from(JSON.stringify(map));
+  assert.ok(json.includes(Buffer.from("\ufffd")));
+  for (const bytes of [json, Buffer.concat([json, Buffer.alloc(220000 - json.length, 0x20)])]) {
     await fs.writeFile(f.cache, bytes);
     const result = await readCodebaseMap(f.workspace);
-    assert.equal(result.ok, true); assert.deepEqual(result.map, value);
+    assert.equal(result.ok, true); assert.deepEqual(result.map, map);
   }
 });
 
