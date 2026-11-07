@@ -1,5 +1,32 @@
 # Supervision Campaign Ledger
 
+## Current backend package bindings — 2026-11-07
+
+The published Flow381 restricted SDK eight-file import closure is byte-identical
+to reviewed Flow365/376 and matches the actual global installation. Litepreview9's
+three-file main entry closure and existing archive match reviewed Lite8. Static
+Git/archive/file checks suffice here; historical wire captures are not relabelled
+as new emissions. No SDK execution, old conformance rerun, network request or
+inference is added by this comparison. The current Flow/Lite artifact hashes are
+recorded in the material LocalLLM owner handoff.
+
+Package identity still matters: the unchanged LocalLLM v1 profile permits only
+Flow344.1/Litepreview2. Source equality does not admit381/preview9. The functional
+LocalLLM ledger capability remains `prerequisite_missing`. S1 is closed; one
+S2-only six-file offline-source approval question is pending. No S2 source,
+profile, credential, model, service, route or Mac operation has been performed.
+S2's pure evidence/exchange checks would still leave authentic admission,
+receipt production/storage, quotas/replay, cancellation, app credentials and
+an approved live resource/transport window as separate requirements.
+
+The broader requirement matrix remains evidence-bound: DeepSeek Flash/Pro and
+native CLI persistence/tool/artifact tasks have qualified examples; the bounded
+application SDK also has qualified synthetic host-scoped reading examples.
+Each application's authentication, domain writes, current deployment and quota
+transactions require its owner's acceptance. LocalLLM workstation/Mac admission
+and app-safe Codex transport are unavailable. No new runtime behavior or npm
+release is warranted by this static pin update.
+
 ## Current-source data continuation — 2026-11-07
 
 Release **0.20.381-integration.0** is published and globally installed. Source
