@@ -2,7 +2,21 @@
 
 ## Generated project-cache publication — 2026-11-07
 
-Installed 0.20.378 can overwrite an unrelated file when the automatically
+Release 0.20.379-integration.0 is published and globally installed. Source
+56694ccd048368741d6ab1749ff7a415b08e93f5 and version-only release
+31ca39f1e70ba81395ca68cfa7aef8c63156f934 are pushed. Trusted CI
+42330208945 passes full validation, audit, unchanged stale-CAS, the isolated
+document-server smoke without a skip and 736 consumer checks. Actual registry
+and global consumers each pass 736 checks with zero skips; all 575 release
+Git/archive/global files match after global tests. Both CLI commands report the
+exact version and the owner-only DeepSeek preference is byte-unchanged. Ten
+initial archive 404 responses resolve within the bounded readiness window,
+without republishing, changing the tag or substituting a local archive.
+Provenance subject and commit match; no independent signature verification is
+claimed. Six ledger cases count the eleven real Flash requests once. Release
+and the actual-PTY evidence-replay demo add zero model requests.
+
+Baseline installed 0.20.378 can overwrite an unrelated file when the automatically
 generated `.aginti/codebase-map.json` is a file link, directory link or hard
 link. A normal native review startup does this before its first model request,
 with zero model tools. The baseline intentionally stops at that first scripted
@@ -44,7 +58,7 @@ Only `src/codebase-map.js` changes runtime behavior. Other project control files
 Git metadata, retained descriptors and adversarial same-UID isolation remain
 separate contracts. No application, LocalLLM, Mac, Codex, credential, service,
 GPU or provider preference is changed. Publication and installed qualification
-remain separate gates.
+are recorded separately above.
 
 ## Resolved file-read scope and required-source stop — 2026-11-07
 
