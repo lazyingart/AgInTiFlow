@@ -2,14 +2,22 @@
 
 ## Standalone application distribution
 
-For a text-only app backend, AgInTiLite private preview 9 provides the same
+For a text-only app backend, AgInTiLite private preview 10 provides the same
 bounded proposal loop without the full CLI, Studio or vision dependency graph.
-Canonical Lite `main` is `e35a36ff56500a76956d56de08f2cbf402b79d14`, also
-available as `sdk/agintilite-deepseek-client-20261106` in the AgInTiFlow repository.
+Canonical Lite `main` is `dca8f08a691c230224713a40b271df69c61a9835`, also
+available as `sdk/agintilite-native-error-envelope-20261108` in the AgInTiFlow repository.
 That ref is a standalone SDK tree, not a branch to merge into Flow's application
 tree. Use the pinned local tarball, not a mutable worktree link. Its SHA-256 is
-`70898a6a962c5dfd7de88ffc1f2a67552e938a306c14eb6298ac76fc42e09e5e`.
+`7b5d5e451efe9eb7f88857e40506db8dadaf393b842424cf0c91c3d3f234dded`.
 It remains private and unpublished to npm; no application is upgraded implicitly.
+
+Preview 10 rejects any own native `error` descriptor before projecting a proposal
+or tool call, including falsey, hidden and accessor forms. Canonical preview 9
+still admitted contradictory error-plus-choices responses; its default source was
+fast-forwarded only after the existing preview-10 tests and immutable archive
+were reverified. Exports, request construction, deadlines and provider policy are
+unchanged. A trusted callback that already discarded an upstream error cannot
+recover that evidence by swapping SDK versions.
 
 Returned JSON snapshots are deeply frozen and may use null prototypes. Consume
 their own data fields or compare JSON values, rather than relying on ordinary
@@ -22,7 +30,7 @@ runtime files. The separate `@lazyingart/agintilite/deepseek-http` import export
 That leaf opens native HTTPS only after an explicit request. The complete
 package has nine files, zero dependencies and no CLI, install hook or server.
 
-A 2026-11-07 installed-package qualification exercises real Flash and Pro
+A 2026-11-07 preview-9 installed-package qualification exercised real Flash and Pro
 requests through Lite itself. Each fresh process performs one account-scoped
 read and two model requests. The Pro follow-up rereads revision 8 and removes
 an item completed since revision 7 rather than trusting stale host history.
@@ -40,14 +48,27 @@ not a permission or factual authority. The qualification produces two such
 host-rendered artifacts and rejects seven stale/foreign/altered-data controls;
 it does not declare the failed raw-Markdown policy passed.
 
-All 105 Lite offline tests and exact reproducible packing pass at the canonical
-path. The first live harness stopped on a protected-JSON prototype comparison
+All 107 Lite offline tests and exact reproducible packing pass at the canonical
+preview-10 path. An independent 126-case matrix rejects contradictory envelopes
+without reads, completed proposals or accessor hooks. Two offline packs reproduce
+the original nine-file archive exactly. The first preview-9 live harness stopped on a protected-JSON prototype comparison
 and did not retain enough data to judge its proposal; its two requests remain
 inconclusive. The later four requests qualify the structured path with the
 presentation limitation above. All six actual requests are counted once;
-recorded-output checks and rendering add none. No SDK behavior change, automatic
-retry/fallback, app activation or new Flow npm release is part of this
-consolidation. LocalLLM and application-safe Codex remain separately gated.
+recorded-output checks and rendering add none. That preview-9 qualification did
+not itself change SDK behavior, start automatic retry/fallback, activate an app
+or publish a new Flow version. Preview 10's error guard is the separate repair
+described above. LocalLLM and application-safe Codex remain separately gated.
+
+A separate November 8 qualification uses the actual installed preview-10 native
+client for a short document transformation. Flash translates two selected source
+paragraphs; a fresh Pro process rereads a changed source and updates only the
+second translation. Four actual requests and two scoped reads complete, with
+source-bound proposals, semantic review and byte-verified host exports. The host
+retains the equation, figure reference/image and code rather than asking the
+model to reproduce them. See [source-preserving text transformations](restricted-source-transforms.md)
+for the ownership boundary, checks and limits. This adds no SDK method, application
+activation or automatic provider handoff.
 
 The repository includes an offline LocalLLM text-profile conformance suite:
 `npm run test:localllm-text-contract`. It reproduces English/Chinese SDK request
