@@ -17,6 +17,7 @@ import {
 import { SessionStore } from "./session-store.js";
 import { assessFileChecksumClaims, nativeFileChecksumReceipts } from "./completion-file-checksums.js";
 import { acquireNativeSessionRunLock } from "./session-run-lock.js";
+import { runNativeHostCommand } from "./native-host-command.js";
 import {
   assertIntegrationRunAgentInvocation,
   assertRegisteredIntegrationSessionConfig,
@@ -7197,6 +7198,13 @@ function killChildTree(child, signal = "SIGTERM") {
 }
 
 function runHostShellCommand(command, config) {
+  if (process.platform !== "win32") {
+    return runNativeHostCommand(String(command || ""), {
+      cwd: config.commandCwd, env: safeExecutionEnv(), shell: hostShellOption(), signal: config.abortSignal,
+      timeoutMs: Number(config.shellTimeoutMs || process.env.AGINTI_SHELL_TIMEOUT_MS || 30000),
+      onShutdownPending: () => createObservers(config).log("command.shutdown.pending", { reason: "termination_unproven", waitingFor: "native-command-shutdown" }),
+    });
+  }
   return new Promise((resolve, reject) => {
     const shell = hostShellOption();
     const child = spawn(String(command || ""), {
@@ -7446,6 +7454,8 @@ export function hostManagedDocumentCompilerInvocationBlock(
 
 export function normalizeNoMatchQueryResult(result = {}, policy = {}) {
   if (
+    result?.lifecycleVerificationFailed === true ||
+    (result != null && Object.hasOwn(result, "lifecycle") && result.lifecycle !== "normal-exit") ||
     policy?.noMatchExitIsSuccess !== true ||
     Number(result?.exitCode) !== 1 ||
     String(result?.stdout || "").trim() ||
@@ -7651,7 +7661,9 @@ export function skippedAfterBlockedToolResult(toolCall, blockedResult) {
   const args = sanitizeToolArgs(toolName, safeParseToolArgs(toolCall));
   const reason = blockedResult?.permissionAdvice
     ? "Skipped because an earlier tool call in the same assistant message returned permission advice. The runtime stops the batch so the agent cannot retry variants before the user/model sees the blocker."
-    : "Skipped because an earlier tool call in the same assistant message failed a semantic pre-dispatch contract. The runtime stops the batch so later calls cannot act on that invalid premise before the model corrects it.";
+    : blockedResult?.category === "native-command-lifecycle"
+      ? "Skipped because the preceding native command lifecycle failed verification. No further work is dispatched after that infrastructure failure."
+      : "Skipped because an earlier tool call in the same assistant message failed a semantic pre-dispatch contract. The runtime stops the batch so later calls cannot act on that invalid premise before the model corrects it.";
   return {
     ok: false,
     blocked: true,
@@ -23758,6 +23770,11 @@ async function runShellCommand(command, config, policy = evaluateCommandPolicy(c
       stdout: trimCommandOutput(normalizedResult.stdout, 8000),
       stderr: trimCommandOutput(normalizedResult.stderr, 4000),
       ...(normalizedResult.noMatch === true ? { noMatch: true, semanticOutcome: "no-match" } : {}),
+      ...(result.lifecycleVerificationFailed === true ? {
+        stopRun: true, recoverable: false, category: "native-command-lifecycle",
+        reason: "Native command lifecycle verification failed. Do not rerun automatically or grant more command permissions.",
+        observedCommandExitCode: result.observedCommandExitCode,
+      } : {}),
       ...(diagnosticHint ? { diagnosticHint } : {}),
     };
   } catch (error) {
@@ -23767,6 +23784,7 @@ async function runShellCommand(command, config, policy = evaluateCommandPolicy(c
       exitCode: Number.isInteger(error?.code) ? error.code : 1,
       stdout: trimCommandOutput(error?.stdout || "", 8000),
       stderr: trimCommandOutput(error?.stderr || error?.message || "", 4000),
+      ...(!config.useDockerSandbox && process.platform !== "win32" ? { lifecycle: "process-error" } : {}),
     };
     const failedResult = normalizeNoMatchQueryResult(rawFailedResult, policy);
     const diagnosticHint = shellDiagnosticHint(command, failedResult);
@@ -25238,7 +25256,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         const generatedOutputPaths = commandResult.ok !== false
           ? await verifiedGeneratedOutputPaths(state, exactOutputSnapshotsBefore, config)
           : [];
-        const permissionAdvice = commandResult.ok === false
+        const permissionAdvice = commandResult.ok === false && commandResult.category !== "native-command-lifecycle"
           ? buildFailedCommandAdvice({
               args: safeArgs,
               commandPolicy: policy,
@@ -32725,6 +32743,23 @@ async function runAgentOnceUnlocked(config) {
           state.stepsCompleted = step;
           state.updatedAt = new Date().toISOString();
           await store.saveState(state);
+        }
+        if (toolResult.stopRun && toolResult.category === "native-command-lifecycle") {
+          for (const skippedCall of toolCalls.slice(toolIndex + 1)) {
+            const skipped = skippedAfterBlockedToolResult(skippedCall, toolResult);
+            state.messages.push({ role: "tool", tool_call_id: skippedCall.id, content: JSON.stringify(skipped) });
+            await store.appendEvent("tool.skipped", sanitizeToolResult(skipped));
+          }
+          state.stepsCompleted = step;
+          state.updatedAt = new Date().toISOString();
+          updateGoalStatus(state, "paused", "native_command_lifecycle", state.updatedAt);
+          await store.saveState(state);
+          await resultObservers.drain(config.abortSignal);
+          const detail = { reason: "native_command_lifecycle", sessionId };
+          await store.appendEvent("session.stopped", detail);
+          observers.event("session.stopped", detail);
+          return { sessionId, result: "The command could not be verified safely. I kept the available output and paused without retrying it.",
+            stopped: true, failed: true, reason: detail.reason, ...goalRunMetadata(state) };
         }
         if (await fenceQueuedInput(toolCalls.slice(toolIndex + 1), "after-tool")) {
           await resultObservers.drain(config.abortSignal);

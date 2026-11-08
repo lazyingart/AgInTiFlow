@@ -51,6 +51,8 @@ try {
     "test/native-turn-boundary.test.js", "test/native-turn-runtime.test.js", "test/inbox-dispatch-fence.test.js", "test/native-tool-checkpoint-runtime.test.js", "test/native-completion-delivery-runtime.test.js", "test/file-creation-intent.test.js", "test/cli-startup-input.test.js", "test/file-checksum.test.js", "test/file-checksum-runtime.test.js", "test/preserved-input-intent.test.js", "test/preserved-mutation-target.test.js",
     "test/japanese-file-preservation.test.js",
     "test/long-job-metadata.test.js",
+    "test/native-host-command.test.js", "test/native-shell-cancellation-runtime.test.js",
+    "test/native-shell-outcome.test.js", "test/native-command-observer-process.test.js",
     "test/advisory-invocation.test.js", "test/advisory-invocation-runtime.test.js", "test/tool-wrappers-lifecycle.test.js", "test/advisory-mutation-intent.test.js",
     "test/workspace-file-publication.test.js", "test/workspace-file-publication-runtime.test.js",
     "test/workspace-read-authority.test.js",
@@ -63,9 +65,9 @@ try {
     "test/verification-input-freshness.test.js",
     "test/restricted-deepseek-http.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 1127\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# tests 1176\n/); assert.match(log, /# fail 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 1127, testConcurrency, consumerTimeoutMs,
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 1176, testConcurrency, consumerTimeoutMs,
     failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });
