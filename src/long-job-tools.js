@@ -6,6 +6,8 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { redactSensitiveText } from "./redaction.js";
+import { dataFields } from "./restricted-application-contract.js";
+import { LONG_JOB_METADATA_MAX_BYTES, longJobMetadataError, openLongJobMetadata } from "./long-job-metadata.js";
 
 const execFile = promisify(execFileCallback);
 const JOB_NAME_PATTERN = /^[A-Za-z0-9_.+-]{1,80}$/;
@@ -66,6 +68,89 @@ function tmuxSessionName(jobId = "") {
   if (base.length <= 80) return base;
   const hash = crypto.createHash("sha1").update(base).digest("hex").slice(0, 10);
   return `${base.slice(0, 68)}-${hash}`;
+}
+
+const JOB_METADATA_KEYS = ["jobId", "name", "session", "createdAt", "cwd", "command", "displayCommand",
+  "rawCommandSha256", "verifyCommand", "expectedOutputPath", "expectedOutputPathAbs", "expectedSizeBytes",
+  "restartOnFailure", "pollIntervalSeconds", "timeoutSeconds", "statusPath", "stdoutPath", "stderrPath", "supervisorLogPath", "note"];
+const STATUS_REQUIRED = ["jobId", "name", "state", "createdAt", "updatedAt", "cwd", "session", "command",
+  "expectedOutputPath", "expectedSizeBytes", "restartOnFailure", "pollIntervalSeconds", "attempt", "pid",
+  "exitCode", "verifyExitCode", "outputBytes", "percent", "reason", "outputExists", "startedAt"];
+const STATUS_TIMES = ["heartbeatAt", "restartedAt", "completedAt", "failedAt"];
+const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
+const isoTime = value => typeof value === "string" && value.length === 24 &&
+  Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+function exactFields(value, required, optional = []) {
+  const fields = dataFields(value, [...required, ...optional], required);
+  if (required.some(key => !Object.hasOwn(fields, key))) throw longJobMetadataError();
+  return fields;
+}
+function validJobMetadata(value, jobId, root, config) {
+  const job = exactFields(value, JOB_METADATA_KEYS);
+  const text = (field, max) => typeof job[field] === "string" && job[field].isWellFormed() && Buffer.byteLength(job[field]) <= max;
+  if (job.jobId !== jobId || !JOB_NAME_PATTERN.test(job.name) || job.session !== tmuxSessionName(jobId) ||
+      !isoTime(job.createdAt) || !text("command", MAX_COMMAND_BYTES) || !job.command.trim() ||
+      !text("verifyCommand", LONG_JOB_METADATA_MAX_BYTES) || !text("note", LONG_JOB_METADATA_MAX_BYTES) ||
+      job.displayCommand !== redactSensitiveText(job.command) ||
+      job.rawCommandSha256 !== crypto.createHash("sha256").update(job.command).digest("hex") ||
+      typeof job.cwd !== "string" || !path.isAbsolute(job.cwd) || path.resolve(job.cwd) !== job.cwd ||
+      (!isTrustedWholeHost(config) && !isInsideDirectory(root, job.cwd)) ||
+      typeof job.expectedOutputPath !== "string" || typeof job.expectedOutputPathAbs !== "string" ||
+      !integer(job.expectedSizeBytes, 0, Number.MAX_SAFE_INTEGER) || typeof job.restartOnFailure !== "boolean" ||
+      !integer(job.pollIntervalSeconds, 5, 3600) || !integer(job.timeoutSeconds, 0, 60 * 60 * 24 * 14)) throw longJobMetadataError();
+  const outputAbs = job.expectedOutputPath ? path.resolve(root, job.expectedOutputPath) : "";
+  if (job.expectedOutputPathAbs !== outputAbs || outputAbs && !isTrustedWholeHost(config) && !isInsideDirectory(root, outputAbs)) throw longJobMetadataError();
+  for (const [key, name] of [["statusPath", "status.json"], ["stdoutPath", "stdout.log"], ["stderrPath", "stderr.log"], ["supervisorLogPath", "supervisor.log"]]) {
+    if (job[key] !== path.join(".aginti", "long-jobs", jobId, name)) throw longJobMetadataError();
+  }
+  return job;
+}
+function validJobStatus(value, job) {
+  const created = value?.state === "created";
+  const status = created
+    ? exactFields(value, [...JOB_METADATA_KEYS, "state", "outputBytes", "percent", "updatedAt"])
+    : exactFields(value, STATUS_REQUIRED, STATUS_TIMES);
+  const shared = created ? JOB_METADATA_KEYS : ["jobId", "name", "createdAt", "cwd", "session", "expectedOutputPath", "expectedSizeBytes", "restartOnFailure", "pollIntervalSeconds"];
+  for (const key of shared) {
+    const expected = key === "command" ? job.displayCommand : key === "verifyCommand" ? redactSensitiveText(job.verifyCommand) : job[key];
+    if (status[key] !== expected) throw longJobMetadataError();
+  }
+  if (!isoTime(status.updatedAt) || status.updatedAt < job.createdAt ||
+      !integer(status.outputBytes, 0, Number.MAX_SAFE_INTEGER)) throw longJobMetadataError();
+  if (created) {
+    if (status.outputBytes !== 0 || status.percent !== null) throw longJobMetadataError();
+    return status;
+  }
+  if (!["starting", "running", "verifying", "restarting", "completed", "failed"].includes(status.state) ||
+      status.command !== job.displayCommand || !integer(status.attempt, 0, Number.MAX_SAFE_INTEGER) ||
+      !(status.pid === null || integer(status.pid, 1, Number.MAX_SAFE_INTEGER)) ||
+      ![status.exitCode, status.verifyExitCode].every(code => code === null || integer(code, 0, 255)) ||
+      typeof status.outputExists !== "boolean" || typeof status.reason !== "string" || Buffer.byteLength(status.reason) > 4096 ||
+      !isoTime(status.startedAt) || status.startedAt < job.createdAt || status.startedAt > status.updatedAt) throw longJobMetadataError();
+  const percent = job.expectedSizeBytes > 0 && status.outputExists ? Math.min(100, status.outputBytes / job.expectedSizeBytes * 100) : null;
+  if (status.percent !== percent || !status.outputExists && status.outputBytes !== 0) throw longJobMetadataError();
+  for (const key of STATUS_TIMES) if (Object.hasOwn(status, key) &&
+      (!isoTime(status[key]) || status[key] < status.startedAt || status[key] > status.updatedAt)) throw longJobMetadataError();
+  if (status.state === "completed" && (!isoTime(status.completedAt) || Object.hasOwn(status, "failedAt") ||
+      status.pid !== null || status.exitCode !== 0 || job.verifyCommand && status.verifyExitCode !== 0) ||
+      status.state === "failed" && (!isoTime(status.failedAt) || Object.hasOwn(status, "completedAt") || status.pid !== null) ||
+      !["completed", "failed"].includes(status.state) && (Object.hasOwn(status, "completedAt") || Object.hasOwn(status, "failedAt"))) throw longJobMetadataError();
+  if (status.state === "completed" && job.expectedOutputPath && (!status.outputExists ||
+      (job.expectedSizeBytes > 0 ? status.outputBytes !== job.expectedSizeBytes : status.outputBytes <= 0))) throw longJobMetadataError();
+  return status;
+}
+
+function unavailableJobMetadata(toolName, jobId = "") {
+  return { ok: false, blocked: true, toolName, ...(jobId ? { jobId } : {}),
+    code: "LONG_JOB_METADATA_UNAVAILABLE", reason: longJobMetadataError().message };
+}
+function observedSessionAlive(result, session) {
+  if (result.ok) return true;
+  const message = result.stderr.trim();
+  if (result.exitCode === 1 && (message === `can't find session: ${session}` ||
+      /^no server running on [^\r\n]+$/.test(message) ||
+      /^error connecting to [^\r\n]+ \(No such file or directory\)$/.test(message))) return false;
+  return null;
 }
 
 function uniqueAbsolutePaths(text = "") {
@@ -195,11 +280,11 @@ function now() {
 }
 
 async function appendLog(message) {
-  await fsp.appendFile(supervisorLogPath, now() + " " + message + "\n");
+  await fsp.appendFile(supervisorLogPath, now() + " " + message + "\n", { mode: 0o600 });
 }
 
 async function appendEvent(type, data = {}) {
-  await fsp.appendFile(eventsPath, JSON.stringify({ type, at: now(), ...data }) + "\n");
+  await fsp.appendFile(eventsPath, JSON.stringify({ type, at: now(), ...data }) + "\n", { mode: 0o600 });
 }
 
 function outputStats() {
@@ -229,7 +314,7 @@ async function writeStatus(patch = {}) {
     updatedAt: now(),
   };
   const tmp = statusPath + ".tmp";
-  await fsp.writeFile(tmp, JSON.stringify(status, null, 2));
+  await fsp.writeFile(tmp, JSON.stringify(status, null, 2), { mode: 0o600 });
   await fsp.rename(tmp, statusPath);
 }
 
@@ -261,8 +346,8 @@ async function runShell(command, { stdout, stderr, label }) {
     });
     status.pid = child.pid || null;
     writeStatus({ state: label === "verify" ? "verifying" : "running", pid: status.pid }).catch(() => {});
-    const out = fs.createWriteStream(stdout, { flags: "a" });
-    const err = fs.createWriteStream(stderr, { flags: "a" });
+    const out = fs.createWriteStream(stdout, { flags: "a", mode: 0o600 });
+    const err = fs.createWriteStream(stderr, { flags: "a", mode: 0o600 });
     child.stdout.on("data", (chunk) => out.write(chunk));
     child.stderr.on("data", (chunk) => err.write(chunk));
     const timeoutMs = Number(job.timeoutSeconds || 0) > 0 ? Math.max(1, job.startedEpochMs + Number(job.timeoutSeconds) * 1000 - Date.now()) : 0;
@@ -472,7 +557,6 @@ export async function startLongJob(args = {}, config = {}) {
   );
   const timeoutSeconds = clampInteger(args.timeoutSeconds, 0, 0, 60 * 60 * 24 * 14);
 
-  await fsp.mkdir(jobDir, { recursive: true });
   const metadata = {
     jobId,
     name,
@@ -495,16 +579,23 @@ export async function startLongJob(args = {}, config = {}) {
     supervisorLogPath,
     note: redactSensitiveText(String(args.note || "")),
   };
-  await fsp.writeFile(path.join(jobDir, "job.json"), JSON.stringify({ ...metadata, command, verifyCommand }, null, 2));
-  await fsp.writeFile(supervisorPath, supervisorSource());
-  await fsp.writeFile(path.join(jobDir, "command.txt"), `${command}\n`);
-  if (verifyCommand) await fsp.writeFile(path.join(jobDir, "verify.txt"), `${verifyCommand}\n`);
-  await fsp.writeFile(path.join(jobDir, "status.md"), buildStatusMarkdown(metadata));
-  await fsp.writeFile(path.join(jobDir, "events.jsonl"), "");
-  await fsp.writeFile(
-    path.join(jobDir, "status.json"),
-    JSON.stringify({ ...metadata, state: "created", outputBytes: 0, percent: null, updatedAt: new Date().toISOString() }, null, 2)
-  );
+  // Finish pure preparation before creating a control directory or dispatching.
+  const jobMetadata = { ...metadata, command, verifyCommand };
+  const initialStatus = { ...metadata, state: "created", outputBytes: 0, percent: null, updatedAt: new Date().toISOString() };
+  const files = [["job.json", JSON.stringify(jobMetadata, null, 2)], ["supervisor.mjs", supervisorSource()],
+    ["command.txt", `${command}\n`], ...(verifyCommand ? [["verify.txt", `${verifyCommand}\n`]] : []),
+    ["status.md", buildStatusMarkdown(metadata)], ["events.jsonl", ""], ["status.json", JSON.stringify(initialStatus, null, 2)]];
+  let storage;
+  try {
+    validJobMetadata(jobMetadata, jobId, root, config); validJobStatus(initialStatus, jobMetadata);
+    if (files.some(([name, text]) => Buffer.byteLength(text) > (name === "supervisor.mjs" ? 256 * 1024 : LONG_JOB_METADATA_MAX_BYTES))) throw longJobMetadataError();
+    if (!isTrustedWholeHost(config) && !isInsideDirectory(await fsp.realpath(root), await fsp.realpath(cwd.cwd))) throw longJobMetadataError();
+    storage = await openLongJobMetadata(root, jobId, { create: true });
+    for (const [name, text] of files) await storage.writeNew(name, text);
+    await storage.verify();
+  } catch {
+    return unavailableJobMetadata("start_long_job", jobId);
+  }
 
   const tmux = await runTmux(
     ["new-session", "-d", "-s", session, "-c", cwd.cwd, `${shellQuote(process.execPath)} ${shellQuote(supervisorPath)}`],
@@ -549,33 +640,45 @@ export async function startLongJob(args = {}, config = {}) {
 }
 
 export async function longJobStatus(args = {}, config = {}) {
-  const jobId = String(args.jobId || "").trim();
+  let jobId = "";
+  try {
+    const fields = dataFields(args, ["jobId"]);
+    if (typeof fields.jobId === "string") jobId = fields.jobId.trim();
+  } catch { return unavailableJobMetadata("long_job_status"); }
   if (!JOB_ID_PATTERN.test(jobId)) {
     return { ok: false, blocked: true, toolName: "long_job_status", reason: "Invalid or missing long job id." };
   }
+  const guard = checkLongJobToolUse("long_job_status", { jobId }, config);
+  if (!guard.allowed) return { ok: false, blocked: true, toolName: "long_job_status", jobId, reason: guard.reason };
   const root = workspaceRoot(config);
-  const statusAbs = path.join(root, ".aginti", "long-jobs", jobId, "status.json");
   try {
-    const status = JSON.parse(await fsp.readFile(statusAbs, "utf8"));
-    let sessionAlive = null;
-    if (status.session) {
-      const alive = await runTmux(["has-session", "-t", status.session], { timeout: 4000, signal: config.abortSignal });
-      sessionAlive = Boolean(alive.ok);
+    const storage = await openLongJobMetadata(root, jobId);
+    const snapshot = await storage.read("job.json");
+    const job = validJobMetadata(snapshot.data, jobId, root, config);
+    let status;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { status = validJobStatus((await storage.read("status.json")).data, job); break; }
+      catch (error) { if (error.code !== "LONG_JOB_METADATA_CHANGED" || attempt === 2) throw error; }
     }
-    return {
-      ok: true,
-      toolName: "long_job_status",
-      jobId,
-      statusPath: path.relative(root, statusAbs),
-      sessionAlive,
-      ...status,
+    await storage.verifySnapshot(snapshot);
+    // Only a fully validated deterministic session name reaches the probe.
+    const alive = await runTmux(["has-session", "-t", job.session], { timeout: 4000, signal: config.abortSignal });
+    await storage.verifySnapshot(snapshot);
+    const result = {
+      ok: true, toolName: "long_job_status", jobId, statusPath: job.statusPath, sessionAlive: observedSessionAlive(alive, job.session),
+      name: job.name, state: status.state, createdAt: job.createdAt, updatedAt: status.updatedAt,
+      cwd: job.cwd, session: job.session, command: job.displayCommand,
+      expectedOutputPath: job.expectedOutputPath, expectedSizeBytes: job.expectedSizeBytes,
+      restartOnFailure: job.restartOnFailure, pollIntervalSeconds: job.pollIntervalSeconds,
+      timeoutSeconds: job.timeoutSeconds, stdoutPath: job.stdoutPath, stderrPath: job.stderrPath,
+      supervisorLogPath: job.supervisorLogPath, attempt: status.attempt ?? 0, pid: status.pid ?? null,
+      exitCode: status.exitCode ?? null, verifyExitCode: status.verifyExitCode ?? null,
+      outputBytes: status.outputBytes, percent: status.percent, outputExists: status.outputExists ?? false,
+      reason: redactSensitiveText(status.reason || ""),
     };
-  } catch (error) {
-    return {
-      ok: false,
-      toolName: "long_job_status",
-      jobId,
-      reason: `Could not read long job status: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    for (const key of ["startedAt", ...STATUS_TIMES]) if (Object.hasOwn(status, key)) result[key] = status[key];
+    return result;
+  } catch {
+    return unavailableJobMetadata("long_job_status", jobId);
   }
 }
