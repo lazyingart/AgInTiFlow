@@ -492,7 +492,7 @@ function withoutFilePathMentions(text = "") {
 // prose, URLs, globs and command strings do not become file authority.
 const PRESERVATION_FILE_TOKEN = "(?:[\"'\\x60][^\"'\\x60\\r\\n]{1,220}[\"'\\x60]|[\\w./~\\-\\u4e00-\\u9fff]{0,219}[\\w~\\-\\u4e00-\\u9fff](?![\\w/~\\-\\u4e00-\\u9fff]|\\.(?!\\s|$)))";
 const PRESERVATION_FILE_MEMBER = "(?:(?:the|my|our)\\s+)?(?:files?\\s+)?" + PRESERVATION_FILE_TOKEN;
-const PRESERVATION_FILE_LIST = PRESERVATION_FILE_MEMBER + "(?:\\s*(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+|[、，]|和|及|与|與|或)\\s*" + PRESERVATION_FILE_MEMBER + "){0,15}";
+const PRESERVATION_FILE_LIST = PRESERVATION_FILE_MEMBER + "(?:\\s*(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+|[、，]|和|及び|および|と|及|与|與|或)\\s*" + PRESERVATION_FILE_MEMBER + "){0,15}";
 const EXPLICIT_OUTPUT_FILE_LIST_HEADER =
   /^(?:#+\s*)?(?:(?:required|final|expected|declared|target|pilot|deliverable)\s+)*(?:create|created files?|files? to create|outputs?|output structure|required outputs?|artifacts?|deliverables?|generated files?|writer requirements|renderer requirements|生成文件|输出结构|輸出結構|输出文件|輸出文件|创建文件|建立文件)(?:\s+(?:outputs?|artifacts?|deliverables?))?\s*[：:]?\s*$/i;
 
@@ -534,9 +534,50 @@ function withoutLiteralFileReferences(text = "", candidates = []) {
   return source;
 }
 
+function japaneseFileIntentClauses(goal = "") {
+  // Literal targets and complete imperative endings only. Partial attributes,
+  // conditionals, quoted examples and pronouns grant no whole-file authority.
+  const source = String(goal || "");
+  if (!/(?:を|は|に|だけ)\s*(?:そのまま|変更|編集|更新|上書き|書き換え|削除|移動|リネーム|新規|作成|生成|保存|出力|要約|読|参照)/u.test(source)) return [];
+  const ranges = [], closers = { '"': '"', "'": "'", "`": "`", "“": "”", "‘": "’", "「": "」", "『": "』" };
+  let quote = "", start = 0;
+  for (let index = 0; index < source.length; index++) {
+    const char = source[index];
+    if (quote) {
+      if (char === "\\") { index++; continue; }
+      if (char === quote) { ranges.push([start, index + 1]); quote = ""; }
+    } else if (Object.hasOwn(closers, char) && !(char === "'" && /[\p{L}\p{N}_]/u.test(source[index - 1] || "") && /[\p{L}\p{N}_]/u.test(source[index + 1] || ""))) {
+      start = index; quote = closers[char];
+    }
+  }
+  if (quote) ranges.push([start, source.length]);
+  const starts = "(?:^|[。!?！？;；\\n,，、]|\\s+)(?:(?:その後|そして|ただし)\\s*)?(?:元の\\s*)?";
+  const nextTarget = "\\s+" + PRESERVATION_FILE_TOKEN + "\\s*(?:は|を|に|だけ)";
+  const end = "(?=\\s*(?:$|[。!?！？;；\\n,，、]|その後|そして|ただし)|" + nextTarget + ")";
+  const request = "(?:してください|して(?:ください)?|する|し|してから)?";
+  const entries = [
+    ["preserve", "(?:は|を)\\s*(?:(?:変更|編集|更新|上書き|書き換え|削除|移動|リネーム)(?:しない(?:で)?(?:ください)?|せず(?:に)?|しては(?:いけない|だめ))|そのまま(?:残して(?:ください)?|保持して(?:ください)?|にして(?:おいて)?ください))"],
+    ["create", "(?:を|だけを|だけ)\\s*(?:新規(?:に)?(?:作成|生成)|作成|生成|保存|出力)" + request],
+    ["create", "に\\s*(?:要約|保存|出力)" + request],
+    ["update", "(?:を|だけを|だけ)\\s*(?:更新|編集|変更|書き換え|上書き)" + request],
+    ["read", "(?:を|は)\\s*(?:読み取(?:り|る|って(?:ください)?)|読(?:む|んで(?:ください)?)|参照(?:して(?:ください)?|する)|読み込(?:み|む|んで(?:ください)?))"],
+  ];
+  const clauses = [];
+  for (const [kind, action] of entries) {
+    const pattern = new RegExp(starts + "(" + PRESERVATION_FILE_LIST + ")\\s*" + action + end, "g");
+    for (const match of source.matchAll(pattern)) {
+      const index = match.index + match[0].indexOf(match[1]);
+      if (ranges.some(([from, to]) => index > from && index < to) || !preservationFileReferences(match[1]).length) continue;
+      clauses.push({ index: match.index, length: match[0].length, body: match[1], kind });
+    }
+  }
+  return clauses;
+}
+
 function filePreservationClauses(goal = "") {
   const source = String(goal || "");
-  const clauses = [];
+  const clauses = japaneseFileIntentClauses(source).filter(clause => clause.kind === "preserve")
+    .map(({ kind, ...clause }) => ({ ...clause, directProhibition: true }));
   const patterns = [
     /\b(?:keep(?:ing)?|leav(?:e|ing)|preserv(?:e|ing)|retain(?:ing)?)\s+([^;；。!?！？]{1,400}?)\s+(?:unchanged|unmodified|untouched|intact|as[- ]is|as (?:it is|they are)|read[- ]only)\b/gi,
     /(?:保持|保留|維持|维持)\s*([^;；。!?！？]{1,400}?)\s*(?:不变|不變|原样|原樣|不修改)/g,
@@ -609,7 +650,8 @@ function inputFileClauseSpans(text = "", outputAction, literalCandidates = []) {
 }
 
 function inferExactOutputPaths(goal = "") {
-  const paths = [];
+  const paths = japaneseFileIntentClauses(goal).filter(clause => ["create", "update"].includes(clause.kind))
+    .flatMap(clause => preservationFileReferences(clause.body).map(reference => reference.path));
   let source = normalizeFileCreationIntent(goal);
   for (const clause of filePreservationClauses(source).sort((a, b) => b.index - a.index)) {
     source = source.slice(0, clause.index) + source.slice(clause.index, clause.index + clause.length).replace(/[^\r\n]/g, " ") + source.slice(clause.index + clause.length);
@@ -1101,7 +1143,8 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
 }
 
 function inferExactInputPaths(goal = "", declaredPreservedPaths = []) {
-  const paths = [];
+  const paths = japaneseFileIntentClauses(goal).filter(clause => ["read", "preserve"].includes(clause.kind))
+    .flatMap(clause => preservationFileReferences(clause.body).map(reference => reference.path));
   const source = String(goal || "") + filePreservationClauses(goal).map(clause => `\nread ${clause.body.replace(/\r?\n/g, " ")}`).join("");
   const lines = source.split(/\n|(?<=[.!?;。！？；])\s+/u);
   const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
@@ -1192,7 +1235,8 @@ function explicitlyCreatedPreservationPaths(goal = "") {
   const qualifiers = "(?:(?:a|an|the|one|two|new|short|small|brief|concise|standalone|empty|simple|text|markdown|json|csv|code|source)\\s+|(?:一份|一个|一個|新的|简短|簡短)\\s*){0,4}";
   const after = "(?=\\s*(?:(?:files?\\s*)?(?:$|[.;!?。！？；\\n,，])|\\b(?:from|using|based|with|containing|about|for|as|in|under|to|and|then|but)\\b|从|從|使用|包含))";
   const pattern = new RegExp(starts + request + from + "(?:" + action + ")" + qualifiers + "(" + PRESERVATION_FILE_LIST + ")" + after, "gi");
-  const paths = [];
+  const paths = japaneseFileIntentClauses(source).filter(clause => clause.kind === "create")
+    .flatMap(clause => preservationFileReferences(clause.body).map(reference => reference.path));
   for (const match of source.matchAll(pattern)) {
     if (!insideQuote(match.index)) paths.push(...preservationFileReferences(match[1]).map(reference => reference.path));
   }
