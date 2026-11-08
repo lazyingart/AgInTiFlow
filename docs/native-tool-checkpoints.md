@@ -6,6 +6,13 @@ tool-call frame, confirmed results, current task evidence and consumed step.
 A callback failure or a process death after this checkpoint therefore cannot
 erase that confirmed progress from the saved model history.
 
+Workspace file tools checkpoint a closed accepted batch before appending its
+result event or publishing file-change events. A process death immediately
+after that result event cannot leave the session behind its published outcome.
+If checkpointing or subsequent event publication fails, the runtime stops;
+it does not manufacture a contradictory failed tool result. Resume uses the
+confirmed saved frame, verifies the output and does not repeat its producer.
+
 The existing dispatch contract serializes mixed or mutating batches. A model
 may propose several calls, but unexecuted suffixes are deferred. Bounded
 read-only batches are checkpointed only after all accepted calls return, keeping
@@ -45,3 +52,7 @@ Run `npm run test:native-tool-checkpoint` for offline regressions. They kill onl
 test-owned child processes, verify closed saved/request history and exact output
 bytes, resume from a fresh process, inject checkpoint/callback failures, and
 cover bounded legacy-reasoning repair and its negative controls.
+They also kill a worker immediately after its file-tool result or change event,
+fail result-event append, and verify a fresh process retains the exact confirmed
+result and performs no second write. Read-only batches retain the same closed
+frame boundary; no result is invented for an unfinished member.

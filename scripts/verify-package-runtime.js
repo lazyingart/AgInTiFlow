@@ -62,9 +62,9 @@ try {
     "test/verification-input-freshness.test.js",
     "test/restricted-deepseek-http.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 1045\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# tests 1049\n/); assert.match(log, /# fail 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 1045, testConcurrency, consumerTimeoutMs,
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 1049, testConcurrency, consumerTimeoutMs,
     failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });

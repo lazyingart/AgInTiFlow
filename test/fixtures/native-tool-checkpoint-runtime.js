@@ -9,6 +9,16 @@ import { getEventListeners } from "node:events";
 
 const [root, baseURL, mode, phase] = process.argv.slice(2), sessionId = "tool-checkpoint-" + mode;
 const readBatch = mode.startsWith("read-batch");
+const append = Object.getOwnPropertyDescriptor(SessionStore.prototype, "appendEvent");
+if (["event-checkpoint-crash", "change-checkpoint-crash", "result-event-save-error", "read-batch-event-checkpoint-crash"].includes(mode) && phase === "start") Object.defineProperty(SessionStore.prototype, "appendEvent", { ...append, value: async function (type, data) {
+  const completed = type === "tool.completed" && data.ok === true && (readBatch ? data.toolName === "read_file" && data.args?.path === "other.txt" : ["write_file", "apply_patch"].includes(data.toolName));
+  if (mode === "result-event-save-error" && completed) {
+    const error = new Error("Synthetic result-event append EIO"); error.code = "EIO"; throw error;
+  }
+  const result = await Reflect.apply(append.value, this, [type, data]);
+  if ((completed && mode !== "change-checkpoint-crash") || (mode === "change-checkpoint-crash" && type === "file.changed")) process.kill(process.pid, "SIGKILL");
+  return result;
+} });
 const originalFetch = globalThis.fetch, offlineOrigin = new URL(baseURL).origin;
 globalThis.fetch = (input, init) => {
   const actual = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
@@ -68,4 +78,4 @@ Object.assign(config, { sessionsDir: root + "/sessions", projectSessionsDir: roo
 });
 try { console.log(JSON.stringify({ ...await runAgent(config), observerAbortListeners: observerAbort ? getEventListeners(observerAbort.signal, "abort").length : 0 })); }
 catch (error) { console.log(JSON.stringify({ error: { code: error.code || "RUNTIME_ERROR", message: error.message }, observerTrapReads })); process.exitCode = 1; }
-finally { globalThis.fetch = originalFetch; Object.defineProperty(SessionStore.prototype, "saveState", save); closeSessionIndexConnections(); }
+finally { globalThis.fetch = originalFetch; Object.defineProperty(SessionStore.prototype, "saveState", save); Object.defineProperty(SessionStore.prototype, "appendEvent", append); closeSessionIndexConnections(); }

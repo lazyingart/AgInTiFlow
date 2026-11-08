@@ -109,8 +109,9 @@ test("retained mutation evidence preserves exact recorded scope revisions", () =
   assert.equal(proof.changed, true); assert.equal(proof.path, "summary.md");
 });
 
-for (const mode of ["crash", "read-batch", "callback-error", "save-error", "normal", "event-error", "event-async-error", "change-error", "event-hostile-error", "read-batch-event-error", "read-batch-async-error", "log-async-error", "observer-abort", "start-event-error", "start-async-error"]) test(`completed native batch checkpoint: ${mode}`, { timeout: 25000 }, async t => {
-  const readBatch = mode.startsWith("read-batch"), preDispatch = mode.startsWith("start-"), deliveryError = !preDispatch && !["crash", "read-batch", "normal", "save-error", "observer-abort"].includes(mode);
+for (const mode of ["crash", "event-checkpoint-crash", "change-checkpoint-crash", "result-event-save-error", "read-batch-event-checkpoint-crash", "read-batch", "callback-error", "save-error", "normal", "event-error", "event-async-error", "change-error", "event-hostile-error", "read-batch-event-error", "read-batch-async-error", "log-async-error", "observer-abort", "start-event-error", "start-async-error"]) test(`completed native batch checkpoint: ${mode}`, { timeout: 25000 }, async t => {
+  const readBatch = mode.startsWith("read-batch"), preDispatch = mode.startsWith("start-"), checkpointBoundary = mode.includes("checkpoint-crash") || mode === "result-event-save-error";
+  const deliveryError = !preDispatch && !checkpointBoundary && !["crash", "read-batch", "normal", "save-error", "observer-abort"].includes(mode);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-tool-checkpoint-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(root + "/workspace"); await fs.writeFile(root + "/workspace/note.txt", note); await fs.writeFile(root + "/workspace/other.txt", "Other note remains open.\n");
@@ -152,10 +153,12 @@ for (const mode of ["crash", "read-batch", "callback-error", "save-error", "norm
   });
   const first = await run(); assert.equal(first.expired, false); assert.deepEqual(errors, []);
   let state = JSON.parse(await fs.readFile(session + "/state.json"));
+  const firstStep = step;
+  const firstOutput = checkpointBoundary && !readBatch ? await fs.stat(root + "/workspace/summary.md", { bigint: true }) : null;
   const firstEvidence = { first, results: state.messages.filter(m => m.role === "tool"),
     summaryBytes: readBatch || preDispatch ? null : await fs.readFile(root + "/workspace/summary.md", "utf8") };
   if (mode.includes("error") && mode !== "save-error") assert.doesNotMatch(first.stderr, /unhandled|Synthetic.*observer failure\n\s+at/, "observer rejection must be reported by the runtime, not escape the process");
-  if (["crash", "read-batch"].includes(mode)) assert.equal(first.signal, "SIGKILL");
+  if (["crash", "read-batch"].includes(mode) || mode.endsWith("checkpoint-crash")) assert.equal(first.signal, "SIGKILL");
   else assert.equal(first.code, ["normal", "observer-abort"].includes(mode) ? 0 : 1, JSON.stringify(firstEvidence));
   if (preDispatch) {
     assert.equal(step, 2); assert.equal(first.stderr, "");
@@ -168,8 +171,22 @@ for (const mode of ["crash", "read-batch", "callback-error", "save-error", "norm
     return;
   }
   assertClosed(state.messages);
+  if (mode === "event-checkpoint-crash") {
+    const events = (await fs.readFile(session + "/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
+    assert.equal(events.filter(e => e.type === "tool.completed" && ["write_file", "apply_patch"].includes(e.data.toolName) && e.data.ok === true).length, 1);
+    assert.equal(firstEvidence.summaryBytes, summary);
+    assert.equal(await fs.readFile(root + "/workspace/note.txt", "utf8"), note);
+    assert.ok(state.messages.some(m => m.role === "tool" && m.tool_call_id === "checkpoint_write"), "durable tool event and file exist, but native state lost the confirmed result: " + JSON.stringify(firstEvidence));
+  }
+  if (mode === "result-event-save-error") {
+    const events = (await fs.readFile(session + "/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
+    assert.equal(events.some(e => e.type === "tool.failed"), false, "result publication failure must not contradict the confirmed tool outcome");
+    assert.equal(events.some(e => e.type === "tool.completed" && ["write_file", "apply_patch"].includes(e.data.toolName)), false);
+    await assert.rejects(fs.stat(root + "/post-result-callback.json"), { code: "ENOENT" });
+    assert.equal(JSON.parse(first.stdout.trim().split("\n").at(-1)).error.code, "EIO");
+  }
   const required = readBatch ? ["checkpoint_read", "checkpoint_other"] : ["checkpoint_write"];
-  for (const id of required) assert.ok(state.messages.some(m => m.role === "tool" && m.tool_call_id === id && JSON.parse(m.content).ok === true), "completed outcome missing after callback/death: " + id);
+  for (const id of required) assert.equal(state.messages.filter(m => m.role === "tool" && m.tool_call_id === id && JSON.parse(m.content).ok === true).length, 1, "completed outcome must be retained exactly once after callback/death: " + id);
   assert.ok(state.stepsCompleted >= (readBatch ? 1 : 2));
   if (mode === "observer-abort") {
     const report = JSON.parse(first.stdout.trim().split("\n").at(-1));
@@ -197,5 +214,12 @@ for (const mode of ["crash", "read-batch", "callback-error", "save-error", "norm
   assert.equal(events.filter(e => e.type === "tool.started" && ["write_file", "apply_patch"].includes(e.data.toolName)).length, readBatch ? 0 : 1);
   if (!readBatch) assert.equal(await fs.readFile(root + "/workspace/summary.md", "utf8"), summary);
   assert.equal(await fs.readFile(root + "/workspace/note.txt", "utf8"), note);
+  if (checkpointBoundary) {
+    if (firstOutput) {
+      const after = await fs.stat(root + "/workspace/summary.md", { bigint: true });
+      for (const key of ["dev", "ino", "size", "mtimeNs", "ctimeNs"]) assert.equal(after[key], firstOutput[key], "resume must not republish confirmed output: " + key);
+    }
+    t.diagnostic(JSON.stringify({ checkpointBoundary: mode, realChildProcesses: 2, firstExitCode: first.code, firstExitSignal: first.signal, actualProviderRequests: 0, scriptedStartTurns: firstStep, scriptedResumeTurns: step, confirmedResultsRetained: required.length, completedGoal: true, producerCalls: readBatch ? 0 : 1, sourceUnchanged: true, outputIdentityUnchanged: Boolean(firstOutput), scope: "Actual process-death/publication-failure regression with scripted provider; not power-loss or generic exactly-once effects" }));
+  }
   await assert.rejects(fs.stat(session + "/.agent-run.lock"), { code: "ENOENT" });
 });

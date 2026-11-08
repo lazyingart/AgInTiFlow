@@ -23924,7 +23924,7 @@ export function integrationTextWorkspaceToolExecutionBlock(config = {}, requeste
   });
 }
 
-async function executeTool(browserState, toolCall, snapshot, config, store, observers, state, registeredConfig = config, resultObservers = null) {
+async function executeTool(browserState, toolCall, snapshot, config, store, observers, state, registeredConfig = config, resultObservers = null, checkpointWorkspaceResult = null) {
   throwIfAborted(config);
   const requestedToolName = toolCall.function.name;
   const integrationProfileBlock = integrationTextWorkspaceToolExecutionBlock(config, requestedToolName);
@@ -24849,6 +24849,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
 
   if (resultObservers) observers = resultObservers.observers;
 
+  let workspaceCheckpointStarted = false;
   try {
     if (isMcpBridgeTool(toolName)) {
       const result = await executeMcpBridgeTool(toolName, args, config);
@@ -25154,6 +25155,12 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           return result;
         }
 
+        // A published result must not get ahead of its closed native frame.
+        // Mutations are serialized; only the last accepted read closes a batch.
+        if (checkpointWorkspaceResult) {
+          workspaceCheckpointStarted = true;
+          await checkpointWorkspaceResult(result);
+        }
         const eventType = result.ok === false ? "tool.failed" : "tool.completed";
         await store.appendEvent(eventType, eventResult);
         observers.event(eventType, eventResult);
@@ -25624,7 +25631,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     observers.event("tool.completed", result);
     return result;
   } catch (error) {
-    if (isAbortError(error, config)) throw error;
+    // Neither a checkpoint failure nor publication after a confirmed result
+    // changes the tool's actual outcome into a second, contradictory result.
+    if (workspaceCheckpointStarted || isAbortError(error, config)) throw error;
     const sourceScopeFailure = isWorkspaceReadScopeDenial(error)
       ? requiredSourceScopeFailure(toolName, args, config, state)
       : null;
@@ -32638,6 +32647,16 @@ async function runAgentOnceUnlocked(config) {
           continueForQueuedInput = true;
           break;
         }
+        let checkpointedWorkspaceResult = null;
+        const checkpointWorkspaceResult = toolIndex === toolCalls.length - 1 ? async (result) => {
+          checkpointedWorkspaceResult = result;
+          state.messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(toolResultForModel(result)) });
+          recordDurableEvidenceCategories(state, result);
+          recordDurableResearchEvidence(state, result);
+          state.stepsCompleted = step;
+          state.updatedAt = new Date().toISOString();
+          await store.saveState(state);
+        } : null;
         const toolResult = await executeTool(
           browserState,
           toolCall,
@@ -32647,20 +32666,25 @@ async function runAgentOnceUnlocked(config) {
           observers,
           state,
           incomingConfig,
-          resultObservers
+          resultObservers,
+          checkpointWorkspaceResult
         );
-        state.messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          content: JSON.stringify(toolResultForModel(toolResult)),
-        });
+        if (!checkpointedWorkspaceResult) {
+          state.messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(toolResultForModel(toolResult)),
+          });
+        }
         if (toolResult.advisoryInvocationId) await store.saveState(state);
         if (toolResult.advisoryUnavailable)
           return await stopForAdvisoryUnavailable({ config, state, store, observers, sessionId, step });
         postBatchToolResults.push(toolResult);
-        recordDurableEvidenceCategories(state, toolResult);
-        recordDurableResearchEvidence(state, toolResult);
-        if (toolIndex === toolCalls.length - 1) {
+        if (!checkpointedWorkspaceResult) {
+          recordDurableEvidenceCategories(state, toolResult);
+          recordDurableResearchEvidence(state, toolResult);
+        }
+        if (!checkpointedWorkspaceResult && toolIndex === toolCalls.length - 1) {
           // Commit a closed native tool-call frame before post-result callbacks,
           // reviews or the next request can interrupt this accepted work. The
           // dispatch contract serializes mutations; partial read batches stay
