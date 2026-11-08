@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isReadOnlyAwkCommand } from "./readonly-awk.js";
 import {
   hasActiveShellCommandSubstitution,
   hasActiveShellExpansion,
@@ -1934,6 +1935,7 @@ function classifySimpleCommand(normalized) {
   if (
     matchAny(READ_ONLY_PATTERNS, commandForPatternMatching) ||
     isReadOnlySedPrintCommand(commandForPatternMatching) ||
+    isReadOnlyAwkCommand(normalized) ||
     isReadOnlyPrintfCommand(commandForPatternMatching) ||
     isReadOnlyTrDeleteFilter(commandForPatternMatching) ||
     isReadOnlyUniqFilter(commandForPatternMatching) ||
