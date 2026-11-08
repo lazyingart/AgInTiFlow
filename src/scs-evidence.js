@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
+import { types } from "node:util";
 import { redactSensitiveText, redactValue } from "./redaction.js";
 import {
   canonicalizeShellCommand,
@@ -5567,6 +5569,143 @@ function messageToEvidence(message = {}) {
   }
 }
 
+export function nativeCommandVerificationDigest(run) {
+  if (!run || typeof run !== "object" || types.isProxy(run) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(run))) return null;
+  const fields = Object.getOwnPropertyDescriptors(run), keys = Reflect.ownKeys(fields);
+  if (keys.some(key => typeof key !== "string") || keys.length > 64) return null;
+  const facts = [];
+  for (const key of keys.sort()) {
+    if (key === "nativeResultCheckpoint") continue;
+    const field = fields[key];
+    if (!field.enumerable || !("value" in field)) return null;
+    const value = field.value;
+    if (typeof value === "string" && value.isWellFormed()) {
+      facts.push([key, "string-sha256", crypto.createHash("sha256").update(value).digest("hex")]);
+    } else if (value === null || typeof value === "boolean" || Number.isSafeInteger(value)) {
+      facts.push([key, typeof value, value]);
+    } else return null;
+  }
+  return crypto.createHash("sha256").update(JSON.stringify(facts)).digest("hex");
+}
+
+export function boundedNativeCommandCheckpointResult(result) {
+  // Commands already exist in the verification record: bind them by its digest,
+  // rather than duplicating arbitrarily long argv in this bounded projection.
+  const text = (value, limit) => {
+    let current = String(value || "");
+    // Cutting a type annotation can change its redaction classification.
+    // Persist only a bounded fixed point; omit nonconverging presentation text.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const next = Array.from(redactSensitiveText(current)).slice(0, limit).join("");
+      if (next === current) return next;
+      current = next;
+    }
+    return "";
+  };
+  if (!Number.isSafeInteger(result.exitCode) || !Number.isSafeInteger(result.goalRevision) || result.goalRevision < 1 ||
+      !Number.isSafeInteger(result.projectMutationRevision) || result.projectMutationRevision < 0 ||
+      (result.projectTest && (!Number.isSafeInteger(result.projectTest.mutationRevision) || result.projectTest.mutationRevision < 0))) {
+    const error = new Error("Native command checkpoint revisions or outcome were invalid.");
+    error.code = "NATIVE_COMMAND_CHECKPOINT_INVALID";
+    throw error;
+  }
+  return {
+    toolName: "run_command", ok: result.ok === true, exitCode: result.exitCode,
+    stdout: text(result.stdout, 1800), stderr: text(result.stderr, 1200),
+    goalRevision: result.goalRevision, projectMutationRevision: result.projectMutationRevision,
+    noMatch: result.noMatch === true, semanticOutcome: result.semanticOutcome === "no-match" ? "no-match" : "",
+    noMatchExitIsSuccess: result.commandPolicy?.noMatchExitIsSuccess === true,
+    authoritativeReadOnlyRoutine: result.authoritativeReadOnlyRoutine === true,
+    authoritativeRoutineObserved: result.authoritativeRoutineObserved === true,
+    authoritativeRoutineId: text(result.authoritativeRoutineId, 128),
+    authoritativeRoutineOutcome: text(result.authoritativeRoutineOutcome, 32),
+    projectTest: result.projectTest ? { passed: result.projectTest.passed === true,
+      mutationRevision: result.projectTest.mutationRevision } : null,
+  };
+}
+
+function checkpointedCommandEvidence(state, existing) {
+  const goal = state.meta?.goalContract || {}, task = String(goal.taskGoal || state.goal || "").trim();
+  if (!task || !Number.isSafeInteger(goal.revision) || !Number.isSafeInteger(goal.taskBoundaryRevision) ||
+      goal.taskBoundaryRevision < 1 || goal.taskBoundaryRevision > goal.revision) return [];
+  const digest = value => crypto.createHash("sha256").update(value).digest("hex");
+  const taskHash = digest(task), history = Array.isArray(goal.history) ? goal.history : [];
+  const runs = state.meta?.projectVerification?.commandRuns;
+  if (!Array.isArray(runs)) return [];
+  const key = item => JSON.stringify([item.category, item.toolName, item.command,
+    item.goalRevision, item.mutationRevision, item.requiredCommandBatchId || "", item.requiredProjectCommand || ""]);
+  const known = new Set(existing.map(key)), evidence = [];
+  for (const run of runs.slice(-40)) {
+    if (!run || typeof run !== "object" || types.isProxy(run)) continue;
+    const property = Object.getOwnPropertyDescriptor(run, "nativeResultCheckpoint");
+    const checkpoint = property?.enumerable && "value" in property ? property.value : null;
+    if (!checkpoint || typeof checkpoint !== "object" || types.isProxy(checkpoint) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(checkpoint))) continue;
+    const fields = Object.getOwnPropertyDescriptors(checkpoint);
+    const keys = ["schemaVersion", "toolCallId", "taskHash", "runSha256", "resultSha256", "resultJson"];
+    if (Reflect.ownKeys(fields).length !== keys.length || keys.some(name =>
+      !fields[name]?.enumerable || !("value" in fields[name]))) continue;
+    const get = name => fields[name].value;
+    if (get("schemaVersion") !== 2 || get("taskHash") !== taskHash ||
+        !get("runSha256") || get("runSha256") !== nativeCommandVerificationDigest(run) ||
+        typeof get("toolCallId") !== "string" || !get("toolCallId") ||
+        typeof get("resultJson") !== "string" || !get("resultJson").isWellFormed() ||
+        Buffer.byteLength(get("resultJson"), "utf8") > 131072 ||
+        get("resultSha256") !== digest(get("resultJson"))) continue;
+    let payload;
+    try { payload = JSON.parse(get("resultJson")); } catch { continue; }
+    let canonical;
+    try { canonical = JSON.stringify(boundedNativeCommandCheckpointResult({ ...payload,
+      commandPolicy: { noMatchExitIsSuccess: payload?.noMatchExitIsSuccess } })); } catch { continue; }
+    if (!payload || canonical !== get("resultJson") ||
+        payload.toolName !== "run_command" || typeof run.command !== "string" || !run.command.trim() ||
+        typeof run.ok !== "boolean" || !Number.isSafeInteger(payload.exitCode) ||
+        !Number.isSafeInteger(payload.projectMutationRevision) || payload.projectMutationRevision < 0 ||
+        payload.projectMutationRevision !== run.mutationRevision ||
+        !Number.isSafeInteger(payload.goalRevision) || payload.goalRevision < goal.taskBoundaryRevision ||
+        payload.goalRevision > goal.revision) continue;
+    const routineObserved = payload.authoritativeReadOnlyRoutine === true && payload.authoritativeRoutineObserved === true &&
+      run.authoritativeReadOnlyRoutine === true && run.authoritativeRoutineObserved === true;
+    const noMatch = payload.noMatch === true && payload.semanticOutcome === "no-match" &&
+      payload.noMatchExitIsSuccess === true && payload.exitCode === 1 && !payload.stdout && !payload.stderr;
+    if ((!payload.ok && !routineObserved) || (payload.exitCode !== 0 && !noMatch && !routineObserved) ||
+        (payload.projectTest?.passed === true && run.ok !== true)) continue;
+    if (payload.projectTest?.passed === true &&
+        (payload.projectTest.mutationRevision !== run.mutationRevision ||
+        !(Array.isArray(state.meta?.projectVerification?.testRuns) ? state.meta.projectVerification.testRuns : []).some(test =>
+          test?.passed === true && test.ok === true && test.command === run.command && test.at === run.at &&
+          test.mutationRevision === run.mutationRevision && test.privateMutationRevision === run.privateMutationRevision))) continue;
+    let continuous = true;
+    for (let revision = payload.goalRevision + 1; revision <= goal.revision; revision++) {
+      const entries = history.filter(entry => entry?.revision === revision);
+      if (entries.length !== 1 || entries[0].taskHash !== taskHash ||
+          !(entries[0].relation === "same-task" || entries[0].kind === "same-task-continuation")) {
+        continuous = false; break;
+      }
+    }
+    if (!continuous) continue;
+    // Supplement only command/test observations. Ordered Git and publish proof
+    // must never be rebuilt from mirrored or compacted model history.
+    const observation = { ...payload, args: { command: run.command },
+      ...(run.requiredCommandBatchId ? { requiredCommandBatchId: run.requiredCommandBatchId } : {}),
+      ...(run.requiredProjectCommand ? { requiredProjectCommand: run.requiredProjectCommand } : {}),
+      ...(payload.projectTest ? { projectTest: { ...payload.projectTest, command: run.command } } : {}),
+    };
+    for (const item of toolPayloadToEvidence(observation, "native-command-checkpoint")) {
+      if (!["command", "test"].includes(item.category) || known.has(key(item))) continue;
+      if (item.category === "command" && Object.prototype.hasOwnProperty.call(item, "explicitExitStatus")) {
+        // The bounded stdout is presentation, not authority for the final
+        // status marker. Use the digest-bound native outcome, including failure.
+        const status = Object.getOwnPropertyDescriptor(run, "explicitExitStatus")?.value;
+        item.explicitExitStatus = Number.isSafeInteger(status) ? status : null;
+      }
+      known.add(key(item)); evidence.push(item);
+    }
+  }
+  return evidence;
+}
+
 export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
   const events = reconcileTmuxGitEvidenceEvents(
     Array.isArray(context.events) ? context.events : []
@@ -5599,7 +5738,8 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
   // action sequences and fabricate ordered Git completion.
   const hasCompletedToolEvents = events.some((event) => String(event?.type || "") === "tool.completed");
   const messageEvidence = hasCompletedToolEvents ? [] : messages.flatMap(messageToEvidence);
-  const items = [...eventEvidence, ...messageEvidence]
+  const checkpointEvidence = checkpointedCommandEvidence(state, [...eventEvidence, ...messageEvidence]);
+  const items = [...eventEvidence, ...messageEvidence, ...checkpointEvidence]
     .slice(-80)
     .map((item) => revalidateArtifactEvidence(item, state, context));
   const verifiedItems = items.filter((item) => item?.verified !== false);

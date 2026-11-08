@@ -6,12 +6,33 @@ tool-call frame, confirmed results, current task evidence and consumed step.
 A callback failure or a process death after this checkpoint therefore cannot
 erase that confirmed progress from the saved model history.
 
-Workspace file tools checkpoint a closed accepted batch before appending its
-result event or publishing file-change events. A process death immediately
+Workspace file tools and completed `run_command` calls checkpoint a closed
+accepted batch before appending result, repository-repair or file-change events.
+A process death immediately
 after that result event cannot leave the session behind its published outcome.
 If checkpointing or subsequent event publication fails, the runtime stops;
 it does not manufacture a contradictory failed tool result. Resume uses the
 confirmed saved frame, verifies the output and does not repeat its producer.
+
+Completed commands also retain a bounded, redacted result projection in the
+existing native command-verification record. Its version 2 receipt separately
+binds that result and the exact verification record, so long command arguments
+are hashed rather than duplicated. Tool success and verification success remain
+distinct: a zero-match query or an outer status probe does not prove a passing
+test. Status probes retain the native final exit status rather than reparsing
+truncated output. Successful-test fallback additionally requires the exact
+stored passing test record. This supplies command
+or successful-test evidence if event publication failed or a provider-history
+repair changed the model-facing representation. It is bound to the actual
+command, mutation revision and uninterrupted same-task lineage. A new task,
+missing lineage/hash, failed or blocked result cannot reuse it. Mirrored results
+are deduplicated; this fallback never reconstructs ordered Git or publish proof.
+The digest checks stored integrity, not protection from a same-UID attacker
+rewriting native state. No application authentication or engine fence is added.
+
+Every prompt style now labels a same-task continuation consistently with the
+durable task boundary. A generic resume therefore retains its scoped evidence;
+an actual new request still starts a new evidence boundary.
 
 The existing dispatch contract serializes mixed or mutating batches. A model
 may propose several calls, but unexecuted suffixes are deferred. Bounded
@@ -54,5 +75,10 @@ bytes, resume from a fresh process, inject checkpoint/callback failures, and
 cover bounded legacy-reasoning repair and its negative controls.
 They also kill a worker immediately after its file-tool result or change event,
 fail result-event append, and verify a fresh process retains the exact confirmed
-result and performs no second write. Read-only batches retain the same closed
+result and performs no second write. Command regressions also retain the exact
+exit code and bounded stdout/stderr, stop on publication/delivery failure,
+preserve nonzero outcomes without claiming success, and resume without a second
+checker invocation. The fixed test-owned command runs under explicit trusted
+host permission; this is not a sandbox or permission qualification.
+Read-only batches retain the same closed
 frame boundary; no result is invented for an unfinished member.

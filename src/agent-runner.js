@@ -152,6 +152,8 @@ import {
 } from "./session-runtime.js";
 import {
   buildScsEvidenceLedger,
+  boundedNativeCommandCheckpointResult,
+  nativeCommandVerificationDigest,
   deriveScsTaskContract,
   deterministicFinishBlocker,
   evaluateScsEvidence,
@@ -6983,7 +6985,9 @@ async function applyContinuationPrompt(state, config, observers) {
     : "";
   const retainedContinuation = isRetainedWorkspaceProfile(config)
     ? [
-        `Continue with this new request: ${config.goal}`,
+        preserveTaskBoundary
+          ? `Continue the current task from saved state: ${config.goal}`
+          : `Continue with this new request: ${config.goal}`,
         "Interpret it against the saved conversation without repeating completed effects.",
         goalUpdate?.previousGoal && goalUpdate.previousGoal !== config.goal
           ? `Previous active goal: ${goalPreview(goalUpdate.previousGoal)}`
@@ -7001,7 +7005,9 @@ async function applyContinuationPrompt(state, config, observers) {
   state.messages.push({
     role: "user",
     content: focusedContinuation || retainedContinuation || [
-      `Continue with this new request: ${config.goal}`,
+      preserveTaskBoundary
+        ? `Continue the current task from saved state: ${config.goal}`
+        : `Continue with this new request: ${config.goal}`,
       "Goal continuity: interpret this request against the complete saved conversation. It may continue, correct, interrupt, narrow, expand, or replace prior work. Preserve completed evidence, do not repeat finished side effects, and cover every still-material user requirement before finishing.",
       goalUpdate?.previousGoal && goalUpdate.previousGoal !== config.goal
         ? `Previous active goal: ${goalPreview(goalUpdate.previousGoal)}`
@@ -23924,7 +23930,7 @@ export function integrationTextWorkspaceToolExecutionBlock(config = {}, requeste
   });
 }
 
-async function executeTool(browserState, toolCall, snapshot, config, store, observers, state, registeredConfig = config, resultObservers = null, checkpointWorkspaceResult = null) {
+async function executeTool(browserState, toolCall, snapshot, config, store, observers, state, registeredConfig = config, resultObservers = null, checkpointCompletedToolResult = null) {
   throwIfAborted(config);
   const requestedToolName = toolCall.function.name;
   const integrationProfileBlock = integrationTextWorkspaceToolExecutionBlock(config, requestedToolName);
@@ -24849,7 +24855,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
 
   if (resultObservers) observers = resultObservers.observers;
 
-  let workspaceCheckpointStarted = false;
+  let completedToolCheckpointStarted = false;
   try {
     if (isMcpBridgeTool(toolName)) {
       const result = await executeMcpBridgeTool(toolName, args, config);
@@ -25157,9 +25163,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
 
         // A published result must not get ahead of its closed native frame.
         // Mutations are serialized; only the last accepted read closes a batch.
-        if (checkpointWorkspaceResult) {
-          workspaceCheckpointStarted = true;
-          await checkpointWorkspaceResult(result);
+        if (checkpointCompletedToolResult) {
+          completedToolCheckpointStarted = true;
+          await checkpointCompletedToolResult(result);
         }
         const eventType = result.ok === false ? "tool.failed" : "tool.completed";
         await store.appendEvent(eventType, eventResult);
@@ -25292,6 +25298,13 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           state,
           result
         );
+        // The command has returned and its actual outcome/evidence are known.
+        // Save the closed native batch before any result/repair publication,
+        // just as for workspace tools; a delivery error is not a command error.
+        if (checkpointCompletedToolResult) {
+          completedToolCheckpointStarted = true;
+          await checkpointCompletedToolResult(result);
+        }
         if (repositoryStateRepair) {
           await store.appendEvent(
             "verification.repository_state_repaired",
@@ -25633,7 +25646,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
   } catch (error) {
     // Neither a checkpoint failure nor publication after a confirmed result
     // changes the tool's actual outcome into a second, contradictory result.
-    if (workspaceCheckpointStarted || isAbortError(error, config)) throw error;
+    if (completedToolCheckpointStarted || isAbortError(error, config)) throw error;
     const sourceScopeFailure = isWorkspaceReadScopeDenial(error)
       ? requiredSourceScopeFailure(toolName, args, config, state)
       : null;
@@ -32647,12 +32660,32 @@ async function runAgentOnceUnlocked(config) {
           continueForQueuedInput = true;
           break;
         }
-        let checkpointedWorkspaceResult = null;
-        const checkpointWorkspaceResult = toolIndex === toolCalls.length - 1 ? async (result) => {
-          checkpointedWorkspaceResult = result;
-          state.messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(toolResultForModel(result)) });
+        let checkpointedToolResult = null;
+        const checkpointCompletedToolResult = toolIndex === toolCalls.length - 1 ? async (result) => {
+          checkpointedToolResult = result;
+          const resultJson = JSON.stringify(toolResultForModel(result));
+          state.messages.push({ role: "tool", tool_call_id: toolCall.id, content: resultJson });
           recordDurableEvidenceCategories(state, result);
           recordDurableResearchEvidence(state, result);
+          if (result.toolName === "run_command") {
+            const run = state.meta?.projectVerification?.commandRuns?.at(-1);
+            const runSha256 = nativeCommandVerificationDigest(run);
+            if (!run || run.command !== normalizeProjectCommand(result.args?.command || "") ||
+                run.mutationRevision !== result.projectMutationRevision || typeof run.ok !== "boolean" || !runSha256) {
+              const error = new Error("Completed command did not match its native verification record.");
+              error.code = "NATIVE_COMMAND_CHECKPOINT_INVALID";
+              throw error;
+            }
+            // Keep the already bounded, redacted result in the existing native
+            // command record too. Model-history repair is a presentation change;
+            // missing event publication must not erase completion evidence.
+            const checkpointJson = JSON.stringify(boundedNativeCommandCheckpointResult(result));
+            run.nativeResultCheckpoint = {
+              schemaVersion: 2, toolCallId: toolCall.id,
+              taskHash: hashForLog(String(state.meta?.goalContract?.taskGoal || state.goal || "").trim()),
+              runSha256, resultSha256: hashForLog(checkpointJson), resultJson: checkpointJson,
+            };
+          }
           state.stepsCompleted = step;
           state.updatedAt = new Date().toISOString();
           await store.saveState(state);
@@ -32667,9 +32700,9 @@ async function runAgentOnceUnlocked(config) {
           state,
           incomingConfig,
           resultObservers,
-          checkpointWorkspaceResult
+          checkpointCompletedToolResult
         );
-        if (!checkpointedWorkspaceResult) {
+        if (!checkpointedToolResult) {
           state.messages.push({
             role: "tool",
             tool_call_id: toolCall.id,
@@ -32680,11 +32713,11 @@ async function runAgentOnceUnlocked(config) {
         if (toolResult.advisoryUnavailable)
           return await stopForAdvisoryUnavailable({ config, state, store, observers, sessionId, step });
         postBatchToolResults.push(toolResult);
-        if (!checkpointedWorkspaceResult) {
+        if (!checkpointedToolResult) {
           recordDurableEvidenceCategories(state, toolResult);
           recordDurableResearchEvidence(state, toolResult);
         }
-        if (!checkpointedWorkspaceResult && toolIndex === toolCalls.length - 1) {
+        if (!checkpointedToolResult && toolIndex === toolCalls.length - 1) {
           // Commit a closed native tool-call frame before post-result callbacks,
           // reviews or the next request can interrupt this accepted work. The
           // dispatch contract serializes mutations; partial read batches stay
