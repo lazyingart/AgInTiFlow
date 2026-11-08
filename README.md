@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.9.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.10.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.9.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.10.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -128,6 +128,11 @@ callback: explicit model, native tools, strict `json_schema`, `max_tokens`,
 `stream:false`, `temperature:0`. It accepts only one complete native tool-call
 response or final JSON document. Truncated, refused, mixed and malformed output
 fails closed. Provider/model compatibility must be tested by the app.
+
+Preview 10 rejects any own native `error` field before accepting choices,
+including null, hidden and accessor fields. Contradictory error-plus-choices
+responses cannot complete a proposal or dispatch a read. Error contents and
+unrelated SDK metadata are not inspected. No retry or fallback is added.
 
 Preview 2 backports the full SDK's strict JSON parser and native metadata
 checks. Duplicate decoded keys reject at every nesting level, including escaped
