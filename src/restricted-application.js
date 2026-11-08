@@ -286,6 +286,9 @@ export function createRestrictedOpenAIProvider(options) {
       // The SDK adds non-enumerable _request_id. Only choices is model data;
       // ignore transport metadata without invoking any accessors/hooks.
       if (!raw || typeof raw !== "object" || types.isProxy(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) fail("PROVIDER_PROTOCOL_INVALID");
+      // An error envelope contradicts choices, even when null or hidden. Never
+      // discard failure evidence while projecting a final answer or read call.
+      if (Object.getOwnPropertyDescriptor(raw, "error")) fail("PROVIDER_PROTOCOL_INVALID");
       const descriptor = Object.getOwnPropertyDescriptor(raw, "choices");
       if (!descriptor?.enumerable || !("value" in descriptor)) fail("PROVIDER_PROTOCOL_INVALID");
       const choices = jsonSnapshot(descriptor.value, { maxBytes: 256 * 1024 });
@@ -350,6 +353,7 @@ export function createRestrictedDeepSeekProvider(options) {
       const raw = types.isPromise(pending) ? await pending : pending;
       if (!raw || typeof raw !== "object" || types.isProxy(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) fail("PROVIDER_PROTOCOL_INVALID");
       if (Object.hasOwn(raw, "then")) fail("PROVIDER_PROTOCOL_INVALID");
+      if (Object.getOwnPropertyDescriptor(raw, "error")) fail("PROVIDER_PROTOCOL_INVALID");
       const descriptor = Object.getOwnPropertyDescriptor(raw, "choices");
       if (!descriptor?.enumerable || !("value" in descriptor)) fail("PROVIDER_PROTOCOL_INVALID");
       const choices = jsonSnapshot(descriptor.value);

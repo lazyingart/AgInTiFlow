@@ -522,6 +522,15 @@ change limits or select callbacks. Separate instances/processes do not share
 quotas, and restart does not preserve cooldown. This is not a durable worker
 lease, upstream attestation or application authorization boundary.
 
+## Contradictory native provider responses
+
+Native provider envelopes with an own `error` field are rejected before any
+proposal or read is accepted, including null, hidden or accessor fields.
+Contradictory error-plus-choices responses are protocol failures; their error
+content is not inspected or exposed. Ordinary SDK metadata remains ignored.
+This guard does not recover wire evidence a trusted host callback has already
+discarded; host transports must preserve native failure semantics.
+
 ## Optional Codex assistance
 
 Trusted standalone CLI work already supports explicitly enabled advisory Codex

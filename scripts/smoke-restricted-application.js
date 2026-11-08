@@ -1228,6 +1228,57 @@ test("native duplicate argument checks precede reads while generic host callback
   }
 });
 
+test("native error envelopes cannot authorize a final proposal or a declared read", async () => {
+  for (const model of ["generic-explicit", "deepseek-flash", "deepseek-v4-pro"]) {
+    for (const toolCall of [false, true]) {
+      for (const mode of ["data", "hidden", "accessor"]) {
+        for (const value of [{ code: "synthetic_failure", message: "PRIVATE_ERROR_DETAIL" }, null, undefined, false, 0, "", []]) {
+          let requests = 0, reads = 0, getters = 0;
+          const wire = { choices: [{ finish_reason: toolCall ? "tool_calls" : "stop", message: {
+            role: "assistant", content: toolCall ? null : '{"reply":"must not complete"}',
+            ...(toolCall ? { tool_calls: [{ id: "c1", type: "function", function: { name: "record_read", arguments: '{"query":"current"}' } }] } : {}),
+          } }] };
+          Object.defineProperty(wire, "error", mode === "accessor"
+            ? { enumerable: true, get() { getters++; throw Error("PRIVATE_ERROR_DETAIL"); } }
+            : { enumerable: mode === "data", value });
+          const provider = boundaryFactory(model, async () => { requests++; return wire; });
+          const tools = [{ name: "record_read", description: "Read caller-owned evidence.", readOnly: true,
+            inputSchema: boundaryObject({ query: boundaryText }), outputSchema: boundarySchema,
+            execute() { reads++; return { reply: "observed" }; } }];
+          await assert.rejects(boundaryRunner(provider, { tools }).run(boundaryInput), error => {
+            assert.equal(error.code, "PROVIDER_FAILED");
+            assert.equal(Object.hasOwn(error, "providerFailure"), false);
+            assert.equal(String(error).includes("PRIVATE_ERROR_DETAIL"), false);
+            return true;
+          });
+          assert.equal(requests, 1); assert.equal(reads, 0); assert.equal(getters, 0);
+        }
+      }
+    }
+  }
+});
+
+test("ordinary native choices retain SDK metadata and exact one-read finalization", async () => {
+  for (const model of ["generic-explicit", "deepseek-flash", "deepseek-v4-pro"]) {
+    let requests = 0, reads = 0, getters = 0;
+    const provider = boundaryFactory(model, async () => {
+      const wire = { choices: [{ finish_reason: ++requests === 1 ? "tool_calls" : "stop", message: {
+        role: "assistant", content: requests === 1 ? null : '{"reply":"observed"}',
+        ...(requests === 1 ? { tool_calls: [{ id: "c1", type: "function", function: { name: "record_read", arguments: '{"query":"current"}' } }] } : {}),
+      } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+      Object.defineProperty(wire, "_request_id", { value: "synthetic-request" });
+      Object.defineProperty(wire, "metadata", { get() { getters++; throw Error("metadata is not read"); } });
+      return wire;
+    });
+    const tools = [{ name: "record_read", description: "Read caller-owned evidence.", readOnly: true,
+      inputSchema: boundaryObject({ query: boundaryText }), outputSchema: boundarySchema,
+      execute() { reads++; return { reply: "observed" }; } }];
+    const result = await boundaryRunner(provider, { tools }).run(boundaryInput);
+    assert.equal(result.proposal.reply, "observed"); assert.equal(result.usage.toolCalls, 1);
+    assert.equal(requests, 2); assert.equal(reads, 1); assert.equal(getters, 0);
+  }
+});
+
 test("each typed text part must be Unicode-valid even when concatenating broken UTF-16 slices would repair it", async () => {
   const original = "x".repeat(23999) + "😀中文かな";
   assert.equal(original.isWellFormed(), true);
