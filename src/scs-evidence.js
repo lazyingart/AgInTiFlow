@@ -571,7 +571,7 @@ function japaneseFileIntentClauses(goal = "") {
       clauses.push({ index: match.index, length: match[0].length, body: match[1], kind });
     }
   }
-  return clauses;
+  return clauses.sort((a, b) => a.index - b.index);
 }
 
 function filePreservationClauses(goal = "") {
@@ -1056,13 +1056,28 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
     .replace(/([,，、])\s*\r?\n\s*/gu, "$1 ")
     .replace(wrappedNegativeAction, "$1 ")
     .replace(wrappedNegativePath, "$1 ");
+  // Japanese particles can directly follow an unspaced filename. Bind those
+  // exact clauses before the legacy path scanner can absorb a narrative prefix
+  // or erase an explicit new-output creation. Updates are not new creations.
+  const japanesePreserved = japaneseFileIntentClauses(source).filter(clause => clause.kind === "preserve");
+  const japaneseExcluded = [];
+  if (japanesePreserved.length) {
+    const created = new Set(explicitlyCreatedPreservationPaths(source));
+    for (const clause of japanesePreserved) {
+      japaneseExcluded.push(...preservationFileReferences(clause.body).map(reference => normalizedContractPath(reference.path))
+        .filter(candidate => !created.has(candidate)));
+    }
+    for (const clause of [...japanesePreserved].sort((a, b) => b.index - a.index)) {
+      source = source.slice(0, clause.index) + source.slice(clause.index, clause.index + clause.length).replace(/[^\r\n]/g, " ") + source.slice(clause.index + clause.length);
+    }
+  }
   // A named preservation clause ends at its file list. Isolate that scope
   // before scanning exclusions, especially when an extensionless name has no
   // dot that the legacy clause splitter could otherwise mistake for a stop.
   for (const clause of filePreservationClauses(source).filter(item => item.directProhibition).sort((a, b) => b.index - a.index)) {
     source = source.slice(0, clause.index) + "; " + source.slice(clause.index, clause.index + clause.length) + "; " + source.slice(clause.index + clause.length);
   }
-  if (!source.trim()) return [];
+  if (!source.trim()) return uniquePathList(japaneseExcluded, 24);
   const pathPattern = new RegExp(
     '((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,260}\\.(?:' +
       extensionPattern +
@@ -1089,7 +1104,7 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
     /\b(?:remove|delete|unlink|discard)\s+(?:(?:the|an?|this|that)\s+)?(?:(?:accidental|stale|temporary|untracked|generated|obsolete|old|private|empty)\s+)*(?:file\s+)?$/i;
   const cjkDirectRemovalBefore =
     /(?:删除|刪除|移除|清除)(?:(?:这个|這個|该|該|意外的|暂存的|暫存的|临时的|臨時的|未跟踪的|未追蹤的|旧的|舊的|私有的)\s*)*(?:文件)?\s*$/u;
-  const excluded = [];
+  const excluded = [...japaneseExcluded];
   for (const clause of source.split(/[;；\n]|(?<=[.!?。！？])\s+/u)) {
     pathPattern.lastIndex = 0;
     const matches = [...clause.matchAll(pathPattern)];

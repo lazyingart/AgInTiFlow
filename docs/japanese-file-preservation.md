@@ -21,6 +21,11 @@ list limits. Quote filenames containing spaces or characters outside the
 existing unquoted path grammar, for example `"メモ.md"`. File naming and policy
 do not depend on provider selection.
 
+Spaces between literal filenames and Japanese particles are optional. A named
+new output followed by a leave-intact instruction retains its creation
+requirement; an existing protected source does not become an update target.
+Multiple explicit read and output roles keep their request order.
+
 Whole-file protection is separate from a request to preserve only formatting
 or column names. Pronouns, ambiguous source aliases, quoted example sentences,
 conditionals and past-tense narration do not grant new file authority. A request

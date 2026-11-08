@@ -54,11 +54,43 @@ for (const goal of [
 for (const goal of [
   "report.md を作成してください。その後 report.md は変更しないでください。",
   "report.md を生成してください。report.md はそのまま残してください。",
+  "report.mdを作成してください。report.mdを変更しないでください。",
+  "report.mdを作成してください。その後report.mdを変更しないでください。",
+  "report.mdを作成してください。report.mdはそのまま残してください。",
+  "Create report.md. report.mdを変更しないでください。",
+  "创建 report.md。report.mdを変更しないでください。",
 ]) test("Japanese newly created output is not mistaken for an existing protected input: " + goal, () => {
   const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
   assert.deepEqual(contract.preservedInputPaths, []);
   assert.deepEqual(contract.exactOutputPaths, ["report.md"]);
+  assert.deepEqual(contract.excludedOutputPaths, []);
   assert.equal(preservedInputMutationBlock({ goal }, "write_file", { path: "report.md", content: "new" }, { goal }), null);
+});
+
+for (const goal of [
+  "input.csvを読み取り、report.mdを作成してください。input.csvは変更しないでください。",
+  "input.csvを読み取り、report.mdを作成してください。input.csvを変更しないでください。",
+]) test("unspaced Japanese read/output/prohibition clauses retain their own scopes: " + goal, () => {
+  const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
+  assert.deepEqual(contract.preservedInputPaths, ["input.csv"]);
+  assert.deepEqual(contract.exactInputPaths, ["input.csv"]);
+  assert.deepEqual(contract.exactOutputPaths, ["report.md"]);
+  assert.deepEqual(contract.excludedOutputPaths, ["input.csv"]);
+});
+
+test("Japanese protecting an existing update target removes the conflicting output requirement", () => {
+  const goal = "input.csvを更新してください。input.csvを変更しないでください。";
+  const contract = deriveScsTaskContract({ goal, taskProfile: "code" });
+  assert.deepEqual(contract.preservedInputPaths, ["input.csv"]);
+  assert.deepEqual(contract.exactOutputPaths, []);
+  assert.deepEqual(contract.excludedOutputPaths, ["input.csv"]);
+  assert.equal(preservedInputMutationBlock({ goal }, "write_file", { path: "input.csv", content: "bad" }, { goal })?.category, "preserved-input-mutation");
+});
+
+test("Japanese output and input roles retain request order across different actions", () => {
+  const contract = deriveScsTaskContract({ goal: "input-b.csvを読み取り、input-a.csvを読み取ってください。input-a.csvは変更しないでください。report.mdを更新してください。checklist.mdを作成してください。", taskProfile: "code" });
+  assert.deepEqual(contract.exactInputPaths, ["input-b.csv", "input-a.csv"]);
+  assert.deepEqual(contract.exactOutputPaths, ["report.md", "checklist.md"]);
 });
 
 for (const goal of [
