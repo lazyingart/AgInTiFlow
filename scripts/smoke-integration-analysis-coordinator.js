@@ -624,8 +624,29 @@ async function routedLeasePinsCutover() {
   });
   const callsA = [];
   const callsB = [];
+  const workerStarted = deferred();
+  const workerRelease = deferred();
+  const pinnedWorker = Object.freeze({
+    capabilities: async () => capability(),
+    async execute(request, { signal } = {}) {
+      workerStarted.resolve();
+      let onAbort;
+      try {
+        if (!signal?.aborted) await Promise.race([
+          workerRelease.promise,
+          new Promise((resolve) => {
+            onAbort = resolve;
+            signal?.addEventListener("abort", onAbort, { once: true });
+          }),
+        ]);
+      } finally {
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+      }
+      return terminalResult(request, signal?.aborted ? "cancelled" : "succeeded");
+    },
+  });
   const clientA = createTestOnlyExecutionWorkerClient(rpcForManager(
-    createExecutionJobManager({ worker: fakeWorker({ delayMs: 300 }) }),
+    createExecutionJobManager({ worker: pinnedWorker }),
     null,
     callsA
   ));
@@ -671,6 +692,7 @@ async function routedLeasePinsCutover() {
   ]);
   const router = createIntegrationExecutionWorkerRouter({ directory, bindingAuthority });
   const coordinator = createTestOnlyRoutedIntegrationAnalysisCoordinator(router, { pollMs: 25 });
+  let first = null, firstSettled = false;
 
   try {
     assert.equal(coordinator.attestation.callerSelectableBinding, false);
@@ -698,23 +720,31 @@ async function routedLeasePinsCutover() {
     await directory.switchRole("execution", nodeA.nodeId, { expectedGeneration: 0 });
 
     const firstProgress = deferred();
-    const first = coordinator.execute(scope(), { source: "print('pinned-a')", timeoutMs: 1_000 }, {
+    first = coordinator.execute(scope(), { source: "print('pinned-a')", timeoutMs: 10_000 }, {
       onProgress(progress) {
         if (progress.state === "running") firstProgress.resolve();
       },
     });
-    await firstProgress.promise;
+    first.then(() => { firstSettled = true; }, () => { firstSettled = true; });
+    await withTimeout(firstProgress.promise, "pinned execution progress", 10_000);
+    await withTimeout(workerStarted.promise, "pinned worker start", 10_000);
     await directory.enroll(nodeB);
     await directory.switchRole("execution", nodeB.nodeId, { expectedGeneration: 1 });
     assert.equal((await directory.resolve("execution")).nodeId, nodeB.nodeId);
+    // Reproduce observation latency beyond the old 300ms fake-work lifetime.
+    // The explicit worker gate, not elapsed time, owns execution completion.
+    await delayed(350);
+    assert.equal(firstSettled, false, "the leased operation must still be in flight");
     const activeLease = (await directory.status()).leases[0];
+    assert.ok(activeLease, "the active worker remains pinned until explicit completion");
     assert.equal(activeLease.nodeId, nodeA.nodeId);
     await assert.rejects(
       directory.finalizeRole("execution", { expectedGeneration: 2 }),
       (error) => error?.code === "WORKER_DRAIN_INCOMPLETE"
     );
 
-    assert.equal((await first).status, "succeeded");
+    workerRelease.resolve();
+    assert.equal((await withTimeout(first, "pinned execution completion", 10_000)).status, "succeeded");
     assert.equal((await directory.status()).leases.length, 0);
     await directory.finalizeRole("execution", { expectedGeneration: 2 });
     assert.equal(
@@ -749,8 +779,13 @@ async function routedLeasePinsCutover() {
     );
     assert.equal((await directory.status()).leases.length, 0);
   } finally {
-    coordinator.close();
-    await fs.rm(rootDir, { recursive: true, force: true });
+    workerRelease.resolve();
+    try {
+      if (first) await withTimeout(first.catch(() => {}), "pinned execution cleanup", 10_000);
+    } finally {
+      coordinator.close();
+      await fs.rm(rootDir, { recursive: true, force: true });
+    }
   }
 }
 
