@@ -100,7 +100,7 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
       const allowed = new Set(${JSON.stringify(runtimeFiles.map((file) => new URL(`file://${installedRoot}/${file}`).href))});
       registerHooks({ resolve(specifier, context, next) {
         const result = next(specifier, context);
-        if (!["node:assert/strict", "node:util", "node:perf_hooks"].includes(result.url) && !allowed.has(result.url)) {
+        if (!["node:assert/strict", "node:util", "node:perf_hooks", "node:events"].includes(result.url) && !allowed.has(result.url)) {
           throw new Error("Unapproved runtime import: " + result.url);
         }
         return result;
@@ -185,7 +185,12 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
       .replace('../src/restricted-application.js', '@lazyingart/agintilite');
     const httpTestPath = path.join(consumer, "native-http.test.mjs"); await fs.writeFile(httpTestPath, httpTests);
     const httpLog = command(process.execPath, ["--experimental-test-module-mocks", "--test", httpTestPath], consumer);
-    assert.match(httpLog, /# tests 41\n/); assert.match(httpLog, /# fail 0\n/); assert.match(httpLog, /# cancelled 0\n/);
+    assert.match(httpLog, /# tests 42\n/); assert.match(httpLog, /# fail 0\n/); assert.match(httpLog, /# cancelled 0\n/);
+    const cancellationTests = (await fs.readFile(path.join(root, "test/restricted-cancellation-observation.test.js"), "utf8"))
+      .replace('../src/restricted-application.js', '@lazyingart/agintilite');
+    const cancellationPath = path.join(consumer, "cancellation.test.mjs"); await fs.writeFile(cancellationPath, cancellationTests);
+    const cancellationLog = command(process.execPath, ["--test", cancellationPath], consumer);
+    assert.match(cancellationLog, /# tests 8\n/); assert.match(cancellationLog, /# fail 0\n/);
   } finally {
     await fs.rm(temp, { recursive: true, force: true });
   }

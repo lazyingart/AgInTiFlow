@@ -1,5 +1,6 @@
 import { types } from "node:util";
 import { performance } from "node:perf_hooks";
+import { addAbortListener } from "node:events";
 import {
   RestrictedApplicationError, fail, dataFields, jsonSnapshot, integer, text,
   assertNoCredentials, checkedSchema, matchesSchema,
@@ -56,6 +57,7 @@ const DEFAULTS = Object.freeze({ timeoutMs: 60_000, maxSteps: 8, maxToolCalls: 1
 const MAXIMA = Object.freeze({ timeoutMs: 180_000, maxSteps: 16, maxToolCalls: 32, maxCallsPerStep: 4, maxContextBytes: 1024 * 1024, maxResultBytes: 256 * 1024, maxOutputTokens: 8192, maxConcurrency: 32 });
 const MAX_INPUT_BYTES = 4 * 1024 * 1024;
 const NAME = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
+const signalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get;
 
 function callback(value) {
   if (types.isProxy(value) || typeof value !== "function") fail();
@@ -84,7 +86,7 @@ function signalValue(value) {
   if (value === undefined) return;
   if (!value || typeof value !== "object" || types.isProxy(value) || Object.getPrototypeOf(value) !== AbortSignal.prototype) fail();
   // Native getter verifies the internal slot; do not trust a forged prototype.
-  try { Reflect.apply(Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get, value, []); }
+  try { Reflect.apply(signalAborted, value, []); }
   catch { fail(); }
   if (Object.getOwnPropertyNames(value).length) fail();
   return value;
@@ -169,10 +171,10 @@ export function createRestrictedApplicationRunner(options) {
     };
     const onAbort = () => stop("CANCELLED");
     const timer = setTimeout(() => stop("TIMEOUT"), limits.timeoutMs);
-    parent?.addEventListener("abort", onAbort, { once: true });
-    if (parent?.aborted) onAbort();
+    let parentSubscription;
     function checkpoint() {
-      if (performance.now() >= deadline) stop("TIMEOUT");
+      if (parent && Reflect.apply(signalAborted, parent, [])) onAbort();
+      else if (performance.now() >= deadline) stop("TIMEOUT");
       if (stopCode) fail(stopCode);
     }
     async function invoke(fn, args, code) {
@@ -199,6 +201,10 @@ export function createRestrictedApplicationRunner(options) {
       }
     }
     try {
+      // A caller's unrelated listener may stop event propagation. Native
+      // abort subscriptions resist that suppression; checkpoints also inspect
+      // the native state rather than trusting that an event was delivered.
+      if (parent) parentSubscription = addAbortListener(parent, onAbort);
       checkpoint();
       const messages = [{ role: "system", content: `${SYSTEM_BOUNDARY}\n${instructions}` }, ...prepareInput(rawRequest)];
       const seen = new Set();
@@ -250,7 +256,7 @@ export function createRestrictedApplicationRunner(options) {
       fail("STEP_LIMIT");
     } finally {
       clearTimeout(timer);
-      parent?.removeEventListener("abort", onAbort);
+      parentSubscription?.[Symbol.dispose]();
       controller.abort();
       // A callback ignoring abort is still live work. Keep its capacity charged
       // until it settles; never permit timed-out calls to grow without bound.

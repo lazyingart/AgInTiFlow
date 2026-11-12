@@ -31,3 +31,9 @@ Preview 11 ports the synchronous callback-result boxing fix from AgInTiFlow
 commit ab912242200b6d0a73375de468aecbfd647d0b76. Strict JSON candidates are
 validated without executing thenable hooks; genuine host Promise behavior and
 cancellation accounting remain unchanged. No new import or dependency is added.
+
+Preview 12 ports propagation-resistant native cancellation from AgInTiFlow
+commit fe37b2cf761084499d6f64365f0aad1da8d34bbb. The runner and optional pinned
+DeepSeek transport use Node's disposable abort subscription and preserve the
+existing capacity/close accounting. The new node:events import is standard
+library only; no package dependency, retry, fallback or app authority is added.

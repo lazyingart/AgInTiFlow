@@ -22,7 +22,10 @@ mock.module("node:https", { namedExports: { ...https, Agent: FixtureAgent,
     assert.equal(options.headers["accept-encoding"], "identity");
     activeFixture.constructions++;
     if (activeFixture.throwBefore) throw Error("Synthetic pre-dispatch constructor failure");
-    const request = http.request({ ...options, protocol: "http:", hostname: "127.0.0.1", port: activeFixture.port }, callback);
+    const owner = activeFixture;
+    const request = http.request({ ...options, protocol: "http:", hostname: "127.0.0.1", port: activeFixture.port }, response => {
+      callback(response); owner.onResponseReceived?.();
+    });
     activeFixture.onConstruct?.(request);
     if (activeFixture.holdClose) {
       const emit = request.emit;
@@ -309,4 +312,19 @@ test("the pinned native parser refuses oversized response headers", { timeout: 5
     res.end(JSON.stringify(result("never accepted")));
   });
   await assert.rejects((await native(f)).run(input), category("protocol")); assert.equal(f.requests.length, 1);
+});
+
+test("an earlier signal listener cannot suppress actual HTTP cancellation", { timeout: 5000 }, async t => {
+  let entered; const ready = new Promise(resolve => { entered = resolve; });
+  const f = await setup(t, (_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.flushHeaders(); }, { onResponseReceived: entered });
+  const controller = new AbortController(), blocker = event => event.stopImmediatePropagation();
+  controller.signal.addEventListener("abort", blocker);
+  t.after(() => controller.signal.removeEventListener("abort", blocker));
+  const pending = f.client.provider.complete({ schemaVersion: "aginti-restricted-application-v1", tools: [], outputSchema: schema,
+    maxOutputTokens: 128, messages: [{ role: "system", content: "Return JSON from supplied data." },
+      { role: "user", content: [{ type: "text", text: "read the authorized note" }] }] }, { signal: controller.signal });
+  const rejection = assert.rejects(pending, { code: "CANCELLED" });
+  await ready; controller.abort(); await rejection; await f.client.close();
+  assert.equal(f.state.constructions, 1); assert.equal(f.requests.length, 1);
+  assert.equal(getEventListeners(controller.signal, "abort").length, 1, "only the caller-owned blocker remains");
 });

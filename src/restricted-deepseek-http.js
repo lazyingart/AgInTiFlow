@@ -1,6 +1,7 @@
 import { Agent, request } from "node:https";
 import { performance } from "node:perf_hooks";
 import { types, TextDecoder } from "node:util";
+import { addAbortListener } from "node:events";
 import { dataFields, integer, jsonSnapshot, fail, parseRestrictedJson, RestrictedApplicationError } from "./restricted-application-contract.js";
 
 // Internal transport building block. No caller-selectable endpoint, fetch,
@@ -12,7 +13,6 @@ const MAX_RESPONSE_BYTES = 256 * 1024;
 const byteLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "byteLength").get;
 const setBytes = Uint8Array.prototype.set;
 const signalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get;
-const addListener = EventTarget.prototype.addEventListener, removeListener = EventTarget.prototype.removeEventListener;
 
 function checkedSignal(value) {
   if (value === undefined) return;
@@ -78,7 +78,7 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
     promise.catch(() => {}); // Observe this owned task even if the SDK turn stops waiting.
     const deadline = performance.now() + timeoutMs;
-    let req, res, timer, requestClosed = false, responseClosed = true, settled = false;
+    let req, res, timer, abortSubscription, requestClosed = false, responseClosed = true, settled = false;
     let error = null, output, ended = false, used = 0;
     const buffer = new Uint8Array(MAX_RESPONSE_BYTES);
     const record = { promise, stop };
@@ -88,7 +88,7 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
       if (settled || !requestClosed || !responseClosed) return;
       settled = true;
       clearTimeout(timer);
-      if (signal) Reflect.apply(removeListener, signal, ["abort", onAbort]);
+      abortSubscription?.[Symbol.dispose]();
       pending.delete(record);
       if (!error && (!ended || performance.now() >= deadline)) error = failure(ended ? "timeout" : "unavailable");
       if (error) reject(error); else resolve(output);
@@ -147,9 +147,9 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
         settle();
       });
     }
-    if (signal) Reflect.apply(addListener, signal, ["abort", onAbort, { once: true }]);
     timer = setTimeout(() => stop(failure("timeout")), timeoutMs);
     try {
+      if (signal) abortSubscription = addAbortListener(signal, onAbort);
       req = nativeRequest({ protocol: "https:", hostname: "api.deepseek.com", port: 443, path: "/v1/chat/completions", method: "POST",
         agent, rejectUnauthorized: true, maxHeaderSize: 16 * 1024, insecureHTTPParser: false,
         headers: { authorization: `Bearer ${fields.apiKey}`, "content-type": "application/json",

@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.11.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.12.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.11.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.12.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -276,6 +276,13 @@ late success. Callbacks ignoring abort remain charged against runner capacity
 until settlement; late rejection is observed. Synchronous JavaScript and remote
 requests cannot be forcibly interrupted here. Use process isolation for hard
 termination. Fresh runner instances do not share a global admission limit.
+
+Node 22 native disposable abort subscriptions prevent another listener's
+`stopImmediatePropagation()` from suppressing cancellation. Checkpoints also
+inspect the native parent-signal state before continuing or returning a final
+proposal. Only the SDK's own subscription is disposed; caller listeners remain
+untouched. The optional DeepSeek HTTP client uses the same resistant mechanism.
+Local request close accounting and remote-termination limitations are unchanged.
 
 Stable error codes include `CANCELLED`, `TIMEOUT`, `BUSY`, `STEP_LIMIT`,
 `CONTEXT_LIMIT`, `DATA_LIMIT`, `SENSITIVE_DATA`, `INVALID_CONTRACT`,
