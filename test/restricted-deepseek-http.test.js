@@ -26,6 +26,15 @@ mock.module("node:https", { namedExports: { ...https, Agent: FixtureAgent,
     const request = http.request({ ...options, protocol: "http:", hostname: "127.0.0.1", port: activeFixture.port }, response => {
       callback(response); owner.onResponseReceived?.();
     });
+    if (owner.holdSocketClose) request.once("socket", socket => {
+      const emit = socket.emit;
+      socket.emit = function (name, ...args) {
+        if (name === "close" && owner.holdSocketClose) {
+          owner.releaseSocketClose = () => Reflect.apply(emit, this, [name, ...args]); owner.onSocketCloseHeld?.(); return true;
+        }
+        return Reflect.apply(emit, this, [name, ...args]);
+      };
+    });
     activeFixture.onConstruct?.(request);
     if (activeFixture.holdClose) {
       const emit = request.emit;
@@ -68,6 +77,7 @@ async function setup(t, handler, options = {}) {
   const client = createRestrictedDeepSeekClient({ ...defaults, ...options.client });
   t.after(async () => {
     state.holdClose = false; state.releaseClose?.();
+    state.holdSocketClose = false; state.releaseSocketClose?.();
     try { await client.close(); } catch (error) { if (!state.expectedCloseFailure) throw error; assert.ok(category("unavailable")(error)); }
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve)); activeFixture = undefined;
@@ -327,4 +337,75 @@ test("an earlier signal listener cannot suppress actual HTTP cancellation", { ti
   await ready; controller.abort(); await rejection; await f.client.close();
   assert.equal(f.state.constructions, 1); assert.equal(f.requests.length, 1);
   assert.equal(getEventListeners(controller.signal, "abort").length, 1, "only the caller-owned blocker remains");
+});
+
+const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
+const observedWithin = async (promise, ms) => {
+  let timer;
+  try { return await Promise.race([promise.then(value => ({ value }), error => ({ error })),
+    new Promise(resolve => { timer = setTimeout(() => resolve({ stillPending: true }), ms); })]); }
+  finally { clearTimeout(timer); }
+};
+const rawRequest = () => ({ schemaVersion: "aginti-restricted-application-v1", tools: [], outputSchema: schema,
+  maxOutputTokens: 128, messages: [{ role: "system", content: "Return supplied status JSON." },
+    { role: "user", content: [{ type: "text", text: "just check this status, no changes please" }] }] });
+
+for (const boundary of ["request", "socket"]) test(`unconfirmed ${boundary} close fails boundedly and remains cached closed`, { timeout: 8000 }, async t => {
+  const held = deferred();
+  const options = boundary === "request" ? { holdClose: true, onCloseHeld: held.resolve } : { holdSocketClose: true, onSocketCloseHeld: held.resolve };
+  const f = await setup(t, (_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(result("observed"))); }, options);
+  f.state.expectedCloseFailure = true;
+  const pending = f.client.provider.complete(rawRequest(), {}); pending.catch(() => {});
+  if (boundary === "request") await held.promise; else await pending;
+  const closing = f.client.close(); assert.equal(f.client.close(), closing);
+  try {
+    const outcome = await observedWithin(closing, 3500);
+    assert.ok(outcome.error && category("unavailable")(outcome.error), "unconfirmed retirement cannot hang or claim cleanup success");
+    if (boundary === "socket") await held.promise;
+    await assert.rejects(f.client.close(), category("unavailable"));
+    await assert.rejects((await native(f)).run(input), category("unavailable"));
+    assert.equal(f.state.constructions, 1);
+  } finally {
+    f.state.holdClose = false; f.state.releaseClose?.();
+    f.state.holdSocketClose = false; f.state.releaseSocketClose?.();
+    await pending.catch(() => {}); await closing.catch(() => {});
+  }
+  await assert.rejects(f.client.close(), category("unavailable"), "late physical retirement cannot rewrite a cached failed close");
+});
+
+test("an unconfirmed request after its deadline poisons admission without releasing physical work", { timeout: 8000 }, async t => {
+  const held = deferred(), unhandled = [], receive = error => unhandled.push(error);
+  process.on("unhandledRejection", receive); t.after(() => process.removeListener("unhandledRejection", receive));
+  const f = await setup(t, (_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(result("late"))); },
+    { holdClose: true, onCloseHeld: held.resolve, client: { timeoutMs: 100, maxConcurrency: 1 } });
+  f.state.expectedCloseFailure = true;
+  const pending = f.client.provider.complete(rawRequest(), {}); pending.catch(() => {}); await held.promise;
+  try {
+    const outcome = await observedWithin(pending, 3500);
+    assert.ok(outcome.error && category("unavailable")(outcome.error), "deadline plus uncertain retirement needs a bounded safe failure");
+    await assert.rejects((await native(f)).run(input), category("unavailable"));
+    assert.equal(f.state.constructions, 1);
+    // Physical completion remains distinct from the already-settled public
+    // failure. This also catches a drain loop spinning on resolved promises.
+    const closing = f.client.close(); closing.catch(() => {});
+    await new Promise(setImmediate);
+    f.state.holdClose = false; f.state.releaseClose();
+    await assert.rejects(closing, category("unavailable")); await new Promise(setImmediate);
+    await assert.rejects((await native(f)).run(input), category("unavailable")); assert.deepEqual(unhandled, []);
+  } finally { f.state.holdClose = false; f.state.releaseClose?.(); await pending.catch(() => {}); }
+});
+
+test("confirmed cancellation within the grace preserves its error and permits a fresh request", { timeout: 5000 }, async t => {
+  const received = deferred(), held = deferred(), controller = new AbortController(); let count = 0;
+  const f = await setup(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    if (++count === 1) res.flushHeaders(); else res.end(JSON.stringify(result("fresh")));
+  }, { onResponseReceived: received.resolve, holdClose: true, onCloseHeld: held.resolve });
+  const pending = f.client.provider.complete(rawRequest(), { signal: controller.signal });
+  const rejected = assert.rejects(pending, { code: "CANCELLED" });
+  await received.promise; controller.abort(); await held.promise;
+  f.state.holdClose = false; f.state.releaseClose(); await rejected;
+  assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+  assert.equal((await (await native(f)).run(input)).proposal.reply, "fresh");
+  assert.equal(f.state.constructions, 2);
 });
