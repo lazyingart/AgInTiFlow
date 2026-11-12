@@ -239,6 +239,15 @@ Promise implementations and SDK subclasses remain trusted host execution, as
 does any resolution the callback performs before returning. This boundary does
 not sandbox callback code or recover evidence that code already discarded.
 
+On Node 22, cancellation uses a native disposable abort subscription that
+cannot be suppressed by another listener's `stopImmediatePropagation()`.
+Checkpoints also inspect the native parent-signal state before admitting a
+continuation or final proposal. Cleanup removes only the SDK's subscription;
+caller listeners remain owned by the caller. The optional DeepSeek HTTP client
+uses the same propagation-resistant subscription. Pending callbacks and local
+requests retain their existing capacity/close accounting; this does not prove
+remote inference termination or refund a delivered request.
+
 A custom `provider.complete` declares an already interpreted SDK response. The
 runner cannot recover discarded native choices, finish/refusal/tool metadata or
 duplicate JSON members after a host has parsed them away. Native wire guards
