@@ -37,3 +37,8 @@ commit fe37b2cf761084499d6f64365f0aad1da8d34bbb. The runner and optional pinned
 DeepSeek transport use Node's disposable abort subscription and preserve the
 existing capacity/close accounting. The new node:events import is standard
 library only; no package dependency, retry, fallback or app authority is added.
+
+Preview 13 ports bounded uncertain HTTP retirement from AgInTiFlow commit
+366c097f80d4d1e4d6b7a558ebdb3d37713f0598. Public failure and physical retirement
+remain separate; a failed cleanup poisons admission, keeps exact physical work
+tracked and preserves the cached failed close. No retry or dependency is added.

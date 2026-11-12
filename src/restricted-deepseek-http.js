@@ -10,6 +10,7 @@ import { dataFields, integer, jsonSnapshot, fail, parseRestrictedJson, Restricte
 const NativeAgent = Agent, nativeRequest = request;
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 256 * 1024;
+const CLEANUP_GRACE_MS = 3000;
 const byteLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "byteLength").get;
 const setBytes = Uint8Array.prototype.set;
 const signalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get;
@@ -48,21 +49,33 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
   const agent = new NativeAgent({ keepAlive: true, maxSockets: maxConcurrency, maxTotalSockets: maxConcurrency,
     maxFreeSockets: Math.min(maxConcurrency, 2), timeout: 5000 });
   const pending = new Set(), sockets = new Map();
-  let closed = false, closing;
+  let closed = false, poisoned = false, poisoning = false, closing;
   const failure = (category, retryAfterMs = null) => issueFailure({ category, retryAfterMs });
+  function poisonAll() {
+    poisoned = true;
+    if (poisoning) return;
+    poisoning = true;
+    try {
+      for (const task of pending) task.stop(failure("unavailable"));
+      try { agent.destroy(); } catch { /* poison and failed close remain */ }
+      for (const socket of sockets.keys()) {
+        try { socket.destroy(); } catch { /* retain exact unclosed socket */ }
+      }
+    } finally { poisoning = false; }
+  }
   function trackSocket(socket) {
     if (socket.closed === true) return;
     if (!sockets.has(socket)) {
       const completion = new Promise(resolve => socket.once("close", () => { sockets.delete(socket); resolve(); }));
       sockets.set(socket, completion);
     }
-    if (closed) socket.destroy();
+    if (closed || poisoned) socket.destroy();
   }
 
   function complete(rawBody, rawOptions = {}) {
     const { signal: value } = dataFields(rawOptions, ["signal"], []), signal = checkedSignal(value);
     if (signal && Reflect.apply(signalAborted, signal, [])) throw new RestrictedApplicationError("CANCELLED");
-    if (closed || pending.size >= maxConcurrency) throw failure("unavailable");
+    if (closed || poisoned || pending.size >= maxConcurrency) throw failure("unavailable");
     const body = jsonSnapshot(rawBody, { maxBytes: MAX_REQUEST_BYTES });
     const wire = dataFields(body, ["model", "messages", "tools", "response_format", "thinking", "max_tokens", "stream", "temperature"],
       ["model", "messages", "response_format", "thinking", "max_tokens", "stream", "temperature"]);
@@ -74,32 +87,42 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
     const bytes = Buffer.from(JSON.stringify(payload), "utf8");
     if (bytes.length > MAX_REQUEST_BYTES) fail("DATA_LIMIT");
 
-    let resolve, reject;
+    let resolve, reject, retire;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
     promise.catch(() => {}); // Observe this owned task even if the SDK turn stops waiting.
+    const retired = new Promise(yes => { retire = yes; });
     const deadline = performance.now() + timeoutMs;
-    let req, res, timer, abortSubscription, requestClosed = false, responseClosed = true, settled = false;
+    let req, res, timer, cleanupTimer, abortSubscription, requestClosed = false, responseClosed = true, physicallyRetired = false, settled = false;
     let error = null, output, ended = false, used = 0;
     const buffer = new Uint8Array(MAX_RESPONSE_BYTES);
-    const record = { promise, stop };
+    const record = { retired, stop };
     pending.add(record);
 
     function settle() {
-      if (settled || !requestClosed || !responseClosed) return;
-      settled = true;
-      clearTimeout(timer);
+      if (physicallyRetired || !requestClosed || !responseClosed) return;
+      physicallyRetired = true;
+      clearTimeout(timer); clearTimeout(cleanupTimer);
       abortSubscription?.[Symbol.dispose]();
-      pending.delete(record);
+      pending.delete(record); retire(); buffer.fill(0);
+      if (settled) return;
+      settled = true;
       if (!error && (!ended || performance.now() >= deadline)) error = failure(ended ? "timeout" : "unavailable");
       if (error) reject(error); else resolve(output);
+      output = undefined;
     }
     function stop(reason) {
-      if (settled) return;
+      if (physicallyRetired) return;
       error ??= reason;
-      // Never settle merely because destroy was requested. The exact owned
-      // request/response close events must arrive before capacity is returned.
-      try { res?.destroy(); } catch { /* native close path still governs */ }
-      try { req?.destroy(); } catch { /* native close path still governs */ }
+      output = undefined;
+      if (!cleanupTimer) cleanupTimer = setTimeout(() => {
+        if (physicallyRetired) return;
+        poisonAll(); clearTimeout(timer); abortSubscription?.[Symbol.dispose]();
+        // A bounded public failure is not physical retirement. Keep the exact
+        // record charged, permanently block admission and wait for real close.
+        if (!settled) { settled = true; reject(failure("unavailable")); }
+      }, CLEANUP_GRACE_MS);
+      try { res?.destroy(); } catch { poisonAll(); }
+      try { req?.destroy(); } catch { poisonAll(); }
     }
     function onAbort() { stop(new RestrictedApplicationError("CANCELLED")); }
     function checkpoint() {
@@ -108,12 +131,12 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
       return !error;
     }
     function receive(response) {
-      if (settled) { response.destroy(); return; }
+      if (physicallyRetired) { response.destroy(); return; }
       res = response; responseClosed = false;
       res.once("close", () => { responseClosed = true; settle(); });
       res.once("error", () => stop(failure("unavailable")));
       res.once("aborted", () => stop(failure("unavailable")));
-      if (!checkpoint() || closed || settled) { stop(error || failure("unavailable")); return; }
+      if (!checkpoint() || closed || poisoned) { stop(error || failure("unavailable")); return; }
       if (res.statusCode !== 200) {
         const category = statusCategory(res.statusCode);
         const header = res.headers["retry-after"];
@@ -157,7 +180,7 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
       req.once("socket", trackSocket);
       req.once("close", () => { requestClosed = true; settle(); });
       req.once("error", cause => stop(failure(typeof cause?.code === "string" && cause.code.startsWith("HPE_") ? "protocol" : "unavailable")));
-      if (closed || !checkpoint()) stop(error || failure("unavailable"));
+      if (closed || poisoned || !checkpoint()) stop(error || failure("unavailable"));
       else req.end(bytes); // One request, one end, zero retry/reconnect logic.
     } catch {
       if (req) stop(failure("unavailable"));
@@ -172,7 +195,8 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
     let resolve, reject;
     closing = new Promise((yes, no) => { resolve = yes; reject = no; });
     closing.catch(() => {});
-    (async () => {
+    let timeout;
+    const drain = (async () => {
       let cleanupFailed = false;
       for (const task of pending) task.stop(failure("unavailable"));
       try { agent.destroy(); } catch { cleanupFailed = true; }
@@ -182,10 +206,17 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
       // Requests admitted before close may attach a socket before reporting
       // close. Drain to a stable empty set; do not assert remote quiescence.
       while (pending.size || sockets.size) await Promise.allSettled([
-        ...Array.from(pending, task => task.promise), ...sockets.values(),
+        ...Array.from(pending, task => task.retired), ...sockets.values(),
       ]);
-      if (cleanupFailed) throw failure("unavailable");
-    })().then(resolve, reject);
+      if (cleanupFailed || poisoned) throw failure("unavailable");
+    })();
+    const bounded = new Promise((_, no) => {
+      timeout = setTimeout(() => { poisonAll(); no(failure("unavailable")); }, CLEANUP_GRACE_MS);
+    });
+    Promise.race([drain, bounded]).then(
+      value => { clearTimeout(timeout); resolve(value); },
+      error => { clearTimeout(timeout); reject(error); },
+    );
     return closing;
   }
   return Object.freeze({ complete, close });

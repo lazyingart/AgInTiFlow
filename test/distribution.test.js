@@ -185,7 +185,7 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
       .replace('../src/restricted-application.js', '@lazyingart/agintilite');
     const httpTestPath = path.join(consumer, "native-http.test.mjs"); await fs.writeFile(httpTestPath, httpTests);
     const httpLog = command(process.execPath, ["--experimental-test-module-mocks", "--test", httpTestPath], consumer);
-    assert.match(httpLog, /# tests 42\n/); assert.match(httpLog, /# fail 0\n/); assert.match(httpLog, /# cancelled 0\n/);
+    assert.match(httpLog, /# tests 46\n/); assert.match(httpLog, /# fail 0\n/); assert.match(httpLog, /# cancelled 0\n/);
     const cancellationTests = (await fs.readFile(path.join(root, "test/restricted-cancellation-observation.test.js"), "utf8"))
       .replace('../src/restricted-application.js', '@lazyingart/agintilite');
     const cancellationPath = path.join(consumer, "cancellation.test.mjs"); await fs.writeFile(cancellationPath, cancellationTests);

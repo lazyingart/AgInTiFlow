@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.12.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.13.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.12.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.13.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -346,6 +346,7 @@ can run; the transport adds no tools, sessions, writes or agent semantics.
 | Request UTF-8 bytes | 2 MiB, including the opaque user ID |
 | Response bytes | 256 KiB, including keep-alive whitespace |
 | Response headers | 16 KiB |
+| Unconfirmed local cleanup grace | 3000 ms; fixed, no caller override |
 | Requested output tokens | 1–8192, further bounded by the runner |
 
 The runner's total deadline remains independent. Full local capacity refuses
@@ -362,8 +363,18 @@ Cancellation destroys the owned local request. Its admission slot stays charged
 until the request and response actually close. `close()` blocks new admission,
 aborts owned requests, destroys owned sockets and waits for local close events.
 Repeated calls return the same promise; a cleanup failure remains a cached safe
-failure. A peer that never closes can keep that drain pending: this client does
-not turn a requested destroy into proof of closure. Remote inference termination,
+failure. If request/response retirement cannot be confirmed within three seconds
+after timeout, cancellation or failure, the client reports unavailable and is
+permanently poisoned against new admission. The public failure does not remove
+the physical record or return its slot; actual close events remain authoritative.
+Client shutdown also bounds its wait to three seconds, including pooled sockets.
+It reports a cached failure rather than inventing cleanup success. Normal
+confirmed requests retain their keep-alive reuse; normal cancellation keeps its
+original error and permits a fresh request once physically retired.
+
+Public settlement and physical retirement have separate completion signals, so
+shutdown cannot spin on an already-rejected task while a close remains pending.
+Remote inference termination,
 billing, response-loss idempotency and cross-process exactly-once dispatch are
 not promised. The host owns those policies and must not automatically retry an
 ambiguous request.
