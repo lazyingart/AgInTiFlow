@@ -28,10 +28,33 @@ The npm trust setup may require the package to exist before trust can be attache
 1. Update `package.json` version.
 2. Run `npm test`.
 3. Run `npm pack --dry-run` and inspect the tarball contents.
-4. Push the release commit and create a GitHub Release, or run the publish workflow manually.
+4. Commit and push the verified source, then push one matching immutable version tag.
 5. Confirm the npm package page shows provenance.
 
-If local token publishing fails with `E401` or `E404`, do not treat that as terminal when Trusted Publishing is configured. Use the GitHub Actions workflow with an account that can dispatch workflows for `lazyingart/AgInTiFlow`, then verify the registry and install the published package. See `references/agintiflow-npm-publication-memory.md` for the 2026-05-20 `0.20.169` publication evidence and the known working command sequence.
+Use the tag-push path:
+
+```bash
+RELEASE_VERSION="$(node -p "require('./package.json').version")"
+git tag -a "v${RELEASE_VERSION}" -m "Release ${RELEASE_VERSION}"
+git push origin "refs/tags/v${RELEASE_VERSION}"
+gh run list --repo lazyingart/AgInTiFlow --workflow npm-publish.yml --event push --branch "v${RELEASE_VERSION}"
+gh run watch RUN_ID --repo lazyingart/AgInTiFlow --exit-status
+```
+
+The hosted-runner namespace restriction disposition is deliberately bound to
+`push` of a version tag in this repository and workflow. A branch dispatch or
+GitHub Release event does not satisfy that predicate. Do not relax the predicate
+or set its flags locally to manufacture a passing namespace proof. Do not move
+an existing tag or launch a second publish while its first run is unresolved.
+
+`pack:verify-runtime` runs the complete 1,208-case consumer cohort at concurrency
+two with a finite ten-minute outer watchdog. Individual test deadlines remain
+unchanged. Failure preserves child stdout/stderr, including partial progress.
+Qualification requires all cases to pass with no cancellation or skips; the
+release cohort currently includes Linux-specific cases. A timeout is a failed
+gate, never permission to publish or silently omit tests.
+
+If local token publishing fails with `E401` or `E404`, do not treat that as terminal when Trusted Publishing is configured. Use the established version-tag workflow with the authorized repository identity, then verify the registry and install the published package. A local npm token is not required for the configured OIDC path. See `references/agintiflow-npm-publication-memory.md` for the historical publication evidence and current invocation boundary. Preserve shared GitHub account settings; scope any required account choice to the command.
 
 ## Local Token Fallback
 

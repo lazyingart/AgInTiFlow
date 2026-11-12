@@ -2,7 +2,24 @@
 
 Date: 2026-05-20
 
-Updated: 2026-06-05
+Updated: 2026-11-13
+
+## Current invocation boundary
+
+Use a matching immutable version-tag **push** for the current release workflow.
+Its GitHub-hosted namespace restriction disposition accepts that exact event,
+repository, workflow and tag scope. Manual branch dispatch and GitHub Release
+events do not qualify. The older manual sequence below is historical evidence,
+not the current invocation recommendation. Never loosen the environment
+predicate to make a branch build pass or move a previously pushed release tag.
+Preserve shared `gh` account settings; use the authorized repository identity
+without changing other projects' active account.
+
+On 2026-11-12, branch dispatch `43298914003` failed before publication at the
+namespace proof. Canonical tag run `43301423885` passed the full suite and audit,
+then exposed the consumer verifier's 180-second outer timeout. No test was
+omitted and no package was published by either run. Failure diagnostics and a
+bounded whole-cohort budget are required before the next release attempt.
 
 This note records the working publication route for AgInTiFlow so future release work does not get blocked by stale local npm tokens or repeated discussion about why direct `npm publish` failed.
 

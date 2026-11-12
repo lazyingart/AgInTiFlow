@@ -16,7 +16,9 @@ const cache = process.env.npm_config_cache || path.join(os.homedir(), ".npm");
 // Consumer tests include real persisted child runtimes. Bound concurrency rather
 // than letting CPU count decide, and allow the complete set on small CI hosts.
 const testConcurrency = 2;
-const consumerTimeoutMs = 180_000;
+// The complete cohort starts and recovers many real child runtimes. Its outer
+// watchdog must accommodate cold two-core CI without changing any case deadline.
+const consumerTimeoutMs = 600_000;
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-package-runtime-"));
 const env = {
   PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
@@ -28,6 +30,12 @@ const env = {
 };
 function run(command, args, cwd, timeout = 120000) {
   const result = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout, maxBuffer: 16 * 1024 * 1024 });
+  if (result.error || result.status !== 0) {
+    // Retain the last completed cases on timeout instead of replacing all
+    // progress with spawnSync's error. This environment contains no auth keys.
+    if (result.stdout) process.stderr.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+  }
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr || result.stdout || "Package runtime command failed.");
   return result.stdout;
@@ -47,6 +55,7 @@ try {
     const version = run(process.execPath, [path.join(installed, actual.bin[name]), "--version"], temporary, 15000).trim();
     assert.equal(version, manifest.version);
   }
+  const consumerStarted = performance.now();
   const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, "test/package-runtime-dependencies.test.js", "test/model-http-boundary.test.js", "test/model-response-budget.test.js", "test/model-response-runtime.test.js", "test/native-tool-json.test.js", "test/native-tool-json-runtime.test.js", "test/publish-status-intent.test.js", "test/remote-image-input.test.js", "test/native-session-run-lock.test.js",
     "test/native-turn-boundary.test.js", "test/native-turn-runtime.test.js", "test/inbox-dispatch-fence.test.js", "test/native-tool-checkpoint-runtime.test.js", "test/native-completion-delivery-runtime.test.js", "test/file-creation-intent.test.js", "test/cli-startup-input.test.js", "test/file-checksum.test.js", "test/file-checksum-runtime.test.js", "test/preserved-input-intent.test.js", "test/preserved-mutation-target.test.js",
     "test/japanese-file-preservation.test.js",
@@ -68,9 +77,11 @@ try {
     "test/restricted-cancellation-observation.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
   assert.match(log, /# tests 1208\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 1208\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
     preferOnline: true, installScriptsDisabled: true, consumerTests: 1208, testConcurrency, consumerTimeoutMs,
-    failures: 0, cliVersionsVerified: true };
+    passedTests: 1208, cancelledTests: 0, skippedTests: 0,
+    consumerDurationMs: Math.round(performance.now() - consumerStarted), failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });
 }
