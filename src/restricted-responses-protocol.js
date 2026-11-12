@@ -1,7 +1,7 @@
 import { types, TextDecoder } from "node:util";
 import {
   dataFields, jsonSnapshot, checkedSchema, matchesSchema, parseRestrictedJson,
-  assertNoCredentials, integer, text, fail,
+  assertNoCredentials, integer, text, fail, RestrictedApplicationError,
 } from "./restricted-application-contract.js";
 
 // Internal protocol prerequisite, deliberately not a package export or provider.
@@ -17,6 +17,19 @@ const getByteLength = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byte
 const getBuffer = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer").get;
 const copyBytes = NativeBytes.prototype.set;
 const FORM = "application_proposal";
+const streamFailures = new WeakMap();
+const knownFailureCategories = Object.freeze({
+  subscription_sharing_usage_limit_exceeded: "quota", insufficient_quota: "quota",
+  subscription_sharing_usage_unavailable: "unavailable", subscription_sharing_user_unavailable: "unavailable",
+  subscription_sharing_user_not_eligible: "permission", subscription_sharing_route_not_supported: "permission",
+  subscription_sharing_invalid_user: "authentication", chatpass_v2_scope_not_authorized: "permission",
+  chatpass_v2_invalid_authorization_context: "permission", subscription_sharing_unsupported_capability: "protocol",
+  rate_limit_exceeded: "rate_limit", server_error: "unavailable", model_timeout: "timeout",
+});
+
+// Only this decoder can brand a validated negative event. Arbitrary thrown
+// objects, error properties and Proxy aliases cannot manufacture a category.
+export function restrictedResponsesFailure(error) { return streamFailures.get(error); }
 
 function sameJson(a, b) {
   if (a === b) return true;
@@ -88,12 +101,17 @@ export function createRestrictedResponsesDecoder(options) {
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   let wireBytes = 0, eventBytes = 0, textBytes = 0, sequence = 0;
   let lineParts = [], lineBytes = 0, eventName = null, data = [], responseId = null, createdAt = null;
-  let valueText = "", textDone = false, partDone = false, completed = false, result = null, poison = null;
+  let valueText = "", textDone = false, partDone = false, completed = false, result = null, poison = null, failureCategory = null;
   const items = [];
   function clear() { lineParts = []; lineBytes = 0; eventName = null; data = []; valueText = ""; items.length = 0; }
-  function reject(code = "PROVIDER_PROTOCOL_INVALID") { poison ??= code; result = null; clear(); fail(poison); }
+  function raise() {
+    const error = new RestrictedApplicationError(poison);
+    if (failureCategory !== null) streamFailures.set(error, jsonSnapshot({ category: failureCategory, retryAfterMs: null }));
+    throw error;
+  }
+  function reject(code = "PROVIDER_PROTOCOL_INVALID") { poison ??= code; result = null; clear(); raise(); }
   function require(condition) { if (!condition) reject(); }
-  function check() { if (poison) fail(poison); }
+  function check() { if (poison) raise(); }
   function fields(value, allowed, required = allowed) {
     try { return dataFields(value, allowed, required); } catch { reject(); }
   }
@@ -103,7 +121,8 @@ export function createRestrictedResponsesDecoder(options) {
     for (const key of ["id", "object", "created_at", "status", "error", "incomplete_details", "model", "output", "tools", "tool_choice", "store", "reasoning", "text"])
       require(Object.hasOwn(value, key));
     identifier(value.id, "resp");
-    require(value.object === "response" && value.model === fixed.model && value.status === status && value.error === null &&
+    require(value.object === "response" && value.model === fixed.model && value.status === status &&
+      (status === "failed" ? value.error && typeof value.error === "object" && !Array.isArray(value.error) : value.error === null) &&
       value.incomplete_details === null && value.store === false && value.tool_choice === "none" &&
       Array.isArray(value.tools) && value.tools.length === 0 && Array.isArray(value.output) &&
       Number.isSafeInteger(value.created_at) && value.created_at >= 0);
@@ -206,6 +225,16 @@ export function createRestrictedResponsesDecoder(options) {
         items.some(entry => entry.type === "message") && sameJson(event.response.output, items.map(entry => entry.done)));
       if (Object.hasOwn(event.response, "completed_at")) require(Number.isSafeInteger(event.response.completed_at) && event.response.completed_at >= createdAt);
       completed = true; return;
+    }
+    if (event.type === "response.failed") {
+      fields(event, [...base, "response"]); response(event.response, "failed");
+      const error = fields(event.response.error, ["code", "message", "type", "param"], ["code", "message"]);
+      require(typeof error.code === "string" && error.code.length >= 1 && error.code.length <= 160 &&
+        typeof error.message === "string" && error.message.length <= 4096 &&
+        (!Object.hasOwn(error, "type") || typeof error.type === "string" && error.type.length <= 160) &&
+        (!Object.hasOwn(error, "param") || error.param === null || typeof error.param === "string" && error.param.length <= 1024));
+      failureCategory = Object.hasOwn(knownFailureCategories, error.code) ? knownFailureCategories[error.code] : "protocol";
+      reject("PROVIDER_FAILED");
     }
     // Failed/incomplete/error, unknown events, refusal, hosted/local tools and
     // reasoning-summary data are not a successful no-tools JSON completion.

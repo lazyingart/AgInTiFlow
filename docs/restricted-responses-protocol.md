@@ -2,8 +2,9 @@
 
 `src/restricted-responses-protocol.js` is an internal request builder and bounded
 SSE decoder. It is not a package export, provider, credential loader, CLI
-wrapper, application sign-in flow or backend admission. No runtime imports it.
-The restricted SDK and installed provider selection remain unchanged.
+wrapper, application sign-in flow or backend admission. The unexported
+`restricted-responses-http.js` candidate imports it; no public provider
+selection or application composition enables that candidate.
 
 The [official inference contract](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
 requires the selected account's authorized token, public Responses endpoint and
@@ -40,8 +41,12 @@ model, reasoning effort, schema and creation time. Text deltas, done text,
 content completion, item completion and the terminal output must agree. Exactly
 one assistant JSON message is accepted, with up to eight empty reasoning items.
 Commentary phases cannot become final answers; an explicit final-answer phase
-is bound through item completion. Tool, refusal, failed, incomplete, unknown or contradictory events poison the
-decoder permanently. Duplicate JSON keys, invalid UTF-8, truncated frames and
+is bound through item completion. Tool, refusal, failed, incomplete, unknown or
+contradictory events stop the decoder permanently. Exact validated failure
+events may carry a module-private safe category; raw diagnostics never leave
+the decoder and arbitrary caller errors cannot forge that brand. Failure code
+and message types and optional type/param fields are validated before issuing
+metadata. Duplicate JSON keys, invalid UTF-8, truncated frames and
 reconnect instructions fail closed. LF and CRLF framing and bounded comments
 are supported. Public output contains only the schema-checked proposal.
 
@@ -62,10 +67,12 @@ contains synthetic multilingual proposals and adversarial frames, not captured
 authenticated output. Tests make no HTTP request, start no listener and consume
 no inference credentials.
 
-An enabling composition still requires a pinned HTTPS transport, actual
-app-authorized account/model evidence, per-principal isolation, request/body/
-header bounds, deadline and cancellation, confirmed local socket cleanup,
-safe error classification and no retry after ambiguous delivery. It must never
+The [internal transport candidate](restricted-responses-transport.md) tests
+pinned HTTPS options, per-client isolation, local deadlines/cancellation,
+bounded errors and confirmed local close against owned HTTP fixtures. Those
+fixtures do not prove public TLS, auth, model access or backend admission.
+An enabling composition still requires actual app-authorized account/model
+evidence and independent isolation and lifecycle acceptance. It must never
 read or forward CLI login credentials. Apps retain durable attempts, consent,
 session state, factual validation, commits and fallback policy. Neither this
 helper nor a fixture can issue those authorities or enable the capability.

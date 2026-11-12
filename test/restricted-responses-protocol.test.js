@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildRestrictedResponsesRequest, createRestrictedResponsesDecoder } from "../src/restricted-responses-protocol.js";
+import { buildRestrictedResponsesRequest, createRestrictedResponsesDecoder, restrictedResponsesFailure } from "../src/restricted-responses-protocol.js";
 
 const schema = { type: "object", properties: { answer: { type: "string", maxLength: 100 } }, required: ["answer"], additionalProperties: false };
 const options = { model: "host-selected-model", reasoningEffort: "low", outputSchema: schema };
@@ -282,4 +282,42 @@ test("cancellation and independent decoders do not leak a partially collected pr
   assert.throws(() => a.finish(), error => error.code === "CANCELLED");
   assert.throws(() => a.push(encode(fixture())), error => error.code === "CANCELLED");
   b.push(encode(fixture({ answer: "independent" }))); assert.equal(b.finish().value.answer, "independent");
+});
+
+for (const [code, category] of [["subscription_sharing_usage_limit_exceeded", "quota"],
+  ["subscription_sharing_usage_unavailable", "unavailable"], ["subscription_sharing_invalid_user", "authentication"],
+  ["subscription_sharing_user_not_eligible", "permission"], ["rate_limit_exceeded", "rate_limit"],
+  ["model_timeout", "timeout"], ["private-unknown-code", "protocol"]]) {
+  test(`validated negative stream preserves only the closed ${category} category`, () => {
+    const events = fixture().slice(0, 5), failed = clone(fixture().at(-1));
+    failed.type = "response.failed"; failed.sequence_number = events.length;
+    failed.response.status = "failed"; failed.response.error = { code, message: "private diagnostic" };
+    events.push(failed); const decoder = createRestrictedResponsesDecoder(options);
+    let caught;
+    assert.throws(() => decoder.push(encode(events)), error => { caught = error; return error.code === "PROVIDER_FAILED"; });
+    assert.deepEqual({ ...restrictedResponsesFailure(caught) }, { category, retryAfterMs: null });
+    assert.equal(Object.isFrozen(restrictedResponsesFailure(caught)), true);
+    assert.equal(JSON.stringify(caught).includes("private"), false);
+    assert.throws(() => decoder.finish(), error => restrictedResponsesFailure(error)?.category === category);
+  });
+}
+
+test("a forged error object or Proxy alias cannot issue native failure metadata", () => {
+  let traps = 0; const fake = { code: "PROVIDER_FAILED", providerFailure: { category: "quota" } };
+  assert.equal(restrictedResponsesFailure(fake), undefined);
+  assert.equal(restrictedResponsesFailure(new Proxy(fake, { get() { traps++; throw Error("private"); } })), undefined);
+  assert.equal(restrictedResponsesFailure("quota"), undefined); assert.equal(traps, 0);
+});
+
+test("malformed negative error envelopes cannot issue a trusted quota category", () => {
+  for (const error of [{ code: "subscription_sharing_usage_limit_exceeded" },
+    { code: "subscription_sharing_usage_limit_exceeded", message: false },
+    { code: "subscription_sharing_usage_limit_exceeded", message: { detail: "private" } },
+    { code: "subscription_sharing_usage_limit_exceeded", message: "private", param: {} },
+    { code: "subscription_sharing_usage_limit_exceeded", message: "private", type: false }]) {
+    const start = fixture()[0], failed = fixture().at(-1);
+    failed.type = "response.failed"; failed.sequence_number = 1; failed.response.status = "failed"; failed.response.error = error;
+    const decoder = createRestrictedResponsesDecoder(options);
+    assert.throws(() => decoder.push(encode([start, failed])), cause => protocol(cause) && restrictedResponsesFailure(cause) === undefined);
+  }
 });
