@@ -26,3 +26,8 @@ Preview 7 adds the matching explicit host-issued read-tool failure channel from
 AgInTiFlow commit 8193dcf8fe1c30405a7325e8beeb5ddaaf201b09. It preserves the
 existing stop/deadline/capacity rules and adds no HTTP classification, automatic
 retry, provider fallback, source authentication or application activation.
+
+Preview 11 ports the synchronous callback-result boxing fix from AgInTiFlow
+commit ab912242200b6d0a73375de468aecbfd647d0b76. Strict JSON candidates are
+validated without executing thenable hooks; genuine host Promise behavior and
+cancellation accounting remain unchanged. No new import or dependency is added.

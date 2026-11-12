@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.10.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.11.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.10.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.11.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -75,6 +75,14 @@ const result = await runner.run({
 dependencies, not exported functions. Callbacks are trusted host JavaScript,
 not sandboxed code. `readOnly: true` is a required host promise, not proof that
 an arbitrary callback cannot write or make network requests.
+
+Normalized callbacks return plain JSON data or a genuine JavaScript Promise.
+Synchronous result candidates stay opaque until strict validation, so Proxies,
+`then` accessors and plain custom thenables cannot execute during adoption.
+Await a query library's plain PromiseLike inside a trusted `async` callback
+before returning data. Genuine Promise implementations and SDK subclasses
+remain trusted host execution; the runner does not sandbox their code or undo
+resolution performed inside the host callback.
 
 ## Exact contract
 

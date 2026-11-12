@@ -62,6 +62,24 @@ function callback(value) {
   return value;
 }
 
+function boxCallbackResult(value) {
+  // A raw JSON candidate must never itself resolve an SDK promise: doing so
+  // reads/calls its `then` before the strict data boundary can reject it.
+  const box = Object.create(null);
+  box.value = value;
+  return Object.freeze(box);
+}
+
+function invokeCallback(fn, args) {
+  const value = fn(...args);
+  if (!types.isProxy(value) && types.isPromise(value)) {
+    // A genuine promise is trusted host execution, including SDK subclass
+    // behavior. Its resolved data still crosses the strict JSON boundary.
+    return value.then(boxCallbackResult);
+  }
+  return boxCallbackResult(value);
+}
+
 function signalValue(value) {
   if (value === undefined) return;
   if (!value || typeof value !== "object" || types.isProxy(value) || Object.getPrototypeOf(value) !== AbortSignal.prototype) fail();
@@ -160,7 +178,7 @@ export function createRestrictedApplicationRunner(options) {
     async function invoke(fn, args, code) {
       checkpoint();
       // Always observe the original task, even if cancellation wins the race.
-      const task = Promise.resolve().then(() => { checkpoint(); return fn(...args); });
+      const task = Promise.resolve().then(() => { checkpoint(); return invokeCallback(fn, args); });
       pending.add(task);
       task.then(() => pending.delete(task), () => pending.delete(task));
       try {
@@ -196,7 +214,7 @@ export function createRestrictedApplicationRunner(options) {
           : messages;
         const request = jsonSnapshot({ schemaVersion: RESTRICTED_APPLICATION_PROTOCOL, messages: turnMessages, tools: canRead ? descriptors : [], outputSchema, maxOutputTokens: limits.maxOutputTokens }, { maxBytes: MAX_INPUT_BYTES + limits.maxContextBytes });
         if (contextBytes(request) > limits.maxContextBytes) fail("CONTEXT_LIMIT");
-        const raw = await invoke(complete, [request, Object.freeze({ signal: controller.signal })], "PROVIDER_FAILED");
+        const { value: raw } = await invoke(complete, [request, Object.freeze({ signal: controller.signal })], "PROVIDER_FAILED");
         const response = jsonSnapshot(raw, { maxBytes: limits.maxResultBytes });
         dataFields(response, ["type", "value", "calls"], ["type"]);
         assertNoCredentials(response);
@@ -221,7 +239,7 @@ export function createRestrictedApplicationRunner(options) {
         messages.push({ role: "assistant", calls: response.calls });
         for (const call of response.calls) {
           const tool = tools.get(call.name);
-          const rawValue = await invoke(tool.execute, [call.arguments, Object.freeze({ signal: controller.signal, callId: call.id })], "TOOL_FAILED");
+          const { value: rawValue } = await invoke(tool.execute, [call.arguments, Object.freeze({ signal: controller.signal, callId: call.id })], "TOOL_FAILED");
           const value = jsonSnapshot(rawValue, { maxBytes: limits.maxResultBytes });
           assertNoCredentials(value);
           if (!matchesSchema(value, tool.outputSchema)) fail("TOOL_RESULT_INVALID");
