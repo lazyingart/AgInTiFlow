@@ -230,6 +230,15 @@ dispatch, but cannot prevent an allowed tool's implementation from escaping its
 scope. Schema validity is not semantic correctness or instruction-following
 proof. Treat prompt injection in retrieved records/images as untrusted content.
 
+Normalized provider and read callbacks return plain JSON data or a genuine
+JavaScript Promise for that data. Synchronous data candidates are kept opaque
+until strict snapshot validation; a `then` accessor, Proxy or custom thenable
+cannot execute during result adoption. A plain PromiseLike returned by a query
+library should be awaited inside a trusted `async` host callback first. Genuine
+Promise implementations and SDK subclasses remain trusted host execution, as
+does any resolution the callback performs before returning. This boundary does
+not sandbox callback code or recover evidence that code already discarded.
+
 A custom `provider.complete` declares an already interpreted SDK response. The
 runner cannot recover discarded native choices, finish/refusal/tool metadata or
 duplicate JSON members after a host has parsed them away. Native wire guards
