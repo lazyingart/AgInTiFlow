@@ -60,3 +60,42 @@ providers are scripted and perform no network/model requests; the fixture
 transaction is test code, never a production persistence export. A negative
 control deliberately returns a schema-valid stale proposal to ensure the host
 still rejects it despite SDK `completed` status.
+
+## Removed sources and unchanged edits
+
+Historical text does not grant permission to restore or edit a removed record.
+Read the currently selected account-owned record before proposing a follow-up.
+When the host has authoritative removal evidence, its read schema can return a
+closed `removed` variant containing the selected ID and current revision but no
+content. The proposal schema should then permit `unavailable` without a draft.
+Keep principal/selection binding in the callback closure, not model arguments.
+
+The host must still compare the proposal with the exact authenticated read and
+current state in its own transaction. Reject stale revisions and recreation at
+a removed ID. A generic 404, timeout or authentication error is not removal
+authority; the SDK reports a tool failure rather than inventing a tombstone or
+silently retrying with another provider. Render lifecycle facts from host-owned
+status/localization rather than free-form model text. Do not pass revoked data
+in history when policy forbids even historical access: a prompt is not deletion
+or data-loss-prevention enforcement.
+
+Likewise, a schema-valid proposal identical to the current text is not evidence
+that a rewrite happened. The host can classify it as `no_change`, avoid a write
+or revision increment, and show that result honestly. Do not mistake SDK
+`completed` for editorial quality, an application commit, or a successful edit.
+
+A 2026-11-14 synthetic qualification used immutable Lite preview18 with explicit
+Flash, then a fresh Pro process with host-retained history. After the host
+removed the selected source at revision5, Pro reread it once and returned
+`unavailable` in Chinese without reconstructing a draft. Two actual HTTP
+requests per phase, no automatic retry/fallback or application mutation.
+Flash's initial two-request proposal repeated the original wording and
+incorrectly called three sentences a single sentence; that editorial shortfall
+is retained, not counted as a successful rewrite. No runtime change is inferred
+from this example, and it is not production account/storage qualification.
+
+`npm run test:restricted-source-revocation` checks this host contract using
+scripted providers: current/removed reads, stale and recreated proposals,
+scope/revision changes, no-change edits, safe presentation, typed versus generic
+failures and cancellation. The in-memory host comparator is test code, not a
+new authentication, persistence, transaction or deletion API.
