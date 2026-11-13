@@ -10,10 +10,24 @@ import {
 export { RestrictedApplicationError };
 export const RESTRICTED_APPLICATION_PROTOCOL = "aginti-restricted-application-v1";
 
-// Only an explicit trusted transport can issue these in-process signals. Plain
+// Only explicit trusted transports and owned native response admission issue
+// these in-process signals. Plain
 // JSON, SDK error properties, model prose and another package copy cannot forge
 // the private brand. Classification never authorizes a retry or provider switch.
 const providerFailures = new WeakMap();
+const nativeProtocolMetadata = jsonSnapshot({ schemaVersion: "aginti-provider-failure-v1", category: "protocol", retryAfterMs: null });
+
+function nativeResponseValidation(validate) {
+  // Keep callback invocation and await outside this scope. Mark only rejection
+  // from native response admission; never infer categories from error fields.
+  // WeakMap issuance neither inspects nor mutates a thrown value, preserving
+  // direct adapter error identity/code while the runner rebuilds a safe error.
+  try { return validate(); }
+  catch (error) {
+    if (error !== null && (typeof error === "object" || typeof error === "function")) providerFailures.set(error, nativeProtocolMetadata);
+    throw error;
+  }
+}
 const providerFailureCategories = Object.freeze(["authentication", "permission", "quota", "rate_limit", "unavailable", "timeout", "protocol"]);
 const toolFailures = new WeakMap();
 const toolFailureCategories = Object.freeze([...providerFailureCategories, "not_found", "conflict"]);
@@ -331,36 +345,38 @@ export function createRestrictedOpenAIProvider(options) {
         max_tokens: request.maxOutputTokens, stream: false, temperature: 0 }, { signal }]);
       // The SDK adds non-enumerable _request_id. Only choices is model data;
       // ignore transport metadata without invoking any accessors/hooks.
-      if (!raw || typeof raw !== "object" || types.isProxy(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) fail("PROVIDER_PROTOCOL_INVALID");
-      // An error envelope contradicts choices, even when null or hidden. Never
-      // discard failure evidence while projecting a final answer or read call.
-      if (Object.getOwnPropertyDescriptor(raw, "then")) fail("PROVIDER_PROTOCOL_INVALID");
-      if (Object.getOwnPropertyDescriptor(raw, "error")) fail("PROVIDER_PROTOCOL_INVALID");
-      const descriptor = Object.getOwnPropertyDescriptor(raw, "choices");
-      if (!descriptor?.enumerable || !("value" in descriptor)) fail("PROVIDER_PROTOCOL_INVALID");
-      const choices = jsonSnapshot(descriptor.value, { maxBytes: 256 * 1024 });
-      if (!Array.isArray(choices) || choices.length !== 1) fail("PROVIDER_PROTOCOL_INVALID");
-      const choice = choices[0];
-      if (!choice || typeof choice !== "object" || Array.isArray(choice)) fail("PROVIDER_PROTOCOL_INVALID");
-      const message = choice.message;
-      if (!message || message.role !== "assistant" || message.refusal) fail("PROVIDER_PROTOCOL_INVALID");
-      if ((Object.hasOwn(message, "function_call") && message.function_call !== null) ||
-          (Object.hasOwn(message, "content") && message.content !== null && typeof message.content !== "string") ||
-          (Object.hasOwn(message, "tool_calls") && message.tool_calls !== null && !Array.isArray(message.tool_calls)) ||
-          (Object.hasOwn(message, "refusal") && message.refusal !== null && typeof message.refusal !== "string")) fail("PROVIDER_PROTOCOL_INVALID");
-      if (choice.finish_reason === "tool_calls" && Array.isArray(message.tool_calls) && message.tool_calls.length && !message.content) {
-        const calls = message.tool_calls.map((call) => {
-          dataFields(call, ["id", "type", "function"]);
-          dataFields(call.function, ["name", "arguments"]);
-          if (call.type !== "function" || typeof call.function.arguments !== "string") fail("PROVIDER_PROTOCOL_INVALID");
-          return { id: call.id, name: call.function.name, arguments: parseRestrictedJson(call.function.arguments) };
-        });
-        return { type: "tool_calls", calls: invocationNativeCalls(calls, request.messages) };
-      }
-      if (choice.finish_reason !== "stop" || (message.tool_calls && message.tool_calls.length) || typeof message.content !== "string") fail("PROVIDER_PROTOCOL_INVALID");
-      const value = parseRestrictedJson(message.content);
-      if (wrapped && (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, "proposal"))) fail("PROVIDER_PROTOCOL_INVALID");
-      return { type: "final", value: wrapped ? value.proposal : value };
+      return nativeResponseValidation(() => {
+        if (!raw || typeof raw !== "object" || types.isProxy(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) fail("PROVIDER_PROTOCOL_INVALID");
+        // An error envelope contradicts choices, even when null or hidden. Never
+        // discard failure evidence while projecting a final answer or read call.
+        if (Object.getOwnPropertyDescriptor(raw, "then")) fail("PROVIDER_PROTOCOL_INVALID");
+        if (Object.getOwnPropertyDescriptor(raw, "error")) fail("PROVIDER_PROTOCOL_INVALID");
+        const descriptor = Object.getOwnPropertyDescriptor(raw, "choices");
+        if (!descriptor?.enumerable || !("value" in descriptor)) fail("PROVIDER_PROTOCOL_INVALID");
+        const choices = jsonSnapshot(descriptor.value, { maxBytes: 256 * 1024 });
+        if (!Array.isArray(choices) || choices.length !== 1) fail("PROVIDER_PROTOCOL_INVALID");
+        const choice = choices[0];
+        if (!choice || typeof choice !== "object" || Array.isArray(choice)) fail("PROVIDER_PROTOCOL_INVALID");
+        const message = choice.message;
+        if (!message || message.role !== "assistant" || message.refusal) fail("PROVIDER_PROTOCOL_INVALID");
+        if ((Object.hasOwn(message, "function_call") && message.function_call !== null) ||
+            (Object.hasOwn(message, "content") && message.content !== null && typeof message.content !== "string") ||
+            (Object.hasOwn(message, "tool_calls") && message.tool_calls !== null && !Array.isArray(message.tool_calls)) ||
+            (Object.hasOwn(message, "refusal") && message.refusal !== null && typeof message.refusal !== "string")) fail("PROVIDER_PROTOCOL_INVALID");
+        if (choice.finish_reason === "tool_calls" && Array.isArray(message.tool_calls) && message.tool_calls.length && !message.content) {
+          const calls = message.tool_calls.map((call) => {
+            dataFields(call, ["id", "type", "function"]);
+            dataFields(call.function, ["name", "arguments"]);
+            if (call.type !== "function" || typeof call.function.arguments !== "string") fail("PROVIDER_PROTOCOL_INVALID");
+            return { id: call.id, name: call.function.name, arguments: parseRestrictedJson(call.function.arguments) };
+          });
+          return { type: "tool_calls", calls: invocationNativeCalls(calls, request.messages) };
+        }
+        if (choice.finish_reason !== "stop" || (message.tool_calls && message.tool_calls.length) || typeof message.content !== "string") fail("PROVIDER_PROTOCOL_INVALID");
+        const value = parseRestrictedJson(message.content);
+        if (wrapped && (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, "proposal"))) fail("PROVIDER_PROTOCOL_INVALID");
+        return { type: "final", value: wrapped ? value.proposal : value };
+      });
     },
   });
 }
@@ -394,38 +410,40 @@ export function createRestrictedDeepSeekProvider(options) {
       });
       const payload = jsonSnapshot({ ...rest, messages, response_format: { type: "json_object" }, thinking: { type: "disabled" } }, { maxBytes: 2 * 1024 * 1024 });
       const pending = complete(payload, options);
-      if (types.isProxy(pending)) fail("PROVIDER_PROTOCOL_INVALID");
+      nativeResponseValidation(() => { if (types.isProxy(pending)) fail("PROVIDER_PROTOCOL_INVALID"); });
       // Do not assimilate arbitrary thenables returned synchronously. A trusted
       // host's own async resolution occurs before our boundary and is not a
       // sandbox against malicious JavaScript inside that callback.
       const raw = types.isPromise(pending) ? await pending : pending;
-      if (!raw || typeof raw !== "object" || types.isProxy(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) fail("PROVIDER_PROTOCOL_INVALID");
-      if (Object.hasOwn(raw, "then")) fail("PROVIDER_PROTOCOL_INVALID");
-      if (Object.getOwnPropertyDescriptor(raw, "error")) fail("PROVIDER_PROTOCOL_INVALID");
-      const descriptor = Object.getOwnPropertyDescriptor(raw, "choices");
-      if (!descriptor?.enumerable || !("value" in descriptor)) fail("PROVIDER_PROTOCOL_INVALID");
-      const choices = jsonSnapshot(descriptor.value);
-      if (!Array.isArray(choices) || choices.length !== 1) fail("PROVIDER_PROTOCOL_INVALID");
-      const choice = dataFields(choices[0], ["message", "finish_reason", "index", "logprobs"], ["message", "finish_reason"]);
-      if ((Object.hasOwn(choice, "index") && choice.index !== 0) || (Object.hasOwn(choice, "logprobs") && choice.logprobs !== null)) fail("PROVIDER_PROTOCOL_INVALID");
-      const message = dataFields(choice.message, ["role", "content", "tool_calls", "refusal", "reasoning_content"], ["role", "content"]);
-      if (Object.hasOwn(message, "reasoning_content") && message.reasoning_content !== null && message.reasoning_content !== "") fail("PROVIDER_PROTOCOL_INVALID");
-      if (Object.hasOwn(message, "tool_calls") && message.tool_calls !== null && !Array.isArray(message.tool_calls)) fail("PROVIDER_PROTOCOL_INVALID");
-      if (Object.hasOwn(message, "refusal") && message.refusal !== null && typeof message.refusal !== "string") fail("PROVIDER_PROTOCOL_INVALID");
-      const calls = message.tool_calls?.map((call, index) => {
-        const fields = dataFields(call, ["index", "id", "type", "function"], ["id", "type", "function"]);
-        if (Object.hasOwn(fields, "index") && fields.index !== index) fail("PROVIDER_PROTOCOL_INVALID");
-        return { id: fields.id, type: fields.type, function: fields.function };
+      return nativeResponseValidation(() => {
+        if (!raw || typeof raw !== "object" || types.isProxy(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) fail("PROVIDER_PROTOCOL_INVALID");
+        if (Object.hasOwn(raw, "then")) fail("PROVIDER_PROTOCOL_INVALID");
+        if (Object.getOwnPropertyDescriptor(raw, "error")) fail("PROVIDER_PROTOCOL_INVALID");
+        const descriptor = Object.getOwnPropertyDescriptor(raw, "choices");
+        if (!descriptor?.enumerable || !("value" in descriptor)) fail("PROVIDER_PROTOCOL_INVALID");
+        const choices = jsonSnapshot(descriptor.value);
+        if (!Array.isArray(choices) || choices.length !== 1) fail("PROVIDER_PROTOCOL_INVALID");
+        const choice = dataFields(choices[0], ["message", "finish_reason", "index", "logprobs"], ["message", "finish_reason"]);
+        if ((Object.hasOwn(choice, "index") && choice.index !== 0) || (Object.hasOwn(choice, "logprobs") && choice.logprobs !== null)) fail("PROVIDER_PROTOCOL_INVALID");
+        const message = dataFields(choice.message, ["role", "content", "tool_calls", "refusal", "reasoning_content"], ["role", "content"]);
+        if (Object.hasOwn(message, "reasoning_content") && message.reasoning_content !== null && message.reasoning_content !== "") fail("PROVIDER_PROTOCOL_INVALID");
+        if (Object.hasOwn(message, "tool_calls") && message.tool_calls !== null && !Array.isArray(message.tool_calls)) fail("PROVIDER_PROTOCOL_INVALID");
+        if (Object.hasOwn(message, "refusal") && message.refusal !== null && typeof message.refusal !== "string") fail("PROVIDER_PROTOCOL_INVALID");
+        const calls = message.tool_calls?.map((call, index) => {
+          const fields = dataFields(call, ["index", "id", "type", "function"], ["id", "type", "function"]);
+          if (Object.hasOwn(fields, "index") && fields.index !== index) fail("PROVIDER_PROTOCOL_INVALID");
+          return { id: fields.id, type: fields.type, function: fields.function };
+        });
+        // DeepSeek can accompany complete native calls with commentary. It is
+        // neither a final answer nor another tool protocol. Discard only this
+        // text; the shared parser and runner still validate the entire native
+        // batch before dispatching any declared read.
+        if (choice.finish_reason === "tool_calls" && typeof message.content === "string" && calls?.length) {
+          if (containsTextToolProtocol(message.content)) fail("PROVIDER_PROTOCOL_INVALID");
+          return { choices: [{ ...choices[0], message: { ...choice.message, tool_calls: calls, content: null } }] };
+        }
+        return { choices: [{ ...choices[0], message: { ...choice.message, ...(calls ? { tool_calls: calls } : {}) } }] };
       });
-      // DeepSeek can accompany complete native calls with commentary. It is
-      // neither a final answer nor another tool protocol. Discard only this
-      // text; the shared parser and runner still validate the entire native
-      // batch before dispatching any declared read.
-      if (choice.finish_reason === "tool_calls" && typeof message.content === "string" && calls?.length) {
-        if (containsTextToolProtocol(message.content)) fail("PROVIDER_PROTOCOL_INVALID");
-        return { choices: [{ ...choices[0], message: { ...choice.message, tool_calls: calls, content: null } }] };
-      }
-      return { choices: [{ ...choices[0], message: { ...choice.message, ...(calls ? { tool_calls: calls } : {}) } }] };
     },
   });
 }

@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.16.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.17.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.16.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.17.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -141,6 +141,14 @@ revision-checked idempotent writes. Schema validity is not grounding,
 instruction-following or semantic correctness. A model can return a
 schema-valid invented citation; the app must reject it. Retrieved text is
 untrusted, not permission to acquire more tools or change providers.
+
+Preview 17 preserves safe `providerFailure.category:"protocol"` on the runner's
+`PROVIDER_FAILED` when native response admission rejects malformed data. The
+private brand is issued after the transport returns, not inferred from thrown
+properties, vendor error text or model prose. Arbitrary callback throws remain
+unclassified; existing trusted transport categories, schema errors, deadlines
+and cancellation retain their meanings. Direct adapter errors are unchanged.
+This enables diagnosis, not retry, fallback or acceptance of invalid output.
 
 ## Providers and fallback
 
@@ -411,37 +419,17 @@ a universal privacy filter. Apps retain authentication, account-scoped history,
 read authorization, factual/citation checks, revision CAS, writes, quotas and
 provider consent. Existing callback providers and app routes remain unchanged.
 
-Preview 9 adds only this optional HTTPS import and two runtime files. The
-default seven exports and three-file core import graph are unchanged. The
-nine-file package remains private, dependency-free and without install hooks.
-It passes 105 offline tests, including the 41 HTTP cases and reproducible
-packing with separately installed default and optional consumers. The HTTP
-fixtures use real loopback sockets with a test-only Node module mock; they
-do not prove TLS, a live provider or application deployment readiness.
+The optional HTTPS import adds two runtime files. Seven core exports and the
+three-file core graph stay unchanged; the nine-file package remains private,
+dependency-free and without install hooks. Loopback HTTP fixtures prove neither
+live TLS nor application deployment readiness.
 
-Preview 8 backports AgInTiFlow's non-object final proposal adaptation from
-`0d43f40e008f8624a03548222857d0416da167f2`. Arrays, scalars and root `anyOf`
-schemas use exactly `{"proposal": VALUE}` on the native provider wire. The
-adapter unwraps that closed final envelope before validating VALUE against
-the original application schema. Object-root proposals, including literal
-`proposal` properties, retain their wire and returned shape. Native tool
-arguments/results are never wrapped. Missing, extra, duplicate, unwrapped and
-invalid values fail closed without retry. Custom provider callbacks keep the
-existing `{type:"final",value}` protocol.
-
-Seven new groups reproduce six failures on preview 7, then cover typed/falsey/
-union/list values, hostile envelopes, whole read batches, alias mutation and
-ordinary English/Chinese host-backed requests. The offline installed-package
-test exercises the adaptation while forbidding network and non-allowlisted
-imports. No dependency, export, deadline, cancellation, retry or provider-policy
-change is introduced. This preview does not update an application's vendored
-copy or qualify its live transport. Reviewed Flow evidence is separate from
-Lite/package/application qualification; no new live model call is claimed here.
-Preview 8 passed 64 offline tests, including reproducible seven-file
-packing and a disposable installed consumer with network and unapproved imports
-forbidden. The two-model list fixture has four byte-identical request pairs
-against the registry-installed Flow 0.20.356 reference using scripted transport;
-that parity check is not an independent live Lite or application qualification.
+Non-object proposals use exactly `{"proposal": VALUE}` on the native wire.
+The adapter unwraps this closed envelope before original-schema validation;
+object-root proposals and tool arguments/results retain their shapes.
+Malformed, missing, extra or duplicate envelope fields fail closed. Normalized
+callbacks retain `{type:"final",value}`. Installed offline tests cover scalar,
+array, union and ordinary object proposals without network or extra imports.
 
 Preview 6 fixes object-valued enum equality throughout final proposals and tool
 arguments/results. JSON object key order is irrelevant; array order, exact
@@ -482,12 +470,8 @@ consumer and enforce the closed runtime import graph. No model is invoked.
 These checks do not qualify live model quality, transport authentication,
 latency, citation correctness, app transactions or production isolation.
 
-The preview-2 offline review reproduced seven failing wire-integrity regressions
-on unchanged preview 1 before the backport. Positive controls preserve valid
-Unicode/escapes, neutral metadata and the already-closed newline identifier
-boundary. No model request, application edit, provider activation, deployment or
-npm publication is part of this preview. Existing vendored copies stay pinned
-until their application owner independently reviews and qualifies an upgrade.
+Existing vendored copies stay pinned until their application owner reviews and
+qualifies an upgrade. Offline tests do not activate providers or applications.
 
 Synchronous raw transport responses pass the same opaque-result boundary as
 normalized provider responses and read results. The native OpenAI-compatible

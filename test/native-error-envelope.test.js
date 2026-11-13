@@ -28,7 +28,9 @@ test("native error envelopes cannot authorize a final proposal or a declared rea
           const app = runner(factory(model, async () => { requests++; return wire; }), () => { reads++; return { reply: "observed" }; });
           await assert.rejects(app.run(input), error => {
             assert.equal(error.code, "PROVIDER_FAILED");
-            assert.equal(Object.hasOwn(error, "providerFailure"), false);
+            assert.deepEqual(JSON.parse(JSON.stringify(error.providerFailure)), {
+              schemaVersion: "aginti-provider-failure-v1", category: "protocol", retryAfterMs: null,
+            });
             assert.equal(String(error).includes("PRIVATE_ERROR_DETAIL"), false);
             return true;
           });
