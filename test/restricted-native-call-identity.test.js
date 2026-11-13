@@ -86,9 +86,11 @@ for (const kind of ["openai", "deepseek"]) {
   test(`${kind}: ID scoping does not bypass step or read budgets`, async () => {
     for (const limits of [{ maxSteps: 2 }, { maxToolCalls: 1 }]) {
       const f = fixture(kind, [[call("call_0")], [call("call_0", "beta")]], limits);
-      await assert.rejects(f.app.run(input), { code: "STEP_LIMIT" });
+      await assert.rejects(f.app.run(input), { code: kind === "deepseek" ? "PROVIDER_FAILED" : "STEP_LIMIT" });
       assert.equal(f.bodies.length, 2); assert.equal(f.reads.length, 1);
-      assert.equal(Object.hasOwn(f.bodies[1], "tools"), false);
+      if (kind === "deepseek") {
+        assert.equal(f.bodies[1].tools.length, 1); assert.equal(f.bodies[1].tools[0].function.name, "__aginti_return_proposal");
+      } else assert.equal(Object.hasOwn(f.bodies[1], "tools"), false);
     }
   });
   test(`${kind}: a reused ID cannot hide an explicit upstream error`, async () => {

@@ -5,7 +5,7 @@ import { inspectIntegrationAnalysisImageBytes } from "./integration-analysis-vis
 import {
   RestrictedApplicationError, fail, dataFields, jsonSnapshot, integer, text,
   assertNoCredentials, checkedSchema, matchesSchema,
-  parseRestrictedJson,
+  parseRestrictedJson, FINAL_PROPOSAL_FUNCTION,
 } from "./restricted-application-contract.js";
 
 export { RestrictedApplicationError };
@@ -329,6 +329,10 @@ function invocationNativeCalls(calls, messages) {
 // Explicit transport only. Caller owns authentication, endpoint, retries and
 // vision qualification; neither environment nor provider fallback is consulted.
 export function createRestrictedOpenAIProvider(options) {
+  return createNativeStructuredProvider(options);
+}
+
+function createNativeStructuredProvider(options, finalizeNativeOutput = false) {
   const fields = dataFields(options, ["complete", "model", "supportsImages"]);
   const complete = callback(fields.complete);
   const model = text(fields.model, 160);
@@ -340,6 +344,7 @@ export function createRestrictedOpenAIProvider(options) {
       // Native structured-output protocols use an object root. Keep the host's
       // proposal schema/value unchanged; only non-object roots need a closed
       // wire envelope. Object-root profiles retain their exact existing wire.
+      const finalizing = finalizeNativeOutput && request.tools.length === 0 && request.messages.some(message => message.role === "tool");
       const wrapped = request.outputSchema.type !== "object";
       const wireSchema = wrapped ? jsonSnapshot({ type: "object", properties: { proposal: request.outputSchema }, required: ["proposal"], additionalProperties: false }) : request.outputSchema;
       const messages = request.messages.map((message) => {
@@ -351,7 +356,15 @@ export function createRestrictedOpenAIProvider(options) {
       // Transport data is no more executable than normalized provider data.
       // Box synchronous candidates before await can read their `then` hook;
       // genuine SDK promises retain their trusted host-owned async behavior.
-      const { value: raw } = await invokeCallback(complete, [{ model, messages, ...(request.tools.length ? { tools: request.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })) } : {}),
+      // A withdrawn read catalog can still encode a final proposal as native
+      // function arguments. This private channel executes no host callback and
+      // consumes neither another step nor a read permission. JSON validation and
+      // the original output schema remain mandatory before returning a proposal.
+      const nativeTools = finalizing ? [{ type: "function", function: {
+        name: FINAL_PROPOSAL_FUNCTION, description: "Encode the final application proposal only. This returns data and executes no host action.", parameters: wireSchema,
+      } }] : request.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }));
+      const { value: raw } = await invokeCallback(complete, [{ model, messages, ...(nativeTools.length ? { tools: nativeTools } : {}),
+        ...(finalizing ? { tool_choice: { type: "function", function: { name: FINAL_PROPOSAL_FUNCTION } } } : {}),
         response_format: { type: "json_schema", json_schema: { name: "application_proposal", strict: true, schema: wireSchema } },
         max_tokens: request.maxOutputTokens, stream: false, temperature: 0 }, { signal }]);
       // The SDK adds non-enumerable _request_id. Only choices is model data;
@@ -381,6 +394,12 @@ export function createRestrictedOpenAIProvider(options) {
             if (call.type !== "function" || typeof call.function.arguments !== "string") fail("PROVIDER_PROTOCOL_INVALID");
             return { id: call.id, name: call.function.name, arguments: parseRestrictedJson(call.function.arguments) };
           });
+          if (finalizing) {
+            if (calls.length !== 1 || calls[0].name !== FINAL_PROPOSAL_FUNCTION || typeof calls[0].id !== "string" || !/^[A-Za-z0-9_-]{1,80}(?![\s\S])/.test(calls[0].id)) fail("PROVIDER_PROTOCOL_INVALID");
+            const value = calls[0].arguments;
+            if (wrapped && (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, "proposal"))) fail("PROVIDER_PROTOCOL_INVALID");
+            return { type: "final", value: wrapped ? value.proposal : value };
+          }
           return { type: "tool_calls", calls: invocationNativeCalls(calls, request.messages) };
         }
         if (choice.finish_reason !== "stop" || (message.tool_calls && message.tool_calls.length) || typeof message.content !== "string") fail("PROVIDER_PROTOCOL_INVALID");
@@ -406,7 +425,7 @@ export function createRestrictedDeepSeekProvider(options) {
   const fields = dataFields(options, ["complete", "model"]);
   const complete = callback(fields.complete);
   if (!["deepseek-flash", "deepseek-v4-pro"].includes(fields.model)) fail();
-  return createRestrictedOpenAIProvider({
+  return createNativeStructuredProvider({
     model: fields.model, supportsImages: false,
     async complete(body, options) {
       const { response_format: format, ...rest } = body;
@@ -456,5 +475,5 @@ export function createRestrictedDeepSeekProvider(options) {
         return { choices: [{ ...choices[0], message: { ...choice.message, ...(calls ? { tool_calls: calls } : {}) } }] };
       });
     },
-  });
+  }, true);
 }

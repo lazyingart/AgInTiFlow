@@ -51,7 +51,8 @@ mock.module("node:https", { namedExports: { ...https, Agent: FixtureAgent,
   },
 } });
 const { createRestrictedDeepSeekClient } = await import("../src/restricted-deepseek-client.js");
-const { createRestrictedApplicationRunner } = await import("../src/restricted-application.js");
+const { createRestrictedApplicationRunner, createRestrictedProviderFailure } = await import("../src/restricted-application.js");
+const { createDeepSeekHttpTransport } = await import("../src/restricted-deepseek-http.js");
 const defaults = { apiKey: "synthetic-deepseek-credential", model: "deepseek-flash", userId: "opaque_user_scope_001", timeoutMs: 500, maxConcurrency: 2 };
 const schema = { type: "object", properties: { reply: { type: "string", minLength: 1, maxLength: 80 } }, required: ["reply"], additionalProperties: false };
 const result = reply => ({ choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({ reply }) } }] });
@@ -115,7 +116,9 @@ test("native tool loop uses the same HTTP scope and returns only a schema-checke
       execute() { reads++; return { reply: "current note" }; } }], limits: { timeoutMs: 1200, maxSteps: 2, maxToolCalls: 1, maxOutputTokens: 128 } });
   const answer = await runner.run(input); assert.equal(answer.proposal.reply, "current note"); assert.equal(reads, 1);
   assert.equal(f.requests.length, 2); assert.ok(f.requests.every(body => body.user_id === defaults.userId));
-  assert.equal(f.requests[1].tools, undefined, "exhausted reads must be withdrawn on final turn");
+  assert.equal(f.requests[1].tools.length, 1);
+  assert.equal(f.requests[1].tools[0].function.name, "__aginti_return_proposal", "exhausted reads stay withdrawn; only output serialization remains");
+  assert.deepEqual(f.requests[1].tool_choice, { type: "function", function: { name: "__aginti_return_proposal" } });
 });
 
 for (const [status, expected] of [[302, "protocol"], [400, "protocol"], [401, "authentication"], [402, "quota"], [403, "permission"], [422, "protocol"],
@@ -485,3 +488,39 @@ for (const ambiguous of [false, true]) {
     assert.deepEqual(record, { reply: "ready" });
   });
 }
+
+const finalOutputName = "__aginti_return_proposal";
+function finalOutputBody() {
+  return { model: defaults.model, messages: [{role:"system",content:"Return JSON only."}, {role:"tool",tool_call_id:"read_1",content:'{"reply":"current note"}'}],
+    tools: [{type:"function",function:{name:finalOutputName,description:"Encode a final proposal; no host action.",parameters:schema}}],
+    tool_choice:{type:"function",function:{name:finalOutputName}}, response_format:{type:"json_object"},thinking:{type:"disabled"},max_tokens:128,stream:false,temperature:0 };
+}
+test("closed native read loop uses one private output encoding and no extra host action", { timeout: 5000 }, async t => {
+  const f = await setup(t, (_req,res,body) => {
+    res.writeHead(200,{"content-type":"application/json"});
+    const closed=body.messages.some(m=>m.role==="tool");
+    if(closed){assert.equal(body.tools.length,1);assert.equal(body.tools[0].function.name,finalOutputName);assert.deepEqual(body.tool_choice,{type:"function",function:{name:finalOutputName}});}
+    res.end(JSON.stringify({choices:[{index:0,finish_reason:"tool_calls",message:{role:"assistant",content:null,tool_calls:[{id:closed?"final_1":"read_1",type:"function",function:{name:closed?finalOutputName:"read_note",arguments:closed?'{"reply":"current note"}':'{}'}}]}}]}));
+  });
+  let reads=0;const runner=createRestrictedApplicationRunner({provider:f.client.provider,instructions:"Read the account note and propose only.",tools:[{name:"read_note",description:"Read only.",readOnly:true,inputSchema:{type:"object",properties:{},required:[],additionalProperties:false},outputSchema:schema,execute(){reads++;return{reply:"current note"};}}],outputSchema:schema,limits:{maxSteps:2,maxToolCalls:1,maxOutputTokens:128,timeoutMs:1200}});
+  const r=await runner.run(input);assert.equal(r.proposal.reply,"current note");assert.deepEqual({...r.usage},{steps:2,toolCalls:1});assert.equal(reads,1);assert.equal(f.requests.length,2);assert.equal(f.requests[1].user_id,defaults.userId);assert.equal(f.requests[1].max_tokens,128);
+});
+const invalidOutputChoices = [
+ ["auto", b=>{b.tool_choice="auto";}],
+ ["other-name", b=>{b.tool_choice.function.name="read_note";}],
+ ["choice-extra", b=>{b.tool_choice.network=true;}],
+ ["function-extra", b=>{b.tool_choice.function.cwd="/private";}],
+ ["missing-tools", b=>{delete b.tools;}],
+ ["missing-choice", b=>{delete b.tool_choice;}],
+ ["extra-tool", b=>{b.tools.push({type:"function",function:{name:"read_note",description:"read",parameters:schema}});}],
+ ["name-mismatch", b=>{b.tools[0].function.name="read_note";}],
+ ["empty-tool-history", b=>{b.messages=[{role:"user",content:"just answer"}];}],
+ ["extra-native-tool-key", b=>{b.tools[0].network=true;}],
+ ["extra-parameter-key", b=>{b.tools[0].function.path="/private";}],
+ ["nonobject-parameters", b=>{b.tools[0].function.parameters={type:"string",maxLength:20};}],
+];
+for(const [name,mutate]of invalidOutputChoices)test(`native HTTP rejects invalid output choice ${name} before construction`,{timeout:5000},async t=>{
+ const f=await setup(t,()=>assert.fail("Invalid output routing must not reach a peer"));
+ const transport=createDeepSeekHttpTransport(defaults,createRestrictedProviderFailure);
+ try{const body=finalOutputBody();mutate(body);assert.throws(()=>transport.complete(body),e=>["INVALID_CONTRACT","INVALID_DATA"].includes(e.code));assert.equal(f.state.constructions,0);assert.equal(f.requests.length,0);}finally{await transport.close();}
+});

@@ -957,7 +957,7 @@ test("last-turn and exhausted-read catalogs withdraw unavailable tools without c
   }
 });
 
-test("native OpenAI and explicit Flash/Pro omit final tools while retaining full tool history/schema/output budget", async () => {
+test("native profiles withdraw reads while retaining full tool history/schema/output budget", async () => {
   for (const model of ["generic-explicit", "deepseek-flash", "deepseek-v4-pro"]) {
     const bodies = [];
     const factory = model === "generic-explicit" ? restricted.createRestrictedOpenAIProvider : restricted.createRestrictedDeepSeekProvider;
@@ -974,7 +974,12 @@ test("native OpenAI and explicit Flash/Pro omit final tools while retaining full
       limits: { maxSteps: 2, maxOutputTokens: 1337 } }).run(closingInput);
     assert.equal(reads, 1); assert.equal(bodies.length, 2);
     assert.equal(result.proposal.reply, "当前版本3；notes unchanged. Proposal only.");
-    assert.equal(bodies[0].tools.length, 1); assert.equal(Object.hasOwn(bodies[1], "tools"), false);
+    assert.equal(bodies[0].tools.length, 1);
+    if (model === "generic-explicit") assert.equal(Object.hasOwn(bodies[1], "tools"), false);
+    else {
+      assert.equal(bodies[1].tools.length, 1); assert.equal(bodies[1].tools[0].function.name, "__aginti_return_proposal");
+      assert.deepEqual(JSON.parse(JSON.stringify(bodies[1].tool_choice)), { type: "function", function: { name: "__aginti_return_proposal" } });
+    }
     assert.equal(bodies[1].max_completion_tokens, bodies[0].max_completion_tokens);
     assert.equal(bodies[1].max_tokens, bodies[0].max_tokens);
     assert.ok(bodies[1].max_completion_tokens === 1337 || bodies[1].max_tokens === 1337);

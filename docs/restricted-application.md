@@ -2,21 +2,22 @@
 
 ## Standalone application distribution
 
-For a text-only app backend, AgInTiLite private preview 17 provides the same
+For a text-only app backend, AgInTiLite private preview 18 provides the same
 bounded proposal loop without the full CLI, Studio or vision dependency graph.
-The qualified Lite source is `e9ff425713203452fd67e35a6e80e81feb4377b2`, also
-available as `sdk/agintilite-native-failure-20261113` in the AgInTiFlow repository.
+The qualified Lite source is `b0fbd8bc4d695dcbe1514fad70848d1dde098ca6`, also
+available as `sdk/agintilite-native-finalizer-20261114` in the AgInTiFlow repository.
 That ref is a standalone SDK tree, not a branch to merge into Flow's application
 tree. Use the pinned local tarball, not a mutable worktree link. Its SHA-256 is
-`20f78210ebd0cd14cbd18359ba39ae0bed381962248f2969e7c4c794c12a1194`.
+`8ad2f92853c53a89d66f3b4aaa8ec64e0c593a78a443c2c1104ea84bd433bbfd`.
 It remains private and unpublished to npm; no application is upgraded implicitly.
 
-Preview 17 retains the transport retirement, cancellation, original-header and
-opaque-result guards from prior previews. All 245 offline cases pass, including
-45 new native failure-category cases and reproducible installed-package checks.
-SDK-owned native response rejection carries safe protocol metadata, while plain
-callback errors cannot mint a provider category. No retry, fallback, dependency
-or public API is added. Earlier preview qualifications below are historical.
+Preview 18 retains prior transport, cancellation, header, opaque-result and
+failure-category guards. All 286 offline cases pass, including 28 native final
+encoding cases, 74 HTTP cases and reproducible installed-package checks.
+Closed DeepSeek read turns may encode their final proposal through one private
+native function. This executes no host callback and adds no turn, read, retry,
+fallback, dependency or public export. Initial no-read and generic OpenAI wire
+forms stay unchanged. Earlier preview qualifications below are historical.
 
 Native response call IDs may recur in later turns. The native adapters preserve
 ordinary IDs and assign a fresh invocation-local ID only to a later collision;
@@ -32,7 +33,7 @@ Six actual model requests, six rejected external data controls and unchanged
 source bytes qualify this narrow adapter path, not production app adoption or
 a model reliability guarantee. No automatic retry or fallback was used.
 
-A subsequent paginated qualification is not green end-to-end. Flash read three
+An earlier preview-16/17 paginated qualification did not complete. Flash read three
 pages and produced a host-validated checklist. After a controlled source update,
 Pro read all four current pages but its final native response failed admission.
 The original preview-16 error lost its category; one explicit read-only
@@ -40,8 +41,21 @@ preview-17 continuation preserved `providerFailure.category:"protocol"` and
 still rejected the response. Across those invocations there were 14 actual
 requests, no accepted follow-up, no source writes and no automatic retry or
 fallback. Raw wire was not retained, so truncation or another particular vendor
-defect is not inferred. The host retains the pending request and the prior
-accepted checklist; safe failure classification does not prove model reliability.
+defect is not inferred from that capture. At that checkpoint the host retained
+the pending request and prior checklist; classification alone did not fix it.
+
+A subsequent bounded diagnosis reconstructed all five recorded request hashes
+offline, then replayed the exact final request. Pro returned whitespace-only
+content with `finish_reason:"stop"`, only 63 of 1536 requested output tokens.
+A generic formatting reminder also failed and was not shipped. The private
+native final-encoding profile then completed the original public-client task:
+four current pages, five model requests, 8.179 seconds, same ordinary prompt,
+history and budgets. Host checks verified complete current IDs/revisions/order,
+unchanged source/foreign bytes and the rendered checklist. A fresh Flash
+follow-up using accepted Pro history completed in two requests and one read.
+Across the entire qualification there were 28 actual native invocations; the
+earlier failures remain evidence, not hidden retries or accepted partial work.
+These are controlled examples, not universal model or application readiness.
 
 Preview 10 rejects any own native `error` descriptor before projecting a proposal
 or tool call, including falsey, hidden and accessor forms. Canonical preview 9
@@ -233,8 +247,10 @@ tools are withdrawn and a transient system instruction asks for a final proposal
 only when the supplied input and observed authorized evidence suffice. Full
 history, native tool IDs/results, output schema and output-token budget remain
 intact. No extra turn, automatic summary, repair or fallback is added. A provider
-that requests an unavailable read still fails closed. Runs configured without
-tools retain their existing request bytes.
+that requests an unavailable read still fails closed. Generic OpenAI and initial
+DeepSeek runs without prior tool results retain their existing request bytes.
+The DeepSeek-only native final encoding below is data serialization, not another
+read permission or host callback.
 
 This makes a bounded final turn possible; it does not prove that a model used
 all required evidence or produced a semantically correct answer. The application
@@ -405,6 +421,25 @@ no repair call, model alias rewrite, image downgrade, retry or alternate provide
 Thinking mode, future/legacy model names and vision require separate qualified
 profiles. The host still owns the endpoint, credential, body/time bounds and
 actual callback behavior; the factory cannot attest arbitrary injected code.
+
+When the normalized read catalog is empty after an observed read, the DeepSeek
+profile offers only `__aginti_return_proposal` and forces that exact function
+through `tool_choice`. Its arguments use the original final schema (or the
+existing `proposal` wrapper for non-object roots). No host function is registered
+or invoked; the name cannot match an application tool name. Exactly one complete
+native call, valid ID and strict JSON are required before the existing runner
+validates the original schema, credentials and budgets. Valid ordinary JSON
+finals remain compatible. Wrong/extra/truncated/mixed calls and blank content
+remain failures; no repair call or fallback is introduced.
+
+This addresses DeepSeek's documented possibility of blank JSON-mode content,
+including with a normal stop reason; it does not reinterpret blank text as a
+proposal. See [JSON output](https://api-docs.deepseek.com/guides/json_mode/) and
+[forced function choice](https://api-docs.deepseek.com/api/create-chat-completion/).
+Application-owned transports must qualify this native-wire change or fail
+closed. The built-in HTTPS client admits only this exact private choice with
+one matching output schema and prior tool history. It cannot enable arbitrary
+tool routing. SDK caller options and normalized request/response keys are unchanged.
 
 Complete native tool turns may contain assistant commentary; that text is
 discarded, never treated as a final answer or parsed into commands. Optional
@@ -760,7 +795,7 @@ is performed by the client. Never construct options from model or browser input.
 The endpoint is fixed to `https://api.deepseek.com:443/v1/chat/completions`.
 Requests use the existing non-thinking JSON-object profile and read-tool loop.
 This leaf is text-only even in the full SDK. Only declared host read callbacks
-can run; the transport adds no tools, sessions, writes or agent semantics.
+can run; the transport adds no host execution tools, sessions, writes or agent semantics.
 
 | HTTP boundary | Limit |
 | --- | --- |

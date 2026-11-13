@@ -78,7 +78,11 @@ test("native read batches retain arguments/results and unwrap only the final lis
         return { choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null,
           tool_calls: [1, 2].map(id => ({ id: `item_${id}`, type: "function", function: { name: "read_item", arguments: JSON.stringify({ id }) } })) } }] };
       }
-      assert(!Object.hasOwn(body, "tools"));
+      if (kind === "openai") assert(!Object.hasOwn(body, "tools"));
+      else {
+        assert.equal(body.tools.length, 1); assert.equal(body.tools[0].function.name, "__aginti_return_proposal");
+        assert.deepEqual(plain(body.tools[0].function.parameters), object({ proposal: list }));
+      }
       assert.deepEqual(body.messages.filter(m => m.role === "tool").map(m => JSON.parse(m.content)), ["first", "second"]);
       return completion({ proposal: ["first", "second"] });
     }, [tool]);

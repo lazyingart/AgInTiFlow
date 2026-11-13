@@ -22,7 +22,9 @@ test("retrieved English/Chinese/Japanese instructions remain data across a curre
       const message = body.messages.findLast(m => m.role === "tool");
       if (!message) return tools([nativeCall("read_current_records")]);
       assert.ok(message.content.includes(injectionMarker));
-      assert.ok(!Object.hasOwn(body, "tools"));
+      assert.equal(body.tools.length, 1);
+      assert.equal(body.tools[0].function.name, "__aginti_return_proposal");
+      assert.deepEqual(JSON.parse(JSON.stringify(body.tool_choice)), { type: "function", function: { name: "__aginti_return_proposal" } });
       const current = JSON.parse(message.content).map(({ id, revision, text }) => ({ id, revision, text }));
       return final({ records: current, reply: body.model === "deepseek-flash" ? "Both current notes were read; nothing was changed." : "已核对两条当前记录，没有修改或保存。" });
     };
