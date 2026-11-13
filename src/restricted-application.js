@@ -267,6 +267,36 @@ export function createRestrictedApplicationRunner(options) {
   return Object.freeze({ schemaVersion: RESTRICTED_APPLICATION_PROTOCOL, run });
 }
 
+function invocationNativeCalls(calls, messages) {
+  // Native response IDs are not invocation-wide operation identities. Preserve
+  // ordinary IDs, but scope a later response's collision to a fresh local ID.
+  // Do not repair invalid IDs or a duplicate inside one batch: the runner must
+  // still reject the entire batch before any callback executes.
+  const current = new Set();
+  for (const call of calls) {
+    if (typeof call.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(call.id) || current.has(call.id)) return calls;
+    current.add(call.id);
+  }
+  const previous = new Set();
+  for (const message of messages) {
+    if (message.role === "assistant" && message.calls) {
+      for (const call of message.calls) previous.add(call.id);
+    }
+  }
+  if (!calls.some(call => previous.has(call.id))) return calls;
+  // Reserve every raw ID before assigning replacements, including a different
+  // call's ID in this batch. The counter is local, not shared across callers.
+  const reserved = new Set([...previous, ...current]);
+  let ordinal = 1;
+  return calls.map(call => {
+    if (!previous.has(call.id)) return call;
+    let id;
+    do { id = `aginti_native_${ordinal++}`; } while (reserved.has(id));
+    reserved.add(id);
+    return { id, name: call.name, arguments: call.arguments };
+  });
+}
+
 // Explicit transport only. Caller owns authentication, endpoint, retries and
 // model qualification; neither environment nor provider fallback is consulted.
 export function createRestrictedOpenAIProvider(options) {
@@ -319,12 +349,13 @@ export function createRestrictedOpenAIProvider(options) {
           (Object.hasOwn(message, "tool_calls") && message.tool_calls !== null && !Array.isArray(message.tool_calls)) ||
           (Object.hasOwn(message, "refusal") && message.refusal !== null && typeof message.refusal !== "string")) fail("PROVIDER_PROTOCOL_INVALID");
       if (choice.finish_reason === "tool_calls" && Array.isArray(message.tool_calls) && message.tool_calls.length && !message.content) {
-        return { type: "tool_calls", calls: message.tool_calls.map((call) => {
+        const calls = message.tool_calls.map((call) => {
           dataFields(call, ["id", "type", "function"]);
           dataFields(call.function, ["name", "arguments"]);
           if (call.type !== "function" || typeof call.function.arguments !== "string") fail("PROVIDER_PROTOCOL_INVALID");
           return { id: call.id, name: call.function.name, arguments: parseRestrictedJson(call.function.arguments) };
-        }) };
+        });
+        return { type: "tool_calls", calls: invocationNativeCalls(calls, request.messages) };
       }
       if (choice.finish_reason !== "stop" || (message.tool_calls && message.tool_calls.length) || typeof message.content !== "string") fail("PROVIDER_PROTOCOL_INVALID");
       const value = parseRestrictedJson(message.content);

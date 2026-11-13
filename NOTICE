@@ -1,6 +1,11 @@
 AgInTiLite
 Copyright 2026 AgInTi and AgInTiFlow contributors
 
+Preview 16 keeps native call identity local to each restricted invocation.
+Later-response ID collisions are scoped consistently in calls/results without
+weakening whole-batch validation, custom-provider IDs or callback ownership.
+This shared SDK change adds no dependency, persistence, retry or app authority.
+
 Derived from the Apache-2.0 AgInTiFlow restricted application SDK:
 https://github.com/lazyingart/AgInTiFlow
 Commit e4c16b0610c41e690d9288739561a5a7e187cc9d

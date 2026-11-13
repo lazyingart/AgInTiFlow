@@ -132,6 +132,24 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
       }});
       const nativeRunner = root.createRestrictedApplicationRunner({provider:deepseek,tools:[],instructions:"Uncommitted JSON only.",outputSchema:schema});
       assert.equal((await nativeRunner.run({input:[{type:"text",text:"Review my draft."}]})).proposal.reply,"Native DeepSeek profile");
+      for (const kind of ["openai","deepseek-flash","deepseek-v4-pro"]) {
+        let turns=0; const checked=[];
+        const complete=async body=>{
+          turns++;
+          if(turns===3){
+            assert.deepEqual(body.messages.filter(m=>m.role==="tool").map(m=>m.tool_call_id),["call_0","aginti_native_1"]);
+            return {choices:[{finish_reason:"stop",message:{role:"assistant",content:'{"reply":"Both scoped reads checked"}'}}]};
+          }
+          return {choices:[{finish_reason:"tool_calls",message:{role:"assistant",content:null,tool_calls:[{id:"call_0",type:"function",function:{name:"record_read",arguments:'{}'}}]}}]};
+        };
+        const provider=kind==="openai"?root.createRestrictedOpenAIProvider({model:"offline-fixture",supportsImages:false,complete})
+          :root.createRestrictedDeepSeekProvider({model:kind,complete});
+        const app=root.createRestrictedApplicationRunner({provider,instructions:"Read only scoped facts; propose, never save.",outputSchema:schema,
+          tools:[{name:"record_read",description:"Read a caller-bound record.",readOnly:true,inputSchema:{type:"object",properties:{},required:[],additionalProperties:false},outputSchema:schema,
+            execute:async(_args,{callId})=>{checked.push(callId);return{reply:"Scoped current fact"}}}],limits:{maxSteps:3}});
+        const result=await app.run({input:[{type:"text",text:"Compare the two current facts."}]});
+        assert.equal(result.usage.toolCalls,2);assert.equal(turns,3);assert.deepEqual(checked,["call_0","aginti_native_1"]);
+      }
       const roots = [
         [{type:"array",items:{type:"string",maxLength:40},maxItems:2},["first","second"]],
         [{type:"boolean"},false], [{type:"null"},null], [{type:"string",maxLength:20},""],

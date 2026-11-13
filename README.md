@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.15.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.16.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.15.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.16.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -110,7 +110,22 @@ The callback returns one exact object:
 Tool shape:
 `{name,description,readOnly:true,inputSchema,outputSchema,execute}`.
 Dispatch is sequential. The entire call batch is validated before the first
-callback. Unknown tools, duplicate call IDs and unexpected arguments reject.
+callback. Unknown tools, duplicate normalized call IDs and unexpected arguments reject.
+
+Native provider response IDs are not application operation identities. The
+OpenAI and DeepSeek native adapters preserve ordinary IDs, but assign a fresh
+invocation-local ID when a later response reuses an earlier one. Assistant
+calls, tool results and callback metadata use that same checked local ID. A
+duplicate inside one batch, malformed ID or invalid call is never repaired into
+new work. Custom normalized providers retain the invocation-wide uniqueness
+rule. Step/read budgets, cancellation, no-retry and host scope remain unchanged.
+Call IDs are neither account authorization nor durable idempotency keys.
+
+An app callback that already projected a raw native response into
+`{type:"final",value}` or `{type:"tool_calls",calls}` owns that projection's
+validation. A vendor upgrade cannot recover error/finish/metadata evidence it
+discarded. Use the native factories with the original transport response when
+possible; qualify any app-specific parser before using its normalized result.
 Tool arguments, schemas and provider requests are detached frozen snapshots.
 
 The detached, deeply frozen success object is:
