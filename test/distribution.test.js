@@ -63,7 +63,7 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
     function command(executable, args, cwd = root) {
       const result = spawnSync(executable, args, { cwd, env, encoding: "utf8", timeout: 20_000, maxBuffer: 2 * 1024 * 1024 });
       assert.ifError(result.error);
-      assert.equal(result.status, 0, `${executable} failed: ${result.stderr}`);
+      assert.equal(result.status, 0, `${executable} failed: ${result.stderr}\n${result.stdout?.slice(-8192) ?? ""}`);
       return result.stdout;
     }
     const hashes = [];
@@ -200,10 +200,11 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
     let httpTests = await fs.readFile(path.join(root, "test/restricted-deepseek-http.test.js"), "utf8");
     assert.ok(httpTests.includes('../src/restricted-deepseek-client.js') && httpTests.includes('../src/restricted-application.js'));
     httpTests = httpTests.replace('../src/restricted-deepseek-client.js', '@lazyingart/agintilite/deepseek-http')
-      .replace('../src/restricted-application.js', '@lazyingart/agintilite');
+      .replace('../src/restricted-application.js', '@lazyingart/agintilite')
+      .replace('../src/restricted-deepseek-http.js', new URL(`file://${installedRoot}/src/restricted-deepseek-http.js`).href);
     const httpTestPath = path.join(consumer, "native-http.test.mjs"); await fs.writeFile(httpTestPath, httpTests);
     const httpLog = command(process.execPath, ["--experimental-test-module-mocks", "--test", httpTestPath], consumer);
-    assert.match(httpLog, /# tests 61\n/); assert.match(httpLog, /# pass 61\n/); assert.match(httpLog, /# fail 0\n/); assert.match(httpLog, /# cancelled 0\n/); assert.match(httpLog, /# skipped 0\n/);
+    assert.match(httpLog, /# tests 74\n/); assert.match(httpLog, /# pass 74\n/); assert.match(httpLog, /# fail 0\n/); assert.match(httpLog, /# cancelled 0\n/); assert.match(httpLog, /# skipped 0\n/);
     const cancellationTests = (await fs.readFile(path.join(root, "test/restricted-cancellation-observation.test.js"), "utf8"))
       .replace('../src/restricted-application.js', '@lazyingart/agintilite');
     const cancellationPath = path.join(consumer, "cancellation.test.mjs"); await fs.writeFile(cancellationPath, cancellationTests);

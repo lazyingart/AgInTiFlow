@@ -2,7 +2,7 @@ import { Agent, request } from "node:https";
 import { performance } from "node:perf_hooks";
 import { types, TextDecoder } from "node:util";
 import { addAbortListener } from "node:events";
-import { dataFields, integer, jsonSnapshot, fail, parseRestrictedJson, RestrictedApplicationError } from "./restricted-application-contract.js";
+import { dataFields, integer, jsonSnapshot, fail, parseRestrictedJson, RestrictedApplicationError, checkedSchema, FINAL_PROPOSAL_FUNCTION } from "./restricted-application-contract.js";
 
 // Internal transport building block. No caller-selectable endpoint, fetch,
 // credential discovery, listener, retry or redirect handler. This is local
@@ -96,10 +96,23 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
     if (signal && Reflect.apply(signalAborted, signal, [])) throw new RestrictedApplicationError("CANCELLED");
     if (closed || poisoned || pending.size >= maxConcurrency) throw failure("unavailable");
     const body = jsonSnapshot(rawBody, { maxBytes: MAX_REQUEST_BYTES });
-    const wire = dataFields(body, ["model", "messages", "tools", "response_format", "thinking", "max_tokens", "stream", "temperature"],
+    const wire = dataFields(body, ["model", "messages", "tools", "tool_choice", "response_format", "thinking", "max_tokens", "stream", "temperature"],
       ["model", "messages", "response_format", "thinking", "max_tokens", "stream", "temperature"]);
     if (wire.model !== fields.model || wire.stream !== false || wire.temperature !== 0 ||
         JSON.stringify(wire.response_format) !== '{"type":"json_object"}' || JSON.stringify(wire.thinking) !== '{"type":"disabled"}') fail();
+    // Only the private proposal-serialization choice is admitted. Never widen
+    // this fixed transport into caller-selected tool routing or execution.
+    const internalOutput = Array.isArray(wire.tools) && wire.tools.some(tool => tool?.function?.name === FINAL_PROPOSAL_FUNCTION);
+    if (Object.hasOwn(wire, "tool_choice") || internalOutput) {
+      const choice = dataFields(wire.tool_choice, ["type", "function"]);
+      const selected = dataFields(choice.function, ["name"]);
+      if (choice.type !== "function" || selected.name !== FINAL_PROPOSAL_FUNCTION || !Array.isArray(wire.tools) || wire.tools.length !== 1 ||
+          !Array.isArray(wire.messages) || !wire.messages.some(message => message?.role === "tool")) fail();
+      const tool = dataFields(wire.tools[0], ["type", "function"]);
+      const fn = dataFields(tool.function, ["name", "description", "parameters"]);
+      if (tool.type !== "function" || fn.name !== FINAL_PROPOSAL_FUNCTION || typeof fn.description !== "string" || Buffer.byteLength(fn.description) > 2000 ||
+          checkedSchema(fn.parameters).type !== "object") fail();
+    }
     integer(wire.max_tokens, 1, 8192);
     const payload = { ...wire, user_id: fields.userId };
     if (containsCredential(payload, fields.apiKey)) fail("SENSITIVE_DATA");

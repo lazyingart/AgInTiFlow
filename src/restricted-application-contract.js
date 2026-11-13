@@ -1,6 +1,9 @@
 import { types } from "node:util";
 import { hasSensitiveText } from "./redaction.js";
 
+// Private native serialization name: cannot match application tool NAME.
+export const FINAL_PROPOSAL_FUNCTION = "__aginti_return_proposal";
+
 export class RestrictedApplicationError extends Error {
   constructor(code) {
     super(`Restricted application run rejected: ${code}`);

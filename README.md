@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.17.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.18.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.17.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.18.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -150,6 +150,22 @@ unclassified; existing trusted transport categories, schema errors, deadlines
 and cancellation retain their meanings. Direct adapter errors are unchanged.
 This enables diagnosis, not retry, fallback or acceptance of invalid output.
 
+## Native final proposal encoding
+
+Preview 18 uses a private native function named `__aginti_return_proposal` only
+when the DeepSeek read catalog has closed after at least one observed read.
+Its arguments encode the original final schema; no host function executes.
+The name cannot be registered as an application tool. Only this exact forced
+choice is admitted by the fixed HTTPS profile; it cannot select another tool.
+Read permissions, host callback counts, steps, output-token cap and deadline do
+not expand. No extra model call or retry is added. Initial no-read DeepSeek and
+generic OpenAI requests retain their existing wire form.
+
+Exactly one complete native call, valid ID, strict JSON and the original output
+schema are required. Truncated/mixed/foreign calls, blank output and invalid data
+still fail closed. Valid ordinary JSON replies remain compatible. A generated
+proposal is never an application commit; the host still validates current facts.
+
 ## Providers and fallback
 
 `createRestrictedOpenAIProvider({model,supportsImages:false,complete})` is an
@@ -160,24 +176,10 @@ callback: explicit model, native tools, strict `json_schema`, `max_tokens`,
 response or final JSON document. Truncated, refused, mixed and malformed output
 fails closed. Provider/model compatibility must be tested by the app.
 
-Preview 10 rejects any own native `error` field before accepting choices,
-including null, hidden and accessor fields. Contradictory error-plus-choices
-responses cannot complete a proposal or dispatch a read. Error contents and
-unrelated SDK metadata are not inspected. No retry or fallback is added.
-
-Preview 2 backports the full SDK's strict JSON parser and native metadata
-checks. Duplicate decoded keys reject at every nesting level, including escaped
-aliases and native tool arguments. A malformed call rejects the whole batch
-before any callback. Legacy `function_call`, non-array `tool_calls` and malformed
-`refusal` metadata cannot accompany a successful final answer. Neutral null/empty
-metadata and valid complete native calls remain compatible.
-
-Parsing is bounded by UTF-8 bytes, depth and node count; malformed JSON produces
-a stable protocol error without raw response text. This strengthens the optional
-wire adapter. The runner still validates schemas/credentials and flattens callback
-errors; using the adapter alone does not replace that runner boundary. Host
-transports injecting already-decoded objects remain host-owned and must reject
-ambiguous raw JSON before decoding it. No app transport is silently replaced.
+Native error fields, duplicate decoded JSON keys, malformed metadata and mixed
+protocols reject before any callback. Neutral metadata and valid native calls
+remain compatible. Byte/depth/node bounds apply. Already-decoded host data must
+also have ambiguous raw JSON rejected by the host transport.
 
 Preview 3 adds an explicit non-thinking DeepSeek wire profile:
 
@@ -424,59 +426,15 @@ three-file core graph stay unchanged; the nine-file package remains private,
 dependency-free and without install hooks. Loopback HTTP fixtures prove neither
 live TLS nor application deployment readiness.
 
-Non-object proposals use exactly `{"proposal": VALUE}` on the native wire.
-The adapter unwraps this closed envelope before original-schema validation;
-object-root proposals and tool arguments/results retain their shapes.
-Malformed, missing, extra or duplicate envelope fields fail closed. Normalized
-callbacks retain `{type:"final",value}`. Installed offline tests cover scalar,
-array, union and ordinary object proposals without network or extra imports.
-
-Preview 6 fixes object-valued enum equality throughout final proposals and tool
-arguments/results. JSON object key order is irrelevant; array order, exact
-values/types, keys and Unicode spelling remain significant. The validated
-proposal and wire schema are not reordered. Four additional groups cover
-recursive equality, invalid bindings, native transports and strict JSON guards.
-There is no dependency, public export, retry or provider-policy change.
-
-Preview 5 withdraws read tools on the last provider turn and after the read
-budget is spent. A transient system instruction requests final JSON only when
-existing authorized evidence suffices. History/results, schemas and output
-budget are preserved. No extra call, summary, formatter or fallback is added;
-ignored limits and invalid answers still reject. No-tools request bytes remain
-unchanged. The host still owns mandatory reads, factual/reference validation,
-revision checks and writes. Five additional offline groups cover these gates.
+Non-object proposals use exactly `{"proposal": VALUE}` on the native wire,
+including private output-function arguments. Object-root values retain their
+shape. Missing/extra/duplicate wrapper fields reject; tools are never wrapped.
+Object enum equality ignores object key order, never value/type or array order.
 
 Derived from AgInTiFlow commit
-`e4c16b0610c41e690d9288739561a5a7e187cc9d`, Apache-2.0.
-`redaction.js` is unchanged. Preview 2's contract module is byte-identical to
-the hardened full SDK at `8dc44e691e61c2c23c8cc21d6aed26939d59c33e`;
-only the duplicate-aware parser was added to the original contract module.
-The runner's loop, deadlines, cancellation, admission accounting, schema checks,
-batch checks and result/error envelopes are retained. The extraction:
-
-- Removes the image inspector and all transitive vision/provider imports.
-- Rejects image-capable declarations and all non-text parts.
-- Counts the complete text context directly; reduces initial JSON cap from
-  24 MiB to 4 MiB because no image payload is accepted.
-- Keeps the explicit native JSON wire adapter without any SDK dependency.
-
-Offline tests cover account isolation, context reuse only when explicitly
-supplied, unknown tools, atomic batch rejection, mutable aliases, schema/secret
-boundaries, deadlines, abort propagation, late rejection/capacity, native JSON
-responses and text-only refusal. Package tests pack twice, compare archive
-hashes, verify the exact package surface, install offline into a disposable
-consumer and enforce the closed runtime import graph. No model is invoked.
-
-These checks do not qualify live model quality, transport authentication,
-latency, citation correctness, app transactions or production isolation.
-
-Existing vendored copies stay pinned until their application owner reviews and
-qualifies an upgrade. Offline tests do not activate providers or applications.
-
-Synchronous raw transport responses pass the same opaque-result boundary as
-normalized provider responses and read results. The native OpenAI-compatible
-adapter rejects Proxy/thenable responses and any own `then` field before
-proposal parsing or read dispatch. Genuine native Promises and SDK Promise
-subclasses remain trusted host execution; hooks already invoked inside a
-trusted callback are outside this boundary. This does not qualify a new
-provider, authorize fallback, or change application-owned persistence.
+`e4c16b0610c41e690d9288739561a5a7e187cc9d`, Apache-2.0; see NOTICE and LICENSE.
+The text-only extraction excludes image inspection and ambient execution.
+Reproducible package tests enforce the closed import graph, zero dependencies,
+private distribution and exact public exports. Offline checks do not qualify
+live quality, account transactions, TLS, deployment or provider admission.
+Existing application copies remain pinned until their owner qualifies an upgrade.
