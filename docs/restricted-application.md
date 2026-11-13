@@ -2,23 +2,21 @@
 
 ## Standalone application distribution
 
-For a text-only app backend, AgInTiLite private preview 16 provides the same
+For a text-only app backend, AgInTiLite private preview 17 provides the same
 bounded proposal loop without the full CLI, Studio or vision dependency graph.
-Canonical Lite `main` is `f50fa86aa1a0dd7eb35c4c9a824e85e563731841`, also
-available as `sdk/agintilite-native-call-identity-20261113` in the AgInTiFlow repository.
+The qualified Lite source is `e9ff425713203452fd67e35a6e80e81feb4377b2`, also
+available as `sdk/agintilite-native-failure-20261113` in the AgInTiFlow repository.
 That ref is a standalone SDK tree, not a branch to merge into Flow's application
 tree. Use the pinned local tarball, not a mutable worktree link. Its SHA-256 is
-`207a9520735ba5e2c8a209f51df370f354916e5e815e74b350499eaaef55c395`.
+`20f78210ebd0cd14cbd18359ba39ae0bed381962248f2969e7c4c794c12a1194`.
 It remains private and unpublished to npm; no application is upgraded implicitly.
 
-Preview 16 includes the bounded transport retirement, cancellation/result and
-original HTTP-header guards from previews 11–14, and extends opaque result
-adoption to the generic native adapter. Its 200 offline tests pass, including
-44 callback-boundary cases and all 61 HTTP cases from a freshly installed reproducible
-nine-file tarball. The dependency graph remains empty and the public API is
-unchanged. Duplicate critical header evidence cannot authorize a proposal, read
-callback or retry hint. The older preview-10 qualification below is historical;
-use the current pinned tarball for new integrations.
+Preview 17 retains the transport retirement, cancellation, original-header and
+opaque-result guards from prior previews. All 245 offline cases pass, including
+45 new native failure-category cases and reproducible installed-package checks.
+SDK-owned native response rejection carries safe protocol metadata, while plain
+callback errors cannot mint a provider category. No retry, fallback, dependency
+or public API is added. Earlier preview qualifications below are historical.
 
 Native response call IDs may recur in later turns. The native adapters preserve
 ordinary IDs and assign a fresh invocation-local ID only to a later collision;
@@ -33,6 +31,17 @@ transport deliberately reused a response ID; the real upstream IDs were distinct
 Six actual model requests, six rejected external data controls and unchanged
 source bytes qualify this narrow adapter path, not production app adoption or
 a model reliability guarantee. No automatic retry or fallback was used.
+
+A subsequent paginated qualification is not green end-to-end. Flash read three
+pages and produced a host-validated checklist. After a controlled source update,
+Pro read all four current pages but its final native response failed admission.
+The original preview-16 error lost its category; one explicit read-only
+preview-17 continuation preserved `providerFailure.category:"protocol"` and
+still rejected the response. Across those invocations there were 14 actual
+requests, no accepted follow-up, no source writes and no automatic retry or
+fallback. Raw wire was not retained, so truncation or another particular vendor
+defect is not inferred. The host retains the pending request and the prior
+accepted checklist; safe failure classification does not prove model reliability.
 
 Preview 10 rejects any own native `error` descriptor before projecting a proposal
 or tool call, including falsey, hidden and accessor forms. Canonical preview 9
@@ -489,8 +498,14 @@ durable attempt/ambiguity policy, user consent, budget and any new invocation.
 A private in-process brand prevents JSON/model output, ordinary Error fields,
 serialized copies, proxies, another SDK instance or tool callback errors from
 impersonating that channel. The runner reconstructs a safe error and never
-returns the transport's original stack/cause. It does not expose unknown errors
-or classify parser failures automatically. Cancellation and the overall
+returns the transport's original stack/cause. Native OpenAI and DeepSeek adapters
+also privately mark SDK-owned response-admission failures as `protocol`, including
+truncated, contradictory, malformed and oversized native envelopes. Callback
+invocation and await stay outside that marking boundary: an arbitrary thrown
+`PROVIDER_PROTOCOL_INVALID` property is insufficient. Direct adapter error codes
+remain unchanged; final schema and tool-authorization failures retain their own
+codes. The runner exposes no raw vendor text or unknown error details.
+Cancellation and the overall
 monotonic deadline take precedence, even if synchronous callback code exceeds
 the deadline before a timer can run. Capacity remains charged until ignored
 cancellation settles. No default provider, retry, fallback or app routing changes.

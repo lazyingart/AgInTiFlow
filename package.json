@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintiflow",
-  "version": "0.20.402-integration.0",
+  "version": "0.20.403-integration.0",
   "type": "module",
   "description": "AgInTiFlow is a project-aware agent workspace for hybrid wet-dry R&D, hardware-aware intelligence, software automation, and industrial workflows.",
   "license": "Apache-2.0",
@@ -314,7 +314,8 @@
     "web.js",
     "scripts/eval-deepseek-cli.mjs",
     "test/cli-fallback-policy.test.js",
-    "aginti-work-examples/deepseek-cli-fallback-20261001.md"
+    "aginti-work-examples/deepseek-cli-fallback-20261001.md",
+    "test/restricted-native-failure-classification.test.js"
   ],
   "bin": {
     "aginti": "bin/aginti-cli.js",
@@ -499,7 +500,7 @@
     "storage:migrate": "node bin/aginti-cli.js storage migrate",
     "publish:env": "node scripts/npm-publish-from-env.js publish --access public",
     "publish:env:whoami": "node scripts/npm-publish-from-env.js whoami",
-    "pretest": "npm run test:package-runtime-verifier && npm run test:native-shell-cancellation && npm run test:long-job-metadata && npm run test:long-job-status-publication && npm run test:background-handoff && npm run test:long-job-checkpoint && npm run test:current-source-recovery && npm run test:project-map-shape && npm run test:project-cache-authority && npm run test:workspace-read-authority && npm run test:partial-patch-recovery && npm run test:workspace-file-publication && npm run test:file-checksum && npm run test:native-tool-checkpoint && npm run test:cli-startup-input && npm run test:cli-run-resume-runtime && npm run test:inbox-dispatch-fence && npm run test:package-runtime-dependencies && npm run test:restricted-native-call-identity && npm run test:restricted-deepseek-http && npm run test:model-http-boundary && npm run test:model-response-budget && npm run test:native-tool-json && npm run test:native-turn && npm run test:remote-image-input && npm run test:native-session-run-lock && npm run test:restricted-retrieved-instructions && npm run test:restricted-partial-read-recovery && npm run test:restricted-root-proposal && npm run test:codex-no-tools-admission && npm run test:restricted-concurrency && npm run test:research-scope-review && npm run test:directory-lock-release && npm run test:research-quote-integrity && npm run test:research-domain-authority && npm run test:read-request-gate && npm run test:retained-execution-context && npm run test:verification-input-freshness && npm run test:advisory-mutation-intent && npm run test:localllm-text-contract && npm run test:cli-provider-defaults && npm run test:safe-chat-completion && npm run test:dependency-boundaries && npm run test:npm-env-helper && npm run smoke:integration-model-binding && npm run smoke:planning-timeout-recovery && npm run smoke:integration-production-runtime-bundle && npm run smoke:integration-retained-idempotency-store && npm run smoke:scoped-artifact-research && npm run smoke:document-artifact-quality && npm run smoke:workspace-secret-false-positive && npm run smoke:provider-handoff",
+    "pretest": "npm run test:package-runtime-verifier && npm run test:native-shell-cancellation && npm run test:long-job-metadata && npm run test:long-job-status-publication && npm run test:background-handoff && npm run test:long-job-checkpoint && npm run test:current-source-recovery && npm run test:project-map-shape && npm run test:project-cache-authority && npm run test:workspace-read-authority && npm run test:partial-patch-recovery && npm run test:workspace-file-publication && npm run test:file-checksum && npm run test:native-tool-checkpoint && npm run test:cli-startup-input && npm run test:cli-run-resume-runtime && npm run test:inbox-dispatch-fence && npm run test:package-runtime-dependencies && npm run test:restricted-native-failure && npm run test:restricted-native-call-identity && npm run test:restricted-deepseek-http && npm run test:model-http-boundary && npm run test:model-response-budget && npm run test:native-tool-json && npm run test:native-turn && npm run test:remote-image-input && npm run test:native-session-run-lock && npm run test:restricted-retrieved-instructions && npm run test:restricted-partial-read-recovery && npm run test:restricted-root-proposal && npm run test:codex-no-tools-admission && npm run test:restricted-concurrency && npm run test:research-scope-review && npm run test:directory-lock-release && npm run test:research-quote-integrity && npm run test:research-domain-authority && npm run test:read-request-gate && npm run test:retained-execution-context && npm run test:verification-input-freshness && npm run test:advisory-mutation-intent && npm run test:localllm-text-contract && npm run test:cli-provider-defaults && npm run test:safe-chat-completion && npm run test:dependency-boundaries && npm run test:npm-env-helper && npm run smoke:integration-model-binding && npm run smoke:planning-timeout-recovery && npm run smoke:integration-production-runtime-bundle && npm run smoke:integration-retained-idempotency-store && npm run smoke:scoped-artifact-research && npm run smoke:document-artifact-quality && npm run smoke:workspace-secret-false-positive && npm run smoke:provider-handoff",
     "test:cli-provider-defaults": "node --test test/cli-provider-defaults.test.js",
     "test:package-runtime-verifier": "node --test test/package-runtime-verifier.test.js",
     "test:safe-chat-completion": "node --test test/safe-chat-completion.test.js",
@@ -508,7 +509,8 @@
     "pack:verify-runtime": "node scripts/verify-package-runtime.js",
     "smoke:capabilities": "node scripts/smoke-capabilities.js",
     "eval:deepseek-cli": "node scripts/eval-deepseek-cli.mjs",
-    "test:cli-fallback": "node --test test/cli-fallback-policy.test.js"
+    "test:cli-fallback": "node --test test/cli-fallback-policy.test.js",
+    "test:restricted-native-failure": "node --test test/restricted-native-failure-classification.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",
