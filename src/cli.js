@@ -2511,12 +2511,31 @@ export async function main(argv = process.argv.slice(2)) {
       console.log('  echo "hello" | aginti run --stdin --json --provider mock');
       return;
     }
-    const runArgs = agentDefaults({
+    let runArgs = agentDefaults({
       ...parsedRunArgs,
       language: parsedRunArgs.language || stripped.options.language,
       goal: prompt,
       commandCwd: parsedRunArgs.commandCwd || commandCwd,
     });
+    let preparedRuntime = null;
+    if (parsedRunArgs.resume) {
+      try {
+        // The machine `run --resume` transport has the same durable runtime
+        // authority as `resume`: only explicit options patch the saved snapshot.
+        // Resolve before key selection, planning, web startup or model calls.
+        preparedRuntime = await prepareResumeRuntime(parsedRunArgs.resume, parsedRunArgs, optionArgv);
+        runArgs = agentDefaults({
+          ...runArgs,
+          ...preparedRuntime.runtimeOverrides,
+          runtimePatch: preparedRuntime.runtimePatch,
+          expectedRuntimeRevision: preparedRuntime.expectedRuntimeRevision,
+        });
+      } catch (error) {
+        if (!jsonFlag) throw error;
+        printMachineRunFailure(error, parsedRunArgs.resume);
+        return;
+      }
+    }
     if (!jsonFlag && !(await ensureDeepSeekKeyForOneShot(runArgs))) {
       process.exitCode = 1;
       return;
@@ -2527,21 +2546,25 @@ export async function main(argv = process.argv.slice(2)) {
         packageDir,
         ...(jsonFlag ? { onConsole: () => {} } : {}),
       });
+      if (preparedRuntime) {
+        config.expectedRuntimeRevision = preparedRuntime.expectedRuntimeRevision;
+        if (preparedRuntime.runtimePatch) config.runtimePatch = preparedRuntime.runtimePatch;
+      }
       const run = await runAgent(config);
       if (runResultExitCode(run) !== 0) process.exitCode = 1;
       if (jsonFlag) {
-        printMachineRunResult(run, runArgs.sessionId, {
+        printMachineRunResult(run, runArgs.resume || runArgs.sessionId, {
           provider: config.provider,
           model: config.model,
-          resumed: false,
+          resumed: Boolean(runArgs.resume),
         });
       }
     } catch (error) {
       if (!jsonFlag) throw error;
-      printMachineRunFailure(error, runArgs.sessionId, {
+      printMachineRunFailure(error, runArgs.resume || runArgs.sessionId, {
         provider: runArgs.provider,
         model: runArgs.model,
-        resumed: false,
+        resumed: Boolean(runArgs.resume),
       });
     }
     return;

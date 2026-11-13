@@ -50,6 +50,16 @@ transport flags and are not persisted. This is the supported boundary for
 LabCanvas, chat bridges, schedulers, and other embedding hosts that need one
 isolated reusable agent session per conversation.
 
+`aginti run --resume SESSION_ID --stdin --json` uses the same saved runtime and
+compare-and-swap preparation as the explicit `resume` command. Only explicit
+provider/model/tool/runtime options patch that snapshot; ambient defaults do not
+change a saved session. Model changes synchronize the route/main/spare roles
+under the existing session-runtime rules. The patch is validated before key
+selection, planning, web startup or inference. A missing session, invalid patch
+or stale runtime revision fails without a model call. A successful machine
+continuation reports `resumed:true` and the resolved configured provider/model.
+Prompts supplied through stdin remain data, including text resembling flags.
+
 The object includes `goalRevision` and `goalStatus`. A first request starts at
 revision 1. Every nonempty resume prompt advances the revision while retaining
 the bounded prior-goal ledger. Accepted completion marks that revision
