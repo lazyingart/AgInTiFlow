@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { acquireSessionRunLock, runAgent } from "../src/agent-runner.js";
 import { RESEARCH_VERSION, RESEARCH_SCOPE_REVIEW_POLICY } from "../src/deep-research.js";
 import { resolveRuntimeConfig } from "../src/config.js";
+import { executeWorkspaceTool } from "../src/workspace-tools.js";
 import { classifyCommand, evaluateCommandPolicy } from "../src/command-policy.js";
 import { createToolContract } from "../src/tool-contract.js";
 import {
@@ -8702,6 +8703,12 @@ try {
     "utf8"
   );
   const groundedTaskCallId = "grounded-project-task";
+  const groundedTaskRead = await executeWorkspaceTool(
+    "read_file",
+    { path: "TASK.md" },
+    { baseDir: missingArtifactCommitWorkspace, commandCwd: missingArtifactCommitWorkspace, allowFileTools: true }
+  );
+  assert(groundedTaskRead.ok && /^[a-f0-9]{64}$/.test(groundedTaskRead.sha256), "native workspace read lacks its content identity");
   const groundedTaskState = {
     goal:
       "This project is incomplete. Inspect it, finish it properly, verify it, and commit the intentional work.",
@@ -8721,14 +8728,10 @@ try {
         role: "tool",
         tool_call_id: groundedTaskCallId,
         content: JSON.stringify({
-          ok: true,
-          toolName: "read_file",
-          path: "TASK.md",
-          content: [
-            "# Task",
-            "Produce an editable LaTeX source plus a compiled mobile-readable PDF.",
-            "Verify the PDF and commit only intentional project files.",
-          ].join("\n"),
+          ...groundedTaskRead,
+          // recordProjectVerificationOutcome stamps this scope before native
+          // frames are persisted. A synthetic receipt must carry it too.
+          goalRevision: 1,
           contentTruncated: false,
           contentTruncatedByLines: false,
         }),
@@ -8772,15 +8775,8 @@ try {
   recordProjectVerificationOutcome(
     compactedGroundedTaskState,
     {
-      toolName: "read_file",
-      ok: true,
-      path: "TASK.md",
+      ...groundedTaskRead,
       args: { path: "TASK.md" },
-      content: [
-        "# Task",
-        "Produce an editable LaTeX source plus a compiled mobile-readable PDF.",
-        "Verify the PDF and commit only intentional project files.",
-      ].join("\n"),
       contentTruncated: false,
       contentTruncatedByLines: false,
     },

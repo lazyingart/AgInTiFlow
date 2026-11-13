@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright";
+import { isTerminalModelQuotaError } from "./model-http-client.js";
 import {
   createClient,
   createPlan,
@@ -1442,7 +1443,7 @@ function latestCompleteReadFileEvidence(messages = [], maxChars = 16000) {
   return latest;
 }
 
-export function successfulReadFileEvidencePaths(messages = []) {
+export function successfulReadFileEvidencePaths(messages = [], { includeProvenance = false } = {}) {
   const callsById = new Map();
   const readsByPath = new Map();
   let ordinal = 0;
@@ -1471,6 +1472,8 @@ export function successfulReadFileEvidencePaths(messages = []) {
         payload.contentTruncated !== true &&
         payload.contentTruncatedByLines !== true &&
         typeof payload.content === "string",
+      sha256: typeof payload.sha256 === "string" && /^[a-f0-9]{64}$/.test(payload.sha256) ? payload.sha256 : "",
+      goalRevision: Number.isSafeInteger(payload.goalRevision) && payload.goalRevision > 0 ? payload.goalRevision : 0,
     });
   };
 
@@ -1498,7 +1501,9 @@ export function successfulReadFileEvidencePaths(messages = []) {
   }
   return [...readsByPath.values()]
     .sort((left, right) => left.ordinal - right.ordinal)
-    .map(({ path: sourcePath, complete }) => ({ path: sourcePath, complete }));
+    .map(({ path: sourcePath, complete, sha256, goalRevision }) => includeProvenance
+      ? { path: sourcePath, complete, sha256, goalRevision }
+      : { path: sourcePath, complete });
 }
 
 export function authoritativeDocumentInputPaths(state = {}, contract = {}) {
@@ -3505,6 +3510,7 @@ export function buildConstrainedRecoveryRequest(
 }
 
 function isModelTimeoutError(error) {
+  if (isTerminalModelQuotaError(error)) return false;
   return error?.name === "ModelTimeoutError" || /timed out after \d+ms/i.test(String(error?.message || ""));
 }
 
@@ -4631,12 +4637,25 @@ function initialGoalContract(goal = "", at = new Date().toISOString()) {
   };
 }
 
+function isCheckpointTaskContinuationText(value = "") {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length > 600) return false;
+  // A checkpoint cue refers to retained work, not a new generic execution
+  // task. Keep this grammar closed: appended actions, paths and questions
+  // remain concrete requests handled by the existing continuation contract.
+  return (
+    /^(?:(?:please|kindly)\s+)?(?:(?:continue|resume|recover|carry\s+on)(?:\s+(?:the\s+)?(?:task|work))?(?:\s+from)?\s+where\s+(?:we|you|I|it)\s+(?:left\s+off|stopped|paused)|pick\s+up(?:\s+from)?\s+where\s+(?:we|you|I)\s+(?:left\s+off|stopped|paused)|(?:continue|resume|recover)\s+from\s+(?:(?:the|your|our)\s+)?(?:last|latest|saved)\s+(?:checkpoint|stopping\s+point))[.!?。！？]*$/iu.test(normalized) ||
+    /^(?:请|麻烦)?(?:从(?:上次|之前|刚才)(?:暂停|停下|中断|停止)(?:的)?(?:地方|位置|进度|状态)(?:继续|接着|恢复)(?:执行|工作)?|继续(?:上次|之前|刚才)(?:未完成|没做完)的(?:任务|工作))[。！？.!?]*$/u.test(normalized) ||
+    /^(?:(?:前回|さっき|先ほど)?(?:止まった|中断した)(?:ところ|位置)(?:から)?)(?:続けて|再開して)(?:ください)?[。！？.!?]*$/u.test(normalized)
+  );
+}
+
 export function isBareTaskContinuationText(value = "") {
   const normalized = String(value || "").replace(/\s+/g, " ").trim();
   if (!normalized || normalized.length > 600) return false;
   const explicitActiveTaskContinuation =
     /^(?:(?:please|kindly)\s+)?(?:continue|resume|recover|finish|complete|keep\s+working)\b(?=[^.!?。！？]{0,220}\b(?:same|current|previous|existing|retained|saved|unfinished|active)\b)(?=[^.!?。！？]{0,220}\b(?:task|work|run|session|job|repair|implementation|project|issue|fix)\b)(?![^.!?。！？]{0,220}\b(?:new|another|different|unrelated|separate)\b)[^.!?。！？]*[.!?。！？]*$/i.test(normalized);
-  return explicitActiveTaskContinuation ||
+  return isCheckpointTaskContinuationText(normalized) || explicitActiveTaskContinuation ||
     /^(?:(?:please|kindly)\s+)?(?:continue|resume|recover|finish|complete|keep\s+working)(?:\s+(?:and\s+)?(?:continue|resume|recover|finish|complete|working))?(?:\s+(?:the\s+)?(?:same|current|previous|existing|retained|saved|unfinished)\s+(?:task|work|run|session|job))?(?:\s+from\s+(?:the\s+)?(?:retained|saved|current|previous)\s+state)?[.!?]*$/i.test(normalized) ||
     /^(?:请)?(?:继续|接着|恢复|完成)(?:之前|上次|当前|同一|这个)?(?:的)?(?:任务|工作|会话|进度)?(?:并完成)?[。！？.!?]*$/u.test(normalized) ||
     /^(?:このまま|前回から|保存した状態から)?(?:同じ|現在の|前の)?(?:タスク|作業|セッション)?(?:を)?(?:続けて|再開して|完了して)(?:ください)?[。！？.!?]*$/u.test(normalized);
@@ -4757,12 +4776,18 @@ export function updateGoalContract(
   const refreshExecutionContract = Boolean(
     preserveTaskBoundary && continuationAddsConcreteRequirement(normalized)
   );
+  const previousActiveGoal = String(prior.activeGoal || previousGoal || taskGoal || normalized).trim();
+  // Older runtimes may have replaced both taskGoal and activeGoal with a bare
+  // checkpoint cue. Restore the exact retained material goal, not fabricated
+  // new instructions. Do not rewrite history or grant older mutation provenance.
+  const restoringActiveGoal = Boolean(preserveTaskBoundary && previousActiveGoal !== taskGoal &&
+    isCheckpointTaskContinuationText(previousActiveGoal));
   const activeGoal = preserveTaskBoundary
     ? refreshExecutionContract
       ? normalized
-      : String(prior.activeGoal || previousGoal || taskGoal || normalized).trim()
+      : restoringActiveGoal ? taskGoal : previousActiveGoal
     : normalized;
-  const activeGoalRevision = refreshExecutionContract || !preserveTaskBoundary
+  const activeGoalRevision = refreshExecutionContract || !preserveTaskBoundary || restoringActiveGoal
     ? revision
     : Math.max(0, Number(prior.activeGoalRevision || prior.revision || revision));
   const entry = {
@@ -4842,6 +4867,7 @@ export function updateGoalContract(
     activeGoal,
     activeGoalRevision,
     refreshExecutionContract,
+    restoredActiveGoal: restoringActiveGoal,
     preserveTaskBoundary,
     previousStatus,
   };
@@ -6874,7 +6900,7 @@ export function applyContinuationContractTransition(
     preserveTaskBoundary ? "same-task-continuation" : "new-task-continuation"
   );
   state.goal = goalUpdate.activeGoal || goalUpdate.taskGoal || String(nextGoal || "").trim();
-  state.plan = preserveTaskBoundary && !goalUpdate.refreshExecutionContract
+  state.plan = preserveTaskBoundary && !goalUpdate.refreshExecutionContract && !goalUpdate.restoredActiveGoal
     ? goalUpdate.previousPlan || state.plan || ""
     : "";
   return goalUpdate;
@@ -9786,23 +9812,28 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       taskProfile: config.taskProfile || state.meta?.taskProfile || "auto",
     });
     const sourcePath = String(toolResult.path || toolResult.args?.path || "");
+    const generatedInstructionArtifact = isGeneratedTaskInstructionArtifact(state, config, sourcePath, currentTaskContract);
     if (
+      !generatedInstructionArtifact &&
       /^(?:TASK|BRIEF|INSTRUCTIONS?)(?:\.[^/]*)?$/iu.test(
         path.posix.basename(sourcePath.replace(/\\/gu, "/"))
       ) &&
       Buffer.byteLength(toolResult.content, "utf8") <= 32 * 1024 &&
+      typeof toolResult.sha256 === "string" && /^[a-f0-9]{64}$/.test(toolResult.sha256) &&
       !toolResult.content.includes("\u0000")
     ) {
       state.meta.groundedProjectTaskInstruction = {
         version: 1,
         path: sourcePath,
-        sha256: hashForLog(toolResult.content),
+        sha256: toolResult.sha256,
         goalRevision: Math.max(
           0,
           Number(state.meta?.goalContract?.revision || 0)
         ),
         readAt: now,
       };
+    } else if (generatedInstructionArtifact && state.meta.groundedProjectTaskInstruction?.path === sourcePath) {
+      delete state.meta.groundedProjectTaskInstruction;
     }
     const acceptanceOptions = {
       commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
@@ -9820,7 +9851,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       sourcePath,
       acceptanceOptions
     );
-    if (projectAcceptanceSourceIsAuthoritative(sourcePath, acceptanceOptions)) {
+    if (!generatedInstructionArtifact && projectAcceptanceSourceIsAuthoritative(sourcePath, acceptanceOptions)) {
       const sourceKey = normalizedProjectAcceptancePath(
         sourcePath,
         acceptanceOptions.commandCwd
@@ -19302,6 +19333,17 @@ export function completionContractGoal(config = {}, state = {}) {
     .join("\n\n");
 }
 
+function isGeneratedTaskInstructionArtifact(state, config, sourcePath, contract = {}) {
+  const cwd = config.commandCwd || state.commandCwd || process.cwd();
+  const key = normalizedProjectAcceptancePath(sourcePath, cwd);
+  if (!key) return true;
+  const generated = [
+    ...(Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : []),
+    ...(state.meta?.projectVerification?.mutationHistory || []).flatMap(item => Array.isArray(item.paths) ? item.paths : []),
+  ];
+  return generated.some(item => normalizedProjectAcceptancePath(item, cwd) === key);
+}
+
 function groundedProjectTaskInstructionText(state = {}, config = {}, directContract = {}) {
   const directHasConcreteDeliverable = [
     directContract.exactOutputPaths,
@@ -19311,27 +19353,31 @@ function groundedProjectTaskInstructionText(state = {}, config = {}, directContr
     directContract.requiredExecutableTerms,
   ].some((items) => Array.isArray(items) && items.length > 0);
   if (directHasConcreteDeliverable) return "";
-  const source = [...successfulReadFileEvidencePaths(state.messages || [])]
+  const currentGoalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const scopeFloor = Math.max(
+    Number(state.meta?.goalContract?.taskBoundaryRevision || currentGoalRevision),
+    Number(state.meta?.goalContract?.activeGoalRevision || currentGoalRevision)
+  );
+  const withinScope = revision => Number.isSafeInteger(revision) && revision > 0 && revision >= scopeFloor && revision <= currentGoalRevision;
+  const source = [...successfulReadFileEvidencePaths(state.messages || [], { includeProvenance: true })]
     .reverse()
     .find(
       (item) =>
         item.complete === true &&
+        /^[a-f0-9]{64}$/.test(item.sha256) && withinScope(item.goalRevision) &&
+        !isGeneratedTaskInstructionArtifact(state, config, item.path, directContract) &&
         /^(?:TASK|BRIEF|INSTRUCTIONS?)(?:\.[^/]*)?$/iu.test(
           path.posix.basename(String(item.path || "").replace(/\\/gu, "/"))
         )
     );
   const persisted = state.meta?.groundedProjectTaskInstruction;
-  const currentGoalRevision = Math.max(
-    0,
-    Number(state.meta?.goalContract?.revision || 0)
-  );
   const sourcePath = source?.path || (
     Number(persisted?.version || 0) === 1 &&
-    Number(persisted?.goalRevision || 0) === currentGoalRevision
+    withinScope(persisted?.goalRevision) && /^[a-f0-9]{64}$/.test(persisted?.sha256 || "")
       ? String(persisted.path || "")
       : ""
   );
-  if (!sourcePath) return "";
+  if (!sourcePath || isGeneratedTaskInstructionArtifact(state, config, sourcePath, directContract)) return "";
   try {
     const target = resolveWorkspacePath(config, sourcePath, {
       allowReadOnlyRoots: true,
@@ -19340,11 +19386,7 @@ function groundedProjectTaskInstructionText(state = {}, config = {}, directContr
     if (!stat.isFile() || stat.size <= 0 || stat.size > 32 * 1024) return "";
     const content = fsSync.readFileSync(target.absolutePath, "utf8");
     if (!content.trim() || content.includes("\u0000")) return "";
-    if (
-      !source &&
-      persisted?.sha256 &&
-      hashForLog(content) !== String(persisted.sha256)
-    ) {
+    if (hashForLog(content) !== (source?.sha256 || persisted.sha256)) {
       return "";
     }
     return redactSensitiveText(content);

@@ -611,7 +611,33 @@ function filePreservationClauses(goal = "") {
 }
 
 function normalizeFileCreationIntent(goal = "") {
-  const source = String(goal || "");
+  let source = String(goal || "");
+  // Named transforms give their operands distinct roles. Normalize only a
+  // bounded, affirmative request with actual source and destination filenames;
+  // command literals, examples, negation and unnamed prose keep their meaning.
+  const extension = /\.(?:md|txt|json|jsonl|ndjson|ya?ml|html?|css|js|ts|tsx|jsx|mjs|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx|xlsx|pptx)$/i;
+  const target = new RegExp("^(?:(?:a|an|the|one|two|three|four)\\s+)?(?:(?:short|brief|concise|new|simple|small|standalone|downloadable|self-contained|markdown|text)\\s+){0,4}(?:files?\\s+)?(" + PRESERVATION_FILE_TOKEN + ")", "i");
+  source = source.replace(new RegExp("\\b(?:turn|convert|transform)\\s+(" + PRESERVATION_FILE_LIST + ")\\s+(?:into|to)\\s+", "gi"), (match, files, index) => {
+    const references = preservationFileReferences(files);
+    if (!references.length || references.some(item => !extension.test(item.path))) return match;
+    const prefix = source.slice(source.lastIndexOf("\n", index - 1) + 1, index);
+    if (prefix.length > 512) return match;
+    const closers = { '"': '"', "'": "'", "`": "`", "“": "”", "‘": "’", "「": "」", "『": "』" };
+    let quote = "";
+    for (let offset = 0; offset < prefix.length; offset++) {
+      const char = prefix[offset];
+      if (char === "\\") { offset++; continue; }
+      if (quote) { if (char === quote) quote = ""; }
+      else if (Object.hasOwn(closers, char) && !(char === "'" && /[\p{L}\p{N}]/u.test(prefix[offset - 1] || "") && /[\p{L}\p{N}]/u.test(prefix[offset + 1] || ""))) quote = closers[char];
+    }
+    if (quote) return match;
+    const clause = prefix.split(/;|(?<=[.!?])\s+/u).at(-1);
+    if (/\b(?:explain|describe|illustrate|quote|say|print|echo|example)\b/i.test(clause) ||
+        !/(?:^|[:]\s*|\b(?:and|then|also)\s+)(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:help\s+(?:me|us)\s+)?|I(?:\s+would|'d)\s+like\s+(?:you\s+)?to\s+|I\s+(?:want|need)\s+(?:you\s+)?to\s+)*$/i.test(clause)) return match;
+    const destination = source.slice(index + match.length, index + match.length + 512).match(target);
+    if (!destination || !preservationFileReferences(destination[1]).some(item => extension.test(item.path))) return match;
+    return `read ${files} and create `;
+  });
   // Natural creation is not invocation of the make executable. Restrict this
   // normalization to a named file or explicit file/artifact noun; "make sure",
   // chat summaries and explicit/quoted command invocations keep their meaning.
@@ -1916,7 +1942,7 @@ function isReadOnlyReadinessTask(goal = "") {
 
 function requiresSourceGrounding(goal = "") {
   const text = String(goal || "");
-  const positiveText = stripForbiddenLanguage(text);
+  const positiveText = stripForbiddenLanguage(normalizeFileCreationIntent(text));
   const inferredOutputs = new Set(inferExactOutputPaths(positiveText));
   const explicitSourceInputs = inferExactInputPaths(positiveText).filter(
     (item) => !inferredOutputs.has(item)

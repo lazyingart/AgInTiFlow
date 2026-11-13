@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { types } from "node:util";
+import { types, TextDecoder } from "node:util";
 
 // Decoded response bytes, including reasoning, native calls and error text.
 // Request token hints are not a transport budget. No model/caller field can
@@ -9,6 +9,52 @@ const NativeByteArray = Uint8Array;
 const byteLengthOf = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "byteLength").get;
 const setBytes = Uint8Array.prototype.set;
 const apply = Reflect.apply;
+
+const TERMINAL_QUOTA_CODES = new Set([
+  "insufficient_quota", "insufficient_balance", "billing_hard_limit_reached", "quota_exceeded",
+]);
+
+function ownData(value, key) {
+  if (!value || typeof value !== "object" || types.isProxy(value)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
+
+// Billing/quota exhaustion cannot be repaired by backoff, different reasoning
+// parameters or context compaction. Read only explicit HTTP/machine evidence;
+// a quota word in model/error prose is not this classification's authority.
+export function isTerminalModelQuotaError(error) {
+  const status = ownData(error, "status");
+  if (status === 402) return true;
+  if (status !== 429) return false;
+  const detail = ownData(error, "error");
+  return [ownData(error, "code"), ownData(error, "type"), ownData(detail, "code"), ownData(detail, "type")]
+    .some(code => typeof code === "string" && TERMINAL_QUOTA_CODES.has(code.toLowerCase()));
+}
+
+function responseHeaders(response, chunks) {
+  if (response.status !== 402 && response.status !== 429) return response.headers;
+  let terminal = response.status === 402;
+  if (!terminal) {
+    // These chunks have already passed the decoded 16 MiB transport bound.
+    // Inspect the same bytes without teeing or consuming another body, then
+    // return their original bytes/status/request metadata to the SDK unchanged.
+    let size = 0;
+    for (const chunk of chunks) size += apply(byteLengthOf, chunk, []);
+    const bytes = new NativeByteArray(size);
+    let offset = 0;
+    for (const chunk of chunks) { apply(setBytes, bytes, [chunk, offset]); offset += apply(byteLengthOf, chunk, []); }
+    try {
+      const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      terminal = isTerminalModelQuotaError({ status: response.status, error: body?.error });
+    } catch { /* Unknown/malformed rate-limit evidence keeps its existing policy. */ }
+    finally { bytes.fill(0); }
+  }
+  if (!terminal) return response.headers;
+  const headers = new Headers(response.headers);
+  headers.set("x-should-retry", "false");
+  return headers;
+}
 
 class ModelResponseLimitError extends Error {
   constructor() {
@@ -102,7 +148,10 @@ async function boundedResponse(response, signal) {
   if (declared !== null && /^[0-9]+$/.test(declared.trim()) && Number(declared) > MAX_MODEL_HTTP_RESPONSE_BYTES) {
     cancelBody(response.body); return terminalResponse();
   }
-  if (!response.body) return response;
+  if (!response.body) {
+    if (response.status !== 402) return response;
+    return retainResponseMetadata(new Response(null, { status: response.status, statusText: response.statusText, headers: responseHeaders(response, []) }), response);
+  }
   if (response.ok && response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() === "text/event-stream") {
     let streamController;
     const budget = budgetReader(response.body, signal, error => streamController?.error(error));
@@ -124,8 +173,9 @@ async function boundedResponse(response, signal) {
   try {
     for (;;) { const item = await budget.read(); if (item.done) break; chunks.push(item.value); }
     if (signal?.aborted) throw new DOMException("Model response aborted.", "AbortError");
+    const headers = responseHeaders(response, chunks);
     const body = new ReadableStream({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); chunks.length = 0; controller.close(); } });
-    return retainResponseMetadata(new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers }), response);
+    return retainResponseMetadata(new Response(body, { status: response.status, statusText: response.statusText, headers }), response);
   } catch (error) {
     budget.cancel(error);
     if (error instanceof ModelResponseLimitError || error instanceof ModelResponseProtocolError) return terminalResponse(error);

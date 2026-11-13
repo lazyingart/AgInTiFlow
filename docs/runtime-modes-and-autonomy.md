@@ -232,6 +232,75 @@ Large tasks should not stop because an early high-level plan ran out. AgInTiFlow
 
 This keeps the agent sober. It avoids giant low-quality plans while still allowing long autonomous work.
 
+## Provider quota interruptions
+
+The native runtime treats HTTP402 and explicit HTTP429 quota/billing codes as
+terminal for the current provider request. The supported machine codes are
+`insufficient_quota`, `insufficient_balance`, `billing_hard_limit_reached` and
+`quota_exceeded`, in the error's `code` or `type` field. Code matching is case
+insensitive; a quota word in prose alone does not establish this condition.
+
+These errors do not spend SDK retries or reasoning/tool compatibility retries,
+and do not trigger timeout/transport history compaction. HTTP status, error body
+and request metadata remain available; only the SDK retry hint is forced off.
+Ordinary and unclassified rate limits retain their existing bounded backoff.
+The same decoded-response size limit and cancellation boundary still apply.
+This policy belongs to the native runtime's model HTTP client; it does not
+replace an application's independent provider and quota policies.
+
+Confirmed tool receipts and completed artifacts stay in the saved session. After
+resolving the account limit or explicitly selecting another qualified route,
+resume that session and reconcile the remaining work. Switching models on the
+same exhausted account does not replenish its balance. Configured provider
+handoff policy remains separate; this change enables no provider or fallback.
+A missing receipt does not prove an operation never happened, so inspect such
+ambiguous work before retrying rather than assuming exactly-once execution.
+
+`npm run test:model-terminal-quota` covers terminal versus transient errors,
+misleading retry/compatibility hints, transport limits, and a persisted two-file
+task interrupted after its first confirmed artifact. Explicit model continuation
+finishes the remaining file without rewriting the first.
+
+## Checkpoint-only continuation
+
+A bounded cue such as “continue from where we left off” continues the saved
+material task rather than becoming a new generic execution request. Equivalent
+checkpoint wording is recognized in English, Chinese and Japanese. The runtime
+keeps the task's confirmed evidence and required commands. Explicit new actions,
+paths and questions remain active requirements; they are not swallowed as a
+resume-only no-op. A checkpoint-only cue after verified completion invokes no
+model or tool and does not repeat side effects.
+
+If an older runtime replaced the active goal with such a cue, retained material
+history can restore the actual goal and discard a plan inferred for the generic
+cue. History and mutation provenance are not rewritten. Missing material history
+does not authorize an invented task, and older artifacts still need their normal
+source, freshness and provenance checks.
+
+`npm run test:native-checkpoint-continuation` covers these boundaries, including
+official CLI continuation after a saved first artifact and a provider failure.
+
+## Artifact data and task instructions
+
+Named-file transforms such as “turn input.txt into a short report.md” bind the
+input and output to different roles and require source grounding. The bounded
+grammar also supports convert/transform, quoted filenames and input lists.
+Negation, explanations, quoted commands and unnamed prose do not grant output
+roles or filesystem permission.
+
+Reading a generated document does not make it a task instruction merely because
+its name is TASK, BRIEF or INSTRUCTIONS. Declared outputs and known native
+mutation paths cannot elect themselves as instruction or acceptance sources.
+The project-instruction heuristic for pre-existing task documents binds the
+recorded complete read's SHA256 and active task scope; a later changed file or
+a read from a different task cannot supply new requirements through that
+heuristic. Real project requirements and explicit command checks still apply.
+This does not make model interpretation of arbitrary source prose trustworthy,
+or provide retained-descriptor isolation for a hostile shared filesystem.
+
+`npm run test:artifact-instruction-boundary` checks transform roles, negative
+language, generated/persisted instruction claims, stale hashes and task scope.
+
 ## Documentation Maintenance
 
 The documentation should be maintained as product code:
