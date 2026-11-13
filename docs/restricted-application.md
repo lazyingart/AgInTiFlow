@@ -2,23 +2,37 @@
 
 ## Standalone application distribution
 
-For a text-only app backend, AgInTiLite private preview 15 provides the same
+For a text-only app backend, AgInTiLite private preview 16 provides the same
 bounded proposal loop without the full CLI, Studio or vision dependency graph.
-Canonical Lite `main` is `2a0fc24e21b0d1e36ae17fac5fc977969a07a829`, also
-available as `sdk/agintilite-native-callback-boundary-20261113` in the AgInTiFlow repository.
+Canonical Lite `main` is `f50fa86aa1a0dd7eb35c4c9a824e85e563731841`, also
+available as `sdk/agintilite-native-call-identity-20261113` in the AgInTiFlow repository.
 That ref is a standalone SDK tree, not a branch to merge into Flow's application
 tree. Use the pinned local tarball, not a mutable worktree link. Its SHA-256 is
-`be21104101c2ea09cbb8c41435aeaa3baeba384e57c1eeeb78f353c4e796d479`.
+`207a9520735ba5e2c8a209f51df370f354916e5e815e74b350499eaaef55c395`.
 It remains private and unpublished to npm; no application is upgraded implicitly.
 
-Preview 15 includes the bounded transport retirement, cancellation/result and
+Preview 16 includes the bounded transport retirement, cancellation/result and
 original HTTP-header guards from previews 11–14, and extends opaque result
-adoption to the generic native adapter. Its 179 offline tests pass, including
+adoption to the generic native adapter. Its 200 offline tests pass, including
 44 callback-boundary cases and all 61 HTTP cases from a freshly installed reproducible
 nine-file tarball. The dependency graph remains empty and the public API is
 unchanged. Duplicate critical header evidence cannot authorize a proposal, read
 callback or retry hint. The older preview-10 qualification below is historical;
 use the current pinned tarball for new integrations.
+
+Native response call IDs may recur in later turns. The native adapters preserve
+ordinary IDs and assign a fresh invocation-local ID only to a later collision;
+assistant calls, tool results and callback metadata remain correlated. Duplicate
+IDs within one response and malformed IDs still reject before that batch runs.
+Custom normalized providers retain their invocation-wide uniqueness rule.
+Call IDs are not account authorization or durable idempotency keys.
+
+A preview-16 installed-package qualification completed two scoped reads and a
+Japanese checklist comparison with explicit Flash and Pro invocations. The test
+transport deliberately reused a response ID; the real upstream IDs were distinct.
+Six actual model requests, six rejected external data controls and unchanged
+source bytes qualify this narrow adapter path, not production app adoption or
+a model reliability guarantee. No automatic retry or fallback was used.
 
 Preview 10 rejects any own native `error` descriptor before projecting a proposal
 or tool call, including falsey, hidden and accessor forms. Canonical preview 9
