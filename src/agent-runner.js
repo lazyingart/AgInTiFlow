@@ -18,6 +18,7 @@ import { SessionStore } from "./session-store.js";
 import { assessFileChecksumClaims, nativeFileChecksumReceipts } from "./completion-file-checksums.js";
 import { acquireNativeSessionRunLock } from "./session-run-lock.js";
 import { runNativeHostCommand } from "./native-host-command.js";
+import { budgetStopWithDeferredReceipts, deferredJobLaunchSummary, launchOnlyHandoffReceipt, recordDeferredJobReceipt } from "./deferred-job-handoff.js";
 import {
   assertIntegrationRunAgentInvocation,
   assertRegisteredIntegrationSessionConfig,
@@ -3474,7 +3475,10 @@ export function buildConstrainedRecoveryRequest(
           "Only the finish tool is needed now. Do not run or request another command.",
           "Use the successful authoritative tool output already retained above and call finish with one concise user-facing status answer.",
           "If the retained output is JSON, summarize its visible status fields directly instead of saying only that evidence exists.",
-        ].join(" "),
+          runtimeConfig.deferredJobHandoffSummary
+            ? `This request is only a background launch and receipt. Return the confirmed receipt below; do not claim the deferred job finished or create a report. ${runtimeConfig.deferredJobHandoffSummary}`
+            : "",
+        ].filter(Boolean).join(" "),
       },
     ];
   }
@@ -21271,6 +21275,20 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         : [],
     };
   }
+  const handoffReceipt = launchOnlyHandoffReceipt(state);
+  if (handoffReceipt && !state.meta?.artifactProgress && !retainedFailedTest && !implementationOpen &&
+      requestedArtifactEvaluation.ok && pendingRequiredProjectCommands.length === 0 &&
+      projectTestVerificationFinishBlock(state) === null) {
+    const contract = completionTaskContract(config, state);
+    if (!contract.requiresWorkspaceMutation && !contract.requiresFileMutation && !contract.requiresSourceGrounding &&
+        !contract.advisoryInvocation &&
+        [contract.exactOutputPaths, contract.requiredArtifactKinds, contract.requiredToolCalls, contract.requiredGitActions, contract.requiredProjectCommands]
+          .every(items => !items?.length) &&
+        evaluateScsEvidence(contract, buildScsEvidenceLedger({ state })).ok) {
+      runtimeConfig.verifiedCompletionPending = true;
+      runtimeConfig.deferredJobHandoffSummary = deferredJobLaunchSummary(handoffReceipt);
+    }
+  }
   const staticTotal = Number(state.meta?.toolLoop?.staticTotal || 0);
   if (staticTotal < STATIC_DISCOVERY_CONVERGENCE_LIMIT) return runtimeConfig;
   const requiresPerSourceChecks = state.meta?.scs?.taskContract?.requiresPerSourceChecks === true;
@@ -25384,6 +25402,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
         if (result.ok) {
+          recordDeferredJobReceipt(state, result);
           await store.appendEvent("long_job.started", eventResult);
           observers.event("long_job.started", eventResult);
           if (result.statusMarkdownPath) {
@@ -26674,6 +26693,21 @@ async function enforceToolCapableOutputContract({
 
 async function completionEvidenceDecision(args) {
   const { config, state, store, observers, step, mode, candidateResult = "" } = args;
+  const handoff = launchOnlyHandoffReceipt(state);
+  if (handoff) {
+    const receiptSummary = nextStepRuntimeConfig(config, state).deferredJobHandoffSummary;
+    if (receiptSummary) {
+      // A launch receipt is a typed runtime result, not evidence of the job's
+      // current state. A model paraphrase must not turn it into a fresh status
+      // assertion. The ordinary completion gates and SCS review still apply.
+      const decision = await completionEvidenceDecisionInner({ ...args, candidateResult: receiptSummary });
+      if (decision.action !== "accept") return decision;
+      const detail = { step, mode, jobId: handoff.jobId, policy: "native-launch-receipt-only" };
+      await store.appendEvent("completion.deferred_job_receipt_selected", detail);
+      observers.event("completion.deferred_job_receipt_selected", detail);
+      return { ...decision, resultOverride: receiptSummary };
+    }
+  }
   const retained = !finishResultClaimsIncompleteWork(candidateResult) && !finishResultClaimsBlocker(candidateResult)
     ? retainedReadOnlyResearchAnswer(config, state) : null;
   if (!retained) return completionEvidenceDecisionInner(args);
@@ -27680,6 +27714,8 @@ function completionCommandOutputRecords(scoped = {}) {
 
 function verifiedCompletionFallback(assessment = {}, state = {}) {
   const contract = assessment.contract || {};
+  const handoff = launchOnlyHandoffReceipt(state);
+  if (assessment.ok && handoff) return deferredJobLaunchSummary(handoff);
   const nativeResearch = retainedReadOnlyResearchAnswer({ goal: contract.outcome || state.goal || "" }, state);
   if (nativeResearch) return nativeResearch.answer;
   const ledger = assessment.ledger || {};
@@ -33170,6 +33206,8 @@ async function runAgentOnceUnlocked(config) {
 
     state.updatedAt = new Date().toISOString();
     updateGoalStatus(state, "paused", "max_steps_reached", state.updatedAt);
+    const partialResult = budgetStopWithDeferredReceipts(state);
+    if (partialResult) appendChatEntry(state, "assistant", partialResult);
     await store.saveState(state);
     await store.appendEvent("session.stopped", {
       reason: "max_steps_reached",
@@ -33182,10 +33220,11 @@ async function runAgentOnceUnlocked(config) {
       reason: "max_steps_reached",
       sessionId,
     });
+    if (partialResult) emitConsole(config, partialResult, { kind: "meta" });
     emitConsole(config, `Stopped after ${stepBudget.currentMaxSteps} steps without finish().`, { kind: "error", error: true });
     return {
       sessionId,
-      result: "",
+      result: partialResult,
       stopped: true,
       reason: "max_steps_reached",
       ...goalRunMetadata(state),
