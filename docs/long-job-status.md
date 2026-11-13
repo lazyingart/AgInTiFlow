@@ -27,6 +27,17 @@ The reader probes only the deterministic job session after validation.
 `sessionAlive: null` means the probe was inconclusive, including a missing tmux
 executable, timeout or permission failure. It does not mean the session is absent.
 
+The native supervisor serializes status publication, including detached PID
+updates, heartbeats and terminal status. Only one heartbeat may be pending.
+Terminal admission stops the heartbeat timer and drains earlier publications
+before replacing status; a late callback cannot overwrite completion. Published
+in-memory status advances only after its atomic rename succeeds. A failed write
+or rename rejects later publication instead of silently declaring completion or
+restarting the command. The output may still exist after a status-storage error;
+inspect its evidence before deciding what recovery is safe.
+New jobs receive this supervisor when they are created. Updating the CLI does
+not rewrite an existing job's supervisor or restart its work.
+
 Recorded completion remains workspace metadata, not authenticated execution
 proof. These bounded named-path checks do not provide retained-descriptor storage,
 openat/openat2 semantics, isolation from a writer controlling the same namespace,
@@ -35,5 +46,9 @@ qualified storage and process isolation. This tool does not grant app access.
 
 Run `npm run test:long-job-metadata` for adversarial file/projection tests and
 persisted native-runtime fixtures with scripted loopback responses. Those tests
-make no live provider requests. The supervisor test executes only a fixed local
-text-output fixture; the native status fixtures execute no commands.
+make no live provider requests. `npm run test:long-job-status-publication` runs
+the real generated supervisor and a fixed shell child under controlled filesystem
+scheduling. It covers delayed PID writes, command/verification failure, heartbeat
+floods, terminal admission and write/rename errors. No hosted model, container or
+GPU is used. This does not add power-loss durability or strengthen the named-path
+and multi-user limitations above. The native status fixtures execute no commands.

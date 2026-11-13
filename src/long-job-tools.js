@@ -253,6 +253,10 @@ const verifyStdoutPath = path.join(jobDir, "verify_stdout.log");
 const verifyStderrPath = path.join(jobDir, "verify_stderr.log");
 const supervisorLogPath = path.join(jobDir, "supervisor.log");
 const job = JSON.parse(await fsp.readFile(jobPath, "utf8"));
+let statusTail = Promise.resolve();
+let statusSealed = false;
+let heartbeatPending = false;
+let heartbeatTimer;
 let status = {
   jobId: job.jobId,
   name: job.name,
@@ -303,19 +307,32 @@ function outputStats() {
   }
 }
 
-async function writeStatus(patch = {}) {
-  const stats = outputStats();
-  status = {
-    ...status,
-    ...patch,
-    outputExists: stats.exists,
-    outputBytes: stats.bytes,
-    percent: stats.percent,
-    updatedAt: now(),
-  };
-  const tmp = statusPath + ".tmp";
-  await fsp.writeFile(tmp, JSON.stringify(status, null, 2), { mode: 0o600 });
-  await fsp.rename(tmp, statusPath);
+function writeStatus(patch = {}) {
+  if (statusSealed) return statusTail;
+  if (patch.state === "completed" || patch.state === "failed") {
+    statusSealed = true;
+    clearInterval(heartbeatTimer);
+  }
+  const operation = statusTail.then(async () => {
+    const stats = outputStats();
+    const next = {
+      ...status,
+      ...patch,
+      outputExists: stats.exists,
+      outputBytes: stats.bytes,
+      percent: stats.percent,
+      updatedAt: now(),
+    };
+    const tmp = statusPath + ".tmp";
+    await fsp.writeFile(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+    await fsp.rename(tmp, statusPath);
+    status = next;
+  });
+  // Observe detached PID/heartbeat writes without repairing a rejected tail.
+  // Later mandatory/terminal writes must fail if any earlier publication failed.
+  statusTail = operation;
+  operation.catch(() => {});
+  return operation;
 }
 
 function outputComplete() {
@@ -344,8 +361,7 @@ async function runShell(command, { stdout, stderr, label }) {
       env: { ...process.env, AGINTI_LONG_JOB_ID: job.jobId, AGINTI_LONG_JOB_DIR: jobDir },
       stdio: ["ignore", "pipe", "pipe"],
     });
-    status.pid = child.pid || null;
-    writeStatus({ state: label === "verify" ? "verifying" : "running", pid: status.pid }).catch(() => {});
+    writeStatus({ state: label === "verify" ? "verifying" : "running", pid: child.pid || null }).catch(() => {});
     const out = fs.createWriteStream(stdout, { flags: "a", mode: 0o600 });
     const err = fs.createWriteStream(stderr, { flags: "a", mode: 0o600 });
     child.stdout.on("data", (chunk) => out.write(chunk));
@@ -387,12 +403,16 @@ await appendEvent("job.started", { jobId: job.jobId, session: job.session });
 job.startedEpochMs = Date.now();
 await writeStatus({ state: "starting", startedAt: now() });
 
-const interval = setInterval(() => {
-  if (status.state === "running" || status.state === "verifying" || status.state === "restarting") {
-    writeStatus({ heartbeatAt: now() }).catch(() => {});
+heartbeatTimer = setInterval(() => {
+  if (!statusSealed && !heartbeatPending && ["running", "verifying", "restarting"].includes(status.state)) {
+    heartbeatPending = true;
+    writeStatus({ heartbeatAt: now() }).then(
+      () => { heartbeatPending = false; },
+      () => { heartbeatPending = false; }
+    );
   }
 }, Math.max(1, Number(job.pollIntervalSeconds || 60)) * 1000);
-interval.unref?.();
+heartbeatTimer.unref?.();
 
 let attempt = 0;
 while (true) {
