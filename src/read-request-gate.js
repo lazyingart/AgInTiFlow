@@ -1,8 +1,10 @@
 import { performance } from "node:perf_hooks";
 import { types } from "node:util";
+import { addAbortListener } from "node:events";
 
 const MAX_DELAY_MS = 86_400_000;
 const abortedGetter = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted").get;
+const isAborted = signal => signal !== undefined && Reflect.apply(abortedGetter, signal, []);
 
 function gateError(code) {
   const error = new Error(`Read request gate rejected: ${code}`);
@@ -41,7 +43,7 @@ export function createReadRequestGate(options = {}) {
   function settle(entry, ok, value) {
     if (entry.settled) return;
     entry.settled = true;
-    entry.signal?.removeEventListener("abort", entry.onAbort);
+    entry.abortSubscription?.[Symbol.dispose]();
     (ok ? entry.resolve : entry.reject)(value);
   }
   function pump() {
@@ -57,7 +59,7 @@ export function createReadRequestGate(options = {}) {
     active = entry;
     entry.running = true;
     const task = Promise.resolve().then(() => {
-      if (entry.signal?.aborted) throw gateError("CANCELLED");
+      if (isAborted(entry.signal)) throw gateError("CANCELLED");
       return entry.operation(Object.freeze({
         signal: entry.signal,
         defer(delayMs) {
@@ -73,7 +75,10 @@ export function createReadRequestGate(options = {}) {
       entry.running = false;
       active = null;
       nextAt = Math.max(nextAt, performance.now() + minIntervalMs);
-      settle(entry, ok, value);
+      // Cancellation is a public outcome, not proof the original read ended.
+      // Observe native state again before any late value/error can be delivered.
+      if (isAborted(entry.signal)) settle(entry, false, gateError("CANCELLED"));
+      else settle(entry, ok, value);
       if (closed) resolveClose?.();
       else pump();
     }
@@ -88,11 +93,11 @@ export function createReadRequestGate(options = {}) {
       try { Reflect.apply(abortedGetter, signal, []); } catch { throw gateError("INVALID_GATE"); }
     }
     if (closed) return Promise.reject(gateError("READ_REQUEST_CLOSED"));
-    if (signal?.aborted) return Promise.reject(gateError("CANCELLED"));
+    if (isAborted(signal)) return Promise.reject(gateError("CANCELLED"));
     if (queue.length >= maxPending) return Promise.reject(gateError("READ_REQUEST_BUSY"));
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-    const entry = { operation, signal, resolve, reject, running: false, settled: false, onAbort: null };
+    const entry = { operation, signal, resolve, reject, running: false, settled: false, onAbort: null, abortSubscription: null };
     entry.onAbort = () => {
       settle(entry, false, gateError("CANCELLED"));
       if (!entry.running) {
@@ -101,9 +106,12 @@ export function createReadRequestGate(options = {}) {
         pump();
       }
     };
-    signal?.addEventListener("abort", entry.onAbort, { once: true });
+    // Another host listener may stop ordinary event propagation. The native
+    // disposable subscription still observes cancellation; caller listeners
+    // remain caller-owned and the active callback retains its slot until done.
+    if (signal) entry.abortSubscription = addAbortListener(signal, entry.onAbort);
     queue.push(entry);
-    if (signal?.aborted) entry.onAbort();
+    if (isAborted(signal)) entry.onAbort();
     else pump();
     return promise;
   }

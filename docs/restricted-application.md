@@ -565,6 +565,22 @@ without queued work. Full queues reject READ_REQUEST_BUSY; invalid contracts
 throw INVALID_GATE synchronously before admission. Queued or active caller cancellation rejects CANCELLED,
 but an ignoring active callback keeps its slot until original settlement.
 
+On Node 22, native disposable abort subscriptions resist an unrelated earlier
+listener's `stopImmediatePropagation()`. The gate rechecks native cancellation
+state before dispatch and before delivering a callback's value or error. A
+cancelled queued read releases its queue capacity promptly; an already active
+read retains its physical slot until its original callback settles. Cleanup
+removes the gate's subscription and preserves caller-owned listeners and source
+cooldown. Cancellation does not restart the deadline or authorize a retry.
+
+The 19-case scheduler suite reproduces eight failures on installed 395 and passes
+after repair, including a real owned loopback HTTP read that drains after its
+caller cancels. It does not claim the upstream socket stopped at public
+cancellation. Current built-in Crossref parent/timeout composition already
+protected that path; its positive control passes before and after this fix.
+This repair covers the public scheduler used directly by host callbacks, not
+model interpretation of a natural-language stop request or distributed quotas.
+
 Close rejects queued/new work with READ_REQUEST_CLOSED, is idempotent and waits
 for the admitted callback. It does not forcibly stop that callback or remote
 work. Arbitrary host JavaScript is not sandboxed; callback errors remain host

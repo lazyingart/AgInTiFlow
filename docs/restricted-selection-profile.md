@@ -78,9 +78,9 @@ There were 13 actual hosted requests across all observations, no automatic
 retry/fallback, no LocalLLM generation and no real application data or service
 changes. This qualifies a bounded example, not universal model accuracy or a
 production authentication/transaction implementation. No runtime fix or new npm
-release was required; the published engine remains `0.20.395-integration.0`.
-The source branch adds the qualification fixture; that already published archive
-is unchanged. Future packaging includes the fixture and its consumer checks.
+release was required for this profile qualification, which used published engine
+`0.20.395-integration.0`. That immutable archive is unchanged. Later source
+packages include the qualification fixture and its consumer checks.
 
 `node --test test/restricted-selection-profile.test.js` adds seven offline
 regressions, also included in `npm run smoke:restricted-application`: staged

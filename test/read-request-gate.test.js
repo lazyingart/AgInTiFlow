@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { getEventListeners } from "node:events";
 import { performance } from "node:perf_hooks";
+import http from "node:http";
 import { createReadRequestGate } from "@lazyingart/agintiflow/read-request-gate";
 
 const turn = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
@@ -170,4 +171,115 @@ test("server rate intervals and canonical Retry-After dates can only lengthen pa
   await advance(4999); assert.equal(times.length, 2); await advance(1); assert.equal((await third).ok, true);
   const fourth = search({ query: "public source four", provider: "crossref" }, config);
   await advance(1099); assert.equal(times.length, 3); await advance(1); assert.equal((await fourth).ok, true);
+});
+
+const suppress = control => {
+  const listener = event => event.stopImmediatePropagation();
+  control.signal.addEventListener("abort", listener);
+  return () => control.signal.removeEventListener("abort", listener);
+};
+
+test("suppressed queued cancellation frees capacity without dispatching the cancelled read", async t => {
+  const advance = clock(t), work = deferred(), control = new AbortController(), remove = suppress(control);
+  const gate = createReadRequestGate({ minIntervalMs: 1, maxPending: 1 });
+  const active = gate.run(() => work.promise); let cancelledCalls = 0, outcome;
+  const waiting = gate.run(() => { cancelledCalls++; }, { signal: control.signal });
+  waiting.then(value => { outcome = { value }; }, error => { outcome = { code: error.code }; });
+  let next;
+  try {
+    await turn(); control.abort(); await turn();
+    assert.deepEqual(outcome, { code: "CANCELLED" });
+    assert.equal(getEventListeners(control.signal, "abort").length, 1, "the caller listener stays caller-owned");
+    next = gate.run(() => "next"); next.catch(() => {});
+    await advance(5000); assert.equal(cancelledCalls, 0, "live old work keeps the physical slot");
+    work.resolve("first"); await active; await advance(1); assert.equal(await next, "next");
+  } finally { work.resolve(); await gate.close(); await Promise.allSettled([active, waiting, ...(next ? [next] : [])]); remove(); }
+});
+
+for (const rejection of [false, true]) {
+  test(`suppressed active cancellation rejects promptly while late ${rejection ? "error" : "data"} remains charged`, async t => {
+    const advance = clock(t), work = deferred(), control = new AbortController(), remove = suppress(control);
+    const gate = createReadRequestGate({ minIntervalMs: 1 }); let outcome, calls = 0, closed = false;
+    const unhandled = [], receive = error => unhandled.push(error); process.on("unhandledRejection", receive);
+    const active = gate.run(() => { calls++; return work.promise; }, { signal: control.signal });
+    active.then(value => { outcome = { value }; }, error => { outcome = { code: error.code }; });
+    let queued, close;
+    try {
+      await turn(); control.abort(); await turn(); assert.deepEqual(outcome, { code: "CANCELLED" });
+      queued = gate.run(() => { calls++; }); queued.catch(() => {});
+      await advance(5000); assert.equal(calls, 1);
+      close = gate.close().then(() => { closed = true; }); await turn(); assert.equal(closed, false);
+      await assert.rejects(queued, { code: "READ_REQUEST_CLOSED" });
+      if (rejection) work.reject(Error("private late source detail")); else work.resolve("late source data");
+      await close; await new Promise(setImmediate); assert.deepEqual(unhandled, []);
+      assert.deepEqual(outcome, { code: "CANCELLED" }); assert.equal(getEventListeners(control.signal, "abort").length, 1);
+    } finally { work.resolve(); await gate.close(); await Promise.allSettled([active, ...(queued ? [queued] : [])]); remove(); process.off("unhandledRejection", receive); }
+  });
+}
+
+test("an earlier listener cannot turn an actual native queued deadline into an indefinite wait", { timeout: 5000 }, async () => {
+  const work = deferred(), expired = deferred(), signal = AbortSignal.timeout(20), gate = createReadRequestGate();
+  const listener = event => { event.stopImmediatePropagation(); expired.resolve(); };
+  signal.addEventListener("abort", listener); const keepAlive = setTimeout(() => {}, 1000);
+  const active = gate.run(() => work.promise); let outcome, calls = 0;
+  const waiting = gate.run(() => { calls++; }, { signal });
+  waiting.then(value => { outcome = { value }; }, error => { outcome = { code: error.code }; });
+  try { await expired.promise; await turn(); assert.equal(signal.aborted, true); assert.deepEqual(outcome, { code: "CANCELLED" }); assert.equal(calls, 0); }
+  finally { clearTimeout(keepAlive); work.resolve(); await gate.close(); await Promise.allSettled([active, waiting]); signal.removeEventListener("abort", listener); }
+});
+
+for (const throws of [false, true]) {
+  test(`callback-local cancellation beats its suppressed ${throws ? "exception" : "return value"}`, async () => {
+    const control = new AbortController(), remove = suppress(control), gate = createReadRequestGate();
+    try {
+      await assert.rejects(gate.run(() => {
+        control.abort();
+        if (throws) throw Error("private callback exception");
+        return "late public result";
+      }, { signal: control.signal }), error => error.code === "CANCELLED" && !error.message.includes("private callback"));
+    } finally { await gate.close(); remove(); }
+  });
+}
+
+test("cancel during an existing source cooldown rejects now and leaves no stale wake", async t => {
+  const advance = clock(t), control = new AbortController(), remove = suppress(control), gate = createReadRequestGate({ minIntervalMs: 1, maxPending: 1 });
+  let calls = 0, outcome;
+  await gate.run(({ defer }) => { calls++; defer(86400000); });
+  const waiting = gate.run(() => { calls++; }, { signal: control.signal });
+  waiting.then(value => { outcome = { value }; }, error => { outcome = { code: error.code }; });
+  try { control.abort(); await turn(); assert.deepEqual(outcome, { code: "CANCELLED" }); await advance(86400001); assert.equal(calls, 1); }
+  finally { await gate.close(); await Promise.allSettled([waiting]); remove(); }
+});
+
+test("real HTTP source work can drain after cancellation without delivering late source data", { timeout: 5000 }, async () => {
+  const entered = deferred(), control = new AbortController(), remove = suppress(control), gate = createReadRequestGate({ minIntervalMs: 1 });
+  let response, outcome, closed = false;
+  const server = http.createServer((_req, res) => { response = res; entered.resolve(); });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  // Deliberately non-cooperative trusted read: do not claim a socket stopped
+  // merely because its public caller cancelled. No model/credentials/network
+  // outside this exact owned loopback peer are involved.
+  const active = gate.run(async () => (await fetch(`http://127.0.0.1:${server.address().port}/source`)).json(), { signal: control.signal });
+  active.then(value => { outcome = { value }; }, error => { outcome = { code: error.code }; });
+  let close;
+  try {
+    await entered.promise; control.abort(); await turn(); assert.deepEqual(outcome, { code: "CANCELLED" });
+    close = gate.close().then(() => { closed = true; }); await turn(); assert.equal(closed, false);
+    response.writeHead(200, { "Content-Type": "application/json" }); response.end('{"status":"ready"}');
+    await close; assert.equal(closed, true); assert.deepEqual(outcome, { code: "CANCELLED" });
+  } finally {
+    if (response && !response.writableEnded) response.end('{"status":"ready"}');
+    await gate.close(); await Promise.allSettled([active]); remove(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("built-in Crossref native parent composition already preserves suppressed parent cancellation", async t => {
+  const advance = clock(t), search = await searchInstance(), control = new AbortController(), remove = suppress(control); let calls = 0;
+  const config = { webSearchFetchImpl: async () => { calls++; return Response.json(source); } };
+  try {
+    assert.equal((await search({ query: "public evidence first", provider: "crossref" }, config)).ok, true);
+    const queued = search({ query: "public evidence next", provider: "crossref" }, { ...config, abortSignal: control.signal });
+    control.abort(); const result = await queued; assert.equal(result.ok, false); assert.match(result.error, /CANCELLED/);
+    await advance(5000); assert.equal(calls, 1);
+  } finally { remove(); }
 });
