@@ -2,18 +2,19 @@
 
 ## Standalone application distribution
 
-For a text-only app backend, AgInTiLite private preview 14 provides the same
+For a text-only app backend, AgInTiLite private preview 15 provides the same
 bounded proposal loop without the full CLI, Studio or vision dependency graph.
-Canonical Lite `main` is `622fb984cbfab4065b486f7db9a04b9c123bd3f8`, also
-available as `sdk/agintilite-http-response-authority-20261113` in the AgInTiFlow repository.
+Canonical Lite `main` is `2a0fc24e21b0d1e36ae17fac5fc977969a07a829`, also
+available as `sdk/agintilite-native-callback-boundary-20261113` in the AgInTiFlow repository.
 That ref is a standalone SDK tree, not a branch to merge into Flow's application
 tree. Use the pinned local tarball, not a mutable worktree link. Its SHA-256 is
-`fadf4bcbe085b71385fd4818ee96982d67b6d96639c58bd585287b08b867b426`.
+`be21104101c2ea09cbb8c41435aeaa3baeba384e57c1eeeb78f353c4e796d479`.
 It remains private and unpublished to npm; no application is upgraded implicitly.
 
-Preview 14 includes the bounded transport retirement and cancellation/result
-guards from previews 11–13, plus original HTTP-header validation. Its 154 offline
-tests pass, including all 61 HTTP cases from a freshly installed reproducible
+Preview 15 includes the bounded transport retirement, cancellation/result and
+original HTTP-header guards from previews 11–14, and extends opaque result
+adoption to the generic native adapter. Its 179 offline tests pass, including
+44 callback-boundary cases and all 61 HTTP cases from a freshly installed reproducible
 nine-file tarball. The dependency graph remains empty and the public API is
 unchanged. Duplicate critical header evidence cannot authorize a proposal, read
 callback or retry hint. The older preview-10 qualification below is historical;
@@ -796,3 +797,11 @@ The cancelled boundary was a cooperative JavaScript read, not an in-flight model
 kill or remote hard-termination proof. The31-group offline suite adds deterministic
 cross-account and same-account overlap, late rejection/capacity, final-publication
 cancellation and abort-listener cleanup controls. No runtime repair was required.
+
+Synchronous raw transport responses pass the same opaque-result boundary as
+normalized provider responses and read results. The native OpenAI-compatible
+adapter rejects Proxy/thenable responses and any own `then` field before
+proposal parsing or read dispatch. Genuine native Promises and SDK Promise
+subclasses remain trusted host execution; hooks already invoked inside a
+trusted callback are outside this boundary. This does not qualify a new
+provider, authorize fallback, or change application-owned persistence.

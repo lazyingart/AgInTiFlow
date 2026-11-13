@@ -304,12 +304,16 @@ export function createRestrictedOpenAIProvider(options) {
         if (message.calls) return { role: "assistant", content: null, tool_calls: message.calls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) };
         return { role: message.role, content: message.content.map((part) => part.type === "text" ? part : ({ type: "image_url", image_url: { url: `data:${part.mediaType};base64,${part.data}` } })) };
       });
-      const raw = await complete({ model, messages, ...(request.tools.length ? { tools: request.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })) } : {}),
+      // Transport data is no more executable than normalized provider data.
+      // Box synchronous candidates before await can read their `then` hook;
+      // genuine SDK promises retain their trusted host-owned async behavior.
+      const { value: raw } = await invokeCallback(complete, [{ model, messages, ...(request.tools.length ? { tools: request.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })) } : {}),
         response_format: { type: "json_schema", json_schema: { name: "application_proposal", strict: true, schema: wireSchema } },
-        max_tokens: request.maxOutputTokens, stream: false, temperature: 0 }, { signal });
+        max_tokens: request.maxOutputTokens, stream: false, temperature: 0 }, { signal }]);
       // The SDK adds non-enumerable _request_id. Only choices is model data;
       // ignore transport metadata without invoking any accessors/hooks.
       if (!raw || typeof raw !== "object" || types.isProxy(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) fail("PROVIDER_PROTOCOL_INVALID");
+      if (Object.getOwnPropertyDescriptor(raw, "then")) fail("PROVIDER_PROTOCOL_INVALID");
       // An error envelope contradicts choices, even when null or hidden. Never
       // discard failure evidence while projecting a final answer or read call.
       if (Object.getOwnPropertyDescriptor(raw, "error")) fail("PROVIDER_PROTOCOL_INVALID");

@@ -30,7 +30,7 @@ const boundary=mock.module("node:child_process",{namedExports:{spawnSync(command
   if(args.at(-1)==="--version")return response(manifest.version+"\n");
   assert.ok(args.includes("--test"));assert.ok(args.includes("--test-concurrency=2"));
   consumerOptions={timeout:options.timeout,concurrency:2};
-  const total=scenario==="wrong-count"?1222:1223;
+  const total=scenario==="wrong-count"?1247:1248;
   const incomplete=["failed","cancelled","skipped"].includes(scenario);
   const counts=`# tests ${total}\n# pass ${total-(incomplete?1:0)}\n# fail ${scenario==="failed"?1:0}\n# cancelled ${scenario==="cancelled"?1:0}\n# skipped ${scenario==="skipped"?1:0}\n`;
   if(scenario==="timeout"||(scenario==="slow"&&options.timeout<240000)){
