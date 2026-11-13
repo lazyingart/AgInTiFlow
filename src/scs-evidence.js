@@ -489,6 +489,37 @@ function withoutFilePathMentions(text = "") {
   );
 }
 
+function outputIntentSyntax(text) {
+  const maskedPaths = withoutFilePathMentions(text);
+  const closers = { '"': '"', "'": "'", "`": "`", "“": "”", "‘": "’", "「": "」", "『": "』" };
+  const boundaries = [], quotes = [];
+  let quote = "", quoteStart = -1;
+  for (let offset = 0; offset < text.length; offset++) {
+    const character = text[offset];
+    if (character === "\\") { offset++;continue; }
+    if (quote) {
+      if (character === quote) { quotes.push({ start: quoteStart, end: offset + 1 });quote = ""; }
+      continue;
+    }
+    if (Object.hasOwn(closers, character) && !(character === "'" && /[\p{L}\p{N}]/u.test(text[offset - 1] || "") && /[\p{L}\p{N}]/u.test(text[offset + 1] || ""))) { quote = closers[character];quoteStart = offset;continue; }
+    if (/[!?。！？;；\n]/u.test(character) || character === "." && maskedPaths[offset] === "." && /\s|$/.test(text[offset + 1] || "")) {
+      boundaries.push(offset);
+    }
+  }
+  if (quote) quotes.push({ start: quoteStart, end: text.length });
+  return { boundaries, quotes };
+}
+
+function outputIntentClauseAt(text, index) {
+  const syntax = outputIntentSyntax(text);
+  let start = 0;
+  for (const boundary of syntax.boundaries) {
+    if (boundary >= index) break;
+    start = boundary + 1;
+  }
+  return { start, quoted: syntax.quotes.some(range => range.start < index && range.end > index) };
+}
+
 // Preservation is not an artifact-format catalog. A literal file may be source
 // code, a dotfile or an extensionless name. Parse only bounded explicit lists;
 // prose, URLs, globs and command strings do not become file authority.
@@ -763,10 +794,13 @@ function inferExactOutputPaths(goal = "") {
     const directOutputIndex = outputActionIndex(line);
     const hasDirectOutputAction = directOutputIndex >= 0;
     if (!isOutputListItem && !hasDirectOutputAction) continue;
+    const outputClause = outputIntentClauseAt(line, directOutputIndex);
+    if (!isOutputListItem && outputClause.quoted) continue;
     let sourceLine = !isOutputListItem && hasDirectOutputAction ? line.slice(directOutputIndex) : line;
     if (!isOutputListItem && negatedOutputLine.test(sourceLine)) continue;
-    const verifierIndex = line.search(/\b(?:validate|verify|check|compile|run|execute)\b/i);
-    if (!isOutputListItem && nonOutputToolLine.test(line) && verifierIndex >= 0 && verifierIndex < directOutputIndex) {
+    const currentClause = line.slice(outputClause.start);
+    const verifierIndex = currentClause.search(/\b(?:validate|verify|check|compile|run|execute)\b/i);
+    if (!isOutputListItem && nonOutputToolLine.test(currentClause) && verifierIndex >= 0 && verifierIndex < directOutputIndex - outputClause.start) {
       continue;
     }
     for (const span of inputFileClauseSpans(sourceLine, directOutputActionGlobal).reverse()) {
@@ -2208,12 +2242,28 @@ function stripForbiddenLanguage(goal = "") {
   for (const clause of filePreservationClauses(source).filter(item => item.directProhibition).sort((a, b) => b.index - a.index)) {
     source = source.slice(0, clause.index) + source.slice(clause.index, clause.index + clause.length).replace(/[^\r\n]/g, " ") + source.slice(clause.index + clause.length);
   }
+  // A filename dot does not end a negative directive. Mask the complete
+  // unquoted clause while preserving a later independently positive sentence.
+  const negativeSpans = [];
+  const syntax = outputIntentSyntax(source);
+  let boundaryCursor = 0, quoteCursor = 0, coveredUntil = 0;
+  for (const match of source.matchAll(/\b(?:do not|don't|dont|must not|should not|never|no need to)\s+/gi)) {
+    if (match.index < coveredUntil) continue;
+    while (quoteCursor < syntax.quotes.length && syntax.quotes[quoteCursor].end <= match.index) quoteCursor++;
+    const range = syntax.quotes[quoteCursor];
+    if (range && range.start < match.index && range.end > match.index) { coveredUntil = range.end;continue; }
+    while (boundaryCursor < syntax.boundaries.length && syntax.boundaries[boundaryCursor] < match.index) boundaryCursor++;
+    coveredUntil = syntax.boundaries[boundaryCursor] ?? source.length;
+    negativeSpans.push({ start: match.index, end: coveredUntil });
+  }
+  for (const span of negativeSpans.sort((left, right) => right.start - left.start)) {
+    source = source.slice(0, span.start) + source.slice(span.start, span.end).replace(/[^\r\n]/g, " ") + source.slice(span.end);
+  }
   return source
     .replace(
       /\b(?:create|attach|return|send|write|generate|produce)(?:\s*,?\s*(?:and|or)\s*(?:create|attach|return|send|write|generate|produce))*\s+no\s+(?:files?|attachments?|artifacts?)\b/gi,
       ""
     )
-    .replace(/\b(do not|don't|dont|must not|should not|never|no need to)\s+([^.\n;]+)/gi, "")
     .replace(/\bwithout\s+([^.,:\uFF1A\n;]+)/gi, "")
     .replace(/(?:不要|禁止|请勿|請勿)([^。\n；]+)/g, "");
 }

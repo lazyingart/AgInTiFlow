@@ -310,3 +310,22 @@ The documentation should be maintained as product code:
 - Add smoke tests when a workflow becomes behavior, not just guidance.
 - Update `AGINTI.md` for project-specific operating memory.
 - Treat docs changes as part of the release checklist before publishing npm.
+
+## Bounded SCS completion evidence
+
+The SCS finish review receives a valid JSON preview bounded to 7,000 UTF-8
+bytes. Current tool receipts, required evidence categories and failed checks
+have dedicated budgets; a long approved plan cannot displace them. Truncated
+sections are labelled in the preview. The preview is advisory: deterministic
+source, artifact and completion gates still use the authoritative session state,
+and model approval cannot override missing execution evidence.
+
+An instruction to check an input followed by an independent instruction to save
+outputs retains those output names. Quoted examples, command arguments and
+negated creation instructions do not become output authority.
+
+`npm run test:scs-proof-budget` checks proof priority, multilingual byte bounds,
+secret redaction and a persisted native SCS tool loop with one producer execution.
+`npm run test:output-clause-boundary` checks output requests and negative cases.
+These tests use local fixtures; they do not establish model quality or application
+sandbox readiness.

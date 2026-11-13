@@ -78,6 +78,80 @@ function compactJson(value, limit = 1800) {
   }
 }
 
+// A review preview is not an authoritative receipt. Bound each selected
+// section before serialization so planning state cannot displace the real
+// proof, and never cut the final JSON envelope or a Unicode code point.
+function boundedScsSection(value, maxBytes) {
+  const marker = " …[truncated]";
+  const holder = { value: JSON.parse(JSON.stringify(redactValue(value))) };
+  let truncated = false;
+  for (let pass = 0; pass < 512; pass++) {
+    if (Buffer.byteLength(JSON.stringify(holder.value), "utf8") <= maxBytes) return { value: holder.value, truncated };
+    const strings = [], arrays = [];
+    const visit = (parent, key) => {
+      const item = parent[key];
+      if (typeof item === "string") {
+        const bytes = Buffer.byteLength(item, "utf8");
+        if (bytes > Buffer.byteLength(marker)) strings.push({ parent, key, bytes });
+      } else if (Array.isArray(item)) {
+        if (item.length) arrays.push(item);
+        for (let index = 0; index < item.length; index++) visit(item, index);
+      } else if (item && typeof item === "object") {
+        for (const name of Object.keys(item)) visit(item, name);
+      }
+    };
+    visit(holder, "value");
+    strings.sort((left, right) => right.bytes - left.bytes);
+    if (strings.length) {
+      const target = strings[0], budget = Math.max(Buffer.byteLength(marker), Math.floor(target.bytes / 2));
+      let prefix = "", used = 0;
+      for (const character of target.parent[target.key].toWellFormed()) {
+        const bytes = Buffer.byteLength(character);
+        if (used + bytes + Buffer.byteLength(marker) > budget) break;
+        prefix += character;used += bytes;
+      }
+      target.parent[target.key] = prefix + marker;
+    } else if (arrays.length) {
+      // Callers order entries by proof priority before invoking this helper.
+      arrays.sort((left, right) => right.length - left.length);arrays[0].pop();
+    } else {
+      throw new Error("SCS evidence section cannot fit its bounded preview.");
+    }
+    truncated = true;
+  }
+  throw new Error("SCS evidence preview exceeded its bounded reduction budget.");
+}
+
+function currentScsCommandProofs(state, context) {
+  const floor = Math.max(0, Number(state.meta?.goalContract?.taskBoundaryRevision || 0), Number(state.meta?.goalContract?.activeGoalRevision || 0));
+  const proofs = [], seen = new Set();
+  const accept = (result, source) => {
+    if (result?.toolName !== "run_command" || Number(result.goalRevision || 0) < floor) return;
+    const proof = {
+      source, toolName: "run_command", goalRevision: Number(result.goalRevision || 0),
+      mutationRevision: Number(result.projectMutationRevision || result.mutationRevision || 0),
+      ok: typeof result.ok === "boolean" ? result.ok : null,
+      exitCode: Number.isInteger(result.exitCode) ? result.exitCode : null,
+      command: typeof result.args?.command === "string" ? result.args.command : "",
+      stdout: typeof result.stdout === "string" ? result.stdout : "",
+      stderr: typeof result.stderr === "string" ? result.stderr : "",
+      error: typeof result.error === "string" ? result.error : "",
+    };
+    const key = JSON.stringify([proof.goalRevision, proof.command, proof.stdout, proof.exitCode, proof.ok]);
+    if (seen.has(key)) return;seen.add(key);proofs.push(proof);
+  };
+  const events = Array.isArray(context.events) ? context.events : [];
+  for (let index = events.length - 1; index >= 0 && proofs.length < 2; index--) {
+    if (["tool.completed", "tool.failed", "tool.blocked"].includes(events[index].type)) accept(events[index].data, "event");
+  }
+  const messages = Array.isArray(state.messages) ? state.messages : [];
+  for (let index = messages.length - 1; index >= 0 && proofs.length < 2; index--) {
+    if (messages[index].role !== "tool") continue;
+    try { accept(JSON.parse(messages[index].content), "tool"); } catch { /* Unparseable text is not a command receipt. */ }
+  }
+  return proofs;
+}
+
 function decisionText(decision = {}) {
   return [
     decision.reason,
@@ -855,10 +929,16 @@ export function buildScsEvidencePack(state = {}, context = {}) {
   });
 
   const events = Array.isArray(context.events)
-    ? context.events.slice(-20).map((event) => ({
+    ? context.events.filter(event => /^(?:tool\.(?:completed|failed|blocked)|canvas\.|artifact\.)/.test(event.type)).slice(-4).reverse().map((event) => ({
         type: event.type,
         timestamp: event.timestamp,
-        data: redactValue(event.data || {}),
+        data: {
+          toolName: event.data?.toolName || "", ok: typeof event.data?.ok === "boolean" ? event.data.ok : null,
+          path: event.data?.path || "", goalRevision: Number(event.data?.goalRevision || 0),
+          url: event.data?.url || "", title: event.data?.title || "",
+          jobId: event.data?.jobId || "", state: typeof event.data?.state === "string" ? event.data.state : event.data?.status?.state || "",
+          error: event.data?.error || event.data?.reason || "",
+        },
       }))
     : [];
 
@@ -866,22 +946,35 @@ export function buildScsEvidencePack(state = {}, context = {}) {
   const evidenceLedger = buildScsEvidenceLedger({ state, context });
   const evidenceEvaluation = evaluateScsEvidence(taskContract, evidenceLedger);
 
-  return compactJson(
-    {
-      goal: state.goal || context.goal || "",
-      taskProfile: context.taskProfile || "",
-      approvedPlan: state.plan || "",
-      scs: state.meta?.scs || null,
-      ...summarizeScsContractEvidence({
-        contract: taskContract,
-        ledger: evidenceLedger,
-        evaluation: evidenceEvaluation,
-      }),
-      recentEvents: events,
-      recentMessages: messageSummary,
-    },
-    7000
-  );
+  const summary = summarizeScsContractEvidence({ contract: taskContract, ledger: evidenceLedger, evaluation: evidenceEvaluation });
+  const selectedItems = [], selectedIds = new Set();
+  const addItem = item => { if (item && !selectedIds.has(item.id)) { selectedIds.add(item.id);selectedItems.push(item); } };
+  const recentItems = summary.evidenceLedger.recentItems.slice().reverse();
+  for (const requirement of taskContract.requiredEvidence || []) {
+    const item = [...(evidenceLedger.items || [])].reverse().find(candidate => candidate.category === requirement.category);
+    if (item) addItem({ id: item.id, category: item.category, source: item.source, toolName: item.toolName || "", target: item.target || "", proof: compact(item.proof || "", 300), gitActions: item.gitActions || (item.gitAction ? [item.gitAction] : []), requiredCommandBatchId: item.requiredCommandBatchId || "", requiredProjectCommand: item.requiredProjectCommand || "" });
+  }
+  for (const item of recentItems) { if (selectedItems.length >= 6) break;addItem(item); }
+  const scs = state.meta?.scs || {};
+  const sections = {
+    goal: [state.goal || context.goal || "", 240],
+    contract: [Object.fromEntries(Object.entries(summary.contract).filter(([, value]) => Array.isArray(value) ? value.length : value !== "" && value !== undefined && value !== null)), 1400],
+    evaluation: [summary.evaluation, 700],
+    evidenceLedger: [{ itemCount: summary.evidenceLedger.itemCount, categories: summary.evidenceLedger.categories, toolNames: summary.evidenceLedger.toolNames, recentItems: selectedItems, blockers: summary.evidenceLedger.blockers.slice(-3) }, 1800],
+    commandProofs: [currentScsCommandProofs(state, context), 1200],
+    recentEvents: [events, 400], recentMessages: [messageSummary.reverse(), 500],
+    approvedPlan: [state.plan || "", 160],
+    scs: [{ enabled: Boolean(scs.enabled), active: Boolean(scs.active), finishRejects: Number(scs.finishRejects || 0) }, 160],
+  };
+  const pack = {}, boundedSections = [];
+  for (const [name, [value, budget]] of Object.entries(sections)) {
+    const section = boundedScsSection(value, budget);pack[name] = section.value;
+    if (section.truncated) boundedSections.push(name);
+  }
+  pack.budget = { maxUtf8Bytes: 7000, boundedSections };
+  const wire = JSON.stringify(pack);
+  if (Buffer.byteLength(wire, "utf8") > 7000) throw new Error("SCS proof preview exceeded its total byte bound.");
+  return wire;
 }
 
 export function buildSupervisorInstruction(scs = {}) {
