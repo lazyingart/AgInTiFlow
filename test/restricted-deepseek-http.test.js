@@ -24,7 +24,7 @@ mock.module("node:https", { namedExports: { ...https, Agent: FixtureAgent,
     if (activeFixture.throwBefore) throw Error("Synthetic pre-dispatch constructor failure");
     const owner = activeFixture;
     const request = http.request({ ...options, protocol: "http:", hostname: "127.0.0.1", port: activeFixture.port }, response => {
-      callback(response); owner.onResponseReceived?.();
+      callback(response); owner.onResponseReceived?.(response);
     });
     if (owner.holdSocketClose) request.once("socket", socket => {
       const emit = socket.emit;
@@ -409,3 +409,79 @@ test("confirmed cancellation within the grace preserves its error and permits a 
   assert.equal((await (await native(f)).run(input)).proposal.reply, "fresh");
   assert.equal(f.state.constructions, 2);
 });
+
+// Use real wire headers: Node intentionally discards some duplicate field
+// values in response.headers, so validating only that object loses evidence.
+const ambiguousHeaders = [
+  ["identical content types", 200, ["Content-Type", "application/json", "Content-Type", "application/json"]],
+  ["conflicting content types", 200, ["Content-Type", "application/json", "Content-Type", "text/plain"]],
+  ["mixed-case content types", 200, ["Content-Type", "application/json", "cOnTeNt-TyPe", "text/event-stream"]],
+  ["unsupported first content type", 200, ["Content-Type", "text/plain", "Content-Type", "application/json"]],
+  ["rate-limit retry hints", 429, ["Content-Type", "application/json", "Retry-After", "2", "rEtRy-AfTeR", "86400"]],
+  ["unavailable retry hints", 503, ["Content-Type", "application/json", "Retry-After", "2", "Retry-After", "0"]],
+  ["identical content encodings", 200, ["Content-Type", "application/json", "Content-Encoding", "identity", "Content-Encoding", "identity"]],
+  ["identical content lengths", 200, ["Content-Type", "application/json", "Content-Length", "0", "Content-Length", "0"]],
+];
+for (const [label, status, headers] of ambiguousHeaders) {
+  test(`duplicate ${label} fail before proposal or retry metadata`, { timeout: 5000 }, async t => {
+    const f = await setup(t, (_req, res) => { res.writeHead(status, headers); res.end(JSON.stringify(result("must not escape"))); });
+    await assert.rejects((await native(f)).run(input), error => category("protocol")(error) && error.providerFailure.retryAfterMs === null);
+    assert.equal(f.state.constructions, 1); assert.equal(f.requests.length, 1);
+  });
+}
+
+for (const coding of ["gzip, chunked", "custom, chunked"]) {
+  test(`unsupported transfer coding ${coding} cannot bypass the JSON profile`, { timeout: 5000 }, async t => {
+    const f = await setup(t, (_req, res) => {
+      res.writeHead(200, ["Content-Type", "application/json", "Transfer-Encoding", coding]);
+      res.end(JSON.stringify(result("must not escape")));
+    });
+    await assert.rejects((await native(f)).run(input), category("protocol")); assert.equal(f.requests.length, 1);
+  });
+}
+
+for (const count of [128, 129]) {
+  test(`${count} native response header fields respect the exact bounded profile`, { timeout: 5000 }, async t => {
+    let observed;
+    const f = await setup(t, (_req, res) => {
+      const body = JSON.stringify(result("bounded"));
+      const headers = ["Content-Type", "application/json", "Content-Length", String(Buffer.byteLength(body)), "Connection", "close"];
+      for (let n = 3; n < count; n++) headers.push(`x-fixture-${n}`, "1");
+      res.sendDate = false; res.writeHead(200, headers); res.end(body);
+    }, { onResponseReceived: response => { observed = response.rawHeaders.length / 2; } });
+    if (count === 128) assert.equal((await (await native(f)).run(input)).proposal.reply, "bounded");
+    else await assert.rejects((await native(f)).run(input), category("protocol"));
+    assert.equal(observed, count); assert.equal(f.requests.length, 1);
+  });
+}
+
+test("unrelated repeated response headers do not become a false protocol failure", { timeout: 5000 }, async t => {
+  const f = await setup(t, (_req, res) => {
+    res.writeHead(200, ["Content-Type", "application/json", "Set-Cookie", "fixture_a=1", "Set-Cookie", "fixture_b=2", "x-trace", "one", "x-trace", "two"]);
+    res.end(JSON.stringify(result("normal")));
+  });
+  assert.equal((await (await native(f)).run(input)).proposal.reply, "normal"); assert.equal(f.requests.length, 1);
+});
+
+for (const ambiguous of [false, true]) {
+  test(`${ambiguous ? "ambiguous" : "normal"} HTTP metadata gates the actual declared read loop`, { timeout: 5000 }, async t => {
+    let reads = 0;
+    const record = Object.freeze({ reply: "ready" });
+    const f = await setup(t, (_req, res, body) => {
+      res.writeHead(200, ambiguous ? ["Content-Type", "application/json", "Content-Type", "text/plain"] : ["Content-Type", "application/json"]);
+      res.end(JSON.stringify(body.messages.some(m => m.role === "tool") ? result("ready") : {
+        choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null,
+          tool_calls: [{ index: 0, id: "read_current", type: "function", function: { name: "read_note", arguments: "{}" } }] } }],
+      }));
+    });
+    const runner = createRestrictedApplicationRunner({ provider: f.client.provider, instructions: "Read the current host note; return its status without changing it.", outputSchema: schema,
+      tools: [{ name: "read_note", description: "Read this account's current note", readOnly: true,
+        inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false }, outputSchema: schema,
+        execute() { reads++; return record; } }], limits: { timeoutMs: 1200, maxSteps: 2, maxToolCalls: 1, maxOutputTokens: 128 } });
+    const task = { input: [{ type: "text", text: "check my note pls, just tell me current status. don't change anything" }] };
+    if (ambiguous) await assert.rejects(runner.run(task), category("protocol"));
+    else assert.equal((await runner.run(task)).proposal.reply, "ready");
+    assert.equal(reads, ambiguous ? 0 : 1); assert.equal(f.requests.length, ambiguous ? 1 : 2);
+    assert.deepEqual(record, { reply: "ready" });
+  });
+}

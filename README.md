@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.13.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.14.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.13.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.14.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -345,9 +345,18 @@ can run; the transport adds no tools, sessions, writes or agent semantics.
 | Concurrent requests per client | 1–32; default 4; no queue |
 | Request UTF-8 bytes | 2 MiB, including the opaque user ID |
 | Response bytes | 256 KiB, including keep-alive whitespace |
-| Response headers | 16 KiB |
+| Response headers | 16 KiB; at most 128 fields |
 | Unconfirmed local cleanup grace | 3000 ms; fixed, no caller override |
 | Requested output tokens | 1–8192, further bounded by the runner |
+
+The optional HTTP client validates original response headers before accepting
+a body or exposing status-derived retry hints. Duplicate Content-Type,
+Content-Encoding, Content-Length, Transfer-Encoding or Retry-After fields are
+protocol failures, including equal values or different casing. Successful JSON
+responses permit only absent or `chunked` transfer coding; a coding list or
+unknown coding is refused. Unrelated repeated fields remain valid. This prevents
+Node's normalized header map from hiding contradictory evidence before a
+proposal or declared read callback is accepted. It adds no retry or fallback.
 
 The runner's total deadline remains independent. Full local capacity refuses
 new requests through the typed `unavailable` provider-failure channel. HTTP

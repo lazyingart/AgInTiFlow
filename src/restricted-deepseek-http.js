@@ -10,6 +10,7 @@ import { dataFields, integer, jsonSnapshot, fail, parseRestrictedJson, Restricte
 const NativeAgent = Agent, nativeRequest = request;
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 256 * 1024;
+const MAX_RESPONSE_HEADER_FIELDS = 128;
 const CLEANUP_GRACE_MS = 3000;
 const byteLength = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), "byteLength").get;
 const setBytes = Uint8Array.prototype.set;
@@ -36,6 +37,24 @@ function containsCredential(value, secret) {
   if (typeof value === "string") return value.includes(secret);
   if (!value || typeof value !== "object") return false;
   return Object.keys(value).some(key => key.includes(secret) || containsCredential(value[key], secret));
+}
+
+function unambiguousResponseHeaders(response) {
+  // IncomingMessage.headers discards duplicates of fields such as Content-Type
+  // and Retry-After. Inspect the original bounded field list before trusting
+  // either a successful body or status-derived retry metadata.
+  const raw = response.rawHeaders;
+  if (!Array.isArray(raw) || raw.length % 2 || raw.length > MAX_RESPONSE_HEADER_FIELDS * 2) return false;
+  const seen = new Set();
+  for (let index = 0; index < raw.length; index += 2) {
+    if (typeof raw[index] !== "string" || typeof raw[index + 1] !== "string") return false;
+    const name = raw[index].toLowerCase();
+    if (["content-type", "content-encoding", "content-length", "transfer-encoding", "retry-after"].includes(name)) {
+      if (seen.has(name)) return false;
+      seen.add(name);
+    }
+  }
+  return true;
 }
 
 export function createDeepSeekHttpTransport(options, issueFailure) {
@@ -137,6 +156,7 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
       res.once("error", () => stop(failure("unavailable")));
       res.once("aborted", () => stop(failure("unavailable")));
       if (!checkpoint() || closed || poisoned) { stop(error || failure("unavailable")); return; }
+      if (!unambiguousResponseHeaders(res)) { stop(failure("protocol")); return; }
       if (res.statusCode !== 200) {
         const category = statusCategory(res.statusCode);
         const header = res.headers["retry-after"];
@@ -144,10 +164,12 @@ export function createDeepSeekHttpTransport(options, issueFailure) {
           /^(0|[1-9][0-9]{0,4})$/.test(header) && Number(header) <= 86400 ? Number(header) * 1000 : null;
         stop(failure(category, retryAfterMs)); return;
       }
-      const contentType = res.headers["content-type"], encoding = res.headers["content-encoding"], length = res.headers["content-length"];
+      const contentType = res.headers["content-type"], encoding = res.headers["content-encoding"], length = res.headers["content-length"], transfer = res.headers["transfer-encoding"];
       if (typeof contentType !== "string" || !/^application\/json(?:;\s*charset=utf-8)?$/i.test(contentType) ||
           (encoding !== undefined && (typeof encoding !== "string" || encoding.toLowerCase() !== "identity")) ||
-          (length !== undefined && (typeof length !== "string" || !/^(0|[1-9][0-9]{0,9})$/.test(length) || Number(length) > MAX_RESPONSE_BYTES))) {
+          (length !== undefined && (typeof length !== "string" || !/^(0|[1-9][0-9]{0,9})$/.test(length) || Number(length) > MAX_RESPONSE_BYTES)) ||
+          (transfer !== undefined && (typeof transfer !== "string" || transfer.toLowerCase() !== "chunked")) ||
+          (length !== undefined && transfer !== undefined)) {
         stop(failure("protocol")); return;
       }
       res.on("data", chunk => {
