@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.14.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.15.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.14.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.15.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -473,3 +473,11 @@ Unicode/escapes, neutral metadata and the already-closed newline identifier
 boundary. No model request, application edit, provider activation, deployment or
 npm publication is part of this preview. Existing vendored copies stay pinned
 until their application owner independently reviews and qualifies an upgrade.
+
+Synchronous raw transport responses pass the same opaque-result boundary as
+normalized provider responses and read results. The native OpenAI-compatible
+adapter rejects Proxy/thenable responses and any own `then` field before
+proposal parsing or read dispatch. Genuine native Promises and SDK Promise
+subclasses remain trusted host execution; hooks already invoked inside a
+trusted callback are outside this boundary. This does not qualify a new
+provider, authorize fallback, or change application-owned persistence.
