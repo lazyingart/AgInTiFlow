@@ -47,7 +47,7 @@ GitHub Release event does not satisfy that predicate. Do not relax the predicate
 or set its flags locally to manufacture a passing namespace proof. Do not move
 an existing tag or launch a second publish while its first run is unresolved.
 
-`pack:verify-runtime` runs the complete 1,378-case consumer cohort at concurrency
+`pack:verify-runtime` runs the complete 1,406-case consumer cohort at concurrency
 two with a finite ten-minute outer watchdog. Individual test deadlines remain
 unchanged. Failure preserves child stdout/stderr, including partial progress.
 Qualification requires all cases to pass with no cancellation or skips; the

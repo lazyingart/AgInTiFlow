@@ -16,6 +16,43 @@ export function isLaunchOnlyHandoffGoal(goal) {
 const fields = ["version", "goalRevision", "goalHash", "mutationRevision", "jobId", "statusPath", "statusMarkdownPath", "stdoutPath", "stderrPath"];
 const files = { statusPath: "status.json", statusMarkdownPath: "status.md", stdoutPath: "stdout.log", stderrPath: "stderr.log" };
 
+// Presentation of an acknowledged native result, never a dispatch request or
+// current-status authority. Omit commands, cwd, PID, output bodies and extras.
+export function retainedLongJobResult(value) {
+  let p;
+  try { p = jsonSnapshot(value, { maxBytes: 64 * 1024, maxNodes: 512 }); } catch { return null; }
+  if (!p || p.ok !== true || !["start_long_job", "long_job_status"].includes(p.toolName) ||
+      typeof p.jobId !== "string" || !/^[A-Za-z0-9_.+-]{8,140}$/.test(p.jobId)) return null;
+  const result = { ok: true, toolName: p.toolName, jobId: p.jobId };
+  for (const [key, file] of Object.entries(files)) {
+    if (key === "statusMarkdownPath" && p.toolName === "long_job_status") continue;
+    if (p[key] !== `.aginti/long-jobs/${p.jobId}/${file}`) return null;
+    result[key] = p[key];
+  }
+  for (const key of ["goalRevision", "projectMutationRevision"]) if (Object.hasOwn(p, key)) {
+    if (!Number.isSafeInteger(p[key]) || p[key] < (key === "goalRevision" ? 1 : 0)) return null;
+    result[key] = p[key];
+  }
+  if (p.toolName === "start_long_job") {
+    if (p.background !== true || p.deferredVerification !== true) return null;
+    result.background = true; result.deferredVerification = true;
+    result.instruction = "Previously acknowledged launch only, not a current status check. Launch arguments were omitted. Use long_job_status with this job ID; do not repeat the producer solely because history was repaired.";
+  } else {
+    const time = v => typeof v === "string" && v.length === 24 && Number.isFinite(Date.parse(v)) && new Date(v).toISOString() === v;
+    if (!["created", "starting", "running", "verifying", "restarting", "completed", "failed"].includes(p.state) ||
+        !time(p.createdAt) || !time(p.updatedAt) || p.updatedAt < p.createdAt ||
+        !Number.isSafeInteger(p.attempt) || p.attempt < 0 ||
+        !Number.isSafeInteger(p.outputBytes) || p.outputBytes < 0 || typeof p.outputExists !== "boolean" ||
+        ![null, true, false].includes(p.sessionAlive) ||
+        ![p.exitCode, p.verifyExitCode].every(v => v === null || Number.isSafeInteger(v) && v >= 0 && v <= 255) ||
+        !p.outputExists && p.outputBytes !== 0 ||
+        p.state === "completed" && (p.exitCode !== 0 || ![null, 0].includes(p.verifyExitCode))) return null;
+    for (const key of ["state", "createdAt", "updatedAt", "attempt", "outputBytes", "outputExists", "exitCode", "verifyExitCode", "sessionAlive"]) result[key] = p[key];
+    result.instruction = "Previously observed status at updatedAt, not proof of the current state. Reread long_job_status when fresh status is required; do not repeat the producer because its history was repaired.";
+  }
+  return Object.freeze(result);
+}
+
 function validatedReceipt(value) {
   try {
     const r = dataFields(value, fields, fields);

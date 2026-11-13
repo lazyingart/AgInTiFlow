@@ -38,6 +38,21 @@ inspect its evidence before deciding what recovery is safe.
 New jobs receive this supervisor when they are created. Updating the CLI does
 not rewrite an existing job's supervisor or restart its work.
 
+The native launcher checkpoints the acknowledged result and its closed tool
+frame before publishing `tool.completed`, `long_job.started` or its canvas
+item. A later event-storage or caller-delivery failure must not manufacture a
+failed producer result or erase the saved launch. Resume uses that receipt;
+it does not blindly start the producer again. A failure or crash before the
+checkpoint commits remains ambiguous; this is not a generic exactly-once claim.
+
+Native history repair retains a bounded launch/status view when a provider
+cannot replay an old frame without reasoning metadata. It retains job IDs,
+safe relative status/log paths and timestamped status observations, omitting
+commands, cwd, PIDs and raw output. Retained observations are not fresh status
+or new dispatch authority. Short explicit information follow-ups remain active
+requests after completed work; a bare continuation still repeats no effects.
+English, Chinese and Japanese follow-up regressions cover this distinction.
+
 For an unambiguous launch-only request, an acknowledged native job receipt can
 move the next turn to the existing finish-only phase. The receipt is bound to
 the current goal revision/hash and mutation revision. Existing evidence,
@@ -70,3 +85,7 @@ and multi-user limitations above. The native status fixtures execute no commands
 `npm run test:background-handoff` covers the receipt scope and the persisted
 native loop with scripted loopback responses and fake tmux admission, without
 running a background producer or calling a model.
+`npm run test:long-job-checkpoint` tests event-write failures, post-event process
+death, restart without duplicate admission, missing reasoning metadata and
+sanitized history. These cases use fake tmux admission; real worker execution
+is qualified separately.

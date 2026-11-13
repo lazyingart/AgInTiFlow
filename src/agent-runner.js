@@ -18,7 +18,7 @@ import { SessionStore } from "./session-store.js";
 import { assessFileChecksumClaims, nativeFileChecksumReceipts } from "./completion-file-checksums.js";
 import { acquireNativeSessionRunLock } from "./session-run-lock.js";
 import { runNativeHostCommand } from "./native-host-command.js";
-import { budgetStopWithDeferredReceipts, deferredJobLaunchSummary, launchOnlyHandoffReceipt, recordDeferredJobReceipt } from "./deferred-job-handoff.js";
+import { budgetStopWithDeferredReceipts, deferredJobLaunchSummary, launchOnlyHandoffReceipt, recordDeferredJobReceipt, retainedLongJobResult } from "./deferred-job-handoff.js";
 import {
   assertIntegrationRunAgentInvocation,
   assertRegisteredIntegrationSessionConfig,
@@ -1058,6 +1058,8 @@ const COMPACTION_STATE_TOOL_NAMES = new Set([
   "apply_patch",
   "write_file",
   "run_command",
+  "start_long_job",
+  "long_job_status",
 ]);
 
 const RETAINED_PROJECT_INSTRUCTION_PATH_PATTERN =
@@ -1102,6 +1104,7 @@ function isRetainablePartialWorkspaceResult(toolName, payload = {}) {
 }
 
 function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
+  if (["start_long_job", "long_job_status"].includes(toolName)) return retainedLongJobResult(payload);
   const result = {
     ok: payload.ok !== false,
     toolName,
@@ -1242,9 +1245,12 @@ function retainedToolStateMessages(messages = [], limit = 12, outputPaths = [], 
   let ordinal = 0;
   const retainRecord = (name, args = {}, payload = {}) => {
     if (!COMPACTION_STATE_TOOL_NAMES.has(name)) return;
+    const isLongJob = name === "start_long_job" || name === "long_job_status";
+    const longJob = isLongJob ? retainedLongJobResult(payload) : null;
+    if (isLongJob && (!longJob || longJob.toolName !== name)) return;
     const partial = isRetainablePartialWorkspaceResult(name, payload);
     if (!payload || (payload.ok === false && !partial) || payload.blocked || payload.skipped) return;
-    const sourcePath = String(payload.path || args?.path || "").trim();
+    const sourcePath = isLongJob ? "" : String(payload.path || args?.path || "").trim();
     const changedPaths = partial ? payload.changes.flatMap(change => [change.path, change.fromPath]).filter(Boolean) : [sourcePath];
     if (["apply_patch", "write_file"].includes(name) && changedPaths.length) {
       for (const [key, record] of recordsByKey.entries()) {
@@ -1256,9 +1262,9 @@ function retainedToolStateMessages(messages = [], limit = 12, outputPaths = [], 
         }
       }
     }
-    const command = String(args?.command || payload.args?.command || "").trim();
+    const command = isLongJob ? "" : String(args?.command || payload.args?.command || "").trim();
     const durableIdentity = String(
-      sourcePath || command || payload.researchId || args?.researchId || args?.query || name
+      longJob?.jobId || sourcePath || command || payload.researchId || args?.researchId || args?.query || name
     ).trim();
     const readRange = name === "read_file" ? retainedReadRange(payload, args) : null;
     const key = `${name}:${durableIdentity || ordinal}${readRange ? `:${readRange.key}` : ""}`;
@@ -1266,7 +1272,7 @@ function retainedToolStateMessages(messages = [], limit = 12, outputPaths = [], 
       ordinal: ordinal += 1,
       name,
       sourcePath,
-      args: partial ? { patch: "Partial patch arguments omitted; inspect confirmed changes and remaining work." } : redactValue(args),
+      args: isLongJob ? name === "long_job_status" ? { jobId: longJob.jobId } : {} : partial ? { patch: "Partial patch arguments omitted; inspect confirmed changes and remaining work." } : redactValue(args),
       payload: compactRetainedToolPayload(name, payload, args),
     });
   };
@@ -4656,7 +4662,21 @@ function isGenericTaskContinuationText(value = "") {
 
 export function continuationAddsConcreteRequirement(value = "") {
   const normalized = String(value || "").replace(/\s+/g, " ").trim();
-  if (!normalized || isBareTaskContinuationText(normalized)) return false;
+  if (!normalized) return false;
+  // A leading "continue" does not make a short, explicit information request
+  // a no-op. This precedes the broad same-task/bare continuation recognition;
+  // the new request must also survive later active-goal compaction.
+  const clauses = normalized.split(/[.!?。！？;；:：,，]|\b(?:and|then|also)\b/iu).map(part => part.trim()).filter(Boolean);
+  const explicitReadRequest = clauses.some(part => !/^(?:(?:please|kindly)\s+)?(?:verify|check|inspect|review)\s+(?:every|all|each|any)\s+(?:(?:the|documented|existing|remaining|requested)\s+)*(?:requirements?|deliverables?|work|tasks?|outputs?|checks?)$/iu.test(part) && (
+    /^(?:(?:please|kindly)\s+)?(?:(?:show|tell|give)\s+me|report|show|list|summari[sz]e|explain|inspect|check|verify|recheck|compare|describe|read|review)\s+(?!(?:is|are|was|were|already)\b)\S/iu.test(part) ||
+    /^(?:(?:please|kindly)\s+)?(?:what|where|when|which|why|how|who)\s+\S/iu.test(part) ||
+    /^(?:请|麻烦)?(?:告诉我|汇报|报告|展示|显示|列出|总结|解释|检查|查看|看看|核实|验证|对比|比较|描述|读取|重新检查).+/u.test(part) ||
+    /^(?!不要|不用|无需|别|不必).*(?:什么|如何|哪里|为何|为什么|是否|怎样).*/u.test(part) ||
+    /(?:を|について)(?:教えて|報告して|説明して|確認して|見せて|要約して|比較して|調べて)(?:ください)?$/u.test(part) ||
+    /^(?:もう一度)?(?:確認して|教えて|説明して|報告して|見せて)(?:ください)?$/u.test(part)
+  ));
+  if (explicitReadRequest) return true;
+  if (isBareTaskContinuationText(normalized)) return false;
   if (!isGenericTaskContinuationText(normalized)) return true;
   const contract = deriveScsTaskContract({ goal: normalized, taskProfile: "auto" });
   const hasParsedContractRequirement = [
@@ -25398,11 +25418,18 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       }
       case "start_long_job": {
         const result = await startLongJob(args, config);
+        if (result.ok) recordDeferredJobReceipt(state, result);
+        // Match native commands/workspace mutations: close the accepted frame
+        // before publishing any result, job event or canvas item. A later I/O
+        // failure is not a second, contradictory producer outcome.
+        if (checkpointCompletedToolResult) {
+          completedToolCheckpointStarted = true;
+          await checkpointCompletedToolResult(result);
+        }
         const eventResult = sanitizeToolResult(result);
         await store.appendEvent(result.ok ? "tool.completed" : "tool.failed", eventResult);
         observers.event(result.ok ? "tool.completed" : "tool.failed", eventResult);
         if (result.ok) {
-          recordDeferredJobReceipt(state, result);
           await store.appendEvent("long_job.started", eventResult);
           observers.event("long_job.started", eventResult);
           if (result.statusMarkdownPath) {
