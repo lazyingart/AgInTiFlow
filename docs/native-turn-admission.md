@@ -8,6 +8,13 @@ Partial nonempty content, truncated native calls, multiple choices and explicit
 refusals fail with a fixed `MODEL_TURN_*` error and status 422. The error contains
 no upstream content and does not trigger a provider or text-protocol fallback.
 
+An own top-level `error` field also contradicts a successful chat-completion
+envelope. Its presence is rejected before choices can authorize any action,
+including when the value is null, false, empty, hidden or an accessor. The
+boundary never reads that value or includes raw upstream diagnostics in its
+error. This rule applies to planning, tool turns and direct final answers;
+valid native calls, textual tool syntax and SDK metadata remain supported.
+
 Empty or reasoning-only nonacting replies retain the established bounded
 continuation/verified-fallback path. Reasoning does not excuse a native call or
 nonempty partial answer. Legacy transports may omit role/finish metadata for
@@ -20,6 +27,9 @@ They verify no rejected content reaches saved messages/events, no truncated call
 executes, the session lease releases, and resume can finish without repeating an
 already successful producer. Scripted loopback replies are used for malformed
 provider cases; real model quality is a separate qualification.
+Error-plus-choices controls also verify that a failed finalization retains prior
+verified work and a fresh-process resume does not repeat its producer. Refusal
+does not roll back already completed actions or authorize automatic redispatch.
 
 ## Preserved input paths
 

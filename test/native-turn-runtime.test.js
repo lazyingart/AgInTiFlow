@@ -13,7 +13,8 @@ const note = "Latency improved from 120 ms to 90 ms.\n", summary = "# Summary\n\
 const marker = "INCOMPLETE_PROVIDER_PAYLOAD";
 const wrap = message => ({ choices: [{ index: 0, finish_reason: message.tool_calls ? "tool_calls" : "stop", message: { role: "assistant", content: null, ...message } }] });
 const tool = (name, args, id) => wrap({ tool_calls: [{ id: "turn_boundary_" + id, type: "function", function: { name, arguments: JSON.stringify(args) } }] });
-for (const scenario of ["plan", "tool", "finish", "text-tool", "refusal", "multiple", "reasoning", "empty"]) test(`native ${scenario} admission preserves side-effect and restart boundaries`, { timeout: 30000 }, async t => {
+for (const scenario of ["plan", "tool", "finish", "text-tool", "refusal", "multiple", "reasoning", "empty",
+  "error-plan", "error-tool", "error-finish", "error-text-tool", "error-null"]) test(`native ${scenario} admission preserves side-effect and restart boundaries`, { timeout: 30000 }, async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-native-turn-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const workspace = path.join(root, "workspace"); await fs.mkdir(workspace, { mode: 0o700 }); await fs.writeFile(path.join(workspace, "note.txt"), note);
@@ -24,19 +25,19 @@ for (const scenario of ["plan", "tool", "finish", "text-tool", "refusal", "multi
     req.on("end", () => {
       requests++; const payload = JSON.parse(body); let reply;
       if (!payload.tools) {
-        reply = wrap({ content: phase === "bad" && scenario === "plan" ? marker : "1. Read note.txt.\n2. Save summary.md.\n3. Verify it and finish." });
+        reply = wrap({ content: phase === "bad" && ["plan", "error-plan"].includes(scenario) ? marker : "1. Read note.txt.\n2. Save summary.md.\n3. Verify it and finish." });
         if (phase === "bad" && scenario === "plan") reply.choices[0].finish_reason = "length";
       } else if (phase === "bad" && ["reasoning", "empty"].includes(scenario) && !reasoningSent) {
         reasoningSent = true; reply = wrap({ content: null, ...(scenario === "reasoning" ? { reasoning_content: "Need one next action." } : {}) }); reply.choices[0].finish_reason = "length";
-      } else if (phase === "bad" && ["tool", "text-tool", "refusal", "multiple"].includes(scenario)) {
+      } else if (phase === "bad" && ["tool", "text-tool", "refusal", "multiple", "error-tool", "error-text-tool", "error-null"].includes(scenario)) {
         reply = tool("write_file", { path: "summary.md", content: marker, mode: "create" }, "bad");
-        if (scenario === "text-tool") reply = wrap({ content: `Requested tool: write_file(${JSON.stringify({ path: "summary.md", content: marker, mode: "create" })})` });
+        if (["text-tool", "error-text-tool"].includes(scenario)) reply = wrap({ content: `Requested tool: write_file(${JSON.stringify({ path: "summary.md", content: marker, mode: "create" })})` });
         if (scenario === "refusal") reply.choices[0].message.refusal = marker;
         else if (scenario === "multiple") reply.choices.push(structuredClone(reply.choices[0]));
-        else reply.choices[0].finish_reason = "length";
+        else if (!scenario.startsWith("error-")) reply.choices[0].finish_reason = "length";
       } else {
         normal++;
-        if (phase === "good" && scenario === "finish") {
+        if (phase === "good" && ["finish", "error-finish"].includes(scenario)) {
           const finishOnly = payload.tools.every(d => d.function.name === "finish");
           reply = normal === 1 && !finishOnly ? tool("read_file", { path: "summary.md" }, "resume_read")
             : tool("finish", { result: "Created and verified summary.md. The input note.txt is unchanged." }, "resume_finish");
@@ -45,8 +46,12 @@ for (const scenario of ["plan", "tool", "finish", "text-tool", "refusal", "multi
             ? tool("write_file", { path: "summary.md", content: summary, mode: "create" }, "write")
             : tool("apply_patch", { patch: "*** Begin Patch\n*** Add File: summary.md\n" + summary.trimEnd().split("\n").map(line => "+" + line).join("\n") + "\n*** End Patch" }, "write"))
           : normal === 3 ? tool("read_file", { path: "summary.md" }, "verify")
-          : tool("finish", { result: phase === "bad" && scenario === "finish" ? marker : "Created and verified summary.md. The input note.txt is unchanged." }, "finish");
+          : tool("finish", { result: phase === "bad" && ["finish", "error-finish"].includes(scenario) ? marker : "Created and verified summary.md. The input note.txt is unchanged." }, "finish");
         if (phase === "bad" && scenario === "finish" && normal === 4) reply.choices[0].finish_reason = "length";
+      }
+      if (phase === "bad" && scenario.startsWith("error-") &&
+          (scenario === "error-plan" ? !payload.tools : scenario === "error-finish" ? normal === 4 : Boolean(payload.tools))) {
+        reply.error = scenario === "error-null" ? null : { code: "quota_exceeded", message: marker };
       }
       if (payload.tools) trace.push({ offered: payload.tools.map(t => t.function.name), requested: reply.choices[0].message.tool_calls?.map(t => t.function.name) || [] });
       res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(reply));
@@ -69,10 +74,10 @@ for (const scenario of ["plan", "tool", "finish", "text-tool", "refusal", "multi
     if (scenario === "reasoning") assert.equal(first.filter(e => e.type === "model.reasoning_continuation_requested").length, 1);
   } else {
     assert.equal(result.ok, false); assert.match(result.code, /^MODEL_TURN_/); assert.equal(result.status, 422);
-    assert.equal(requests, scenario === "plan" ? 1 : scenario === "finish" ? 5 : 2, "No hidden retry or fallback");
+    assert.equal(requests, ["plan", "error-plan"].includes(scenario) ? 1 : ["finish", "error-finish"].includes(scenario) ? 5 : 2, "No hidden retry or fallback");
     assert.equal(first.some(e => e.type === "session.finished"), false);
     assert.ok(first.some(e => e.type === "session.failed"));
-    if (scenario === "finish") assert.equal(await fs.readFile(path.join(workspace, "summary.md"), "utf8"), summary);
+    if (["finish", "error-finish"].includes(scenario)) assert.equal(await fs.readFile(path.join(workspace, "summary.md"), "utf8"), summary);
     else { assert.equal(first.some(e => e.type === "tool.started"), false); await assert.rejects(fs.stat(path.join(workspace, "summary.md")), { code: "ENOENT" }); }
     await assert.rejects(fs.stat(path.join(dir, ".agent-run.lock")), { code: "ENOENT" });
     phase = "good"; normal = 0; result = await run(true);

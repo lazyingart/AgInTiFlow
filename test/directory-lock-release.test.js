@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { test } from "node:test";
 import { withDirectoryLock } from "../src/integration-durable-common.js";
 
@@ -340,6 +341,68 @@ test("concurrent callers preserve exact results, exclusion and cleanup", { timeo
     assert.equal(maximum, 1);
     assert.deepEqual(await fs.readdir(root), []);
   } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("canonical absence is not proof that a successor's lock may be reaped", { timeout: 10_000 }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-lock-absent-observation-"));
+  const lock = path.join(root, "transaction.lock"), actor = new AsyncLocalStorage();
+  const entered = gate(), releaseFirst = gate(), absent = gate(), successorEntered = gate();
+  const finishSuccessor = gate(), observerSawSuccessor = gate();
+  const nativeStat = fs.lstat.bind(fs);
+  let first, successor, observer, observations = 0, observerCalls = 0;
+  t.mock.method(fs, "lstat", async (target, ...args) => {
+    if (target === lock && actor.getStore() === "observer") {
+      observations++;
+      if (observations === 4) {
+        // The contender captured the first owner's identity, lost its claim,
+        // then entered the stale check. Retire that live owner, capture true
+        // ENOENT, and delay delivery until a distinct live successor exists.
+        releaseFirst.resolve();
+        assert.deepEqual(await bounded(first, "first owner retires"), { value: "first" });
+        let missing;
+        try { await nativeStat(target, ...args); }
+        catch (error) { missing = error; }
+        assert.equal(missing?.code, "ENOENT"); absent.resolve();
+        await bounded(successorEntered.promise, "successor publishes live owner");
+        throw missing;
+      }
+      const stat = await nativeStat(target, ...args);
+      if (observations >= 5) observerSawSuccessor.resolve();
+      return stat;
+    }
+    return nativeStat(target, ...args);
+  });
+  try {
+    first = observe(withDirectoryLock(lock, async () => {
+      entered.resolve(); await bounded(releaseFirst.promise, "release original owner"); return "first";
+    }));
+    await bounded(entered.promise, "original owner enters");
+    observer = observe(actor.run("observer", () => withDirectoryLock(lock, async () => {
+      observerCalls++; return "observer";
+    }, { waitMs: 3000 })));
+    await bounded(absent.promise, "contender captured canonical absence");
+    successor = observe(withDirectoryLock(lock, async () => {
+      successorEntered.resolve(); await bounded(finishSuccessor.promise, "finish live successor"); return "successor";
+    }));
+    await bounded(successorEntered.promise, "successor enters");
+    const ownerBefore = await fs.readFile(path.join(lock, "owner.json"));
+    const observed = await bounded(Promise.race([
+      observerSawSuccessor.promise.then(() => true),
+      observer.then(result => { if (result.error) throw result.error; return false; }),
+    ]), "contender retries without moving live successor");
+    assert.equal(observed, true); assert.equal(observerCalls, 0);
+    assert.deepEqual(await fs.readFile(path.join(lock, "owner.json")), ownerBefore);
+    assert.deepEqual(await fs.readdir(root), ["transaction.lock"]);
+    finishSuccessor.resolve();
+    assert.deepEqual(await bounded(successor, "successor result"), { value: "successor" });
+    assert.deepEqual(await bounded(observer, "observer eventually acquires"), { value: "observer" });
+    assert.equal(observerCalls, 1); assert.ok(observations >= 5);
+    assert.deepEqual(await fs.readdir(root), []);
+  } finally {
+    releaseFirst.resolve(); finishSuccessor.resolve();
+    await Promise.allSettled([first, successor, observer].filter(Boolean));
     await fs.rm(root, { recursive: true, force: true });
   }
 });

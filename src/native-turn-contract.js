@@ -39,7 +39,13 @@ function array(value) {
 // repairable syntax and must never authorize tools, a plan or a final answer.
 export function assertNativeTurnAdmission(response, lane) {
   if (!["plan", "direct", "step"].includes(lane)) throw new TypeError("Unknown native model lane.");
-  const choices = array(field(object(response), "choices", true).value);
+  const envelope = object(response);
+  // An explicit upstream error contradicts choices, even when falsey. Inspect
+  // presence only: neither error values nor diagnostic accessors are authority.
+  // Keep the refusal generic so raw provider diagnostics cannot enter history
+  // or accidentally authorize a compatibility retry/provider handoff.
+  if (Object.getOwnPropertyDescriptor(envelope, "error")) fail();
+  const choices = array(field(envelope, "choices", true).value);
   if (choices.length !== 1) fail();
   const choice = object(field(choices, "0", true).value);
   const index = field(choice, "index");

@@ -131,3 +131,41 @@ test("pure boundary rejects Proxy and authority accessors without traps", () => 
   for (const input of inputs) assert.throws(() => assertNativeTurnAdmission(input, "step"), { code: "MODEL_TURN_INVALID" });
   assert.equal(traps, 0);
 });
+
+for (const lane of ["step", "direct", "plan"]) {
+  const invoke = (client) => lane === "step" ? requestNextStep(client, config, [])
+    : lane === "direct" ? requestDirectResponse(client, config, [])
+      : createPlan(client, config, { goal: config.goal, messages: [], meta: {} });
+  for (const [label, error] of [
+    ["object", { code: "quota_exceeded", message: "UPSTREAM_PRIVATE_DIAGNOSTIC" }],
+    ["null", null], ["false", false], ["zero", 0], ["empty string", ""],
+    ["array", []], ["undefined", undefined], ["string", "UPSTREAM_PRIVATE_DIAGNOSTIC"],
+  ]) test(`${lane}: explicit ${label} error cannot authorize a native turn`, async () => {
+    const value = lane === "step" ? response() : text(); value.error = error;
+    const f = fixture(value);
+    await assert.rejects(invoke(f.client), result => {
+      assert.equal(result.code, "MODEL_TURN_INVALID"); assert.equal(result.status, 422);
+      assert.equal(isTransientProviderRequestError(result), false);
+      assert.equal(shouldRetryWithTextToolProtocol(result, { provider: "localllm" }), false);
+      assert.equal(classifyProviderHandoffError(result).eligible, false);
+      assert.doesNotMatch(result.message, /UPSTREAM_PRIVATE|quota_exceeded/);
+      return true;
+    });
+    assert.equal(f.calls(), 1, "Contradictory response must not trigger a hidden retry");
+  });
+  for (const mode of ["hidden", "accessor"]) test(`${lane}: ${mode} error descriptor is refused without reading it`, async () => {
+    let reads = 0; const value = lane === "step" ? response() : text();
+    Object.defineProperty(value, "error", mode === "hidden" ? { value: false }
+      : { enumerable: true, get() { reads++; throw Error("UPSTREAM_PRIVATE_DIAGNOSTIC"); } });
+    const f = fixture(value);
+    await assert.rejects(invoke(f.client), { code: "MODEL_TURN_INVALID", status: 422 });
+    assert.equal(reads, 0); assert.equal(f.calls(), 1);
+  });
+}
+test("an error value cannot run Proxy hooks while refusing its envelope", () => {
+  let traps = 0; const value = response();
+  value.error = new Proxy({}, { get() { traps++; throw Error("must not run"); },
+    getPrototypeOf() { traps++; throw Error("must not run"); }, ownKeys() { traps++; throw Error("must not run"); } });
+  assert.throws(() => assertNativeTurnAdmission(value, "step"), { code: "MODEL_TURN_INVALID" });
+  assert.equal(traps, 0);
+});

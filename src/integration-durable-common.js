@@ -492,12 +492,15 @@ async function lockIsBreakable(
   staleMs,
   nowMs,
   testHooks = {},
-  { requireValidatedOwnerForRecovery = false } = {}
+  { requireValidatedOwnerForRecovery = false, expectedIdentity, expectedToken } = {}
 ) {
   const link = await lockDirectoryIdentity(lockDir);
-  if (!link) return true;
+  // A disappearing or replaced name is a reason to retry acquisition, never
+  // evidence of a dead owner. Otherwise a later rename can retire a live
+  // successor published between this observation and the quarantine step.
+  if (!sameLockIdentity(expectedIdentity, link)) return false;
   const owner = await readLockOwner(lockDir);
-  if (!lockRecoveryOwnerToken(owner, requireValidatedOwnerForRecovery)) return false;
+  if (lockRecoveryOwnerToken(owner, requireValidatedOwnerForRecovery) !== expectedToken) return false;
   const acquiredMs = owner?.acquiredAt ? Date.parse(owner.acquiredAt) : Number(link.ctimeMs || 0);
   const expired = Number.isFinite(acquiredMs) && nowMs - acquiredMs > staleMs;
   if (!expired) return false;
@@ -982,7 +985,7 @@ async function breakStaleDirectoryLock(
       staleMs,
       nowMs,
       testHooks,
-      { requireValidatedOwnerForRecovery }
+      { requireValidatedOwnerForRecovery, expectedIdentity: before, expectedToken: token }
     )
   )) return false;
 
