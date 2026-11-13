@@ -2,14 +2,22 @@
 
 ## Standalone application distribution
 
-For a text-only app backend, AgInTiLite private preview 10 provides the same
+For a text-only app backend, AgInTiLite private preview 14 provides the same
 bounded proposal loop without the full CLI, Studio or vision dependency graph.
-Canonical Lite `main` is `dca8f08a691c230224713a40b271df69c61a9835`, also
-available as `sdk/agintilite-native-error-envelope-20261108` in the AgInTiFlow repository.
+Canonical Lite `main` is `622fb984cbfab4065b486f7db9a04b9c123bd3f8`, also
+available as `sdk/agintilite-http-response-authority-20261113` in the AgInTiFlow repository.
 That ref is a standalone SDK tree, not a branch to merge into Flow's application
 tree. Use the pinned local tarball, not a mutable worktree link. Its SHA-256 is
-`7b5d5e451efe9eb7f88857e40506db8dadaf393b842424cf0c91c3d3f234dded`.
+`fadf4bcbe085b71385fd4818ee96982d67b6d96639c58bd585287b08b867b426`.
 It remains private and unpublished to npm; no application is upgraded implicitly.
+
+Preview 14 includes the bounded transport retirement and cancellation/result
+guards from previews 11–13, plus original HTTP-header validation. Its 154 offline
+tests pass, including all 61 HTTP cases from a freshly installed reproducible
+nine-file tarball. The dependency graph remains empty and the public API is
+unchanged. Duplicate critical header evidence cannot authorize a proposal, read
+callback or retry hint. The older preview-10 qualification below is historical;
+use the current pinned tarball for new integrations.
 
 Preview 10 rejects any own native `error` descriptor before projecting a proposal
 or tool call, including falsey, hidden and accessor forms. Canonical preview 9
@@ -48,8 +56,8 @@ not a permission or factual authority. The qualification produces two such
 host-rendered artifacts and rejects seven stale/foreign/altered-data controls;
 it does not declare the failed raw-Markdown policy passed.
 
-All 107 Lite offline tests and exact reproducible packing pass at the canonical
-preview-10 path. An independent 126-case matrix rejects contradictory envelopes
+At the earlier preview-10 checkpoint, all 107 Lite offline tests and exact
+reproducible packing passed. An independent 126-case matrix rejected contradictory envelopes
 without reads, completed proposals or accessor hooks. Two offline packs reproduce
 the original nine-file archive exactly. The first preview-9 live harness stopped on a protected-JSON prototype comparison
 and did not retain enough data to judge its proposal; its two requests remain
@@ -709,9 +717,18 @@ can run; the transport adds no tools, sessions, writes or agent semantics.
 | Concurrent requests per client | 1–32; default 4; no queue |
 | Request UTF-8 bytes | 2 MiB, including the opaque user ID |
 | Response bytes | 256 KiB, including keep-alive whitespace |
-| Response headers | 16 KiB |
+| Response headers | 16 KiB; at most 128 fields |
 | Unconfirmed local cleanup grace | 3000 ms; fixed, no caller override |
 | Requested output tokens | 1–8192, further bounded by the runner |
+
+The native client inspects original response headers before accepting any body
+or exposing status-derived retry hints. Duplicate Content-Type, Content-Encoding,
+Content-Length, Transfer-Encoding or Retry-After fields fail as protocol errors,
+including equal values or different casing. Successful JSON responses permit
+only absent or `chunked` transfer coding; unsupported coding lists are refused.
+Unrelated repeated headers remain valid. Node's normalized header map can discard
+duplicate values, so it alone cannot establish this boundary. These checks add
+no retry, fallback or tool authority.
 
 The runner's total deadline remains independent. Full local capacity refuses
 new requests through the typed `unavailable` provider-failure channel. HTTP
