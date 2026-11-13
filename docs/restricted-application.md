@@ -529,6 +529,11 @@ batch controls. The fixture has no live-provider/credential CLI option.
 
 ## Optional host read scheduling
 
+For target discovery followed by selected-record reads, see
+[the staged selection profile](restricted-selection-profile.md). The host binds
+the displayed list and authenticated selection; the existing SDK enforces each
+invocation's narrower declared catalog and schemas.
+
 `@lazyingart/agintiflow/read-request-gate` exports
 `createReadRequestGate({minIntervalMs?,maxPending?})`. This is a lightweight,
 in-memory scheduler for trusted host callbacks. It performs no HTTP request,

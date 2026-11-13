@@ -74,13 +74,14 @@ try {
     "test/verification-input-freshness.test.js",
     "test/restricted-deepseek-http.test.js",
     "test/restricted-callback-result.test.js",
+    "test/restricted-selection-profile.test.js",
     "test/restricted-cancellation-observation.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 1248\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 1248\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 1255\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 1255\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 1248, testConcurrency, consumerTimeoutMs,
-    passedTests: 1248, cancelledTests: 0, skippedTests: 0,
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 1255, testConcurrency, consumerTimeoutMs,
+    passedTests: 1255, cancelledTests: 0, skippedTests: 0,
     consumerDurationMs: Math.round(performance.now() - consumerStarted), failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });
