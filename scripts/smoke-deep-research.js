@@ -667,7 +667,8 @@ async function main() {
   );
   assert(page.ok && page.readable, `page reader failed: ${page.error || "unknown"}`);
   assert(page.title === "Research Article" && page.author === "Primary Author", "page reader lost document metadata");
-  assert(page.canonicalUrl === "https://docs.example.org/article", "page reader did not preserve the canonical URL");
+  assert(page.canonicalUrl === "https://docs.example.org/article?utm_campaign=test", "page reader relabelled the actual retrieved source URL");
+  assert(page.requestedUrl === "https://docs.example.org/article", "page reader lost the separately requested source address");
   assert(page.content.includes("verifies exact quotations"), "page reader lost article text");
   assert(!page.content.includes("leak secrets") && !page.content.includes("Navigation noise"), "page reader retained script/navigation noise");
   assert(page.passages.length > 0, "page reader did not rank relevant passages");

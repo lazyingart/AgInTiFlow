@@ -76,6 +76,7 @@ try {
     "test/partial-patch-recovery.test.js", "test/partial-patch-runtime.test.js",
     "test/retained-execution-context.test.js",
     "test/verification-input-freshness.test.js",
+    "test/make-intent-evidence.test.js", "test/research-source-address.test.js",
     "test/restricted-native-history.test.js", "test/restricted-proposal-review.test.js", "test/restricted-source-revocation.test.js",
     "test/restricted-deepseek-http.test.js",
     "test/restricted-callback-result.test.js",
@@ -91,11 +92,11 @@ try {
     "test/native-checkpoint-continuation.test.js",
     "test/artifact-instruction-boundary.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 1710\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 1710\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 1753\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 1753\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 1710, testConcurrency, consumerTimeoutMs,
-    passedTests: 1710, cancelledTests: 0, skippedTests: 0,
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 1753, testConcurrency, consumerTimeoutMs,
+    passedTests: 1753, cancelledTests: 0, skippedTests: 0,
     consumerDurationMs: Math.round(performance.now() - consumerStarted), failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });

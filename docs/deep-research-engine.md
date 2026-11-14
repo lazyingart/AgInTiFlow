@@ -10,6 +10,39 @@ Simple questions should stay on the fast path. A deep-research run spends more
 queries and model calls only when breadth, verification, and traceability add
 real value.
 
+## Fetched-source identity
+
+Discovery may group an arXiv abstract, HTML page, PDF and version URLs as one
+scholarly work. That does not make the fetched documents interchangeable.
+`read_web_page` binds its content hash to the observed final response URL,
+preserving the revision, representation and complete query, including repeated
+parameters and order. Even names commonly used for tracking can select different
+content. Only fragments, which are not sent in HTTP, are removed by this source
+address normalization; URL parsing also normalizes host casing and default ports.
+Source addresses are bounded to 8192 UTF-8 bytes before retrieval, including
+redirects. Durable context retains a complete bounded address or omits an unsafe
+entry; it never attaches the response hash to a truncated or redacted substitute.
+
+The requested URL is recorded separately when the server redirects. A page's
+`rel=canonical` link cannot relabel verified response bytes or replace their
+address in durable native evidence. Two explicitly read revisions therefore
+retain distinct URL/hash records. Repeated reads of the same address update that
+address's observation; this is not a claim that the remote content is immutable.
+Work-level scholarly deduplication and independent-source counting are unchanged.
+
+Deep-research policy version 18 refuses older checkpoints before resuming or
+returning cached reports. Preserve them and choose a new research ID or an
+explicit refresh; do not relabel old content as newly verified. Existing native
+histories are preserved too: an old ambiguous URL/hash entry cannot reconstruct
+lost revision identity. Re-read exact sources before relying on such an entry.
+This change adds no provider, permission, network scope or implicit refresh.
+
+Completion also distinguishes ordinary editing language such as “make this note
+shorter” from the `make` executable. File inspection and mutation evidence can
+verify a note edit without inventing a shell requirement. Explicit commands,
+compilation and tests still require their corresponding execution evidence;
+disabled shell access is never silently enabled to satisfy a completion gate.
+
 For a request that combines local workspace evidence with web research, the
 outer agent first receives normal inspection tools. After it has read two
 relevant files, or read one file plus inspected/searched the project, the next
@@ -85,8 +118,8 @@ every query an unbounded agent swarm:
    `allowedDomains` policy. The effective scope is their intersection using
    the existing parent/subdomain semantics. An empty task list retains the
    server policy; disjoint or malformed lists fail before retrieval, synthesis
-   or checkpoint writes. Search results, PDF/alternate URLs, page redirects
-   and canonical metadata retain that effective scope. Snippet and explicitly
+   or checkpoint writes. Search results, PDF/alternate URLs and page redirects
+   retain that effective scope. Snippet and explicitly
    authorized hosted research receive the same narrowed domains, and cached
    deep-research checkpoints bind the effective scope in their fingerprint.
    This is a source-domain policy, not an allowlist for search-index transport

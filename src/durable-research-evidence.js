@@ -16,22 +16,28 @@ function compact(value = "", limit = 700) {
 }
 
 function publicUrl(value = "") {
-  const text = compact(value, 1200);
-  if (!text) return "";
+  const text = typeof value === "string" ? value.trim() : "";
+  // Never attach a content hash to a truncated or redacted replacement URL.
+  // This matches the reader's bounded address contract without inventing data.
+  if (!text || !text.isWellFormed() || Buffer.byteLength(text, "utf8") > 8192 || redactSensitiveText(text) !== text) return "";
   try {
     const parsed = new URL(text);
-    return ["http:", "https:"].includes(parsed.protocol) ? parsed.toString() : "";
+    const normalized = parsed.toString();
+    return ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password &&
+      Buffer.byteLength(normalized, "utf8") <= 8192 && redactSensitiveText(normalized) === normalized ? normalized : "";
   } catch {
     return "";
   }
 }
 
 function normalizedEntry(value = {}) {
+  const rawUrl = value.url, url = publicUrl(rawUrl);
+  if (rawUrl !== undefined && rawUrl !== null && rawUrl !== "" && !url) return null;
   const entry = {
     toolName: compact(value.toolName, 40),
     query: compact(value.query, 320),
     title: compact(value.title, 260),
-    url: publicUrl(value.url),
+    url,
     excerpt: compact(value.excerpt, 760),
     publishedAt: compact(value.publishedAt, 80),
     retrievedAt: compact(value.retrievedAt, 80),
@@ -83,7 +89,7 @@ function sourceEntries(toolResult = {}) {
       toolName,
       query,
       title: toolResult.title,
-      url: toolResult.canonicalUrl || toolResult.url || toolResult.requestedUrl,
+      url: toolResult.url || toolResult.canonicalUrl || toolResult.requestedUrl,
       excerpt: passages || toolResult.content,
       publishedAt: toolResult.publishedAt,
       retrievedAt: toolResult.retrievedAt,
@@ -149,9 +155,11 @@ export function formatDurableResearchEvidence(entries = [], limit = 18) {
   return (Array.isArray(entries) ? entries : [])
     .slice(-Math.max(1, Number(limit || 18)))
     .map((entry) => {
+      const url = publicUrl(entry.url);
+      if (entry.url && !url) return "";
       const parts = [
         entry.title ? `title=${compact(entry.title, 260)}` : "",
-        entry.url ? `url=${publicUrl(entry.url)}` : "",
+        url ? `url=${url}` : "",
         entry.publishedAt ? `published=${compact(entry.publishedAt, 80)}` : "",
         entry.query ? `query=${compact(entry.query, 260)}` : "",
         entry.excerpt ? `evidence=${compact(entry.excerpt, 700)}` : "",

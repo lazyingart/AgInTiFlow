@@ -19,6 +19,7 @@ const MAX_RESULTS = 10;
 const MAX_PAGE_BYTES = 5 * 1024 * 1024;
 const MAX_PAGE_CHARS = 40_000;
 const MAX_REDIRECTS = 5;
+const MAX_SOURCE_URL_BYTES = 8 * 1024;
 // Public Crossref list requests: one per second and one in flight. This is
 // shared across callers in this process, not a distributed quota/lease proof.
 const crossrefRequests = createReadRequestGate({ minIntervalMs: 1100, maxPending: 32 });
@@ -334,6 +335,20 @@ export function canonicalizeWebUrl(urlString = "") {
   }
 }
 
+function canonicalizeSourceUrl(urlString = "") {
+  // A fetched document's revision, representation and semantic query belong to
+  // its evidence identity. Work-level discovery aliases may deliberately merge
+  // these URLs; they must never replace the address bound to response bytes.
+  // Even a conventionally tracking-named query can select different bytes.
+  try {
+    const parsed = new URL(String(urlString || ""));
+    parsed.hash = ""; // Fragments do not participate in an HTTP request.
+    return parsed.href;
+  } catch {
+    return String(urlString || "").trim();
+  }
+}
+
 function canonicalizeResourceUrl(urlString = "") {
   try {
     const parsed = new URL(String(urlString || ""));
@@ -627,6 +642,7 @@ async function assertPublicResolution(url, resolveHostImpl) {
 async function fetchPageWithValidatedRedirects(fetchImpl, requestedUrl, options, allowedDomains, blockedDomains, resolveHostImpl) {
   let currentUrl = requestedUrl;
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
+    if (Buffer.byteLength(canonicalizeSourceUrl(currentUrl), "utf8") > MAX_SOURCE_URL_BYTES) throw new Error("Source URL exceeds the 8192-byte research limit.");
     if (!sourceUrlAllowed(currentUrl, allowedDomains, blockedDomains)) {
       throw new Error("Redirect target is outside the allowed research domains.");
     }
@@ -1003,16 +1019,6 @@ function isAccessChallengePage({ url = "", title = "", content = "" } = {}) {
   );
 }
 
-function safeCanonicalUrl(canonical, finalUrl, allowedDomains, blockedDomains) {
-  if (!canonical) return finalUrl;
-  try {
-    const candidate = canonicalizeWebUrl(new URL(canonical, finalUrl).href);
-    return sourceUrlAllowed(candidate, allowedDomains, blockedDomains) ? candidate : finalUrl;
-  } catch {
-    return finalUrl;
-  }
-}
-
 function relevantPassages(text = "", query = "", limit = 8) {
   const terms = [...new Set(String(query || "").toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || [])].slice(0, 16);
   const paragraphs = String(text || "")
@@ -1032,6 +1038,9 @@ function relevantPassages(text = "", query = "", limit = 8) {
 
 export async function readWebPage(args = {}, config = {}) {
   const requestedUrl = String(args.url || "").trim();
+  if (Buffer.byteLength(canonicalizeSourceUrl(requestedUrl), "utf8") > MAX_SOURCE_URL_BYTES) {
+    return { ok: false, toolName: "read_web_page", error: "Source URL exceeds the 8192-byte research limit." };
+  }
   if (!isPublicWebUrl(requestedUrl)) {
     return { ok: false, toolName: "read_web_page", error: "A public http/https URL is required." };
   }
@@ -1058,8 +1067,7 @@ export async function readWebPage(args = {}, config = {}) {
         Accept: "text/html,application/xhtml+xml,text/plain,text/markdown,application/json,application/pdf",
       },
     }, allowedDomains, blockedDomains, resolveHostImpl);
-    const finalUrl = canonicalizeWebUrl(resolvedUrl);
-    const resourceUrl = canonicalizeResourceUrl(resolvedUrl);
+    const finalUrl = canonicalizeSourceUrl(resolvedUrl);
     if (!response.ok) {
       return { ok: false, toolName: "read_web_page", url: finalUrl, status: response.status, error: `Page returned HTTP ${response.status}.` };
     }
@@ -1069,8 +1077,8 @@ export async function readWebPage(args = {}, config = {}) {
     const base = {
       ok: true,
       toolName: "read_web_page",
-      requestedUrl: canonicalizeWebUrl(requestedUrl),
-      url: contentType === "application/pdf" ? resourceUrl : finalUrl,
+      requestedUrl: canonicalizeSourceUrl(requestedUrl),
+      url: finalUrl,
       canonicalUrl: finalUrl,
       status: response.status,
       contentType,
@@ -1138,7 +1146,9 @@ export async function readWebPage(args = {}, config = {}) {
       title,
       author: document.author || "",
       publishedAt: document.publishedAt || "",
-      canonicalUrl: safeCanonicalUrl(document.canonical, finalUrl, allowedDomains, blockedDomains),
+      // Rel-canonical is untrusted page metadata, not an observed redirect or
+      // a statement that another resource supplied these verified bytes.
+      canonicalUrl: finalUrl,
       content,
       truncated: String(document.text || "").length > maxChars,
       passages: relevantPassages(content, args.query || "", Math.min(Math.max(Number(args.maxPassages) || 8, 1), 16)),
@@ -1147,7 +1157,7 @@ export async function readWebPage(args = {}, config = {}) {
     return {
       ok: false,
       toolName: "read_web_page",
-      url: canonicalizeWebUrl(requestedUrl),
+      url: canonicalizeSourceUrl(requestedUrl),
       error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
     };
   }

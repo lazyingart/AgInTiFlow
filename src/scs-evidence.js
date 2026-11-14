@@ -2060,10 +2060,20 @@ function goalRequestsPublishAction(goal = "") {
   );
 }
 
+function hasMakeCommandSignal(goal = "") {
+  const source = stripForbiddenLanguage(goal).trim();
+  if (/(?:^|[.!?]\s+|[;,\n]\s*|\b(?:and|then|also)\s+)(?:(?:please|kindly|now|actually)\s+)*(?:(?:can|could|would|will)\s+you\s+)?(?:run|rerun|re-run|execute|invoke|launch)\s+(?:gnu\s+)?g?make\b/i.test(source)) return true;
+  const literal = source.match(/^`([^`\r\n]+)`[.!]?$/u)?.[1];
+  if (literal && /^(?:g?make)(?:\.exe)?$/i.test(path.basename(tokenizeShellWords(literal)[0] || ""))) return true;
+  return /^(?:g?make)\s+--?[A-Za-z][^\r\n]*$/i.test(source) ||
+    /^(?:g?make)\s+(?:all|test|check|clean|install|uninstall|distclean|lint|verify)(?:\s+[A-Za-z_][A-Za-z0-9_]*=[^\s]+)*[.!]?$/i.test(source);
+}
+
 function hasPositiveExecutionRequest(goal = "") {
   const text = stripForbiddenLanguage(goal);
   return (
-    /(?:^|[.!?]\s+|[;,\n]\s*|\b(?:and|then|also)\s+)(?:(?:please|kindly|now|actually)\s+)*(?:(?:can|could|would|will)\s+you\s+)?(?:try\s+to\s+)?(?:run|rerun|execute|invoke|launch|test|lint|typecheck|build|compile|install|make|reproduce|benchmark|measure)\b/i.test(text) ||
+    /(?:^|[.!?]\s+|[;,\n]\s*|\b(?:and|then|also)\s+)(?:(?:please|kindly|now|actually)\s+)*(?:(?:can|could|would|will)\s+you\s+)?(?:try\s+to\s+)?(?:run|rerun|execute|invoke|launch|test|lint|typecheck|build|compile|install|reproduce|benchmark|measure)\b/i.test(text) ||
+    hasMakeCommandSignal(text) ||
     /\b(?:by|and)\s+(?:actually\s+)?(?:running|executing|testing|compiling)\b/i.test(text) ||
     /\buse\s+(?:python\d*|node|bash|shell|pytest)\s+to\b/i.test(text) ||
     /\b(?:check|verify|validate|confirm)\b[^.!?;\n]{0,60}\b(?:works?|runs?|passes?|tests?|runtime|output|results?|installation|environment|version|script|program|code)\b/i.test(text) ||
@@ -2114,8 +2124,9 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   const directCommandSignal =
     textHas(
       text,
-      /\b(run|command|lint|typecheck|build|compile|install|npm|node|python|pytest|make|xelatex|latexmk|ffmpeg)\b|\btest(?:ing)?\s+(?:the|this|that|it|app|site|code|function|workflow|script|build)\b/
-    ) || /运行|测试|编译|安装|実際に実行|実行してください|テストしてください/.test(text);
+      /\b(run|command|lint|typecheck|build|compile|install|npm|node|python|pytest|xelatex|latexmk|ffmpeg)\b|\btest(?:ing)?\s+(?:the|this|that|it|app|site|code|function|workflow|script|build)\b/
+    ) || hasMakeCommandSignal(positiveGoal) || inferExplicitRequestedCommands(positiveGoal).length > 0 ||
+    /运行|测试|编译|安装|実際に実行|実行してください|テストしてください/.test(text);
   const validationSignal = textHas(text, /\b(check|verify|validate)\b/) || /检查|验证/.test(text);
   // A generic "verify outputs" reminder on a simple document/file request is
   // satisfied by the file + semantic evidence checks below. Requiring a shell
