@@ -2728,7 +2728,7 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "apply_patch",
           description:
-            "Apply deterministic workspace-local code edits. Either provide path/search/replace for one exact replacement, or provide patch with a Codex-style patch envelope (*** Begin Patch / *** Update File / *** Add File / *** Delete File / *** End Patch) or unified diff. Use this after reading/searching relevant files. It supports multi-file add/update/delete patches, blocks secrets/.git/node_modules/outside-workspace paths, preflights hunks before writing, and records before/after hashes plus compact diffs.",
+            "Apply deterministic workspace-local code edits. Either provide path/search/replace for one exact replacement, or provide patch with a Codex-style patch envelope (*** Begin Patch / *** Update File / *** Add File / *** Delete File / *** End Patch) or unified diff. To fill an observed zero-byte file, use search=\"\", its exact empty-file baseHash from read_file, and a nonempty replace; the current file must still be empty. Use this after reading/searching relevant files. It supports multi-file add/update/delete patches, blocks secrets/.git/node_modules/outside-workspace paths, preflights hunks before writing, and records before/after hashes plus compact diffs.",
           parameters: {
             type: "object",
             properties: {

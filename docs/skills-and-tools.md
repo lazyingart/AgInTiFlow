@@ -10,6 +10,33 @@ AgInTiFlow separates **skills** from **tools** so the agent can stay general whi
 
 **Profile**: A broad runtime mode such as `auto`, `code`, `latex`, or `maintenance`. Profiles tune routing, max steps, and general behavior. Skills can combine across profiles.
 
+## Intentionally Empty Files
+
+For a text placeholder, ask for an exact filename: “Create an empty draft.md”
+or “Add a zero-byte marker.txt.” Completion requires a real workspace file with
+exactly zero bytes. Whitespace, a BOM or a placeholder heading does not satisfy
+that request. A missing file, directory, shared hardlink or outside-workspace
+alias cannot count as the empty output.
+
+This narrow content contract keeps an intentional empty Markdown file from
+triggering repeated document-production attempts. Ordinary reports still need
+nonempty evidence, and PDF, Word, image and SVG formats retain their existing
+validation. Tool permissions and overwrite guards are unchanged: repair a
+generated file through a read and exact patch when whole-file replacement is
+not authorized. `npm run test:empty-file-intent` covers these boundaries and
+persisted native runs with deterministic providers.
+
+To fill an existing empty file, read it and use `apply_patch` with its exact
+empty-file `baseHash`, `search: ""`, and a nonempty `replace`. This insertion
+mode is rejected without that hash, if the file is no longer empty, or if more
+than one replacement is requested. Publication still checks the current bytes;
+the hash does not grant path or overwrite permission.
+
+When fresh-source repair is required, explicitly requested current text inputs
+remain readable before the canonical output is patched. A previous goal's read
+does not satisfy that step. Protected files named only to be left unchanged
+do not become mandatory data reads, and input reads never add mutation paths.
+
 ## Built-In Skills
 
 The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, source ingestion/OCR, structured JSON, autonomous artifact pipelines, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, skill creation, novel writing, and supervision/student-agent training.

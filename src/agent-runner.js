@@ -421,6 +421,7 @@ function buildScsRuntimeContext(config = {}, state = {}, extra = {}) {
     );
   return {
     ...extra,
+    taskContract: completionTaskContract(config, state),
     taskProfile: config.taskProfile,
     goal: state.goal || config.goal || "",
     commandCwd: config.commandCwd || projectRoot,
@@ -3310,6 +3311,12 @@ export function buildKnownConstrainedPhasePlan(
             "2. Do not broaden the path scope or replace the restore with a guessed source patch.",
             "3. After restoration, run the retained verifier once, remove disposable build output, and finish from clean repository evidence.",
           ].join("\n")
+        : runtimeConfig.completionFreshMutationInputReadPaths?.length
+          ? [
+              `1. Read the current declared data inputs first: ${runtimeConfig.completionFreshMutationInputReadPaths.join(", ")}.`,
+              "2. Then inspect the canonical target and make the requested correction using that current input evidence.",
+              "3. Inputs remain read-only; do not guess from history or modify the output before reading them. Report a real read blocker if unavailable.",
+            ].join("\n")
         : generatedArtifactProducerRepair &&
             runtimeConfig.completionFreshMutationNeedsSourceRead === true
           ? [
@@ -19894,6 +19901,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     },
     state
   );
+  delete runtimeConfig.completionFreshMutationInputReadPaths;
   const advisory = currentAdvisoryInvocationState(state, config);
   if (advisory.contract?.beforeMutation && advisory.kind !== "succeeded") {
     runtimeConfig.advisoryPrerequisitePending = true;
@@ -20178,6 +20186,21 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       runtimeConfig.completionFreshMutationNeedsSourceRead = explicitHeadRestore
         ? false
         : !groundedAfterRepair;
+      if (!explicitHeadRestore) {
+        const goalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+        const inputKey = value => {
+          try { return resolveWorkspacePath(runtimeConfig, value, { allowReadOnlyRoots: true }).absolutePath; }
+          catch { return null; }
+        };
+        runtimeConfig.completionFreshMutationInputReadPaths = (groundingTaskContract.explicitInputReadPaths || [])
+          .filter(input => PLAIN_TEXT_FILE_EXTENSIONS.has(path.extname(input).toLowerCase()))
+          .filter(input => {
+            const key = inputKey(input);
+            return !key || !(state.meta?.toolLoop?.recent || []).some(entry => entry.toolName === "read_file" &&
+              entry.ok === true && entry.blocked !== true && goalRevision > 0 && entry.goalRevision === goalRevision &&
+              inputKey(retainedReadFilePath(entry)) === key);
+          }).slice(0, 24);
+      }
       if (
         explicitHeadRestore &&
         explicitHeadRestore.paths.every((candidate) =>
@@ -21221,7 +21244,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     const completionContract = completionTaskContract(config, state);
     const completionEvaluation = evaluateScsEvidence(
       completionContract,
-      buildScsEvidenceLedger({ state })
+      buildScsEvidenceLedger({ state, contract: completionContract })
     );
     const pendingGitActions = Array.isArray(completionEvaluation.missingGitActions)
       ? completionEvaluation.missingGitActions
@@ -21259,7 +21282,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     const completionContract = completionTaskContract(runtimeConfig, state);
     const completionEvaluation = evaluateScsEvidence(
       completionContract,
-      buildScsEvidenceLedger({ state })
+      buildScsEvidenceLedger({ state, contract: completionContract })
     );
     if (completionEvaluation.ok) {
       runtimeConfig.verifiedCompletionPending = true;
@@ -21274,10 +21297,11 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   }
   const completionCandidate = state.meta?.verifiedCompletionCandidate;
   const currentGoalRevision = Math.max(0, Number(state.meta?.goalContract?.revision || 0));
+  const completionCandidateContract = completionCandidate ? completionTaskContract(config, state) : null;
   const completionCandidateEvidenceReady = completionCandidate
     ? evaluateScsEvidence(
-        completionTaskContract(config, state),
-        buildScsEvidenceLedger({ state })
+        completionCandidateContract,
+        buildScsEvidenceLedger({ state, contract: completionCandidateContract })
       ).ok
     : false;
   const completionCandidateCurrent = Boolean(
@@ -21301,7 +21325,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   }
   if (state.meta?.artifactProgress?.complete) {
     const completionContract = completionTaskContract(config, state);
-    const completionLedger = buildScsEvidenceLedger({ state });
+    const completionLedger = buildScsEvidenceLedger({ state, contract: completionContract });
     const completionEvaluation = evaluateScsEvidence(completionContract, completionLedger);
     const completionNeedsCommand = completionEvidenceNeedsCommand(completionEvaluation);
     const recordedEvidence = new Set(
@@ -21391,7 +21415,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         !contract.advisoryInvocation &&
         [contract.exactOutputPaths, contract.requiredArtifactKinds, contract.requiredToolCalls, contract.requiredGitActions, contract.requiredProjectCommands]
           .every(items => !items?.length) &&
-        evaluateScsEvidence(contract, buildScsEvidenceLedger({ state })).ok) {
+        evaluateScsEvidence(contract, buildScsEvidenceLedger({ state, contract })).ok) {
       runtimeConfig.verifiedCompletionPending = true;
       runtimeConfig.deferredJobHandoffSummary = deferredJobLaunchSummary(handoffReceipt);
     }
@@ -21627,7 +21651,7 @@ async function refreshArtifactValidationPreflight(
     taskProfile: config.taskProfile,
     goal: config.goal,
   };
-  const ledger = buildScsEvidenceLedger({ state, context });
+  const ledger = buildScsEvidenceLedger({ state, context, contract });
   const evidence = evaluateScsEvidence(contract, ledger);
   const semantic = evaluateScsSemanticContract(contract, {
     commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
@@ -26517,6 +26541,7 @@ async function evaluateCompletionEvidence({ config, state, store }) {
   const scoped = currentContinuationEvidence(state, await store.loadEvents());
   const ledger = buildScsEvidenceLedger({
     state: scoped.state,
+    contract,
     context: {
       events: scoped.events,
       taskProfile: config.taskProfile,
@@ -31167,6 +31192,19 @@ async function runAgentOnceUnlocked(config) {
 
     state.meta = state.meta || {};
     state.meta.goalIntent = goalIntent;
+    if (config.scsActive && state.meta.scs) {
+      const currentContract = completionTaskContract(config, state);
+      const previousEmpty = state.meta.scs.taskContract?.exactEmptyOutputPaths || [];
+      const currentEmpty = currentContract.exactEmptyOutputPaths || [];
+      if ((previousEmpty.length || currentEmpty.length) && JSON.stringify(previousEmpty) !== JSON.stringify(currentEmpty)) {
+        // Rebase the presentation of this content constraint once. An older
+        // cached document-format plan must not demand filler or a side artifact.
+        state.meta.scs.taskContract = currentContract;
+        state.meta.scs.supervisorInstructionInjected = false;
+        await store.appendEvent("scs.empty_output_contract_refreshed", { paths: currentEmpty });
+        await store.saveState(state);
+      }
+    }
     const responseOnlyScope = isResponseOnlyEvidenceScope(config.goal || state.goal || "");
     const executionPolicy = responseOnlyScope
       ? selectExecutionPolicy({ responseOnly: true })

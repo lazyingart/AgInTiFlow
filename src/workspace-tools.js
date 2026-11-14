@@ -1205,9 +1205,12 @@ async function applyPatch(config, args) {
   const crlf = usesOnlyCrlf(beforeText) && !rawSearch.includes("\r");
   const search = patchLineEndings(rawSearch, crlf);
   const replace = patchLineEndings(String(args.replace ?? ""), crlf);
-  if (!search) throw new Error("Patch search text is required.");
+  const emptyInsertion = args.search === "" && typeof args.replace === "string" && replace.length > 0 &&
+    beforeText === "" && hash === hashBuffer(Buffer.alloc(0)) && args.baseHash === hash &&
+    (args.expectedReplacements === undefined || args.expectedReplacements === 1);
+  if (!search && !emptyInsertion) throw new Error("Patch search text is required; filling an empty file needs its exact empty baseHash and a nonempty replacement.");
 
-  const matches = beforeText.split(search).length - 1;
+  const matches = emptyInsertion ? 1 : beforeText.split(search).length - 1;
   if (matches === 0) throw new Error(`Patch search text was not found in ${target.relativePath}.`);
   const expected = Number(args.expectedReplacements);
   if (Number.isFinite(expected) && expected > 0 && matches !== expected) {
@@ -1215,7 +1218,7 @@ async function applyPatch(config, args) {
   }
   if (matches > 20) throw new Error(`Patch would replace too many sections (${matches}).`);
 
-  const afterText = beforeText.split(search).join(replace);
+  const afterText = emptyInsertion ? replace : beforeText.split(search).join(replace);
   if (afterText === beforeText) throw new Error(`Patch made no changes to ${target.relativePath}.`);
   const change = await writeChange(target, afterText, "apply_patch", {
     replacements: matches,

@@ -680,10 +680,20 @@ function normalizeFileCreationIntent(goal = "", transformSources = null) {
   // normalization to a named file or explicit file/artifact noun; "make sure",
   // chat summaries and explicit/quoted command invocations keep their meaning.
   return source.replace(
-    /\bmake(?=\s+(?:(?:me|us)\s+)?(?:(?:a|an|the|one|two|three|four)\s+)?(?:(?:short|brief|concise|new|simple|small|standalone|downloadable|self-contained)\s+){0,4}(?:["'`]?[\w./~\-\u4e00-\u9fff]+\.(?:md|txt|json|csv|ya?ml|tex|pdf|docx|xlsx|pptx|svg|png|jpe?g|webp)\b|(?:files?|artifacts?|markdown\s+files?|text\s+files?)\b))/gi,
+    /\b(?:make|add)(?=\s+(?:(?:me|us)\s+)?(?:(?:a|an|the|one|two|three|four)\s+)?(?:(?:short|brief|concise|new|simple|small|standalone|downloadable|self-contained|empty|blank|zero[- ]byte)\s+){0,4}(?:["'`]?[\w./~\-\u4e00-\u9fff]+\.(?:md|txt|json|csv|ya?ml|tex|pdf|docx|xlsx|pptx|svg|png|jpe?g|webp)\b|(?:files?|artifacts?|markdown\s+files?|text\s+files?)\b))/gi,
     (match, index) => {
       const prefix = source.slice(Math.max(source.lastIndexOf("\n", index - 1) + 1, 0), index);
       if ((prefix.match(/`/g) || []).length % 2 || /\b(?:run|rerun|execute|invoke|launch|use)\s+(?:(?:the|this)\s+)?(?:command\s+)?["']?\s*$/i.test(prefix)) return match;
+      if (match.toLowerCase() === "add") {
+        // Only a direct explicit empty-file request is a creation alias.
+        // Git add, package-manager commands and explanatory prose are not.
+        const clause = outputIntentClauseAt(source, index);
+        const clauseLead = source.slice(clause.start, index).split(/[,，]/u).at(-1);
+        const lead = clauseLead.split(/\b(?:and|then|also)\b/iu).at(-1);
+        const explanatory = /^\s*(?:(?:please|could you|can you|would you)\s+)?(?:explain|describe|discuss|show (?:me )?how|how|if|when|suppose|imagine)\b/iu.test(clauseLead);
+        if (clause.quoted || explanatory || !/^(?:(?:\s*(?:please|could you|can you|would you))\s+)*\s*$/iu.test(lead) ||
+            !/^\s+(?:(?:a|an|the|one|new)\s+){0,3}(?:empty|blank|zero[- ]byte)\s+/iu.test(source.slice(index + match.length))) return match;
+      }
       return "create";
     }
   );
@@ -986,6 +996,46 @@ export function hostManagedDocumentCompilationRequested(goal = "") {
   return false;
 }
 
+// A named zero-byte placeholder is a content contract, not an unfinished
+// document. Bind only an affirmative literal output already admitted by the
+// existing path parser. Mask just that claim before inferring document formats;
+// independent reports, PDF/Word quality and ordinary artifact requirements stay.
+function emptyOutputIntent(goal = "", outputPaths = []) {
+  const source = String(goal || "");
+  const syntax = outputIntentSyntax(source);
+  // A blank PDF, Word document or SVG still needs its real structured format.
+  // Zero-byte admission is limited to text/source/configuration placeholders.
+  const textPaths = outputPaths.filter(candidate => !path.posix.extname(candidate) ||
+    /\.(?:md|txt|json|jsonl|ndjson|ya?ml|html?|css|js|jsx|ts|tsx|mjs|cjs|py|sh|csv|tex|toml|ini|cfg)$/iu.test(candidate));
+  const references = textPaths.flatMap(candidate => [...source.matchAll(literalFileReferencePattern(candidate))]
+    .map(match => ({ path: candidate, index: match.index, length: match[0].length })))
+    .sort((a, b) => a.index - b.index);
+  const paths = [], spans = [];
+  let previous = null;
+  for (const reference of references) {
+    if (syntax.quotes.some(range => range.start < reference.index && range.end > reference.index)) continue;
+    const clauseStart = [...syntax.boundaries].reverse().find(index => index < reference.index) ?? -1;
+    const end = reference.index + reference.length;
+    const clauseEnd = syntax.boundaries.find(index => index >= end) ?? source.length;
+    const before = source.slice(clauseStart + 1, reference.index);
+    const after = source.slice(end, clauseEnd);
+    const leading = before.match(/(?:^|[,，]|\b(?:and|then|also))\s*(?:(?:please|could you|can you|would you)\s+)?(?:create|add|make|write|generate|save)\s+(?:(?:a|an|the|one|new)\s+){0,3}((?:empty|blank|zero[- ]byte)\s+(?:(?:markdown|text|source|placeholder|files?|named|called)\s+){0,4})$/iu) ||
+      before.match(/(?:^|[,，])\s*(?:请|請)?(?:创建|建立|生成|写入|寫入)\s*(?:(?:一个|一個|一份)\s*)?((?:空的|空白(?:的)?|零字节(?:的)?|零字節(?:的)?)\s*(?:(?:文本|Markdown|文件)\s*){0,3})$/iu);
+    const trailing = /(?:^|[,，]|\b(?:and|then|also))\s*(?:(?:please|could you|can you|would you)\s+)?(?:create|add|make|write|generate|save)\s+(?:(?:a|an|the|one|new|files?)\s+){0,3}$/iu.test(before) &&
+      /^\s*(?:with no contents?|(?:and (?:leave|keep) (?:it|them)|must be|should be|as (?:an?|the)) (?:empty|blank|zero[- ]byte)(?: (?:text|markdown))?(?: files?)?)\s*$/iu.test(after);
+    const japanese = before.match(/(空の\s*)$/u) && /^\s*を(?:作成|生成|追加|保存)(?![^。；\n]{0,30}(?:しない|しなく|してはいけない))/u.test(after);
+    const coordinated = previous && /^\s*(?:,\s*(?:and\s+)?|and\s+|[、，]|和|与|與)\s*$/iu.test(source.slice(previous.index + previous.length, reference.index));
+    if (!leading && !trailing && !japanese && !coordinated) { previous = null; continue; }
+    const cue = leading?.[1] || (japanese ? before.match(/(空の\s*)$/u)[1] : "");
+    paths.push(reference.path);
+    spans.push({ start: reference.index - cue.length, end: trailing ? clauseEnd : end });
+    previous = reference;
+  }
+  let artifactGoal = source;
+  for (const span of spans.sort((a, b) => b.start - a.start)) artifactGoal = artifactGoal.slice(0, span.start) + artifactGoal.slice(span.start, span.end).replace(/[^\r\n]/g, " ") + artifactGoal.slice(span.end);
+  return { paths: uniquePathList(paths, 24), artifactGoal };
+}
+
 export function inferRequestedArtifactRequirements(goal = "", taskProfile = "") {
   const source = stripForbiddenLanguage(String(goal || ""));
   if (!artifactRequestHasOutputIntent(source, taskProfile)) return [];
@@ -1228,8 +1278,12 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
   return uniquePathList(excluded.map(normalizedContractPath), 24);
 }
 
-function inferExactInputPaths(goal = "", declaredPreservedPaths = []) {
+function inferExactInputPaths(goal = "", declaredPreservedPaths = [], { preservationReads = true } = {}) {
   goal = normalizeFileCreationIntent(goal);
+  if (!preservationReads) {
+    const clauses = [...filePreservationClauses(goal), ...japaneseFileIntentClauses(goal).filter(clause => clause.kind === "preserve")];
+    for (const clause of clauses.sort((a, b) => b.index - a.index)) goal = goal.slice(0, clause.index) + goal.slice(clause.index, clause.index + clause.length).replace(/[^\r\n]/g, " ") + goal.slice(clause.index + clause.length);
+  }
   const paths = japaneseFileIntentClauses(goal).filter(clause => ["read", "preserve"].includes(clause.kind))
     .flatMap(clause => preservationFileReferences(clause.body).map(reference => reference.path));
   const source = String(goal || "") + filePreservationClauses(goal).map(clause => `\nread ${clause.body.replace(/\r?\n/g, " ")}`).join("");
@@ -3382,9 +3436,12 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   const preservedInputPaths = inferPreservedInputPaths(evidenceGoal);
   const exactInputPaths = inferExactInputPaths(positiveEvidenceGoal, preservedInputPaths)
     .filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
+  const explicitInputReadPaths = inferExactInputPaths(positiveEvidenceGoal, preservedInputPaths, { preservationReads: false })
+    .filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
+  const emptyOutputs = emptyOutputIntent(evidenceGoal, exactOutputPaths);
   let requiredArtifactKinds = inferRequestedArtifactRequirements(
-    positiveEvidenceGoal,
+    emptyOutputs.artifactGoal,
     taskProfile
   );
   if (hostManagedDocumentCompilation) {
@@ -3420,6 +3477,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiredEvidence,
     forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
+    exactEmptyOutputPaths: emptyOutputs.paths,
     requiredArtifactKinds,
     artifactRepairRequirements: packetContract.repairRequirements,
     artifactQualityIssues: packetContract.qualityIssues,
@@ -3429,6 +3487,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     excludedOutputPaths,
     artifactRoot,
     exactInputPaths,
+    explicitInputReadPaths,
     preservedInputPaths,
     advisoryInvocation,
     declaredSourceRoots,
@@ -3841,6 +3900,16 @@ function resolveContractPath(commandCwd = process.cwd(), rawPath = "") {
   if (text.startsWith("/workspace/")) return path.resolve(commandCwd || process.cwd(), text.slice("/workspace/".length));
   if (path.isAbsolute(text)) return text;
   return path.resolve(commandCwd || process.cwd(), text);
+}
+
+function ownedEmptyOutputFile(commandCwd, absolutePath) {
+  try {
+    const stat = fs.lstatSync(absolutePath);
+    if (!stat.isFile() || stat.nlink !== 1) return null;
+    const relative = path.relative(fs.realpathSync(commandCwd), fs.realpathSync(absolutePath));
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+    return stat;
+  } catch { return null; }
 }
 
 const ARTIFACT_SCAN_IGNORED_DIRECTORIES = new Set([
@@ -5308,6 +5377,9 @@ export function evaluateScsSemanticContract(
   const files = exactOutputPaths.map((rawPath) => {
     const absolutePath = resolveContractPath(commandCwd, rawPath);
     try {
+      if ((contract.exactEmptyOutputPaths || []).includes(rawPath)) {
+        if (!ownedEmptyOutputFile(commandCwd, absolutePath)) throw new Error("Empty output is not an owned regular file");
+      }
       const content = fs.readFileSync(absolutePath, "utf8");
       return { rawPath, absolutePath, exists: true, content };
     } catch {
@@ -5315,12 +5387,14 @@ export function evaluateScsSemanticContract(
     }
   });
   const missingFiles = files.filter((file) => !file.exists).map((file) => file.rawPath);
+  const nonemptyFiles = files.filter(file => (contract.exactEmptyOutputPaths || []).includes(file.rawPath) && file.exists && file.content.length !== 0).map(file => file.rawPath);
   const combinedContent = files.map((file) => file.content).join("\n");
   const missingRequiredText = requiredTextTerms.filter((term) => !combinedContent.includes(term));
   const presentForbiddenText = forbiddenTextTerms.filter((term) => combinedContent.includes(term));
   const sourceGrounding = evaluateSourceGrounding(contract, files, { commandCwd, events, state });
   const ok =
     missingFiles.length === 0 &&
+    nonemptyFiles.length === 0 &&
     missingRequiredText.length === 0 &&
     presentForbiddenText.length === 0 &&
     executable.ok &&
@@ -5336,6 +5410,7 @@ export function evaluateScsSemanticContract(
     forbiddenTextTerms,
     requestedArtifacts,
     missingFiles,
+    nonemptyFiles,
     missingRequiredText,
     missingExecutableTerms: executable.missingExecutableTerms,
     executableSourcePaths: executable.executableSourcePaths,
@@ -5359,6 +5434,7 @@ export function evaluateScsSemanticContract(
       ? "Exact output files satisfy inferred semantic hard constraints."
       : [
           missingFiles.length ? `Missing exact output files: ${missingFiles.join(", ")}` : "",
+          nonemptyFiles.length ? `Outputs required to be exactly empty contain bytes: ${nonemptyFiles.join(", ")}` : "",
           missingRequiredText.length ? `Missing required text terms: ${missingRequiredText.join(", ")}` : "",
           !executable.ok ? executable.reason : "",
           presentForbiddenText.length ? `Forbidden text terms present: ${presentForbiddenText.join(", ")}` : "",
@@ -5626,7 +5702,7 @@ function firstArtifactPath(...values) {
   return "";
 }
 
-function revalidateArtifactEvidence(item = {}, state = {}, context = {}) {
+function revalidateArtifactEvidence(item = {}, state = {}, context = {}, contract = {}) {
   if (item?.category !== "artifact" || item?.verified === false || item?.virtualArtifact === true) return item;
   const candidate = firstArtifactPath(item.target, item.proof);
   if (!candidate) {
@@ -5648,7 +5724,10 @@ function revalidateArtifactEvidence(item = {}, state = {}, context = {}) {
   let durable = false;
   try {
     const stat = fs.statSync(resolved);
-    durable = stat.isDirectory() || (stat.isFile() && stat.size > 0);
+    const exactEmpty = (contract.exactEmptyOutputPaths || []).some(raw => resolveContractPath(commandCwd, raw) === resolved);
+    durable = exactEmpty
+      ? ownedEmptyOutputFile(commandCwd, resolved)?.size === 0
+      : stat.isDirectory() || stat.isFile() && stat.size > 0;
   } catch {
     durable = false;
   }
@@ -5809,7 +5888,7 @@ function checkpointedCommandEvidence(state, existing) {
   return evidence;
 }
 
-export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
+export function buildScsEvidenceLedger({ state = {}, context = {}, contract = {} } = {}) {
   const events = reconcileTmuxGitEvidenceEvents(
     Array.isArray(context.events) ? context.events : []
   );
@@ -5844,7 +5923,7 @@ export function buildScsEvidenceLedger({ state = {}, context = {} } = {}) {
   const checkpointEvidence = checkpointedCommandEvidence(state, [...eventEvidence, ...messageEvidence]);
   const items = [...eventEvidence, ...messageEvidence, ...checkpointEvidence]
     .slice(-80)
-    .map((item) => revalidateArtifactEvidence(item, state, context));
+    .map((item) => revalidateArtifactEvidence(item, state, context, contract));
   const verifiedItems = items.filter((item) => item?.verified !== false);
   const durableGitEvidence = (
     Array.isArray(state.meta?.durableGitEvidence) ? state.meta.durableGitEvidence : []
@@ -6113,10 +6192,12 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       })),
       forbiddenActions: contract.forbiddenActions || [],
       exactOutputPaths: contract.exactOutputPaths || [],
+      exactEmptyOutputPaths: contract.exactEmptyOutputPaths || [],
       requiredArtifactKinds: contract.requiredArtifactKinds || [],
       artifactRepairRequirements: contract.artifactRepairRequirements || [],
       artifactQualityIssues: contract.artifactQualityIssues || [],
       exactInputPaths: contract.exactInputPaths || [],
+      explicitInputReadPaths: contract.explicitInputReadPaths || [],
       requiredToolCalls: contract.requiredToolCalls || [],
       requiredGitActions: contract.requiredGitActions || [],
       requiredGitRevision: Number(contract.requiredGitRevision || 0),

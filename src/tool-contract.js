@@ -620,11 +620,17 @@ export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } 
     if (standardApplyPatchContract) {
       const hasPatchDocument =
         typeof args.patch === "string" && args.patch.trim().length > 0;
+      // This is a CAS precondition, not source authority. The workspace tool
+      // must still prove current zero bytes and publish against the same hash.
+      const emptyFileInsertion = args.search === "" &&
+        args.baseHash === "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" &&
+        typeof args.replace === "string" && args.replace.length > 0 &&
+        (args.expectedReplacements === undefined || args.expectedReplacements === 1);
       const hasExactPatch =
         typeof args.path === "string" &&
         args.path.trim().length > 0 &&
         typeof args.search === "string" &&
-        args.search.length > 0 &&
+        (args.search.length > 0 || emptyFileInsertion) &&
         typeof args.replace === "string";
       if (!hasPatchDocument && !hasExactPatch) {
         addError(

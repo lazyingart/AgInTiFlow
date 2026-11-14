@@ -594,7 +594,9 @@ function normalizePlanText(plan) {
 function formatHardContractForPrompt(contract = {}) {
   const lines = [];
   const exactOutputPaths = normalizeStringList(contract.exactOutputPaths, []);
+  const exactEmptyOutputPaths = normalizeStringList(contract.exactEmptyOutputPaths, []);
   const exactInputPaths = normalizeStringList(contract.exactInputPaths, []);
+  const explicitInputReadPaths = normalizeStringList(contract.explicitInputReadPaths, []);
   const artifactRepairRequirements = normalizeStringList(contract.artifactRepairRequirements, []);
   const artifactQualityIssues = normalizeStringList(contract.artifactQualityIssues, []);
   const requiredTextTerms = normalizeStringList(contract.requiredTextTerms, []);
@@ -607,7 +609,11 @@ function formatHardContractForPrompt(contract = {}) {
     .map((item) => compact(item?.description || item?.id || "", 160))
     .filter(Boolean);
   if (exactOutputPaths.length) lines.push(`Exact output path(s): ${exactOutputPaths.join(", ")}`);
+  if (exactEmptyOutputPaths.length) {
+    lines.push(`Exact zero-byte text output(s): ${exactEmptyOutputPaths.join(", ")}. These are intentional empty files: verify existence and zero bytes, then finish when the other requirements are satisfied. Do not add filler or a separate explanatory/canvas artifact merely to satisfy older document-format wording. Independent document requirements remain mandatory.`);
+  }
   if (exactInputPaths.length) lines.push(`Exact input/reference path(s) to use: ${exactInputPaths.join(", ")}`);
+  if (explicitInputReadPaths.length) lines.push(`Read current declared inputs before dependent source corrections: ${explicitInputReadPaths.join(", ")}. A canonical-target read is not a substitute for reading the input.`);
   if (artifactRepairRequirements.length) {
     lines.push(`Remaining exact-task artifact repair requirement(s): ${artifactRepairRequirements.join("; ")}`);
   }
@@ -898,7 +904,7 @@ function contractForState(state = {}, context = {}) {
 
 function hasConcreteFinishEvidence(state = {}, context = {}) {
   const contract = contractForState(state, context);
-  const ledger = buildScsEvidenceLedger({ state, context });
+  const ledger = buildScsEvidenceLedger({ state, context, contract });
   const evaluation = evaluateScsEvidence(contract, ledger);
   return evaluation.ok;
 }
@@ -943,7 +949,7 @@ export function buildScsEvidencePack(state = {}, context = {}) {
     : [];
 
   const taskContract = contractForState(state, context);
-  const evidenceLedger = buildScsEvidenceLedger({ state, context });
+  const evidenceLedger = buildScsEvidenceLedger({ state, context, contract: taskContract });
   const evidenceEvaluation = evaluateScsEvidence(taskContract, evidenceLedger);
 
   const summary = summarizeScsContractEvidence({ contract: taskContract, ledger: evidenceLedger, evaluation: evidenceEvaluation });
@@ -1394,7 +1400,7 @@ export async function reviewScsToolResult(client, config, state, toolResult, con
     ...context,
     taskProfile: context.taskProfile || config.taskProfile || "",
   });
-  const evidenceLedger = buildScsEvidenceLedger({ state, context });
+  const evidenceLedger = buildScsEvidenceLedger({ state, context, contract: taskContract });
   const evidenceEvaluation = evaluateScsEvidence(taskContract, evidenceLedger);
   if (resolveScsValidationMode(config) === "deterministic") {
     const deterministicDecision = normalizeDecision(
@@ -1463,7 +1469,7 @@ export async function reviewScsProgress(client, config, state, context = {}) {
     ...context,
     taskProfile: context.taskProfile || config.taskProfile || "",
   });
-  const evidenceLedger = buildScsEvidenceLedger({ state, context });
+  const evidenceLedger = buildScsEvidenceLedger({ state, context, contract: taskContract });
   const evidenceEvaluation = evaluateScsEvidence(taskContract, evidenceLedger);
   if (resolveScsValidationMode(config) === "deterministic") {
     return reconcileScsProgressDecision(fallback, evidenceEvaluation, evidenceLedger);
@@ -1554,7 +1560,7 @@ export async function reviewScsFinish(client, config, state, result = "", contex
     ...context,
     taskProfile: context.taskProfile || config.taskProfile || "",
   });
-  const evidenceLedger = buildScsEvidenceLedger({ state, context });
+  const evidenceLedger = buildScsEvidenceLedger({ state, context, contract: taskContract });
   const evidenceEvaluation = evaluateScsEvidence(taskContract, evidenceLedger);
   const semanticEvaluation = evaluateScsSemanticContract(taskContract, {
     commandCwd: config.commandCwd || process.cwd(),

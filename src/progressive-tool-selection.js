@@ -929,6 +929,8 @@ function constrainReadFilePaths(tool, paths, phase) {
     description:
       phase === "patch-context-refresh"
         ? "Exact workspace-relative path whose complete current source must be refreshed before another mutation."
+        : phase === "current-data-input-before-mutation"
+          ? "Exact declared current data input to read before inspecting or correcting the dependent canonical output. This is read-only input authority."
         : phase === "completion-fresh-mutation"
           ? "Exact canonical project file selected from current task evidence for the required fresh correction."
         : phase === "failed-test-evidence-refresh"
@@ -1069,6 +1071,7 @@ function constrainCompletionFreshMutationPatch(tool, paths = []) {
       ...tool.function,
       description: [
         "Apply one material correction to a currently grounded canonical project file after completion was rejected for missing fresh source evidence.",
+        "For an observed zero-byte file, use search=\"\", its read_file baseHash, and a nonempty replacement. Other empty searches remain invalid.",
         normalizedPaths.length
           ? `The path must be one of: ${normalizedPaths.join(", ")}.`
           : "Use the exact canonical project path retained in the current source context.",
@@ -2416,6 +2419,10 @@ export function selectProgressiveTools(
     const paths = Array.isArray(config.completionFreshMutationPaths)
       ? config.completionFreshMutationPaths
       : [];
+    if (Array.isArray(config.completionFreshMutationInputReadPaths) && config.completionFreshMutationInputReadPaths.length) {
+      const inputs = constrainReadFilePaths(available.get("read_file"), config.completionFreshMutationInputReadPaths, "current-data-input-before-mutation");
+      return [inputs, finish].filter(Boolean);
+    }
     if (config.completionFreshMutationNeedsSourceRead === true) {
       const readFile = constrainReadFilePaths(
         available.get("read_file"),
