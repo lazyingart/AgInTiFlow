@@ -93,12 +93,13 @@ try {
     "test/model-terminal-quota.test.js",
     "test/native-checkpoint-continuation.test.js",
     "test/artifact-instruction-boundary.test.js",
+    "test/named-transform-obligations.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 1891\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 1891\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 1912\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 1912\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 1891, testConcurrency, consumerTimeoutMs,
-    passedTests: 1891, cancelledTests: 0, skippedTests: 0,
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 1912, testConcurrency, consumerTimeoutMs,
+    passedTests: 1912, cancelledTests: 0, skippedTests: 0,
     consumerDurationMs: Math.round(performance.now() - consumerStarted), failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });

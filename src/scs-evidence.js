@@ -613,10 +613,12 @@ function filePreservationClauses(goal = "") {
     .map(({ kind, ...clause }) => ({ ...clause, directProhibition: true }));
   const patterns = [
     /\b(?:keep(?:ing)?|leav(?:e|ing)|preserv(?:e|ing)|retain(?:ing)?)\s+([^;；。!?！？]{1,400}?)\s+(?:unchanged|unmodified|untouched|intact|as[- ]is|as (?:it is|they are)|read[- ]only)\b/gi,
+    new RegExp("(?:^|[\\n;；。!?！？,，]|\\.\\s+)\\s*(?:(?:and|then|but|please|kindly)\\s+){0,2}(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?)?leav(?:e|ing)\\s+(" + PRESERVATION_FILE_LIST + ")\\s+alone\\b", "gi"),
     /(?:保持|保留|維持|维持)\s*([^;；。!?！？]{1,400}?)\s*(?:不变|不變|原样|原樣|不修改)/g,
     new RegExp("(" + PRESERVATION_FILE_TOKEN + ")\\s+(?:must\\s+)?(?:remain|stay)\\s+(?:unchanged|unmodified|untouched|intact|read[- ]only)\\b", "gi"),
   ];
   for (const pattern of patterns) for (const match of source.matchAll(pattern)) {
+    if (outputIntentClauseAt(source, match.index).quoted) continue;
     const references = preservationFileReferences(match[1]);
     if (!references.length) continue;
     let bodyActions = match[1].trim();
@@ -647,8 +649,8 @@ function normalizeFileCreationIntent(goal = "") {
   // bounded, affirmative request with actual source and destination filenames;
   // command literals, examples, negation and unnamed prose keep their meaning.
   const extension = /\.(?:md|txt|json|jsonl|ndjson|ya?ml|html?|css|js|ts|tsx|jsx|mjs|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx|xlsx|pptx)$/i;
-  const target = new RegExp("^(?:(?:a|an|the|one|two|three|four)\\s+)?(?:(?:short|brief|concise|new|simple|small|standalone|downloadable|self-contained|markdown|text)\\s+){0,4}(?:files?\\s+)?(" + PRESERVATION_FILE_TOKEN + ")", "i");
-  source = source.replace(new RegExp("\\b(?:turn|convert|transform)\\s+(" + PRESERVATION_FILE_LIST + ")\\s+(?:into|to)\\s+", "gi"), (match, files, index) => {
+  const target = new RegExp("^(?:(?:a|an|the|one|two|three|four)\\s+)?(?:(?:short|brief|concise|new|simple|small|standalone|downloadable|self-contained|markdown|text|json|csv|list|table)\\s+){0,4}(?:files?\\s+)?(" + PRESERVATION_FILE_TOKEN + ")", "i");
+  source = source.replace(new RegExp("\\b(?:turn|convert|transform|tidy|clean)\\s+(" + PRESERVATION_FILE_LIST + ")\\s+(?:into|to)\\s+", "gi"), (match, files, index) => {
     const references = preservationFileReferences(files);
     if (!references.length || references.some(item => !extension.test(item.path))) return match;
     const prefix = source.slice(source.lastIndexOf("\n", index - 1) + 1, index);
@@ -811,6 +813,7 @@ function inferExactOutputPaths(goal = "") {
     activeOutputDir = outputDirMatch?.[1] || "";
     quotedPathPattern.lastIndex = 0;
     for (const match of sourceLine.matchAll(quotedPathPattern)) {
+      if (outputIntentClauseAt(sourceLine, match.index).quoted) continue;
       const prefix = sourceLine.slice(
         Math.max(0, Number(match.index || 0) - 180),
         Number(match.index || 0)
@@ -829,6 +832,7 @@ function inferExactOutputPaths(goal = "") {
     const unquotedLine = sourceLine.replace(quotedPathPattern, (match) => " ".repeat(match.length));
     pathPattern.lastIndex = 0;
     for (const match of unquotedLine.matchAll(pathPattern)) {
+      if (outputIntentClauseAt(sourceLine, match.index + match[0].indexOf(match[1])).quoted) continue;
       pushPath(match[1]);
     }
     activeOutputDir = "";
@@ -1220,6 +1224,7 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
 }
 
 function inferExactInputPaths(goal = "", declaredPreservedPaths = []) {
+  goal = normalizeFileCreationIntent(goal);
   const paths = japaneseFileIntentClauses(goal).filter(clause => ["read", "preserve"].includes(clause.kind))
     .flatMap(clause => preservationFileReferences(clause.body).map(reference => reference.path));
   const source = String(goal || "") + filePreservationClauses(goal).map(clause => `\nread ${clause.body.replace(/\r?\n/g, " ")}`).join("");
@@ -1351,6 +1356,7 @@ function preservedSourceAliasPaths(goal = "") {
   const chinese = "(?:原(?:始)?(?:导出|導出|数据|數據|资料|資料|输入|輸入|文件|檔案)|源(?:文件|数据|數據|资料|資料)|输入|輸入)(?:文件|檔案|資料|数据|數據)?";
   const patterns = [
     "(?:keep|leave|preserve|retain)\\s+" + english + "\\s+(?:unchanged|unmodified|untouched|intact|as-is|read-only)",
+    "leave\\s+" + english + "\\s+alone",
     "(?:do\\s+not|don['’]?t|never)\\s+(?:modify|edit|change|overwrite|rewrite|delete|touch)\\s+" + english,
     chinese + "\\s*(?:别动|別動|别改|別改|不要修改|不要更改|不修改|不变|不變|不动|不動)",
     "(?:保持|保留|維持|维持)\\s*" + chinese + "\\s*(?:不变|不變|原样|原樣|不修改)",
