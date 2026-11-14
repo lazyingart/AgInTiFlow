@@ -6,6 +6,11 @@ This local preview is private, unpublished and not a general agent service.
 It includes no CLI/server, shell/filesystem/browser/vision tools, MCP, plugins,
 skills, environment loader, session store or automatic fallback.
 
+Preview 21 counts exact UTF-8 JSON bytes, including escaped names and punctuation,
+not implicit array indices or worst-case primitive estimates. Bounded numeric
+results now fit their stated cap; one byte over rejects. Node/depth, schema,
+cancellation and credential checks remain independent. No authority is added.
+
 ## Consumption
 
 Build the local package from the pinned source commit:
@@ -17,12 +22,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.20.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.21.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.20.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.21.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -173,22 +178,17 @@ unchanged. Proposals still require host fact checks and an application commit.
 
 ## Providers and fallback
 
-Preview20 rejects recognized quoted credentials in input/history/reads/proposals/
-feedback. It handles JSON field-name escapes, truncated values and serialized
-JSON/source strings without executing code; unchanged literals keep their bytes.
-Log/event field masking does not mutate callers. Empty values, masks, typed
-parameters, environment lookups and unfilled Bearer prefixes stay usable. This
-pattern guard is not universal detection: hosts must exclude credentials,
-including arbitrary encodings. Provider/tool/schema/deadline/fallback contracts
-are unchanged.
+Recognized quoted credentials reject in input/history/reads/proposals/feedback,
+including escaped names and serialized JSON/source strings. Status masks,
+parameters, environment references and empty Bearer prefixes remain usable.
+Field masking does not mutate callers. This is pattern detection, not universal
+privacy: hosts must exclude credentials, including arbitrary encodings.
 
-`createRestrictedOpenAIProvider({model,supportsImages:false,complete})` is an
-optional pure wire adapter. It imports no OpenAI SDK and opens no connection.
-It supplies Chat Completions arguments to the host's `complete(body,{signal})`
-callback: explicit model, native tools, strict `json_schema`, `max_tokens`,
-`stream:false`, `temperature:0`. It accepts only one complete native tool-call
-response or final JSON document. Truncated, refused, mixed and malformed output
-fails closed. Provider/model compatibility must be tested by the app.
+`createRestrictedOpenAIProvider({model,supportsImages:false,complete})` opens no
+connection and imports no SDK. Its host `complete(body,{signal})` receives
+explicit model/native tools/strict `json_schema`/`max_tokens`/`stream:false`/
+`temperature:0`. Only one complete call response or final JSON is accepted;
+truncated/refused/mixed/malformed output rejects. Apps qualify model compatibility.
 
 Native error fields, duplicate decoded JSON keys, malformed metadata and mixed
 protocols reject before any callback. Neutral metadata and valid native calls
@@ -343,16 +343,10 @@ public/physical signals prevent rejection busy loops. Remote stop/billing,
 response-loss idempotency and cross-process exactly-once are unproved. Never
 retry ambiguous work automatically.
 
-The client trusts Node TLS/DNS/runtime; it is no OS sandbox or protection from
-compromised same-process dependencies. Credentials stay in its closure/header;
-literal request/response reflection checks provide neither memory zeroization nor
-universal privacy. App authentication, scope/history, reads, evidence, CAS, writes,
-quotas and consent remain host-owned. Callback providers/routes are unchanged.
-The optional import adds two files; seven exports, three-file core graph and
-private nine-file dependency-free/no-hook package stay intact. Loopback tests
-qualify neither live TLS nor application deployment.
-
-See NOTICE for Apache-2.0 provenance. Package tests enforce the closed import
-graph, private distribution, zero dependencies and exact exports. Offline tests
-do not qualify live quality, transactions, TLS, deployment or provider admission.
-Existing application copies remain pinned until their owner qualifies an upgrade.
+The client trusts Node TLS/DNS/runtime, not an OS sandbox. Closure/header and
+reflection checks do not prove zeroization or universal privacy. Apps own
+authentication, scope/history, evidence, CAS, writes, quotas and consent.
+The optional two-file import preserves seven exports, three-file core and
+private nine-file zero-dependency/no-hook package. NOTICE records provenance.
+Offline/loopback tests do not qualify live quality, transactions, TLS, deployment
+or provider admission. App copies stay pinned until their owner qualifies them.
