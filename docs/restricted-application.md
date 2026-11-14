@@ -733,6 +733,15 @@ additionalProperties:false`; arrays require `items,maxItems` (optional
 Unknown keywords, `$ref`, regex/format schemas and coercion are rejected.
 Flatten app schema references explicitly and retain app-side domain validation.
 String lengths use Unicode code points; transport/context caps use UTF-8 bytes.
+JSON snapshot caps count the actual UTF-8 JSON representation incrementally:
+primitive values, escaped member names, delimiters and commas. Implicit array
+indices are not serialized member names. Numeric/null/boolean-heavy results
+within the configured byte cap are admitted without raising that cap; one byte
+over still rejects without truncation. Independent node/depth ceilings, strict
+descriptor checks, schema validation and credential checks still apply.
+Run `npm run test:restricted-json-byte-budget` for exact-boundary and tool-loop
+regressions. This is data admission, not a guarantee of model arithmetic or
+application authorization.
 For array, scalar and root `anyOf` proposals, the native OpenAI/DeepSeek adapters
 use a closed object envelope on the provider wire: `{"proposal": VALUE}`. The
 SDK unwraps only that exact final envelope and validates VALUE against the host's

@@ -34,17 +34,19 @@ export function jsonSnapshot(value, { maxBytes = 256 * 1024, maxNodes = 20_000 }
   let nodes = 0;
   let bytes = 0;
   const active = new Set();
+  function charge(size) {
+    bytes += size;
+    if (bytes > maxBytes) fail("DATA_LIMIT");
+  }
   function clone(item, depth) {
     if (++nodes > maxNodes || depth > 32) fail("DATA_LIMIT");
     if (item === null || typeof item === "boolean" || (typeof item === "number" && Number.isFinite(item))) {
-      bytes += 24;
-      if (bytes > maxBytes) fail("DATA_LIMIT");
+      charge(Buffer.byteLength(JSON.stringify(item)));
       return item;
     }
     if (typeof item === "string") {
       if (!item.isWellFormed()) fail("INVALID_DATA");
-      bytes += Buffer.byteLength(JSON.stringify(item));
-      if (bytes > maxBytes) fail("DATA_LIMIT");
+      charge(Buffer.byteLength(JSON.stringify(item)));
       return item;
     }
     if (!item || typeof item !== "object" || types.isProxy(item) || active.has(item)) fail("INVALID_DATA");
@@ -55,13 +57,18 @@ export function jsonSnapshot(value, { maxBytes = 256 * 1024, maxNodes = 20_000 }
     const keys = Reflect.ownKeys(item);
     const output = array ? [] : Object.create(null);
     if (keys.length > maxNodes || (array && keys.length !== item.length + 1)) fail("INVALID_DATA");
+    // Charge the actual JSON delimiters/member names, never implicit array
+    // index names or a worst-case numeric estimate. Node/depth limits remain
+    // independent, and every charge happens before copying the next child.
+    charge(2);
+    let members = 0;
     for (const key of keys) {
       if (array && key === "length") continue;
       if (typeof key !== "string" || ["__proto__", "constructor", "prototype", "toJSON", "then"].includes(key)) fail("INVALID_DATA");
       if (array && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= item.length)) fail("INVALID_DATA");
       const descriptor = Object.getOwnPropertyDescriptor(item, key);
       if (!descriptor.enumerable || !("value" in descriptor)) fail("INVALID_DATA");
-      bytes += Buffer.byteLength(key) + 4;
+      charge((members++ ? 1 : 0) + (array ? 0 : Buffer.byteLength(JSON.stringify(key)) + 1));
       output[key] = clone(descriptor.value, depth + 1);
     }
     active.delete(item);
