@@ -626,6 +626,21 @@ production app authorization/transactions or automatic provider fallback.
 Run `npm run test:restricted-partial-read-recovery` for the offline serial and
 batch controls. The fixture has no live-provider/credential CLI option.
 
+## Startup and inline image admission
+
+Text-only SDK startup does not load a provider SDK, the vision transport,
+runtime probes, the CLI or session storage. PNG/JPEG validation uses the shared
+synchronous image-data boundary; it performs no inference or readiness probe.
+The existing vision module re-exports the same validator, limits and error
+class. Bounds, PNG/JPEG checks and ordered inline-image behavior are retained.
+The explicit DeepSeek HTTPS companion loads its transport only when imported;
+it does not load another provider SDK or select a fallback. Image inspection
+options reject Proxies before inspecting their descriptors.
+
+Run `npm run test:restricted-startup-isolation` for fresh-process dependency
+barriers, ordered-image admission, rejected-image controls and public API
+identity. This is dependency isolation, not an OS sandbox or provider admission.
+
 ## Optional host read scheduling
 
 For target discovery followed by selected-record reads, see

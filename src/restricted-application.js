@@ -1,7 +1,7 @@
 import { types } from "node:util";
 import { performance } from "node:perf_hooks";
 import { addAbortListener } from "node:events";
-import { inspectIntegrationAnalysisImageBytes } from "./integration-analysis-vision.js";
+import { inspectIntegrationAnalysisImageBytes } from "./integration-analysis-image.js";
 import {
   RestrictedApplicationError, fail, dataFields, jsonSnapshot, integer, text,
   assertNoCredentials, checkedSchema, matchesSchema,
