@@ -94,11 +94,11 @@ try {
     "test/native-checkpoint-continuation.test.js",
     "test/artifact-instruction-boundary.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 1886\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 1886\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 1888\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 1888\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 1886, testConcurrency, consumerTimeoutMs,
-    passedTests: 1886, cancelledTests: 0, skippedTests: 0,
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 1888, testConcurrency, consumerTimeoutMs,
+    passedTests: 1888, cancelledTests: 0, skippedTests: 0,
     consumerDurationMs: Math.round(performance.now() - consumerStarted), failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });

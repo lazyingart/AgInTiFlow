@@ -14,6 +14,8 @@ Edits to a file with consistently CRLF line endings retain that convention,
 including when the search text comes from the LF display returned by `read_file`.
 Only line separators are adapted. Context, whitespace, case, match counts and
 base hashes still have to match; the UTF-8 BOM and untouched bytes are preserved.
+An exact-mode search containing a literal carriage return stays byte-exact,
+including its replacement. This preserves intentional CRLF-to-LF conversions.
 Files with mixed line endings or bare carriage returns require exact matching.
 New files use the supplied content. Use an explicit whole-file rewrite when
 changing a file's line-ending convention is part of the task.

@@ -46,6 +46,16 @@ test("exact CRLF arguments remain accepted without double carriage returns", asy
   await executeWorkspaceTool("apply_patch", { path: "handoff.md", search: "A\r\nB", replace: "A\r\nD" }, config);
   assert.equal(await fs.readFile(file, "utf8"), "A\r\nD\r\nC\r\n");
 });
+test("explicit raw CRLF search can intentionally convert separators to LF", async t => {
+  const original = "\uFEFFA\r\nB\r\nC\r\n";const { file, config } = await workspace(t, original);
+  await executeWorkspaceTool("apply_patch", { path: "handoff.md", search: "\r\n", replace: "\n", expectedReplacements: 3, baseHash: sha(original) }, config);
+  assert.equal(await fs.readFile(file, "utf8"), "\uFEFFA\nB\nC\n");
+});
+test("literal CRLF context preserves exact supplied replacement bytes", async t => {
+  const { file, config } = await workspace(t, "A\r\nB\r\nC\r\n");
+  await executeWorkspaceTool("apply_patch", { path: "handoff.md", search: "A\r\nB", replace: "A\nD", expectedReplacements: 1 }, config);
+  assert.equal(await fs.readFile(file, "utf8"), "A\nD\r\nC\r\n");
+});
 for (const kind of ["duplicate", "stale-hash", "whitespace", "case", "mixed", "bare-cr"]) test(`no fuzzy or stale replacement: ${kind}`, async t => {
   let original = "Status: draft\r\nReview: pending\r\nKeep\r\n";
   if (kind === "duplicate") original += original;

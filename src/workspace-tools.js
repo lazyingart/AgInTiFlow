@@ -1199,8 +1199,11 @@ async function applyPatch(config, args) {
   if (args.baseHash && args.baseHash !== hash) {
     throw new Error(`Base hash mismatch for ${target.relativePath}; read the file again before patching.`);
   }
-  const crlf = usesOnlyCrlf(beforeText);
-  const search = patchLineEndings(String(args.search || ""), crlf);
+  const rawSearch = String(args.search || "");
+  // Literal CR input is already byte-aware, including an intentional CRLF-to-LF
+  // conversion. Only adapt the LF display form; do not reinterpret raw searches.
+  const crlf = usesOnlyCrlf(beforeText) && !rawSearch.includes("\r");
+  const search = patchLineEndings(rawSearch, crlf);
   const replace = patchLineEndings(String(args.replace ?? ""), crlf);
   if (!search) throw new Error("Patch search text is required.");
 
