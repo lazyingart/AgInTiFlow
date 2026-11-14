@@ -66,6 +66,27 @@ test("long ordinary quoted data does not become a credential or change text", ()
   assert.equal(redactSensitiveText(value), value);
 });
 
+for (const value of [
+  JSON.stringify({ content: `password="${fake}"` }),
+  JSON.stringify({ content: JSON.stringify({ password: fake }) }),
+  JSON.stringify(JSON.stringify({ password: fake })),
+  JSON.stringify({ message: JSON.stringify({ nested: JSON.stringify({ password: fake }) }) }),
+  JSON.stringify([{ public: "unchanged" }, { content: JSON.stringify({ password: fake }) }]),
+]) test(`serialized quoted credentials are masked: ${value.slice(0, 65)}`, () => {
+  const redacted = redactSensitiveText(value);assert.notEqual(redacted, value);assert.ok(!redacted.includes(fake));
+  assert.doesNotThrow(() => JSON.parse(redacted));assert.equal(redactSensitiveText(redacted), redacted);
+});
+test("serialized credential-handling source stays byte-identical", () => {
+  const patch = JSON.stringify({ patch: 'headers = {"Authorization": "Bearer " + key}\nif line.startswith("DEEPSEEK_API_KEY="):\n    token = os.environ.get("APP_TOKEN")\n' });
+  assert.equal(redactSensitiveText(patch), patch);assert.equal(hasSensitiveText(patch), false);
+});
+test("serialized private input is rejected before a provider can inspect it", async () => {
+  let calls = 0;
+  const app = createRestrictedApplicationRunner(config(() => { calls++;return final("Observed."); }));
+  await assert.rejects(app.run(input(JSON.stringify({ content: JSON.stringify({ password: fake }) }))), { code: "SENSITIVE_DATA" });
+  assert.equal(calls, 0);
+});
+
 for (const location of ["input", "user history", "assistant history", "instructions", "tool description"]) test(`restricted SDK rejects quoted credentials in ${location} before dispatch`, async () => {
   let calls = 0;const text = JSON.stringify({ password: fake });let request = input("Check this record, no changes please.");
   const options = config(() => { calls++;return final("Observed."); });

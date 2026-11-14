@@ -133,33 +133,27 @@ semantics. Reject invented citations; retrieved text grants no tools or provider
 
 ### Optional host proposal review
 
-Pass `proposalReview: {readOnly:true, evaluate}` to validate schema-valid
-proposals before completion. `evaluate(proposal, {signal, reads})` receives
-frozen data and current invocation reads only; each read has exactly
-`callId,name,arguments,value`. Authentication, source scope and application
-semantics stay host-owned. Never use a shared mutable last-read variable to
-bind concurrent calls.
+`proposalReview: {readOnly:true,evaluate}` validates proposals before completion.
+`evaluate(proposal,{signal,reads})` receives frozen data and invocation-local
+`callId,name,arguments,value` reads. Hosts own authentication, scope and semantics;
+never bind concurrent calls through a shared mutable last-read variable.
 
-Return exactly `{decision:"accept"}` or
-`{decision:"revise",feedback:"bounded host feedback"}`. Feedback is nonblank,
-well-formed, credential-free text, at most 2048 UTF-8 bytes. One refinement is
-permitted within the original provider, deadline, steps, reads, context and
-output-token budgets. Remaining provider turns incur their normal charges.
-The rejected proposal remains uncommitted assistant
-data. Host feedback grants no additional authority. Each final candidate must
-pass review; repeated rejection or no remaining step yields `PROPOSAL_REJECTED`
-without returning a partial proposal.
+Return exactly `{decision:"accept"}` or `{decision:"revise",feedback:"text"}`.
+Feedback is nonblank, well-formed, credential-free text within2048 UTF-8 bytes.
+One refinement uses the original provider/deadline/step/read/context/token budgets
+and normal charges. Rejected proposals remain uncommitted; feedback grants no
+authority. Every final candidate must pass. Repeated rejection or an exhausted
+step budget yields `PROPOSAL_REJECTED`, without a partial proposal.
 
 Review may reject unchanged edits or check citation IDs/locators against current
 reads. These are host policies; review never commits or replaces CAS/idempotency.
 
-Omitting review skips the callback/refinement and retains two-field usage.
-Opted-in usage adds `proposalReviews` and `proposalRevisions` (zero or one).
-Callback errors yield `PROPOSAL_REVIEW_FAILED`; malformed data yields
-`PROPOSAL_REVIEW_INVALID`, with no raw cause or provider-fallback metadata.
-Review uses the same cooperative cancellation and physical pending capacity.
-Host callbacks remain trusted JavaScript, not sandboxed code. There is no
-automatic transport retry, provider switch, storage, shell or service.
+Omitting review retains two-field usage; opt-in adds `proposalReviews` and
+`proposalRevisions` (0or1). Callback/malformed-result failures yield
+`PROPOSAL_REVIEW_FAILED`/`PROPOSAL_REVIEW_INVALID`, without cause or fallback
+metadata. Cancellation and physical-capacity accounting are unchanged. Callbacks
+are trusted host code, not sandboxed. Review adds no retry/provider switch/storage/
+shell/service.
 
 Native admission failures retain safe `providerFailure.category:"protocol"` on
 `PROVIDER_FAILED`. The same-module brand follows transport return; arbitrary
@@ -179,14 +173,14 @@ unchanged. Proposals still require host fact checks and an application commit.
 
 ## Providers and fallback
 
-Preview 20 rejects recognized quoted credential assignments in input, history,
-read results, proposals and review feedback. JSON field-name escapes and
-truncated quoted values are covered; log/event redaction also masks recognized
-string-valued credential fields without mutating caller data. Explicit masks,
-empty values, typed parameters, environment lookups and an unfilled Bearer prefix
-remain usable. This is a pattern guard, not a universal secret detector: hosts
-must exclude credentials from all supplied data, including arbitrary encodings.
-The provider, tool, schema, deadline and fallback contracts are unchanged.
+Preview20 rejects recognized quoted credentials in input/history/reads/proposals/
+feedback. It handles JSON field-name escapes, truncated values and serialized
+JSON/source strings without executing code; unchanged literals keep their bytes.
+Log/event field masking does not mutate callers. Empty values, masks, typed
+parameters, environment lookups and unfilled Bearer prefixes stay usable. This
+pattern guard is not universal detection: hosts must exclude credentials,
+including arbitrary encodings. Provider/tool/schema/deadline/fallback contracts
+are unchanged.
 
 `createRestrictedOpenAIProvider({model,supportsImages:false,complete})` is an
 optional pure wire adapter. It imports no OpenAI SDK and opens no connection.
@@ -327,33 +321,27 @@ can run; the transport adds no tools, sessions, writes or agent semantics.
 | Unconfirmed local cleanup grace | 3000 ms; fixed, no caller override |
 | Requested output tokens | 1–8192, further bounded by the runner |
 
-Original response headers are checked before body/status hints. Duplicate
-Content-Type, Content-Encoding, Content-Length, Transfer-Encoding or Retry-After
-(equal/case variants too) fails. Success permits absent or chunked transfer
-coding only; unrelated repeated headers remain valid.
+Original headers precede body/status checks. Duplicate Content-Type/Encoding/
+Length, Transfer-Encoding or Retry-After rejects, including equal/case variants.
+Only absent/chunked transfer coding is accepted; other repeated headers remain
+valid. The runner deadline is independent; full capacity issues typed unavailable.
+HTTP401/403/402/429 map to authentication/permission/quota/rate_limit;408/504 to
+timeout,500–503 to unavailable, every other non-200 to protocol. Retry-After
+integers0–86400 seconds become milliseconds for rate_limit/unavailable only and
+schedule nothing. Redirects, retry/fallback, streaming, compression, non-JSON,
+duplicate keys, malformed UTF-8, truncation, excess bytes and incomplete answers
+reject. Keep-alive whitespace counts toward byte/time limits.
 
-The runner's total deadline remains independent. Full local capacity refuses
-new requests through the typed `unavailable` provider-failure channel. HTTP
-401/403/402/429 map to authentication/permission/quota/rate-limit respectively;
-408 and 504 map to timeout, 500–503 to unavailable, and other non-200 statuses
-to protocol failure. Numeric Retry-After values from 0–86400 seconds are
-reported in milliseconds only for rate-limit/unavailable; they schedule nothing.
-Redirects, retries, fallback, streaming, compression, non-JSON content, duplicate
-JSON keys, malformed UTF-8, truncated/over-limit responses and incomplete model
-answers fail closed. Blank keep-alive lines count toward the byte/time limits.
-
-Cancellation destroys the owned request; its slot stays charged until request
-and response actually close. Client close blocks admission, aborts requests,
-destroys sockets and waits for local closure, including pooled sockets.
-Repeated close returns the same promise. Timeout/cancel/failure retirement is
-bounded to3000ms: unconfirmed retirement permanently poisons admission and
-reports unavailable; exact physical records/slots remain until real close.
-Shutdown also bounds waiting to3000ms and caches failure rather than inventing
-success. Confirmed requests retain reuse; confirmed cancellation preserves its
-original error and admits fresh work after retirement. Separate public/physical
-signals prevent rejected-promise busy loops. Remote termination/billing,
-response-loss idempotency and cross-process exactly-once are not promised;
-never automatically retry ambiguous work.
+Cancel destroys the request but charges its slot until request/response close.
+Close blocks admission, aborts requests, destroys all sockets including pooled
+ones and awaits closure; repeats return the same promise. Timeout/cancel/failure
+retirement and shutdown each wait at most3000ms. Unconfirmed close permanently
+poisons admission, returns unavailable and caches failed shutdown; physical
+records/slots stay charged until real close. Confirmed requests retain reuse;
+confirmed cancel preserves its error and admits work after retirement. Separate
+public/physical signals prevent rejection busy loops. Remote stop/billing,
+response-loss idempotency and cross-process exactly-once are unproved. Never
+retry ambiguous work automatically.
 
 The client trusts Node TLS/DNS/runtime; it is no OS sandbox or protection from
 compromised same-process dependencies. Credentials stay in its closure/header;

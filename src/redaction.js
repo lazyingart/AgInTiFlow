@@ -54,8 +54,19 @@ function redactSecretAssignments(value) {
   );
 }
 
-export function redactSensitiveText(value) {
+const JSON_STRING_LITERAL = /"(?:\\[^\r\n]|[^"\\\r\n])*"/g;
+
+function redactText(value, depth) {
   let text = redactSecretAssignments(value);
+  // Native arguments and persisted context can serialize another JSON/source
+  // string. Decode literal strings only, never execute hooks or source code.
+  text = text.replace(JSON_STRING_LITERAL, (literal) => {
+    if (!/[\\:=]/.test(literal)) return literal;
+    let decoded;
+    try { decoded = JSON.parse(literal); } catch { return literal; }
+    const redacted = depth < 32 ? redactText(decoded, depth + 1) : "[REDACTED]";
+    return redacted === decoded ? literal : JSON.stringify(redacted);
+  });
   for (const pattern of SECRET_PATTERNS) {
     text = text.replace(pattern, (...args) => {
       const captures = args.slice(1, -2).filter((item) => typeof item === "string");
@@ -64,6 +75,10 @@ export function redactSensitiveText(value) {
     });
   }
   return text;
+}
+
+export function redactSensitiveText(value) {
+  return redactText(value, 0);
 }
 
 export function hasSensitiveText(value) {
