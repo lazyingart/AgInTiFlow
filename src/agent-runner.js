@@ -18537,7 +18537,7 @@ function completionFreshMutationPath(value = "", state = {}, config = {}) {
   return relativePath.replace(/\\/g, "/");
 }
 
-function completionFreshMutationCandidatePaths(state = {}, config = {}) {
+function completionFreshMutationCandidatePaths(state = {}, config = {}, { separateSourceDeliverable = false } = {}) {
   const candidates = [];
   const commandCwd = path.resolve(
     config.commandCwd || state.commandCwd || process.cwd()
@@ -18642,7 +18642,10 @@ function completionFreshMutationCandidatePaths(state = {}, config = {}) {
     return normalizedGoalText.includes(normalized) ||
       (basename.includes(".") && normalizedGoalText.includes(basename));
   });
-  const selected = explicitlyNamed.length ? explicitlyNamed : eligibleCandidates;
+  // A missing named deliverable is not authority to repair an unrelated file
+  // merely because it was read in an earlier turn. Completion evidence stays
+  // mandatory; leave normal creation tools available when no named file exists.
+  const selected = explicitlyNamed.length || separateSourceDeliverable ? explicitlyNamed : eligibleCandidates;
   if (Array.isArray(currentContract.requiredExecutableTerms) && currentContract.requiredExecutableTerms.length) {
     const productionSource = selected.filter((candidate) => {
       const normalized = candidate.toLocaleLowerCase("en-US");
@@ -20132,7 +20135,11 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     ) ||
     currentTurnRequiresFreshMutation
   ) {
-    const candidatePaths = completionFreshMutationCandidatePaths(state, config);
+    const candidatePaths = completionFreshMutationCandidatePaths(state, config, {
+      separateSourceDeliverable: separateSourceDeliverable &&
+        !retainedSourceQualityRepairRequired &&
+        completionRepair.sourceQualityRepairRequired !== true,
+    });
     const mutationBoundaryTimes = [
       currentTurnRequiresFreshMutation
         ? Date.parse(String(groundingExecutionContract.refreshedAt || ""))

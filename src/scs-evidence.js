@@ -643,7 +643,7 @@ function filePreservationClauses(goal = "") {
   return clauses;
 }
 
-function normalizeFileCreationIntent(goal = "") {
+function normalizeFileCreationIntent(goal = "", transformSources = null) {
   let source = String(goal || "");
   // Named transforms give their operands distinct roles. Normalize only a
   // bounded, affirmative request with actual source and destination filenames;
@@ -669,6 +669,11 @@ function normalizeFileCreationIntent(goal = "") {
         !/(?:^|[:]\s*|\b(?:and|then|also)\s+)(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:help\s+(?:me|us)\s+)?|I(?:\s+would|'d)\s+like\s+(?:you\s+)?to\s+|I\s+(?:want|need)\s+(?:you\s+)?to\s+)*$/i.test(clause)) return match;
     const destination = source.slice(index + match.length, index + match.length + 512).match(target);
     if (!destination || !preservationFileReferences(destination[1]).some(item => extension.test(item.path))) return match;
+    // Synthetic create syntax must not turn an existing transformation input
+    // into new-file authority when preservation is evaluated later.
+    if (transformSources) for (const reference of references) {
+      transformSources.add(path.posix.normalize(normalizedContractPath(reference.path)));
+    }
     return `read ${files} and create `;
   });
   // Natural creation is not invocation of the make executable. Restrict this
@@ -1293,7 +1298,8 @@ function inferExactInputPaths(goal = "", declaredPreservedPaths = []) {
 }
 
 function explicitlyCreatedPreservationPaths(goal = "") {
-  let source = stripForbiddenLanguage(normalizeFileCreationIntent(goal));
+  const transformSources = new Set();
+  let source = stripForbiddenLanguage(normalizeFileCreationIntent(goal, transformSources));
   for (const clause of filePreservationClauses(source).sort((a, b) => b.index - a.index)) {
     source = source.slice(0, clause.index) + " ".repeat(clause.length) + source.slice(clause.index + clause.length);
   }
@@ -1330,7 +1336,8 @@ function explicitlyCreatedPreservationPaths(goal = "") {
     } else if (line.trim() || inList) inList = false;
     offset += line.length + 1;
   }
-  return uniquePathList(paths.map(normalizedContractPath), 24);
+  return uniquePathList(paths.map(normalizedContractPath), 24)
+    .filter(candidate => !transformSources.has(path.posix.normalize(candidate)));
 }
 
 function preservedSourceAliasPaths(goal = "") {
@@ -1353,11 +1360,14 @@ function preservedSourceAliasPaths(goal = "") {
   const start = "(?:^|[\\n.;!?。！？；,，])\\s*(?:(?:and|then|but|please)\\s+|请|請){0,2}";
   const end = "(?=\\s*(?:$|[\\n.;!?。！？；,，]))";
   const english = "(?:(?:the|my|our)\\s+)?(?:(?:original|raw)\\s+)?(?:source|input|data|export|original)(?:\\s+(?:file|data|document|export))?";
+  // Resolve only the unique input, not an invented list of historical outputs.
+  // A coordinated generic preservation target does not erase input authority.
+  const otherFiles = "(?:\\s+(?:and|as\\s+well\\s+as)\\s+(?:(?:the|my|our)\\s+)?(?:(?:other|earlier|previous|existing|retained)\\s+)?(?:outputs?|artifacts?|files?))?";
   const chinese = "(?:原(?:始)?(?:导出|導出|数据|數據|资料|資料|输入|輸入|文件|檔案)|源(?:文件|数据|數據|资料|資料)|输入|輸入)(?:文件|檔案|資料|数据|數據)?";
   const patterns = [
-    "(?:keep|leave|preserve|retain)\\s+" + english + "\\s+(?:unchanged|unmodified|untouched|intact|as-is|read-only)",
-    "leave\\s+" + english + "\\s+alone",
-    "(?:do\\s+not|don['’]?t|never)\\s+(?:modify|edit|change|overwrite|rewrite|delete|touch)\\s+" + english,
+    "(?:keep|leave|preserve|retain)\\s+" + english + otherFiles + "\\s+(?:unchanged|unmodified|untouched|intact|as-is|read-only)",
+    "leave\\s+" + english + otherFiles + "\\s+alone",
+    "(?:do\\s+not|don['’]?t|never)\\s+(?:modify|edit|change|overwrite|rewrite|delete|touch)\\s+" + english + otherFiles,
     chinese + "\\s*(?:别动|別動|别改|別改|不要修改|不要更改|不修改|不变|不變|不动|不動)",
     "(?:保持|保留|維持|维持)\\s*" + chinese + "\\s*(?:不变|不變|原样|原樣|不修改)",
     "(?:不要|请勿|請勿|别|別)\\s*(?:改动|改動|修改|更改|编辑|編輯|覆盖|覆蓋|改|动|動|删除|刪除)\\s*" + chinese,

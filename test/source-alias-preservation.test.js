@@ -20,6 +20,8 @@ const goals=[
  'Using export.csv, update the outputs. Leave the original export untouched.',
  'According to export.csv, update the report. Do not modify the input file.',
  'As per export.csv, regenerate the results. Keep the original unchanged.',
+ 'Also tidy export.csv into report.md and result.json. Leave the source and earlier outputs unchanged; no installs.',
+ 'Use export.csv to create report.md. Keep the original input and other files unchanged.',
  '根据 "source notes.json" 更新之前的报告。原始输入别动。',
 ];
 for(const goal of goals)test('a unique explicitly preserved source alias stays an input: '+goal,()=>{

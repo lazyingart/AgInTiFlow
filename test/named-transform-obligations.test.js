@@ -6,10 +6,79 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const runtimeRoot = process.env.AGINTI_TEST_BASELINE_RUNTIME || fileURLToPath(new URL("../", import.meta.url));
-const { runAgent } = await import(pathToFileURL(path.join(runtimeRoot, "src/agent-runner.js")));
+const { runAgent, preservedInputMutationBlock } = await import(pathToFileURL(path.join(runtimeRoot, "src/agent-runner.js")));
 const { resolveRuntimeConfig } = await import(pathToFileURL(path.join(runtimeRoot, "src/config.js")));
 const { closeSessionIndexConnections } = await import(pathToFileURL(path.join(runtimeRoot, "src/session-index.js")));
 const { deriveScsTaskContract } = await import(pathToFileURL(path.join(runtimeRoot, "src/scs-evidence.js")));
+
+for (const verb of ["turn", "convert", "transform", "tidy", "clean"]) {
+  for (const destination of ["readings.csv", "./readings.csv", "sub/../readings.csv"]) test(`a ${verb} source is not new-file authority: ${destination}`, () => {
+    const goal = `Please ${verb} readings.csv into ${destination}. Leave readings.csv alone.`;
+    const contract = deriveScsTaskContract({ goal });
+    assert.deepEqual(contract.preservedInputPaths, ["readings.csv"]);
+    for (const target of ["readings.csv", destination]) assert.equal(preservedInputMutationBlock({ goal }, "apply_patch", { path: target, search: "old", replace: "bad" }, { goal })?.category, "preserved-input-mutation");
+    const reverse = `Please ${verb} ${destination} into readings.csv. Leave ${destination} alone.`;
+    assert.deepEqual(deriveScsTaskContract({ goal: reverse }).preservedInputPaths.map(value => path.posix.normalize(value)), ["readings.csv"]);
+    assert.equal(preservedInputMutationBlock({ goal: reverse }, "apply_patch", { path: "readings.csv", search: "old", replace: "bad" }, { goal: reverse })?.category, "preserved-input-mutation");
+  });
+  test(`a genuine new ${verb} destination may be created and then preserved`, () => {
+    const contract = deriveScsTaskContract({ goal: `Please ${verb} readings.csv into a new brief.md. Leave brief.md alone.` });
+    assert.deepEqual(contract.exactOutputPaths, ["brief.md"]);
+    assert.deepEqual(contract.preservedInputPaths, []);
+    assert.deepEqual(contract.exactInputPaths, ["readings.csv"]);
+    for (const goal of [
+      `Create brief.md. Explain "${verb} brief.md into report.md". Leave brief.md alone.`,
+      `Please ${verb} readings.csv into Readings.csv. Leave Readings.csv alone.`,
+      `Please ${verb} source/readings.csv into output/readings.csv. Leave output/readings.csv alone.`,
+    ]) assert.deepEqual(deriveScsTaskContract({ goal }).preservedInputPaths, [], goal);
+  });
+}
+
+test("every bounded transformation operand retains preservation authority", () => {
+  const goal = 'Please tidy "source readings.csv" and other.csv into "source readings.csv". Leave "source readings.csv" and other.csv alone.';
+  assert.deepEqual(deriveScsTaskContract({ goal }).preservedInputPaths, ["source readings.csv", "other.csv"]);
+  for (const target of ["source readings.csv", "other.csv"]) assert.equal(preservedInputMutationBlock({ goal }, "write_file", { path: target, content: "bad" }, { goal })?.category, "preserved-input-mutation");
+});
+
+for (const scsActive of [false, true]) test(`native source cannot be overwritten by synthetic create authority (SCS ${scsActive})`, { timeout: 20000 }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-transform-preserve-"));
+  const previousHome = process.env.AGINTIFLOW_HOME; process.env.AGINTIFLOW_HOME = path.join(root, "home");
+  t.mock.method(globalThis, "fetch", async () => { throw Error("Offline source preservation must not access the network"); });
+  t.after(async () => {
+    closeSessionIndexConnections();
+    if (previousHome === undefined) delete process.env.AGINTIFLOW_HOME; else process.env.AGINTIFLOW_HOME = previousHome;
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const work = path.join(root, "work"); await fs.mkdir(work);
+  const csv = "id,value\na,02.50\n"; await fs.writeFile(path.join(work, "readings.csv"), csv);
+  let step = 0;
+  const clientFactory = async () => ({ chat: { completions: { create: async request => {
+    if (!request.tools) return { choices: [{ message: { role: "assistant", content: "Inspect the source and preserve its original bytes." } }] };
+    const actions = [["read_file", { path: "readings.csv" }], ["apply_patch", { path: "readings.csv", search: "02.50", replace: "2.5" }]];
+    const action = actions[step++]; assert.ok(action, "unexpected source-preservation model turn");
+    return { choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null,
+      tool_calls: [{ id: `source_${step}`, type: "function", function: { name: action[0], arguments: JSON.stringify(action[1]) } }] } }] };
+  } } } });
+  clientFactory.agintiDeterministicTest = true;
+  const config = resolveRuntimeConfig({ provider: "openai", model: "offline-source-preservation", routingMode: "manual", taskProfile: "code",
+    enableScs: scsActive ? "on" : "off", goal: "Please tidy readings.csv into readings.csv. Leave readings.csv alone; no installs." }, {
+    baseDir: work, commandCwd: work, packageDir: runtimeRoot, sessionId: "source-preservation", clientFactory,
+    sandboxMode: "host", packageInstallPolicy: "block", allowFileTools: true, allowShellTool: false,
+    allowWrapperTools: false, allowAuxiliaryTools: false, allowMcpTools: false, allowWebSearch: false, allowParallelScouts: false,
+  });
+  Object.assign(config, { clientFactory, apiKey: "synthetic-only", sessionsDir: path.join(root, "sessions"), projectSessionsDir: path.join(root, "pointers"),
+    maxSteps: 2, dynamicSteps: "off", allowProviderHandoff: false, scsActive, scsValidationMode: "deterministic",
+    executionPolicy: { tier: "focused", requiresPlan: false }, onConsole() {}, onLog() {} });
+  const result = await runAgent(config);
+  assert.equal(step, 2);
+  assert.equal(await fs.readFile(path.join(work, "readings.csv"), "utf8"), csv, "synthetic output creation must not authorize source overwrite");
+  assert.equal(result.stopped, true);
+  const state = JSON.parse(await fs.readFile(path.join(root, "sessions/source-preservation/state.json"), "utf8"));
+  assert.notEqual(state.meta.goalContract.status, "completed");
+  assert.equal(state.meta.projectVerification.mutationRevision, 0);
+  const events = (await fs.readFile(path.join(root, "sessions/source-preservation/events.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+  assert.ok(events.some(event => event.type === "tool.blocked" && event.data.category === "preserved-input-mutation"));
+});
 
 for (const goal of [
   "Please tidy readings.csv into brief.md and brief.json. Leave readings.csv alone; no installs.",
@@ -152,7 +221,7 @@ for (const staleOutputs of [false, true]) for (const scsActive of [false, true])
     ["finish", { result: "Created followup.md and followup.json. The CSV and earlier files are unchanged." }],
   );
   const followup = await runAgent({ ...config, resume: "named-transform",
-    goal: "Please clean readings.csv into followup.md and followup.json. Leave readings.csv, brief.md and brief.json alone." });
+    goal: "Also clean readings.csv into followup.md and followup.json. Leave the source and earlier outputs unchanged." });
   assert.equal(followup.goalStatus, "completed", JSON.stringify(followup));
   assert.equal(requests, initialRequests + 7, "follow-up must enforce fresh outputs rather than borrow the old completion");
   for (const file of ["brief.md", "followup.md"]) assert.equal(await fs.readFile(path.join(work, file), "utf8"), markdown);
