@@ -20,12 +20,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.18.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.19.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.18.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.19.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -142,15 +142,48 @@ instruction-following or semantic correctness. A model can return a
 schema-valid invented citation; the app must reject it. Retrieved text is
 untrusted, not permission to acquire more tools or change providers.
 
-Preview 17 preserves safe `providerFailure.category:"protocol"` on the runner's
-`PROVIDER_FAILED` when native response admission rejects malformed data. The
-private brand is issued after the transport returns, not inferred from thrown
-properties, vendor error text or model prose. Arbitrary callback throws remain
-unclassified; existing trusted transport categories, schema errors, deadlines
-and cancellation retain their meanings. Direct adapter errors are unchanged.
-This enables diagnosis, not retry, fallback or acceptance of invalid output.
+### Optional host proposal review
+
+Pass `proposalReview: {readOnly:true, evaluate}` to validate schema-valid
+proposals before completion. `evaluate(proposal, {signal, reads})` receives
+frozen data and current invocation reads only; each read has exactly
+`callId,name,arguments,value`. Authentication, source scope and application
+semantics stay host-owned. Never use a shared mutable last-read variable to
+bind concurrent calls.
+
+Return exactly `{decision:"accept"}` or
+`{decision:"revise",feedback:"bounded host feedback"}`. Feedback is nonblank,
+well-formed, credential-free text, at most 2048 UTF-8 bytes. One refinement is
+permitted within the original provider, deadline, steps, reads, context and
+output-token budgets. Remaining provider turns incur their normal charges.
+The rejected proposal remains uncommitted assistant
+data. Host feedback grants no additional authority. Each final candidate must
+pass review; repeated rejection or no remaining step yields `PROPOSAL_REJECTED`
+without returning a partial proposal.
+
+For a rewrite, a host reviewer can reject an unchanged draft. For a citation,
+it can check the returned ID/locator against current authorized reads. Those
+checks are application policy, not facts inferred by Lite. Review never
+commits data or replaces current-state CAS and idempotency on apply.
+
+Omitting review skips the callback/refinement and retains two-field usage.
+Opted-in usage adds `proposalReviews` and `proposalRevisions` (zero or one).
+Callback errors yield `PROPOSAL_REVIEW_FAILED`; malformed data yields
+`PROPOSAL_REVIEW_INVALID`, with no raw cause or provider-fallback metadata.
+Review uses the same cooperative cancellation and physical pending capacity.
+Host callbacks remain trusted JavaScript, not sandboxed code. There is no
+automatic transport retry, provider switch, storage, shell or service.
+
+Native admission failures retain safe `providerFailure.category:"protocol"` on
+`PROVIDER_FAILED`. The same-module brand follows transport return; arbitrary
+callback throws/model text cannot forge it. Classification authorizes no retry.
 
 ## Native final proposal encoding
+
+Preview 19 encodes strict JSON assistant history matching the application schema
+in DeepSeek's required `{proposal: value}` envelope for non-object roots. Host
+history stays unchanged; ordinary prose remains literal. OpenAI and object-root
+wire forms are unchanged. Unwrapped incoming replies still fail closed.
 
 Preview 18 uses a private native function named `__aginti_return_proposal` only
 when the DeepSeek read catalog has closed after at least one observed read.
@@ -181,20 +214,8 @@ protocols reject before any callback. Neutral metadata and valid native calls
 remain compatible. Byte/depth/node bounds apply. Already-decoded host data must
 also have ambiguous raw JSON rejected by the host transport.
 
-Preview 3 adds an explicit non-thinking DeepSeek wire profile:
-
-```js
-import {
-  createRestrictedApplicationRunner,
-  createRestrictedDeepSeekProvider,
-} from "@lazyingart/agintilite";
-
-const provider = createRestrictedDeepSeekProvider({
-  model: "deepseek-flash", // trusted host choice; Pro is deepseek-v4-pro
-  complete: (body, { signal }) => hostTransport(body, { signal }),
-});
-// Supply provider to the same bounded runner, host schemas and scoped tools.
-```
+`createRestrictedDeepSeekProvider({model,complete})` is the explicit
+non-thinking DeepSeek wire profile. Supply it to the same bounded runner.
 
 Exact factory options are `model,complete`. It accepts only `deepseek-flash`
 or `deepseek-v4-pro`, returns `supportsImages:false`, requests `json_object`
@@ -206,68 +227,34 @@ application's authenticated, fixed-endpoint, no-redirect, no-retry transport.
 Its authentication, response byte limits and actual abort behavior require
 the application's own qualification.
 
-Complete native calls may carry ordinary English/Chinese/Japanese commentary.
-Known competing DSML, XML, requested-tool and JSON/YAML tool-envelope markers
-reject the whole turn before a read; they are never parsed into commands.
-Native `content` cannot be boolean/number data masquerading as an empty string.
-Neutral null/empty content stays compatible. Nonempty thinking, inconsistent
-indices, unknown model fields, duplicate arguments, partial/refused responses
-and unsupported tool names fail closed. A protocol label inside a valid final
-JSON value remains data. Thinking/history/vision/streaming profiles require
-separate support. See DeepSeek's [tool calls](https://api-docs.deepseek.com/guides/tool_calls/),
-[JSON output](https://api-docs.deepseek.com/guides/json_mode/) and
-[native message schema](https://api-docs.deepseek.com/api/create-chat-completion/).
+Native calls may carry English/Chinese/Japanese commentary. Competing DSML,
+XML, requested-tool or JSON/YAML tool markers reject before reads. Malformed
+types, thinking/indices/unknown fields, duplicate arguments, partial/refused
+output and unsupported tools fail closed. Protocol labels inside final JSON
+remain data. Vision/thinking/streaming are not qualified. The core opens no
+HTTP; the optional client below is explicit. Codex application transport is
+unqualified. Do not switch provider or output mode automatically.
 
-The package still supplies no credentialed HTTP client or qualified Codex
-backend. Do not silently retry, downgrade output mode or select a different
-model after failure. Existing host adapters are not replaced automatically.
+Keep credentials in the transport closure, never in runner data. Disable
+automatic transport/SDK retries; qualify response bounds and real cancellation.
 
-The host controls transport response size, endpoint/redirect policy,
-credentials, retries and cancellation. Disable automatic SDK retries when
-using this bounded contract. Credentials belong in the transport closure only,
-never instructions, history, tool results or proposals.
+Callback exceptions yield safe `PROVIDER_FAILED` or `TOOL_FAILED` without raw
+messages/stacks/causes. Trusted same-module transports can throw
+`createRestrictedProviderFailure({category,retryAfterMs?})`. Frozen metadata is
+`{schemaVersion:"aginti-provider-failure-v1",category,retryAfterMs}`.
+Categories: authentication, permission, quota, rate_limit, unavailable, timeout,
+protocol. Omitted cooldown is null; integers0..86400000ms are allowed only for
+rate_limit/unavailable. Nothing schedules a retry, wait or provider switch.
 
-Callback errors become safe `PROVIDER_FAILED` or `TOOL_FAILED` without raw
-messages/causes. Preview4 adds explicit trusted-transport classification:
-
-```js
-throw createRestrictedProviderFailure({ category: "rate_limit", retryAfterMs: 1000 });
-```
-
-Import that factory from the same SDK module instance as the runner. Only a
-trusted transport may call it for its actually observed failure. Runner errors
-retain `code:"PROVIDER_FAILED"` and an optional deeply frozen `providerFailure`:
-`{schemaVersion:"aginti-provider-failure-v1",category,retryAfterMs}`. Exact
-categories: `authentication`, `permission`, `quota`, `rate_limit`, `unavailable`,
-`timeout`, `protocol`. Omitted cooldown becomes null; a non-null integer from0
-through86,400,000 milliseconds is allowed only for `rate_limit` or `unavailable`.
-No wait, repair, retry or provider switch is performed. The host still owns
-durable attempt/ambiguity policy, consent, quotas and new invocations.
-
-This is a private in-process brand, not an HTTP attestation. The host must map
-its reviewed provider contract; status429 alone cannot distinguish temporary
-limits from exhausted quota. Raw Error properties, model text, proxies, JSON
-clones, another SDK instance and tool callback failures cannot forge the
-channel. Unknown failures stay opaque; the original callback stack/cause is
-never propagated. Cancellation/deadline wins, including a synchronous callback
-that throws after the monotonic budget expires before the timer runs.
-
-Preview7 adds `createRestrictedToolFailure({category,retryAfterMs?})` for trusted
-read-only handlers. A failed invocation retains `code:"TOOL_FAILED"` and an
-optional frozen `toolFailure` exactly
-`{schemaVersion:"aginti-tool-failure-v1",category,retryAfterMs}`. Categories are
-the provider set plus `not_found` and `conflict`; cooldown uses the same bounds
-and eligible categories. The same-module private brand is separate from the
-provider channel. Unknown errors, proxies, serialized copies and another SDK
-instance remain opaque. Neither callback may impersonate the other channel.
-
-Only the host may classify its observed source response. A missing or failed
-read stops the invocation before later batch reads or another provider turn;
-no partial proposal, automatic retry or fallback occurs. The host owns any
-retained evidence, presentation and later attempt policy. Unavailability is
-not authoritative absence. Cancellation/deadline/capacity rules stay intact.
-For public research, verify publication kind and all selected metadata against
-the actual read. A real DOI does not prove task fit, peer review or findings.
+`createRestrictedToolFailure` issues the separate same-module tool channel:
+`toolFailure` schema aginti-tool-failure-v1, same categories plus not_found/conflict,
+same cooldown bounds. Provider/tool callbacks cannot impersonate each other.
+Unknown errors/properties/Proxies/JSON clones/other SDK instances cannot forge
+either brand. Cancellation/deadline wins even for synchronous throws after
+expiry. Only the host classifies observed responses; unavailable is not absence.
+A failed read stops before later reads/model turns. Hosts own pending intent,
+ambiguity, consent, quotas, factual/citation checks, revision CAS, idempotency
+and writes. Proposal completion or transport status does not authorize a save.
 
 ## Bounds and cancellation
 
@@ -315,8 +302,6 @@ Stable error codes include `CANCELLED`, `TIMEOUT`, `BUSY`, `STEP_LIMIT`,
 `TOOL_CALL_INVALID`, `TOOL_RESULT_INVALID`, `TOOL_FAILED`, `PROVIDER_FAILED`.
 No partial proposal is returned on failure. Secret-pattern checks are defense
 in depth, not a guarantee that arbitrary sensitive content will be detected.
-
-## Extraction and qualification
 
 ## Optional bounded DeepSeek HTTPS client
 
@@ -374,14 +359,10 @@ can run; the transport adds no tools, sessions, writes or agent semantics.
 | Unconfirmed local cleanup grace | 3000 ms; fixed, no caller override |
 | Requested output tokens | 1–8192, further bounded by the runner |
 
-The optional HTTP client validates original response headers before accepting
-a body or exposing status-derived retry hints. Duplicate Content-Type,
-Content-Encoding, Content-Length, Transfer-Encoding or Retry-After fields are
-protocol failures, including equal values or different casing. Successful JSON
-responses permit only absent or `chunked` transfer coding; a coding list or
-unknown coding is refused. Unrelated repeated fields remain valid. This prevents
-Node's normalized header map from hiding contradictory evidence before a
-proposal or declared read callback is accepted. It adds no retry or fallback.
+Original response headers are checked before body/status hints. Duplicate
+Content-Type, Content-Encoding, Content-Length, Transfer-Encoding or Retry-After
+(equal/case variants too) fails. Success permits absent or chunked transfer
+coding only; unrelated repeated headers remain valid.
 
 The runner's total deadline remains independent. Full local capacity refuses
 new requests through the typed `unavailable` provider-failure channel. HTTP
@@ -393,25 +374,18 @@ Redirects, retries, fallback, streaming, compression, non-JSON content, duplicat
 JSON keys, malformed UTF-8, truncated/over-limit responses and incomplete model
 answers fail closed. Blank keep-alive lines count toward the byte/time limits.
 
-Cancellation destroys the owned local request. Its admission slot stays charged
-until the request and response actually close. `close()` blocks new admission,
-aborts owned requests, destroys owned sockets and waits for local close events.
-Repeated calls return the same promise; a cleanup failure remains a cached safe
-failure. If request/response retirement cannot be confirmed within three seconds
-after timeout, cancellation or failure, the client reports unavailable and is
-permanently poisoned against new admission. The public failure does not remove
-the physical record or return its slot; actual close events remain authoritative.
-Client shutdown also bounds its wait to three seconds, including pooled sockets.
-It reports a cached failure rather than inventing cleanup success. Normal
-confirmed requests retain their keep-alive reuse; normal cancellation keeps its
-original error and permits a fresh request once physically retired.
-
-Public settlement and physical retirement have separate completion signals, so
-shutdown cannot spin on an already-rejected task while a close remains pending.
-Remote inference termination,
-billing, response-loss idempotency and cross-process exactly-once dispatch are
-not promised. The host owns those policies and must not automatically retry an
-ambiguous request.
+Cancellation destroys the owned request; its slot stays charged until request
+and response actually close. Client close blocks admission, aborts requests,
+destroys sockets and waits for local closure, including pooled sockets.
+Repeated close returns the same promise. Timeout/cancel/failure retirement is
+bounded to3000ms: unconfirmed retirement permanently poisons admission and
+reports unavailable; exact physical records/slots remain until real close.
+Shutdown also bounds waiting to3000ms and caches failure rather than inventing
+success. Confirmed requests retain reuse; confirmed cancellation preserves its
+original error and admits fresh work after retirement. Separate public/physical
+signals prevent rejected-promise busy loops. Remote termination/billing,
+response-loss idempotency and cross-process exactly-once are not promised;
+never automatically retry ambiguous work.
 
 The client depends on the trusted Node TLS/DNS/runtime boundary. It offers no
 OS sandbox or protection from a compromised same-process dependency. Credentials
@@ -426,15 +400,7 @@ three-file core graph stay unchanged; the nine-file package remains private,
 dependency-free and without install hooks. Loopback HTTP fixtures prove neither
 live TLS nor application deployment readiness.
 
-Non-object proposals use exactly `{"proposal": VALUE}` on the native wire,
-including private output-function arguments. Object-root values retain their
-shape. Missing/extra/duplicate wrapper fields reject; tools are never wrapped.
-Object enum equality ignores object key order, never value/type or array order.
-
-Derived from AgInTiFlow commit
-`e4c16b0610c41e690d9288739561a5a7e187cc9d`, Apache-2.0; see NOTICE and LICENSE.
-The text-only extraction excludes image inspection and ambient execution.
-Reproducible package tests enforce the closed import graph, zero dependencies,
-private distribution and exact public exports. Offline checks do not qualify
-live quality, account transactions, TLS, deployment or provider admission.
+See NOTICE for Apache-2.0 provenance. Package tests enforce the closed import
+graph, private distribution, zero dependencies and exact exports. Offline tests
+do not qualify live quality, transactions, TLS, deployment or provider admission.
 Existing application copies remain pinned until their owner qualifies an upgrade.

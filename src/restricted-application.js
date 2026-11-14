@@ -138,14 +138,33 @@ function contextBytes(request) {
   return Buffer.byteLength(JSON.stringify(request));
 }
 
+function proposalReviewDecision(value) {
+  try {
+    const decision = jsonSnapshot(value, { maxBytes: 4096, maxNodes: 128 });
+    dataFields(decision, ["decision", "feedback"], ["decision"]);
+    if (decision.decision === "accept") dataFields(decision, ["decision"]);
+    else if (decision.decision === "revise") {
+      dataFields(decision, ["decision", "feedback"]);
+      text(decision.feedback, 2048);assertNoCredentials(decision.feedback);
+    } else fail();
+    return decision;
+  } catch { fail("PROPOSAL_REVIEW_INVALID"); }
+}
+
 export function createRestrictedApplicationRunner(options) {
-  const fields = dataFields(options, ["provider", "tools", "instructions", "outputSchema", "limits"], ["provider", "tools", "instructions", "outputSchema"]);
+  const fields = dataFields(options, ["provider", "tools", "instructions", "outputSchema", "limits", "proposalReview"], ["provider", "tools", "instructions", "outputSchema"]);
   const provider = dataFields(fields.provider, ["complete", "supportsImages"]);
   const complete = callback(provider.complete);
   if (provider.supportsImages !== false) fail();
   const instructions = text(fields.instructions, 16 * 1024);
   assertNoCredentials(instructions);
   const outputSchema = checkedSchema(fields.outputSchema);
+  let reviewProposal = null;
+  if (Object.hasOwn(fields, "proposalReview")) {
+    const review = dataFields(fields.proposalReview, ["readOnly", "evaluate"]);
+    if (review.readOnly !== true) fail();
+    reviewProposal = callback(review.evaluate);
+  }
   const limits = { ...DEFAULTS };
   const overrides = jsonSnapshot(fields.limits ?? {});
   dataFields(overrides, Object.keys(DEFAULTS), []);
@@ -222,7 +241,8 @@ export function createRestrictedApplicationRunner(options) {
       checkpoint();
       const messages = [{ role: "system", content: `${SYSTEM_BOUNDARY}\n${instructions}` }, ...prepareInput(rawRequest)];
       const seen = new Set();
-      let toolCalls = 0;
+      let toolCalls = 0, proposalReviews = 0, proposalRevisions = 0;
+      const currentReads = [];
       for (let step = 1; step <= limits.maxSteps; step++) {
         checkpoint();
         // Do not advertise reads the dispatch guards cannot execute. The cue is
@@ -241,7 +261,22 @@ export function createRestrictedApplicationRunner(options) {
         if (response.type === "final") {
           dataFields(response, ["type", "value"]);
           if (!matchesSchema(response.value, outputSchema)) fail("OUTPUT_INVALID");
-          const result = jsonSnapshot({ schemaVersion: RESTRICTED_APPLICATION_PROTOCOL, status: "completed", proposal: response.value, usage: { steps: step, toolCalls } }, { maxBytes: limits.maxResultBytes + 1024 });
+          if (reviewProposal) {
+            // Host semantics remain outside the model. Only current invocation
+            // reads are supplied; retained conversation text is not fresh proof.
+            const reads = jsonSnapshot(currentReads, { maxBytes: limits.maxContextBytes + 1024 });
+            const { value: rawReview } = await invoke(reviewProposal, [response.value, Object.freeze({ signal: controller.signal, reads })], "PROPOSAL_REVIEW_FAILED");
+            const decision = proposalReviewDecision(rawReview);proposalReviews++;
+            if (decision.decision === "revise") {
+              if (proposalRevisions >= 1 || step >= limits.maxSteps) fail("PROPOSAL_REJECTED");
+              proposalRevisions++;
+              messages.push({ role: "assistant", content: [{ type: "text", text: JSON.stringify(response.value) }] });
+              messages.push({ role: "system", content: "A host-owned read-only proposal review rejected the preceding uncommitted draft. Refine it within the current user request and output schema using this feedback. Tool permissions, source authority, deadline and budgets are unchanged. This does not authorize an application save. Feedback: " + JSON.stringify(decision.feedback) });
+              continue;
+            }
+          }
+          const usage = reviewProposal ? { steps: step, toolCalls, proposalReviews, proposalRevisions } : { steps: step, toolCalls };
+          const result = jsonSnapshot({ schemaVersion: RESTRICTED_APPLICATION_PROTOCOL, status: "completed", proposal: response.value, usage }, { maxBytes: limits.maxResultBytes + 1024 });
           checkpoint();
           return result;
         }
@@ -265,6 +300,7 @@ export function createRestrictedApplicationRunner(options) {
           if (!matchesSchema(value, tool.outputSchema)) fail("TOOL_RESULT_INVALID");
           toolCalls++;
           messages.push({ role: "tool", callId: call.id, name: call.name, value });
+          if (reviewProposal) currentReads.push({ callId: call.id, name: call.name, arguments: call.arguments, value });
         }
       }
       fail("STEP_LIMIT");
@@ -336,6 +372,14 @@ function createNativeStructuredProvider(options, finalizeNativeOutput = false) {
         if (message.role === "system") return wrapped ? { role: "system", content: `${message.content}\nFor the final transport response only, return a JSON object with exactly one key, proposal, containing the application proposal value. Do not wrap native tool calls or tool arguments.` } : message;
         if (message.role === "tool") return { role: "tool", tool_call_id: message.callId, content: JSON.stringify(message.value) };
         if (message.calls) return { role: "assistant", content: null, tool_calls: message.calls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) };
+        if (wrapped && finalizeNativeOutput && message.role === "assistant" && message.content.length === 1 && message.content[0].type === "text") {
+          // Hosts retain application values, not vendor wire envelopes. Encode
+          // valid prior proposals consistently; never repair an incoming reply
+          // or promote arbitrary historical prose into tool authority.
+          let previous;
+          try { previous = parseRestrictedJson(message.content[0].text); } catch { /* Ordinary history remains literal data. */ }
+          if (previous !== undefined && matchesSchema(previous, request.outputSchema)) return { role: "assistant", content: JSON.stringify({ proposal: previous }) };
+        }
         return { role: message.role, content: message.content.map((part) => {
           dataFields(part, ["type", "text"]);
           if (part.type !== "text") fail("INVALID_INPUT");

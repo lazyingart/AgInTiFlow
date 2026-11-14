@@ -1,49 +1,25 @@
 AgInTiLite
 Copyright 2026 AgInTi and AgInTiFlow contributors
 
-Preview 16 keeps native call identity local to each restricted invocation.
-Later-response ID collisions are scoped consistently in calls/results without
-weakening whole-batch validation, custom-provider IDs or callback ownership.
-This shared SDK change adds no dependency, persistence, retry or app authority.
-
 Derived from the Apache-2.0 AgInTiFlow restricted application SDK:
 https://github.com/lazyingart/AgInTiFlow
-Commit e4c16b0610c41e690d9288739561a5a7e187cc9d
+Initial extraction: e4c16b0610c41e690d9288739561a5a7e187cc9d
 
-The standalone extraction removes image handling and vision/provider imports,
-accepts text-only input, and packages the bounded runner without dependencies.
-The credential-text detector is retained unchanged. Preview 2 backports the
-strict JSON parser and native metadata checks from AgInTiFlow commit
-8dc44e691e61c2c23c8cc21d6aed26939d59c33e; the contract module matches that commit.
-See README.md for the extraction boundary and qualification limits.
+The standalone extraction removes image inspection and vision/provider imports,
+accepts text-only input and packages the bounded runner without dependencies.
+The credential-text detector is retained. See README.md and LICENSE for the
+API boundary, qualifications and Apache-2.0 license.
 
-Preview 3 adds the explicit text-only DeepSeek profile and shared native-turn
-admission checks from AgInTiFlow commit
-6de9bb0b543613c4f01dfa29f6eebe520ab15de2. The factory/marker-guard block is kept
-byte-identical to its qualified full SDK source; transport remains host-owned.
+Shared-source backports (full history remains in Git):
+Preview 2: 8dc44e691e61c2c23c8cc21d6aed26939d59c33e — strict JSON/native metadata.
+Preview 3: 6de9bb0b543613c4f01dfa29f6eebe520ab15de2 — explicit DeepSeek text profile.
+Preview 4: 18918723d3e68943e83ea22f45edeff3af1da5ba — failure brand/deadline.
+Preview 7: 8193dcf8fe1c30405a7325e8beeb5ddaaf201b09 — host read failure channel.
+Preview 11: ab912242200b6d0a73375de468aecbfd647d0b76 — opaque callback results.
+Preview 12: fe37b2cf761084499d6f64365f0aad1da8d34bbb — native abort subscription.
+Preview 13: 366c097f80d4d1e4d6b7a558ebdb3d37713f0598 — bounded HTTP retirement.
+Preview 16: invocation-local native call identity with strict batch admission.
+Preview 19: bounded host proposal review and consistent DeepSeek proposal history.
 
-Preview 4 adds the shared explicit host-declared provider-failure channel and
-monotonic exception-deadline correction from AgInTiFlow commit
-18918723d3e68943e83ea22f45edeff3af1da5ba. The private in-process brand adds no
-transport, retry, fallback, credential or application policy authority.
-
-Preview 7 adds the matching explicit host-issued read-tool failure channel from
-AgInTiFlow commit 8193dcf8fe1c30405a7325e8beeb5ddaaf201b09. It preserves the
-existing stop/deadline/capacity rules and adds no HTTP classification, automatic
-retry, provider fallback, source authentication or application activation.
-
-Preview 11 ports the synchronous callback-result boxing fix from AgInTiFlow
-commit ab912242200b6d0a73375de468aecbfd647d0b76. Strict JSON candidates are
-validated without executing thenable hooks; genuine host Promise behavior and
-cancellation accounting remain unchanged. No new import or dependency is added.
-
-Preview 12 ports propagation-resistant native cancellation from AgInTiFlow
-commit fe37b2cf761084499d6f64365f0aad1da8d34bbb. The runner and optional pinned
-DeepSeek transport use Node's disposable abort subscription and preserve the
-existing capacity/close accounting. The new node:events import is standard
-library only; no package dependency, retry, fallback or app authority is added.
-
-Preview 13 ports bounded uncertain HTTP retirement from AgInTiFlow commit
-366c097f80d4d1e4d6b7a558ebdb3d37713f0598. Public failure and physical retirement
-remain separate; a failed cleanup poisons admission, keeps exact physical work
-tracked and preserves the cached failed close. No retry or dependency is added.
+These changes add no dependency, persistence, application commit authority or
+automatic provider fallback. Opaque host callbacks are not sandboxed JavaScript.
