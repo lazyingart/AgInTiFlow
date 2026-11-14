@@ -2,22 +2,39 @@
 
 ## Standalone application distribution
 
-For a text-only app backend, AgInTiLite private preview 18 provides the same
+For a text-only app backend, AgInTiLite private preview 19 provides the same
 bounded proposal loop without the full CLI, Studio or vision dependency graph.
-The qualified Lite source is `b0fbd8bc4d695dcbe1514fad70848d1dde098ca6`, also
-available as `sdk/agintilite-native-finalizer-20261114` in the AgInTiFlow repository.
+The qualified Lite source is `febddd95d77203f27de8cd1b796a3397863bcdc4`, also
+available as `sdk/agintilite-proposal-review-20261114` in the AgInTiFlow repository.
 That ref is a standalone SDK tree, not a branch to merge into Flow's application
 tree. Use the pinned local tarball, not a mutable worktree link. Its SHA-256 is
-`8ad2f92853c53a89d66f3b4aaa8ec64e0c593a78a443c2c1104ea84bd433bbfd`.
+`5deb54c5c6272b7d91f426eb4acd2d427ae193c3d718a82240781b1352f54aaf`.
 It remains private and unpublished to npm; no application is upgraded implicitly.
 
-Preview 18 retains prior transport, cancellation, header, opaque-result and
-failure-category guards. All 286 offline cases pass, including 28 native final
+Preview 19 retains prior transport, cancellation, header, opaque-result and
+failure-category guards. All 360 offline cases pass, including 28 native final
 encoding cases, 74 HTTP cases and reproducible installed-package checks.
 Closed DeepSeek read turns may encode their final proposal through one private
 native function. This executes no host callback and adds no turn, read, retry,
 fallback, dependency or public export. Initial no-read and generic OpenAI wire
 forms stay unchanged. Earlier preview qualifications below are historical.
+
+Preview 19 adds optional read-only host proposal review and consistent DeepSeek
+structured history encoding. In a controlled rewrite, Flash's unchanged first
+proposal was rejected and refined within the original four-step budget: three
+model requests, one read, 3.16 seconds. A fresh Pro Chinese follow-up with that
+host-retained history read the current source and completed in two requests,
+2.95 seconds. Source bytes stayed unchanged and no application write occurred.
+Flash's draft inferred that samples were collected where the source said used;
+the Pro draft restored the source wording. Narrow numeric/no-op checks did not
+prove full semantic fidelity. Apps still own substantive review and commit CAS.
+
+Before the history fix, two Pro continuations and an exact request replay failed
+strict native admission. The replay returned bare application JSON despite the
+required wrapper. After the encoder correction, the same normalized request
+returned the wrapper. All 14 actual requests across diagnosis and qualification
+are retained as evidence; earlier failures are not accepted results or automatic
+retries. This qualifies a bounded SDK path, not production app integration.
 
 Native response call IDs may recur in later turns. The native adapters preserve
 ordinary IDs and assign a fresh invocation-local ID only to a later collision;
@@ -739,6 +756,55 @@ or content. Key codes: `CANCELLED`, `TIMEOUT`, `BUSY`, `VISION_UNAVAILABLE`,
 `TOOL_CALL_INVALID`, `TOOL_RESULT_INVALID`, `TOOL_FAILED`, `PROVIDER_FAILED`.
 Invalid contract/data/input/image also fail closed. No proposal is returned on
 failure. Batch validation precedes every callback; duplicate call IDs reject.
+
+### Optional read-only proposal review
+
+The host can configure `proposalReview: {readOnly:true, evaluate}` when a
+schema-valid proposal still needs domain validation. For example, an edit must
+change the current text, or a citation must match an authorized source. Omit
+this option to skip review/refinement and retain the two-field usage shape.
+
+`evaluate(proposal, {signal, reads})` receives a deeply frozen proposal and only
+the current invocation's successful reads. Each frozen read contains exactly
+`callId,name,arguments,value`; historical text is not fresh read evidence. Close
+over authenticated scope rather than trusting owner fields in model arguments.
+The callback is trusted host JavaScript and must be read-only. It is not an
+application commit or an OS sandbox.
+
+Return exactly `{decision:"accept"}` or
+`{decision:"revise",feedback:"bounded host feedback"}`. Feedback must be
+nonblank, well-formed text within 2048 UTF-8 bytes and contain no credentials.
+Unknown/hidden/accessor/proxy/thenable data is rejected. Accepted proposals
+still require the app's revision/permission/idempotency transaction before apply.
+
+One rejected candidate can be refined by the same provider within the existing
+step, tool, context, token and total-deadline limits. It does not grant another
+step, tool, provider, retry budget or write permission. Refinement can consume
+remaining provider turns and their normal charges, all within
+`maxSteps`. The previous candidate is retained as uncommitted assistant data and host feedback is a trusted system
+instruction. The model may use any remaining authorized reads; every final
+candidate must pass the host reviewer. A second rejection, or rejection on the
+last step, fails closed with `PROPOSAL_REJECTED`. No partial proposal is returned.
+
+With review configured, `usage` also contains `proposalReviews` and
+`proposalRevisions` (at most one). Callback exceptions become
+`PROPOSAL_REVIEW_FAILED`; invalid review data becomes `PROPOSAL_REVIEW_INVALID`.
+These are not provider-failure or fallback signals. Review waits share the
+existing cancellation/deadline and physical-capacity accounting. A callback
+that ignores cancellation keeps its slot until it settles.
+
+The reviewer supplies domain semantics, not a general model-quality guarantee.
+It cannot replace current-state CAS at commit time or prove correctness by
+returning `accept`. Preserve pending intent on failure; a caller can separately
+authorize another provider under its own policy. `test:restricted-proposal-review`
+covers unchanged defaults, bounded refinement, scoped reads, concurrency,
+descriptor attacks, UTF-8 limits, errors, cancellation and native final encoding.
+
+DeepSeek encodes strict JSON assistant history matching a non-object-root
+application schema in its required `{proposal:value}` transport envelope. Host
+history is unchanged; ordinary prose and invalid/ambiguous JSON remain literal.
+OpenAI and object-root wire forms stay unchanged. Incoming unwrapped responses
+still fail closed; this encoding does not repair malformed provider output.
 
 The deadline includes preparation, provider/tool waits and final validation;
 no subsequent dispatch or late success is accepted after interruption.
