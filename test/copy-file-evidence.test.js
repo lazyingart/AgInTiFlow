@@ -34,6 +34,7 @@ for (const request of [
   "Run cp notes.txt notes-backup.txt.", "Write marketing copy about notes.txt in notes-backup.txt.",
   "I already copied notes.txt to notes-backup.txt. Explain it.",
   "Explain how to read notes.txt and copy notes.txt to notes-backup.txt.",
+  "请不要复制 notes.txt 到 notes-backup.txt。", "不要然后复制 notes.txt 到 notes-backup.txt。",
 ]) test("prose or commands do not mint copy authority: " + request, () => {
   const contract = deriveScsTaskContract({ goal: request }); assert.deepEqual(contract.exactCopyRequirements, []);
 });
@@ -93,6 +94,37 @@ test("a preserved earlier backup is not a second data input", () => {
   assert.deepEqual(contract.exactInputPaths, ["notes.txt"]);
   assert.deepEqual(contract.explicitInputReadPaths, ["notes.txt"]);
   assert.deepEqual(contract.preservedInputPaths, ["notes.txt", "notes-backup.txt"]);
+});
+for (const request of [
+  "Copy notes.txt to backup.txt. Then write brief.txt about notes.txt.",
+  "Copy notes.txt to backup.txt. Leave the original alone; also write brief.txt about notes.txt.",
+  "Copy notes.txt to backup.txt. Then explain how to update notes.txt.",
+  "Copy notes.txt to backup.txt. Then write brief.txt discussing how to edit notes.txt.",
+  'Copy notes.txt to backup.txt. Quote "update notes.txt" in brief.txt.',
+]) test("a copy source mention is not edit permission: " + request, () => {
+  const contract = deriveScsTaskContract({ goal: request });
+  assert.equal(contract.exactCopyRequirements[0].sourceMayChange, undefined);
+  assert.ok(contract.preservedInputPaths.includes("notes.txt"));
+  assert.ok(contract.exactInputPaths.includes("notes.txt"));
+  assert.ok(!contract.exactOutputPaths.includes("notes.txt"));
+});
+for (const request of [
+  "请复制 notes.txt 到 backup.txt；然后写 brief.txt 来介绍 notes.txt。",
+  "notes.txt を backup.txt にコピーしてください。notes.txt について brief.txt を作成してください。",
+  "Copy Notes.txt to backup.txt. Then update notes.txt to use a new value.",
+]) test("indirect or differently named sources remain read-only: " + request, () => {
+  const contract = deriveScsTaskContract({ goal: request });const source = request.includes("Notes.txt") ? "Notes.txt" : "notes.txt";
+  assert.equal(contract.exactCopyRequirements[0].sourceMayChange, undefined);
+  assert.ok(contract.preservedInputPaths.includes(source));assert.ok(!contract.exactOutputPaths.includes(source));
+});
+for (const request of [
+  "请复制 notes.txt 到 backup.txt；然后修改 notes.txt。",
+  "先修改 notes.txt。然后复制 notes.txt 到 backup.txt。",
+  "notes.txt を backup.txt にコピーしてください。notes.txt を更新してください。",
+  "notes.txt を更新してください。notes.txt を backup.txt にコピーしてください。",
+]) test("explicit multilingual source edits retain their distinct role: " + request, () => {
+  const contract = deriveScsTaskContract({ goal: request });assert.equal(contract.exactCopyRequirements[0].sourceMayChange, true);
+  assert.ok(!contract.preservedInputPaths.includes("notes.txt"));
 });
 test("source display can be copied faithfully without normalizing mixed line endings", async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-copy-mixed-"));t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -223,7 +255,7 @@ test("an earlier task read cannot poison a new backup snapshot in the raw SCS ev
   assert.equal(evaluateScsSemanticContract(deriveScsTaskContract({ goal: request }), { commandCwd: root, state, events }).exactCopies.ok, true);
 });
 
-for (const scsActive of [false, true]) for (const mode of ["wrong-copy", "source-mutation", "unrelated-output", "line-ending-repair", "source-copy"]) {
+for (const scsActive of [false, true]) for (const mode of ["wrong-copy", "source-mutation", "unrelated-output", "line-ending-repair", "source-copy", "report-source", "report-source-alias"]) {
   test(`native copy contract and continuation (SCS ${scsActive}, ${mode})`, { timeout: 20000 }, async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-copy-native-"));const previousHome = process.env.AGINTIFLOW_HOME;
     let closeIndex = () => {};t.after(async () => { closeIndex();if (previousHome === undefined) delete process.env.AGINTIFLOW_HOME;else process.env.AGINTIFLOW_HOME = previousHome;await fs.rm(root, { recursive: true, force: true }); });
@@ -232,9 +264,12 @@ for (const scsActive of [false, true]) for (const mode of ["wrong-copy", "source
     const { resolveRuntimeConfig } = await import(pathToFileURL(path.join(runtimeRoot, "src/config.js")));
     closeIndex = (await import(pathToFileURL(path.join(runtimeRoot, "src/session-index.js")))).closeSessionIndexConnections;
     const work = path.join(root, "work");await fs.mkdir(work);await fs.writeFile(path.join(work, "notes.txt"), raw);
+    const reportTask = mode.startsWith("report-source");
+    const request = reportTask ? `Copy notes.txt to notes-backup.txt. Then write brief.txt about notes.txt.${mode.endsWith("alias") ? " Leave the original alone." : ""} No commands or installs.` : goal;
     const actions = [["read_file", { path: "notes.txt" }]];
-    if (mode === "source-mutation") actions.push(["apply_patch", { path: "notes.txt", search: "needs review", replace: "approved" }]);
-    if (mode === "source-copy") actions.push(["write_file", { path: "notes-backup.txt", copyFromPath: "notes.txt", copyFromSha256: hash(raw), mode: "create" }]);
+    if (mode === "source-mutation" || reportTask) actions.push(["apply_patch", { path: "notes.txt", search: "needs review", replace: "approved" }]);
+    if (reportTask) actions.push(["write_file", { path: "notes-backup.txt", content: raw }], ["write_file", { path: "brief.txt", content: "The supplied note is a draft. Its status still needs review, and its reference code is AB-007. This brief records the supplied information without changing the original note.\n" }]);
+    else if (mode === "source-copy") actions.push(["write_file", { path: "notes-backup.txt", copyFromPath: "notes.txt", copyFromSha256: hash(raw), mode: "create" }]);
     else if (mode === "line-ending-repair") actions.push(["write_file", { path: "notes-backup.txt", content: raw.replaceAll("\r\n", "\n") }],
       ["apply_patch", { path: "notes-backup.txt", search: "An absent source anchor.", replace: raw }], ["read_file", { path: "notes-backup.txt" }],
       ["apply_patch", { path: "notes-backup.txt", search: raw.replaceAll("\r\n", "\n"), replace: raw.replaceAll("\r\n", "\n") + " " }],
@@ -243,10 +278,14 @@ for (const scsActive of [false, true]) for (const mode of ["wrong-copy", "source
       ["read_file", { path: "notes-backup.txt" }], ["apply_patch", { path: "notes-backup.txt", search: "Wrong copied text.\n", replace: raw }]);
     else if (mode === "unrelated-output") actions.push(["write_file", { path: "unrelated.txt", content: "Not the requested backup.\n" }], ["finish", { result: "Copied notes.txt to notes-backup.txt." }], ["write_file", { path: "notes-backup.txt", content: raw }]);
     else actions.push(["write_file", { path: "notes-backup.txt", content: raw }]);
-    actions.push(["finish", { result: "Created the exact notes-backup.txt copy; notes.txt is unchanged." }]);
-    let step = 0;const offered = [];
+    actions.push(["finish", { result: reportTask ? "Created notes-backup.txt and brief.txt; notes.txt is unchanged." : "Created the exact notes-backup.txt copy; notes.txt is unchanged." }]);
+    let step = 0, preparatoryInspections = 0;const offered = [];
     const clientFactory = async () => ({ chat: { completions: { create: async request => {
       if (!request.tools) return { choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "1. Read the current named source.\n2. Create the requested copy.\n3. Verify the files and finish." } }] };
+      if (reportTask && actions[step]?.[0] === "read_file" && !request.tools.some(tool => tool.function.name === "read_file") && request.tools.some(tool => tool.function.name === "inspect_project")) {
+        assert.equal(preparatoryInspections++, 0, "Bounded baseline setup cannot become an inspection loop");
+        return { choices: [{ index: 0, finish_reason: "tool_calls", message: { role: "assistant", content: null, tool_calls: [{ id: "copy_prepare", type: "function", function: { name: "inspect_project", arguments: "{}" } }] } }] };
+      }
       const action = actions[step++];
       assert.ok(action, JSON.stringify({ reason: "No producer loop after an exact copy", step, offered, rejections: request.messages.filter(message => message.role === "user" && String(message.content).startsWith("The proposed completion")).slice(-2).map(message => String(message.content).slice(0, 1200)) }));
       offered.push({ action: action[0], tools: request.tools.map(tool => tool.function.name) });
@@ -257,13 +296,14 @@ for (const scsActive of [false, true]) for (const mode of ["wrong-copy", "source
         { baseDir: work, commandCwd: work, packageDir: runtimeRoot, sessionId: "copy-proof", clientFactory, sandboxMode: "host", packageInstallPolicy: "block", allowFileTools: true, allowShellTool: false, allowWrapperTools: false, allowAuxiliaryTools: false, allowMcpTools: false, allowWebSearch: false, allowParallelScouts: false });
       return Object.assign(config, { clientFactory, apiKey: "synthetic-only", sessionsDir: path.join(root, "sessions"), projectSessionsDir: path.join(root, "pointers"), maxSteps: 12, dynamicSteps: "off", allowProviderHandoff: false, scsActive, scsValidationMode: "deterministic", executionPolicy: { tier: "focused", requiresPlan: false }, onConsole() {}, onLog() {} });
     };
-    const result = await runAgent(makeConfig(goal));assert.notEqual(result.stopped, true, JSON.stringify({ result, step, offered }));assert.equal(step, actions.length);
-    assert.equal(await fs.readFile(path.join(work, "notes.txt"), "utf8"), raw);assert.equal(await fs.readFile(path.join(work, "notes-backup.txt"), "utf8"), raw);
+    const result = await runAgent(makeConfig(request));assert.notEqual(result.stopped, true, JSON.stringify({ result, step, offered }));assert.equal(step, actions.length);
+    assert.equal(await fs.readFile(path.join(work, "notes.txt"), "utf8"), raw, reportTask ? JSON.stringify({ goalStatus: result.goalStatus, stopped: result.stopped || false, originalMustRemainUnchanged: true }) : undefined);assert.equal(await fs.readFile(path.join(work, "notes-backup.txt"), "utf8"), raw);
+    if (reportTask) assert.equal(preparatoryInspections, 0, "A known data source must not require unrelated repository inspection");
     const session = path.join(root, "sessions/copy-proof"), events = (await fs.readFile(path.join(session, "events.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
     const sourceRead = events.find(e => e.type === "tool.completed" && e.data.toolName === "read_file" && e.data.path === "notes.txt");
     assert.equal(sourceRead.data.lineEndingsPreserved, true, "The native copy contract selects fidelity presentation without rewriting provider arguments");
     assert.equal(sourceRead.data.args.preserveLineEndings, undefined);
-    if (mode === "source-mutation") assert.ok(events.some(e => e.type === "tool.blocked" && e.data.category === "preserved-input-mutation"));
+    if (mode === "source-mutation" || reportTask) assert.ok(events.some(e => e.type === "tool.blocked" && e.data.category === "preserved-input-mutation"));
     else if (mode === "line-ending-repair") assert.ok(events.some(e => e.type === "tool.failed" && e.data.category === "patch-context-noop"), "Arbitrary whitespace remains a no-op; only the exact proven copy bytes qualify");
     else if (mode === "source-copy") assert.ok(events.some(e => e.type === "tool.completed" && e.data.copiedFrom?.sha256 === hash(raw)), "The native publisher, not model text, attests the copied source");
     else assert.ok(events.some(e => ["completion.evidence_rejected", "scs.student.finish_rejected"].includes(e.type)), "A false first completion must be rejected");

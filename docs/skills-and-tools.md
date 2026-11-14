@@ -73,6 +73,9 @@ For backup-then-edit requests, the backup stays bound to the pre-edit read:
 later source mutations cannot redefine it. Explicit edit-then-copy requests
 instead bind the later copy to the edited snapshot. Late publication of the
 original snapshot is allowed if its native evidence and exact bytes remain valid.
+Mentioning the source in a separate report, explanation or quoted edit instruction
+is not permission to change it. Only a direct request to edit that named source
+relaxes its copy-source protection.
 
 ## Built-In Skills
 

@@ -645,6 +645,24 @@ function filePreservationClauses(goal = "") {
   return clauses;
 }
 
+function explicitCopySourceEditPositions(source, sourcePath) {
+  const positions = [];
+  for (const match of source.matchAll(literalFileReferencePattern(sourcePath))) {
+    if (!preservationFileReferences(match[0]).some(reference => normalizedContractPath(reference.path) === sourcePath)) continue;
+    const clause = outputIntentClauseAt(source, match.index);
+    const before = source.slice(clause.start, match.index);
+    if (clause.quoted || /\b(?:explain|describe|discuss|suggest|quote|say|example|suppose|imagine|if|when|unless)\b|如果|假如|解释|解釋|说明|説明|例として|もし/iu.test(before)) continue;
+    const directEdit = /(?:^|[.;!?。！？；,，\n]|\b(?:and|then|also)\b)\s*(?:(?:please|kindly|could you|can you|would you)\s+)?(?:update|edit|modify|patch|fix|repair|rewrite|replace|overwrite|write|save|create|change)\s+(?:(?:the|original|existing|source|file)\s+){0,3}$/iu.test(before);
+    const chineseEdit = /(?:^|[。！？；，\n])\s*(?:先|首先|然后|然後|再|然后再|然後再)?\s*(?:请|請)?(?:修改|更新|编辑|編輯|更改|重写|重寫|替换|替換|覆盖|覆蓋|写入|寫入|创建|建立)\s*$/u.test(before);
+    if (directEdit || chineseEdit) positions.push(match.index);
+    if (positions.length >= 64) break;
+  }
+  for (const clause of japaneseFileIntentClauses(source).filter(item => item.kind === "update")) {
+    if (preservationFileReferences(clause.body).some(reference => normalizedContractPath(reference.path) === sourcePath)) positions.push(clause.index);
+  }
+  return positions;
+}
+
 function namedCopyIntent(goal = "") {
   const source = String(goal || ""), pairs = [], spans = [];
   const file = "(" + PRESERVATION_FILE_TOKEN + ")";
@@ -663,7 +681,7 @@ function namedCopyIntent(goal = "") {
     const lead = source.slice(clause.start, match.index);
     if (clause.quoted || /\b(?:explain|describe|discuss|quote|say|print|echo|example|suppose|imagine|if|when)\b|如果|假如|解释|解釋|说明|説明|例として|もし/u.test(lead.toLowerCase())) continue;
     const direct = lead.split(/[,，]|\b(?:and|then|also)\b/iu).at(-1).trim();
-    if (!/^(?:(?:\s*(?:please|kindly|could you|can you|would you|I want you to|I need you to|请|請|どうぞ))\s*)*$/iu.test(direct)) continue;
+    if (!/^(?:(?:\s*(?:please|kindly|could you|can you|would you|I want you to|I need you to|请|請|然后|然後|然后再|然後再|その後|そして|どうぞ))\s*)*$/iu.test(direct)) continue;
     const a = preservationFileReferences(match[1]), b = preservationFileReferences(match[2]);
     if (a.length !== 1 || !b.length || reverse && b.length !== 1) continue;
     if (spans.some(span => match.index < span.end && match.index + match[0].length > span.start)) continue;
@@ -677,12 +695,13 @@ function namedCopyIntent(goal = "") {
   if (pairs.length) {
     let remainder = source;
     for (const span of [...spans].sort((a, b) => b.start - a.start)) remainder = remainder.slice(0, span.start) + " ".repeat(span.end - span.start) + remainder.slice(span.end);
-    const edits = new Set(inferExactOutputPaths(remainder).map(item => path.posix.normalize(item)));
-    for (const pair of pairs) if (edits.has(path.posix.normalize(pair.sourcePath))) {
+    for (const pair of pairs) {
+      const edits = explicitCopySourceEditPositions(remainder, pair.sourcePath);
+      if (!edits.length) continue;
       pair.sourceMayChange = true;
       const span = spans.find(item => preservationFileReferences(item.sourceToken).some(reference => normalizedContractPath(reference.path) === pair.sourcePath) &&
         preservationFileReferences(item.destinationToken).some(reference => normalizedContractPath(reference.path) === pair.destinationPath));
-      if (span && inferExactOutputPaths(remainder.slice(0, span.start)).some(item => path.posix.normalize(item) === path.posix.normalize(pair.sourcePath))) pair.sourceEditBeforeCopy = true;
+      if (span && edits.some(index => index < span.start)) pair.sourceEditBeforeCopy = true;
     }
   }
   return { pairs: pairs.slice(0, 16), overflow: pairs.length > 16, spans };
@@ -1487,7 +1506,8 @@ function preservedSourceAliasPaths(goal = "") {
       if (match[1]) sourceReferences = sourceReferences.slice(0, match.index) + match[0] + sourceReferences.slice(match.index + match[0].length);
     }
   }
-  const inputs = uniquePathList(inferExactInputPaths(sourceReferences).map(normalizedContractPath), 24).filter(item => !outputs.has(item));
+  const copiedInputs = new Set(namedCopyIntent(goal).pairs.map(pair => normalizedContractPath(pair.sourcePath)));
+  const inputs = uniquePathList(inferExactInputPaths(sourceReferences).map(normalizedContractPath), 24).filter(item => !outputs.has(item) || copiedInputs.has(item));
   return inputs.length === 1 ? inputs : [];
 }
 
@@ -3467,10 +3487,11 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     description: CATEGORY_LABELS[category] || category,
   }));
   const excludedOutputPaths = inferExplicitlyExcludedOutputPaths(evidenceGoal);
+  const readOnlyCopySources = new Set(copies.pairs.filter(pair => !pair.sourceMayChange).map(pair => normalizedContractPath(pair.sourcePath)));
   const inferredOutputPaths = filterExplicitlyExcludedOutputPaths(
     uniquePathList([...inferExactOutputPaths(positiveEvidenceGoal), ...copies.pairs.map(pair => pair.destinationPath)], 24),
     excludedOutputPaths
-  );
+  ).filter(item => !readOnlyCopySources.has(normalizedContractPath(item)));
   // Host compilation ownership is a runtime execution contract, not source
   // evidence. Keep it visible even when AGINTI_EVIDENCE_SCOPE_JSON narrows the
   // factual task text to an earlier user request.
