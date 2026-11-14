@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
-import { lookup as dnsLookup } from "node:dns/promises";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -13,6 +12,7 @@ import { isDomainAllowed, resolveResearchDomains } from "./guardrails.js";
 import { redactSensitiveText } from "./redaction.js";
 import { assessPublicWebQuery } from "./web-query-privacy.js";
 import { createReadRequestGate } from "./read-request-gate.js";
+import { fetchPublicWebResponse, disposePublicWebResponse } from "./public-page-fetch.js";
 
 const MAX_QUERY_BYTES = 500;
 const MAX_RESULTS = 10;
@@ -639,6 +639,10 @@ async function assertPublicResolution(url, resolveHostImpl) {
   }
 }
 
+async function cancelPageResponse(response) {
+  if (!await disposePublicWebResponse(response)) await response?.body?.cancel?.();
+}
+
 async function fetchPageWithValidatedRedirects(fetchImpl, requestedUrl, options, allowedDomains, blockedDomains, resolveHostImpl) {
   let currentUrl = requestedUrl;
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
@@ -650,13 +654,16 @@ async function fetchPageWithValidatedRedirects(fetchImpl, requestedUrl, options,
     const response = await fetchImpl(currentUrl, { ...options, redirect: "manual" });
     const responseUrl = String(response.url || currentUrl);
     if (!sourceUrlAllowed(responseUrl, allowedDomains, blockedDomains)) {
+      try { await cancelPageResponse(response); } catch { /* Preserve the policy refusal. */ }
       throw new Error("Redirect target is outside the allowed research domains.");
     }
     if (!REDIRECT_STATUSES.has(Number(response.status))) return { response, finalUrl: responseUrl };
     const location = response.headers?.get?.("location");
     if (!location) return { response, finalUrl: responseUrl };
-    if (redirectCount >= MAX_REDIRECTS) throw new Error(`Page exceeded the ${MAX_REDIRECTS}-redirect research limit.`);
-    currentUrl = new URL(location, responseUrl).href;
+    try {
+      if (redirectCount >= MAX_REDIRECTS) throw new Error(`Page exceeded the ${MAX_REDIRECTS}-redirect research limit.`);
+      currentUrl = new URL(location, responseUrl).href;
+    } finally { try { await cancelPageResponse(response); } catch { /* The next hop remains policy checked. */ } }
   }
   throw new Error(`Page exceeded the ${MAX_REDIRECTS}-redirect research limit.`);
 }
@@ -1051,22 +1058,29 @@ export async function readWebPage(args = {}, config = {}) {
     return { ok: false, toolName: "read_web_page", error: "URL is outside the allowed research domains." };
   }
   if (typeof config.webPageReaderImpl === "function") return config.webPageReaderImpl({ ...args, domains: allowedDomains }, config);
-  const fetchImpl = config.webPageFetchImpl || config.webFetchImpl || globalThis.fetch;
-  if (typeof fetchImpl !== "function") {
+  const configuredFetch = config.webPageFetchImpl || config.webFetchImpl;
+  if (configuredFetch && typeof configuredFetch !== "function") {
     return { ok: false, toolName: "read_web_page", error: "No compatible fetch implementation is available." };
   }
   const timeoutMs = Math.min(Math.max(Number(args.timeoutMs) || 20_000, 1_000), 90_000);
   const maxBytes = Math.min(Math.max(Number(args.maxBytes) || 2 * 1024 * 1024, 32 * 1024), MAX_PAGE_BYTES);
   const maxChars = Math.min(Math.max(Number(args.maxChars) || 20_000, 1_000), MAX_PAGE_CHARS);
-  const resolveHostImpl = config.webPageResolveHostImpl || (fetchImpl === globalThis.fetch ? dnsLookup : null);
+  // Explicit host callbacks remain trusted overrides. The default and an
+  // explicitly selected global fetch use the credential-free pinned transport.
+  const nativeTransport = !configuredFetch || configuredFetch === globalThis.fetch;
+  const fetchImpl = nativeTransport ? (url, options) => fetchPublicWebResponse(url, { signal: options.signal, maximumBytes: maxBytes }) : configuredFetch;
+  const resolveHostImpl = config.webPageResolveHostImpl || null;
+  let response;
   try {
-    const { response, finalUrl: resolvedUrl } = await fetchPageWithValidatedRedirects(fetchImpl, requestedUrl, {
+    const fetched = await fetchPageWithValidatedRedirects(fetchImpl, requestedUrl, {
       signal: timeoutSignal(config.abortSignal, timeoutMs),
       headers: {
         "User-Agent": "AgInTiFlow/1.0 (+https://flow.lazying.art)",
         Accept: "text/html,application/xhtml+xml,text/plain,text/markdown,application/json,application/pdf",
       },
     }, allowedDomains, blockedDomains, resolveHostImpl);
+    response = fetched.response;
+    const resolvedUrl = fetched.finalUrl;
     const finalUrl = canonicalizeSourceUrl(resolvedUrl);
     if (!response.ok) {
       return { ok: false, toolName: "read_web_page", url: finalUrl, status: response.status, error: `Page returned HTTP ${response.status}.` };
@@ -1160,7 +1174,7 @@ export async function readWebPage(args = {}, config = {}) {
       url: canonicalizeSourceUrl(requestedUrl),
       error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
     };
-  }
+  } finally { try { await cancelPageResponse(response); } catch { /* Preserve the read result. */ } }
 }
 
 function pathTitle(urlString) {

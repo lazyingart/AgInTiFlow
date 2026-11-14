@@ -21,8 +21,8 @@ function run(scenario){
 }
 
 for(const scenario of ["normal","slow"])test(`complete consumer cohort succeeds on ${scenario} host without dropping cases`,()=>{
-  const result=run(scenario);assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/"consumerTests":1753/);
-  assert.match(result.stdout,/"passedTests":1753/);assert.match(result.stdout,/"cancelledTests":0/);assert.match(result.stdout,/"skippedTests":0/);
+  const result=run(scenario);assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/"consumerTests":1793/);
+  assert.match(result.stdout,/"passedTests":1793/);assert.match(result.stdout,/"cancelledTests":0/);assert.match(result.stdout,/"skippedTests":0/);
   if(scenario==="slow")assert.ok(result.receipt.consumerOptions.timeout>=240000,"Full cohort needs a finite budget beyond the old180-second cutoff");
 });
 test("outer watchdog failure preserves child progress and stderr and still fails",()=>{

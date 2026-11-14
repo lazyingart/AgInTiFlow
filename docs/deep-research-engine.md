@@ -12,6 +12,32 @@ real value.
 
 ## Fetched-source identity
 
+The default page reader binds each checked DNS answer set to the actual HTTP(S)
+connection. It rejects mixed public/private or reserved answers, keeps the URL
+hostname for TLS verification and SNI, and checks the connected peer against the
+detached approved set. Node can select an available IPv4/IPv6 address within that
+set without another ambient DNS lookup. An explicitly selected global fetch uses
+this same native boundary; a mutable ambient fetch is not source authority.
+The transport follows the existing public PDF acquisition pattern using Node's
+[custom connection lookup](https://nodejs.org/docs/latest-v22.x/api/net.html#socketconnectoptions-connectlistener)
+and [HTTP request options](https://nodejs.org/docs/latest-v22.x/api/http.html#httprequestoptions-callback),
+with no new package dependency.
+
+Every redirect is checked and pinned independently. Its owned response,
+decompression streams, request and socket close before the next hop; refusals,
+HTTP errors, oversized bodies and cancellation close the same scope. Both wire
+and decoded bytes are bounded. Ordinary gzip, deflate and Brotli responses remain
+supported. Requests use fixed credential-free headers, with no cookies,
+authorization, pooled global agent or proxy-environment delegation.
+
+Plain HTTP remains unencrypted and does not authenticate a publisher. A response
+hash identifies observed bytes, not the truth of the page. This is a page-reader
+boundary, not a system-wide egress sandbox or application account authorization.
+Explicit host-supplied reader/fetch callbacks remain trusted overrides and do not
+acquire native connection ownership from returning a Response-shaped object.
+Cancellation cannot stop an OS DNS lookup already in progress, but its late
+result cannot dispatch a request after cancellation.
+
 Discovery may group an arXiv abstract, HTML page, PDF and version URLs as one
 scholarly work. That does not make the fetched documents interchangeable.
 `read_web_page` binds its content hash to the observed final response URL,
@@ -30,12 +56,16 @@ retain distinct URL/hash records. Repeated reads of the same address update that
 address's observation; this is not a claim that the remote content is immutable.
 Work-level scholarly deduplication and independent-source counting are unchanged.
 
-Deep-research policy version 18 refuses older checkpoints before resuming or
+Deep-research policy version 19 refuses older checkpoints before resuming or
 returning cached reports. Preserve them and choose a new research ID or an
 explicit refresh; do not relabel old content as newly verified. Existing native
 histories are preserved too: an old ambiguous URL/hash entry cannot reconstruct
 lost revision identity. Re-read exact sources before relying on such an entry.
 This change adds no provider, permission, network scope or implicit refresh.
+Version 18 predates connection pinning and cannot establish that its retrieved
+bytes came from an approved peer. A complete, otherwise replayable v18 report
+is therefore refused too. Older native history is preserved; re-read pages when
+current public-origin evidence is needed instead of upgrading old observations.
 
 Completion also distinguishes ordinary editing language such as “make this note
 shorter” from the `make` executable. File inspection and mutation evidence can

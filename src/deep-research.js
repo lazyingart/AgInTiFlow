@@ -23,7 +23,7 @@ import {
   validateResearchScopeProtocolRepairs,
 } from "./research-scope-review.js";
 
-export const RESEARCH_VERSION = 18;
+export const RESEARCH_VERSION = 19;
 export { RESEARCH_SCOPE_REVIEW_POLICY, RESEARCH_SCOPE_REVIEW_LIMITS };
 const DEPTH_BUDGETS = Object.freeze({
   quick: Object.freeze({ maxQueries: 3, maxSources: 6, concurrency: 3, gapPasses: 0 }),

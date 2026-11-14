@@ -1,0 +1,346 @@
+{
+  "args": {
+    "researchId": "pre-peer-binding",
+    "query": "Compare synthetic public manual compatibility guidance",
+    "depth": "quick",
+    "maxQueries": 1,
+    "maxSources": 2,
+    "dryRun": true
+  },
+  "state": {
+    "version": 18,
+    "researchId": "pre-peer-binding",
+    "fingerprint": "613f9bbe70a240e17b0f1f1ddb0d31a1a22846f68b6de4dcb9e7eeea3fc3d212",
+    "query": "Compare synthetic public manual compatibility guidance",
+    "provider": "mock",
+    "model": "mock-agent",
+    "budget": {
+      "depth": "quick",
+      "maxQueries": 1,
+      "maxSources": 2,
+      "concurrency": 3,
+      "gapPasses": 0
+    },
+    "sourcePolicy": "primary",
+    "requirements": {
+      "requirePdf": false,
+      "pdfMode": "optional",
+      "minIndependentSources": 0,
+      "scholarlyDiscovery": false,
+      "officialDiscovery": false,
+      "requireRecommendations": false,
+      "requireVerificationMethod": false,
+      "includeEvidenceAppendix": false,
+      "includeNegativeEvidence": false
+    },
+    "execution": {
+      "routeModel": "mock-agent",
+      "mainModel": "mock-agent",
+      "extractionConcurrency": 3,
+      "scopeReviewPolicy": "retained-source-context-review-v2",
+      "synthesisNotePolicy": "source-bound-notes-native-provenance-v1",
+      "scopeReviewMode": "dry_run"
+    },
+    "createdAt": "2026-11-14T03:48:28.943Z",
+    "updatedAt": "2026-11-14T03:48:28.954Z",
+    "status": "completed",
+    "stage": "completed",
+    "plan": {
+      "objective": "Compare synthetic public manual compatibility guidance",
+      "sourcePolicy": "primary",
+      "subquestions": [
+        {
+          "id": "scope",
+          "question": "What is the current state and precise scope of Compare synthetic public manual compatibility guidance?",
+          "query": "Compare synthetic public manual compatibility guidance current state official documentation"
+        }
+      ],
+      "queries": [
+        "Compare synthetic public manual compatibility guidance current state official documentation"
+      ],
+      "sourceTypes": [
+        "official documentation",
+        "primary sources",
+        "original papers"
+      ],
+      "exclusions": [
+        "unsourced summaries when primary evidence is available"
+      ],
+      "requirements": {
+        "requirePdf": false,
+        "pdfMode": "optional",
+        "minIndependentSources": 0,
+        "scholarlyDiscovery": false,
+        "officialDiscovery": false,
+        "requireRecommendations": false,
+        "requireVerificationMethod": false,
+        "includeEvidenceAppendix": false,
+        "includeNegativeEvidence": false
+      }
+    },
+    "searches": [
+      {
+        "id": "search-1",
+        "query": "Compare synthetic public manual compatibility guidance current state official documentation",
+        "searchQuery": "Compare synthetic public manual compatibility guidance current state official documentation",
+        "effectiveSearchQuery": "Compare synthetic public manual compatibility guidance current state official documentation",
+        "domainHint": "",
+        "domainHintRelaxed": false,
+        "ok": true,
+        "provider": "test",
+        "providersTried": [],
+        "error": "",
+        "results": [
+          {
+            "rank": 1,
+            "url": "https://docs.example.org/manual",
+            "canonicalUrl": "https://docs.example.org/manual",
+            "domain": "docs.example.org",
+            "provider": "test",
+            "title": "Synthetic public manual A",
+            "snippet": "Synthetic public manual compatibility guidance."
+          },
+          {
+            "rank": 2,
+            "url": "https://standards.example.net/manual",
+            "canonicalUrl": "https://standards.example.net/manual",
+            "domain": "standards.example.net",
+            "provider": "test",
+            "title": "Synthetic public manual B",
+            "snippet": "Synthetic public manual compatibility guidance."
+          }
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "id": "S1",
+        "title": "Synthetic public manual",
+        "url": "https://docs.example.org/manual",
+        "landingPageUrl": "https://docs.example.org/manual",
+        "domain": "docs.example.org",
+        "discoveredDomain": "docs.example.org",
+        "snippet": "Synthetic public manual compatibility guidance.",
+        "publishedAt": "",
+        "author": "",
+        "official": true,
+        "scholarly": false,
+        "firstParty": true,
+        "score": 17.25,
+        "discoveredBy": [
+          "Compare synthetic public manual compatibility guidance current state official documentation"
+        ],
+        "discoveryRoutes": [
+          "search-1"
+        ],
+        "providers": [
+          "test"
+        ],
+        "providerConsensusCount": 1,
+        "scholarlyIndexes": [],
+        "workIdentity": "",
+        "workAliases": [
+          "https://docs.example.org/manual"
+        ],
+        "variantUrls": [
+          "https://docs.example.org/manual"
+        ],
+        "workVariantCount": 1,
+        "doi": "",
+        "arxivId": "",
+        "authors": [],
+        "venue": "",
+        "sourceType": "",
+        "repository": false,
+        "discoveryIndex": false,
+        "alternativeUrls": [],
+        "pdfUrls": [],
+        "readAttempts": [
+          {
+            "url": "https://docs.example.org/manual",
+            "ok": true,
+            "error": ""
+          }
+        ],
+        "readable": true,
+        "readError": "",
+        "readTruncated": null,
+        "contentType": "text/html",
+        "retrievedAt": "2026-01-01T00:00:00.000Z",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pdfTextExtracted": false,
+        "pdfUrl": "",
+        "pdfSha256": "",
+        "content": "Synthetic public manual compatibility guidance remains under review.",
+        "passages": [
+          "Synthetic public manual compatibility guidance remains under review."
+        ],
+        "untrustedContent": true
+      },
+      {
+        "id": "S2",
+        "title": "Synthetic public manual",
+        "url": "https://standards.example.net/manual",
+        "landingPageUrl": "https://standards.example.net/manual",
+        "domain": "standards.example.net",
+        "discoveredDomain": "standards.example.net",
+        "snippet": "Synthetic public manual compatibility guidance.",
+        "publishedAt": "",
+        "author": "",
+        "official": false,
+        "scholarly": false,
+        "firstParty": false,
+        "score": 7,
+        "discoveredBy": [
+          "Compare synthetic public manual compatibility guidance current state official documentation"
+        ],
+        "discoveryRoutes": [
+          "search-1"
+        ],
+        "providers": [
+          "test"
+        ],
+        "providerConsensusCount": 1,
+        "scholarlyIndexes": [],
+        "workIdentity": "",
+        "workAliases": [
+          "https://standards.example.net/manual"
+        ],
+        "variantUrls": [
+          "https://standards.example.net/manual"
+        ],
+        "workVariantCount": 1,
+        "doi": "",
+        "arxivId": "",
+        "authors": [],
+        "venue": "",
+        "sourceType": "",
+        "repository": false,
+        "discoveryIndex": false,
+        "alternativeUrls": [],
+        "pdfUrls": [],
+        "readAttempts": [
+          {
+            "url": "https://standards.example.net/manual",
+            "ok": true,
+            "error": ""
+          }
+        ],
+        "readable": true,
+        "readError": "",
+        "readTruncated": null,
+        "contentType": "text/html",
+        "retrievedAt": "2026-01-01T00:00:00.000Z",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "pdfTextExtracted": false,
+        "pdfUrl": "",
+        "pdfSha256": "",
+        "content": "Synthetic public manual compatibility guidance remains under review.",
+        "passages": [
+          "Synthetic public manual compatibility guidance remains under review."
+        ],
+        "untrustedContent": true
+      }
+    ],
+    "pdfRequirement": {
+      "required": false,
+      "mode": "optional",
+      "satisfied": true,
+      "candidateCount": 0,
+      "attempts": []
+    },
+    "evidence": [
+      {
+        "sourceId": "S1",
+        "relevant": true,
+        "summary": "Synthetic public manual compatibility guidance remains under review.",
+        "relevantQuestionIds": [
+          "scope"
+        ],
+        "claims": [],
+        "limitations": [
+          "No model evidence extraction was available."
+        ]
+      },
+      {
+        "sourceId": "S2",
+        "relevant": true,
+        "summary": "Synthetic public manual compatibility guidance remains under review.",
+        "relevantQuestionIds": [
+          "scope"
+        ],
+        "claims": [],
+        "limitations": [
+          "No model evidence extraction was available."
+        ]
+      }
+    ],
+    "coverage": {
+      "questionCoverage": 0,
+      "coveredQuestionIds": [],
+      "missingQuestions": [
+        {
+          "id": "scope",
+          "question": "What is the current state and precise scope of Compare synthetic public manual compatibility guidance?",
+          "query": "Compare synthetic public manual compatibility guidance current state official documentation"
+        }
+      ],
+      "claimCount": 0,
+      "verifiedClaimCount": 0,
+      "verifiedEvidenceCount": 0,
+      "quoteVerificationRate": 0,
+      "readableSourceCount": 2,
+      "primarySourceCount": 1,
+      "verifiedPrimarySourceCount": 0,
+      "firstPartySourceCount": 1,
+      "verifiedFirstPartySourceCount": 0,
+      "searchExcerptEvidenceSourceCount": 0,
+      "searchExcerptMatchedClaimCount": 0,
+      "independentPrimarySourceCount": 0,
+      "duplicateWorkVariantCount": 0,
+      "pdfSourceCount": 0,
+      "independentDomainCount": 2,
+      "verifiedIndependentDomainCount": 0,
+      "sourceIds": [
+        "S1",
+        "S2"
+      ]
+    },
+    "synthesis": {
+      "title": "Research report: Compare synthetic public manual compatibility guidance",
+      "executiveSummary": "The research run did not verify enough claim-level evidence for a supported executive summary.",
+      "executiveSummaryEvidenceIds": [],
+      "executiveSummarySourceIds": [],
+      "sections": [],
+      "keyFindings": [],
+      "recommendations": [],
+      "contradictions": [],
+      "uncertainties": [],
+      "nextQuestions": [
+        {
+          "text": "What is the current state and precise scope of Compare synthetic public manual compatibility guidance?",
+          "evidenceIds": [],
+          "sourceIds": []
+        }
+      ]
+    },
+    "audit": {
+      "assessmentKind": "citation_linkage_only",
+      "statementCount": 1,
+      "citedStatementCount": 0,
+      "rejectedStatementCount": 1,
+      "citationCoverage": 0,
+      "unknownSourceIds": [],
+      "unsupportedSourceIds": [],
+      "unknownEvidenceIds": [],
+      "unsupportedEvidenceIds": []
+    },
+    "synthesisAuditWarnings": {
+      "rejectedStatementCount": 1,
+      "unknownSourceIds": [],
+      "unsupportedSourceIds": [],
+      "unknownEvidenceIds": [],
+      "unsupportedEvidenceIds": []
+    }
+  }
+}
