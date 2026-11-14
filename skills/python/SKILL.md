@@ -19,6 +19,13 @@ tools:
 ---
 # Python Development
 
+Inspect inputs and existing code. For a requested rerunnable analyzer/checker,
+create or extend the workspace program with file tools, then run its permitted
+project entry. Validate current inputs; prove read-only inputs unchanged with
+before/after hashes per invocation, not a permanent past-source hash. Preserve
+independent/golden test expectations. Avoid preliminary `-c`, stdin and heredoc
+experiments; do not disguise denied commands or elevate privileges.
+
 Inspect `pyproject.toml`, requirements, package layout, and tests. Prefer stdlib tests when dependency installs are unnecessary; otherwise use project-local venv/conda/uv or Docker.
 
 When reporting syntax, lint, test, or runtime results, always include the actual interpreter path/version and whether commands ran on the host or in Docker/venv. `py_compile` only proves the active interpreter accepted the files.

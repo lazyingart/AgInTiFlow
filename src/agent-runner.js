@@ -112,6 +112,7 @@ import {
   goalRevisionCoversActiveTask,
   isAlreadyCommittedCleanGitNoop,
   isCleanGitStatusAfterCurrentCommit,
+  requestedWorkspaceProgramRecovery,
 } from "./permission-advice.js";
 import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
 import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
@@ -24432,6 +24433,15 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       });
 
   if (!guard.allowed) {
+    const programRecovery = requestedWorkspaceProgramRecovery({ toolName, args, guard, config, state });
+    if (programRecovery) {
+      state.meta.requestedProgramPolicyRecovery = { goalRevision: state.meta.goalContract.revision };
+      const result = { ok: false, blocked: true, recoverable: true, needsApproval: false,
+        toolName, args: safeArgs, reason: guard.reason, category: guard.category, permissionAdvice: programRecovery };
+      await store.appendEvent("tool.blocked", result);
+      observers.event("tool.blocked", result);
+      return result;
+    }
     const diagnosticRecovery = state.meta?.readOnlyDiagnosticPolicyRecovery || {};
     if (toolName === "run_command" && guard.category === "general-shell" && currentWorkIsReadOnlyDiagnostic(state) &&
         diagnosticRecovery.goalRevision !== state.meta.goalContract.revision) {

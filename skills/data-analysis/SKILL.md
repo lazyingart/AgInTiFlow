@@ -23,7 +23,19 @@ tools:
 ---
 # Data Analysis And ETL
 
-Preserve raw/source/input exports as immutable evidence unless the user explicitly authorizes an in-place source change. Start with `inspect_project`, then read project instructions plus the relevant existing analyzer, configuration, and tests before editing or running ad hoc calculations. Inspect schemas, row counts, missing values, duplicate rows, units, aliases, time zones, and suspicious outliers before writing conclusions.
+Inspect inputs and existing code. For a requested rerunnable analyzer/checker,
+create or extend the workspace program with file tools, then run its permitted
+project entry. Preserve raw inputs unless explicitly asked to edit them. Check
+outputs against current inputs; a read-only hash guard compares before/after
+within each invocation, not a permanent past-source hash. Preserve independent
+test expectations. Avoid preliminary inline programs; do not disguise denied
+commands or elevate privileges.
+
+Inspect source schema, row counts, missing values, duplicates, units, time zones
+and outliers before conclusions. On a source refresh, regenerate every affected
+output from the latest source and rerun semantic checks. A fixed golden fixture
+is authoritative only when the task or existing project explicitly defines it;
+never change an independent oracle merely to make a failed check pass.
 
 Prefer the project's existing reproducible analyzer over one-off chat math; repair or extend it when needed. Save cleaned data, plots, and reports at the exact declared output paths. Keep machine outputs separate from raw inputs and make the report explain methods, evidence, limitations, and the practical result.
 

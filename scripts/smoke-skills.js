@@ -158,6 +158,23 @@ assert(qaSkill?.body.includes("Do not invent staged bugs"), "QA skill does not g
 const pythonSkill = skills.find((skill) => skill.id === "python");
 assert(pythonSkill?.body.includes("PEP 701 relaxed f-strings"), "Python skill must mention 3.12 f-string compatibility traps");
 assert(pythonSkill?.body.includes("only proves the active interpreter"), "Python skill must guard syntax-check overclaims");
+// The runtime discloses only a bounded body excerpt. Test the actual prompt,
+// not only the full Markdown which the model may never open.
+const refreshSkills = selectSkillsForGoal(
+  "Tidy readings.csv into a Markdown report and JSON. Include a small Python checker I can rerun; leave the CSV alone, no installs.",
+  { projectRoot: routingFixtureRoot }
+);
+for (const id of ["python", "data-analysis"]) {
+  const skill = refreshSkills.find((item) => item.id === id);
+  assert(skill, `ordinary reusable-checker request omitted ${id}`);
+  const prompt = formatSkillsForPrompt([skill]);
+  assert(prompt.includes("file tools"), `${id} excerpt omitted the reusable workspace program`);
+  assert(prompt.includes("permitted"), `${id} excerpt omitted existing execution policy`);
+  assert(prompt.includes("before/after"), `${id} excerpt omitted per-invocation input integrity`);
+  assert(prompt.includes("not a permanent past-source hash"), `${id} excerpt pinned mutable user input forever`);
+  assert(prompt.includes("test expectations"), `${id} excerpt omitted independent oracle protection`);
+  assert(prompt.includes("do not disguise denied"), `${id} excerpt omitted denied-command protection`);
+}
 assert(selectedIds("write SQL migrations for sqlite schema").includes("database"), "database prompt did not select database");
 const imperfectDatabaseRepairSkills = selectedIds(
   "The reading archive broke after its recent schema upgrade: an old library came back empty, and search gives surprising results for some punctuation. Please inspect the project, fix the underlying problems without discarding existing data, add useful regression coverage, run the checks, and commit the intentional repair. Keep the implementation small and standard-library only."

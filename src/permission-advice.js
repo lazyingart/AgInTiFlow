@@ -18,6 +18,34 @@ const NETWORK_FAILURE_PATTERNS = [
 const LOCALHOST_TARGET_PATTERN = /\b(127\.0\.0\.1|localhost|::1)\b/i;
 const READ_ONLY_FILE_TOOLS = new Set(["inspect_project", "list_files", "read_file", "search_files", "read_image"]);
 
+// This selects a recovery explanation, never permission to execute the denied
+// text. The independently requested workspace program still uses every normal
+// file, command, secret, and failed-test guard.
+export function requestedWorkspaceProgramRecovery({ toolName, args = {}, guard = {}, config = {}, state = {} } = {}) {
+  if (toolName !== "run_command" || guard.category !== "general-shell" ||
+      config.allowFileTools !== true || config.allowShellTool !== true ||
+      config.sandboxMode !== "host" || config.allowDestructive === true) return null;
+  const revision = state.meta?.goalContract?.revision;
+  if (!Number.isSafeInteger(revision) || revision <= 0 ||
+      state.meta?.requestedProgramPolicyRecovery?.goalRevision === revision) return null;
+  const command = String(args.command || "");
+  if (command.length > 16000 || !/\b(?:python(?:3(?:\.\d+)*)?|node)\s+(?:-c\s|-e\s|-\s*<<)/u.test(command)) return null;
+  const goal = permissionIntentGoal({ ...config, goal: state.meta?.goalContract?.taskGoal || config.goal }, state)
+    .replace(/[‘’]/gu, "'");
+  const program = String.raw`(?:python\s+|node(?:\.js)?\s+|javascript\s+)?(?:scripts?|programs?|analy[sz]ers?|checkers?)`;
+  if (new RegExp(String.raw`\b(?:do\s+not|don'?t|never|without)\s+(?:(?:ever|also|actually|really)\s+){0,3}(?:creat(?:e|ing)|writ(?:e|ing)|add(?:ing)?|mak(?:e|ing)|includ(?:e|ing)|build(?:ing)?|provid(?:e|ing)|want(?:ing)?|need(?:ing)?)\b[^.!?;\n]{0,70}\b${program}\b`, "iu").test(goal) ||
+      new RegExp(String.raw`\b(?:not|no|rather\s+than|instead\s+of)\s+(?:(?:a|an|any|another|new|small|reusable|rerunnable|standalone|executable)\s+){0,4}${program}\b`, "iu").test(goal) ||
+      /\b(?:do\s+not|don'?t|never)\s+(?:create|write|modify|edit)(?:\s+(?:or|and)\s+(?:create|write|modify|edit)){0,2}\s+(?:(?:any|new|additional|extra|other)\s+){0,3}files?\b/iu.test(goal) ||
+      /\b(?:(?:no|without)\s+(?:any\s+)?tools?|(?:do\s+not|don'?t|never)\s+(?:use|run|call|invoke)\s+(?:any\s+)?tools?)\b/iu.test(goal) ||
+      /\b(?:in|as)\s+(?:(?:your|the)\s+)?(?:answer|response|reply|message)\b/iu.test(goal)) return null;
+  if (!new RegExp(String.raw`\b(?:create|write|include|provide|add|build|make)\b[^.!?;\n]{0,100}\b${program}\b`, "iu").test(goal)) return null;
+  return {
+    category: "requested-workspace-program", autoRecover: true,
+    summary: "The inline command was denied; the requested reusable workspace program is still pending.",
+    instruction: "The denied command was NOT executed. Do not retry it, move its text into a script, or request broader permissions. Inspect current inputs and existing code, then implement the independently requested reusable program with workspace file tools. Run only a permitted project entry under the unchanged policy and verify every requested output. Keep independent tests and source inputs intact. If another command is denied, stop and report the specific limitation.",
+  };
+}
+
 const DOCKER_WORKSPACE_PATH_FAILURE_PATTERNS = [
   /\/home\/[^:\n]+:\s+No such file or directory/i,
   /\/Users\/[^:\n]+:\s+No such file or directory/i,
