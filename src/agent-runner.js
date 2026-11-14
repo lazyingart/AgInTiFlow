@@ -694,6 +694,41 @@ function preserveAssistantMessage(message) {
   return preserved;
 }
 
+function redactRetainedModelMessage(message) {
+  if (!message || typeof message !== "object") return message;
+  let output = message;
+  const replace = (key, value) => {
+    if (message[key] === value) return;
+    if (output === message) output = { ...message };
+    output[key] = value;
+  };
+  if (typeof message.content === "string") replace("content", redactSensitiveText(message.content));
+  else if (Array.isArray(message.content)) {
+    let changed = false;
+    const parts = message.content.map((part) => {
+      if (part?.type !== "text" || typeof part.text !== "string") return part;
+      const text = redactSensitiveText(part.text);
+      if (text === part.text) return part;
+      changed = true;return { ...part, text };
+    });
+    if (changed) replace("content", parts);
+  }
+  if (Array.isArray(message.tool_calls)) {
+    let changed = false;
+    const calls = message.tool_calls.map((call) => {
+      if (typeof call?.function?.arguments !== "string") return call;
+      const args = redactSensitiveText(call.function.arguments);
+      if (args === call.function.arguments) return call;
+      changed = true;return { ...call, function: { ...call.function, arguments: args } };
+    });
+    if (changed) replace("tool_calls", calls);
+  }
+  for (const key of ["reasoning_content", "reasoningContent", "refusal"]) {
+    if (typeof message[key] === "string") replace(key, redactSensitiveText(message[key]));
+  }
+  return output;
+}
+
 function retainedVisionToolCallProjection(call) {
   try {
     const rawName = typeof call?.function?.name === "string" ? call.function.name : "";
@@ -3576,6 +3611,8 @@ export function repairModelMessageHistory(state, config = {}) {
     };
   }
 
+  const messages = state.messages.map(redactRetainedModelMessage);
+  const redactedHistory = messages.some((message, index) => message !== state.messages[index]);
   const repaired = [];
   let droppedAssistantMessages = 0;
   let convertedAssistantMessages = 0;
@@ -3592,8 +3629,8 @@ export function repairModelMessageHistory(state, config = {}) {
     }
   };
 
-  for (let index = 0; index < state.messages.length; index += 1) {
-    const message = state.messages[index];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
     if (message.role === "assistant") {
       const hasReasoningContent = Boolean(message.reasoning_content || message.reasoningContent);
       const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
@@ -3609,8 +3646,8 @@ export function repairModelMessageHistory(state, config = {}) {
         const seen = new Set();
         let cursor = index + 1;
 
-        while (cursor < state.messages.length) {
-          const nextMessage = state.messages[cursor];
+        while (cursor < messages.length) {
+          const nextMessage = messages[cursor];
           if (nextMessage?.role !== "tool") {
             const complete = expectedIds.length > 0 && expectedIds.every((id) => seen.has(id));
             if (complete || nextMessage?.role === "assistant") break;
@@ -3695,7 +3732,7 @@ export function repairModelMessageHistory(state, config = {}) {
     repaired.push(message);
   }
 
-  const changed =
+  const changed = redactedHistory ||
     droppedAssistantMessages > 0 ||
     convertedAssistantMessages > 0 ||
     droppedToolMessages > 0 ||

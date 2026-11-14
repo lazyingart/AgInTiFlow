@@ -2,18 +2,21 @@
 
 ## Standalone application distribution
 
-For a text-only app backend, AgInTiLite private preview 19 provides the same
+For a text-only app backend, AgInTiLite private preview 20 provides the same
 bounded proposal loop without the full CLI, Studio or vision dependency graph.
-The qualified Lite source is `febddd95d77203f27de8cd1b796a3397863bcdc4`, also
-available as `sdk/agintilite-proposal-review-20261114` in the AgInTiFlow repository.
+The qualified Lite source is `a7ff6dbf564958fc417cb7f0422c7720b7c80d87`, also
+available as `sdk/agintilite-quoted-credentials-20261114` in the AgInTiFlow repository.
 That ref is a standalone SDK tree, not a branch to merge into Flow's application
 tree. Use the pinned local tarball, not a mutable worktree link. Its SHA-256 is
-`5deb54c5c6272b7d91f426eb4acd2d427ae193c3d718a82240781b1352f54aaf`.
+`84ed7add59f603e2153c6e8854e42451a44da4700c1be899e078fab18a7b8ed4`.
 It remains private and unpublished to npm; no application is upgraded implicitly.
 
-Preview 19 retains prior transport, cancellation, header, opaque-result and
-failure-category guards. All 360 offline cases pass, including 28 native final
-encoding cases, 74 HTTP cases and reproducible installed-package checks.
+Preview 20 adds quoted-credential and structured-field redaction guards while
+retaining prior transport, cancellation, header, opaque-result and failure
+categories. All 423 offline cases pass, including 63 new credential cases,
+28 native final encoding cases, 74 HTTP cases and reproducible installed-package
+checks. The dependency-free private nine-file archive remains below the original
+96 KiB unpacked limit; no package or runtime size gate was relaxed.
 Closed DeepSeek read turns may encode their final proposal through one private
 native function. This executes no host callback and adds no turn, read, retry,
 fallback, dependency or public export. Initial no-read and generic OpenAI wire
@@ -337,6 +340,21 @@ patterns and credential-shaped JSON fields are rejected, not redacted into an
 apparently successful answer. This is defense in depth, not a universal secret
 detector: the host must exclude private credentials from instructions, history,
 tool results and images. Pixel contents are not scanned for secrets.
+
+Quoted JSON and source-literal assignments to recognized credential fields also
+cross this boundary, including escaped JSON field names and truncated quoted
+values. Serialized JSON/source strings are inspected without executing code;
+unchanged literals keep their bytes. Blocked reads do not send those bytes to the
+next provider turn;
+blocked proposals and review feedback do not become accepted output or new
+instructions. Shared log/event redaction masks recognized string-valued
+credential fields without mutating the caller. Empty values, explicit masks,
+typed parameters, environment lookups and an unfilled Bearer prefix remain
+usable. This pattern guard cannot recognize arbitrary encodings or secrets in
+ordinary prose; authenticated host tools must still omit credentials entirely.
+Native CLI replay also redacts known textual message slots before dispatch,
+leaving opaque image parts and tool-call identities intact. Existing immutable
+legacy event logs are not rewritten or claimed to be purged.
 
 ## Callback-provider API example
 
