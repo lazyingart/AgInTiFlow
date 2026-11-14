@@ -84,6 +84,7 @@ try {
     "test/restricted-callback-result.test.js",
     "test/restricted-json-byte-budget.test.js",
     "test/empty-file-intent.test.js",
+    "test/copy-file-evidence.test.js",
     "test/restricted-startup-isolation.test.js",
     "test/restricted-selection-profile.test.js",
     "test/read-request-gate.test.js",
@@ -98,11 +99,11 @@ try {
     "test/artifact-instruction-boundary.test.js",
     "test/named-transform-obligations.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 2038\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 2038\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 2109\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 2109\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 2038, testConcurrency, consumerTimeoutMs,
-    passedTests: 2038, cancelledTests: 0, skippedTests: 0,
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 2109, testConcurrency, consumerTimeoutMs,
+    passedTests: 2109, cancelledTests: 0, skippedTests: 0,
     consumerDurationMs: Math.round(performance.now() - consumerStarted), failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });

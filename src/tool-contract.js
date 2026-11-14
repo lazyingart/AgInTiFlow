@@ -611,6 +611,13 @@ export function validateToolCallBatch(toolCalls, contract, { maxToolCalls = 1 } 
     }
 
     const properties = descriptor.function?.parameters?.properties;
+    if (name === "write_file" && isPlainObject(properties) && Object.hasOwn(properties, "copyFromPath") && Object.hasOwn(properties, "copyFromSha256")) {
+      const hasCopy = Object.hasOwn(args, "copyFromPath") || Object.hasOwn(args, "copyFromSha256");
+      const valid = hasCopy
+        ? !Object.hasOwn(args, "content") && typeof args.copyFromPath === "string" && args.copyFromPath.length > 0 && /^[a-f0-9]{64}$/.test(args.copyFromSha256 || "") && args.mode !== "overwrite"
+        : typeof args.content === "string";
+      if (!valid) { addError("TOOL_ARGUMENTS_SCHEMA_INVALID", index, "write_file requires content OR a complete create-only copyFromPath/copyFromSha256 pair, never both.");continue; }
+    }
     const standardApplyPatchContract =
       name === "apply_patch" &&
       isPlainObject(properties) &&

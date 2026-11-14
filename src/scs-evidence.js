@@ -11,6 +11,8 @@ import {
 } from "./shell-syntax.js";
 import { firstJsonObject } from "./json-extraction.js";
 import { deriveAdvisoryInvocationContract } from "./advisory-invocation.js";
+import { isSensitiveWorkspacePath } from "./workspace-read-boundary.js";
+import { currentGoalRevisionBelongsToActiveTask } from "./goal-intent.js";
 
 const CATEGORY_LABELS = {
   file: "file or workspace change",
@@ -643,8 +645,56 @@ function filePreservationClauses(goal = "") {
   return clauses;
 }
 
+function namedCopyIntent(goal = "") {
+  const source = String(goal || ""), pairs = [], spans = [];
+  const file = "(" + PRESERVATION_FILE_TOKEN + ")";
+  const files = "(" + PRESERVATION_FILE_LIST + ")";
+  const end = "(?=\\s*(?:$|[.,;!?。！？；，\\n]|\\b(?:and|then|but|without|leave|keep|again)\\b))";
+  const patterns = [
+    [new RegExp("\\b(?:copy|duplicate|back\\s+up|backup)\\s+(?:from\\s+)?" + file + "\\s+(?:to|as|into)\\s+" + files + end, "gi"), false],
+    [new RegExp("\\b(?:make|create)\\s+(?:(?:a|an|the|new|exact|byte-identical)\\s+){0,3}(?:copy|backup)\\s+of\\s+" + file + "\\s+(?:to|as|into)\\s+" + files + end, "gi"), false],
+    [new RegExp("\\b(?:create|write|save)\\s+" + file + "\\s+with\\s+(?:the\\s+)?(?:exact|identical|unchanged)\\s+(?:contents?|bytes)\\s+of\\s+" + file + end, "gi"), true],
+    [new RegExp("(?:复制|複製)\\s*" + file + "\\s*(?:到|为|為|成)\\s*" + file + end, "g"), false],
+    [new RegExp("(?:把|将|將)\\s*" + file + "\\s*(?:原样|原樣)?(?:复制|複製)(?:到|为|為|成)\\s*" + file + end, "g"), false],
+    [new RegExp(file + "\\s*を\\s*" + file + "\\s*にコピー(?:してください|する|して)?[。]?", "g"), false],
+  ];
+  for (const [pattern, reverse] of patterns) for (const match of source.matchAll(pattern)) {
+    const clause = outputIntentClauseAt(source, match.index);
+    const lead = source.slice(clause.start, match.index);
+    if (clause.quoted || /\b(?:explain|describe|discuss|quote|say|print|echo|example|suppose|imagine|if|when)\b|如果|假如|解释|解釋|说明|説明|例として|もし/u.test(lead.toLowerCase())) continue;
+    const direct = lead.split(/[,，]|\b(?:and|then|also)\b/iu).at(-1).trim();
+    if (!/^(?:(?:\s*(?:please|kindly|could you|can you|would you|I want you to|I need you to|请|請|どうぞ))\s*)*$/iu.test(direct)) continue;
+    const a = preservationFileReferences(match[1]), b = preservationFileReferences(match[2]);
+    if (a.length !== 1 || !b.length || reverse && b.length !== 1) continue;
+    if (spans.some(span => match.index < span.end && match.index + match[0].length > span.start)) continue;
+    const sourcePath = normalizedContractPath((reverse ? b : a)[0].path);
+    for (const destination of reverse ? a : b) pairs.push({ sourcePath, destinationPath: normalizedContractPath(destination.path) });
+    spans.push({ start: match.index, end: match.index + match[0].length,
+      sourceToken: reverse ? match[2] : match[1], destinationToken: reverse ? match[1] : match[2] });
+  }
+  // A backup before a separately requested source edit binds the earlier
+  // native snapshot, not the edited final source. Copy alone grants no edit.
+  if (pairs.length) {
+    let remainder = source;
+    for (const span of [...spans].sort((a, b) => b.start - a.start)) remainder = remainder.slice(0, span.start) + " ".repeat(span.end - span.start) + remainder.slice(span.end);
+    const edits = new Set(inferExactOutputPaths(remainder).map(item => path.posix.normalize(item)));
+    for (const pair of pairs) if (edits.has(path.posix.normalize(pair.sourcePath))) {
+      pair.sourceMayChange = true;
+      const span = spans.find(item => preservationFileReferences(item.sourceToken).some(reference => normalizedContractPath(reference.path) === pair.sourcePath) &&
+        preservationFileReferences(item.destinationToken).some(reference => normalizedContractPath(reference.path) === pair.destinationPath));
+      if (span && inferExactOutputPaths(remainder.slice(0, span.start)).some(item => path.posix.normalize(item) === path.posix.normalize(pair.sourcePath))) pair.sourceEditBeforeCopy = true;
+    }
+  }
+  return { pairs: pairs.slice(0, 16), overflow: pairs.length > 16, spans };
+}
+
 function normalizeFileCreationIntent(goal = "", transformSources = null) {
   let source = String(goal || "");
+  const copies = namedCopyIntent(source);
+  for (const pair of copies.pairs) if (!pair.sourceMayChange) transformSources?.add(path.posix.normalize(pair.sourcePath));
+  for (const span of [...copies.spans].sort((a, b) => b.start - a.start)) {
+    source = source.slice(0, span.start) + `read ${span.sourceToken} and create ${span.destinationToken} ` + source.slice(span.end);
+  }
   // Named transforms give their operands distinct roles. Normalize only a
   // bounded, affirmative request with actual source and destination filenames;
   // command literals, examples, negation and unnamed prose keep their meaning.
@@ -1447,7 +1497,7 @@ function inferPreservedInputPaths(goal = "") {
   // create the same deliverable remains valid ("write X, then keep X intact").
   const clauses = filePreservationClauses(goal);
   const candidates = uniquePathList([...clauses.flatMap(clause =>
-    preservationFileReferences(clause.body).map(reference => normalizedContractPath(reference.path))), ...preservedSourceAliasPaths(goal)], 24);
+    preservationFileReferences(clause.body).map(reference => normalizedContractPath(reference.path))), ...preservedSourceAliasPaths(goal), ...namedCopyIntent(goal).pairs.filter(pair => !pair.sourceMayChange).map(pair => pair.sourcePath)], 24);
   if (!candidates.length) return [];
   // Only an explicit new-file declaration can relax preservation. An incidental
   // mention in prose, a source clause or a verification command is not one.
@@ -3396,6 +3446,7 @@ export function inferAuthoritativeReadOnlyRoutine(goal = "") {
 
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
   const evidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
+  const copies = namedCopyIntent(evidenceGoal);
   const positiveEvidenceGoal = stripForbiddenLanguage(normalizeFileCreationIntent(evidenceGoal));
   const authoritativeRoutine = inferAuthoritativeReadOnlyRoutine(goal);
   const artifactRoot = scopedArtifactRoot(goal);
@@ -3417,7 +3468,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   }));
   const excludedOutputPaths = inferExplicitlyExcludedOutputPaths(evidenceGoal);
   const inferredOutputPaths = filterExplicitlyExcludedOutputPaths(
-    inferExactOutputPaths(positiveEvidenceGoal),
+    uniquePathList([...inferExactOutputPaths(positiveEvidenceGoal), ...copies.pairs.map(pair => pair.destinationPath)], 24),
     excludedOutputPaths
   );
   // Host compilation ownership is a runtime execution contract, not source
@@ -3434,12 +3485,14 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   );
   // A prohibition on changing an input must not erase the obligation to read it.
   const preservedInputPaths = inferPreservedInputPaths(evidenceGoal);
-  const exactInputPaths = inferExactInputPaths(positiveEvidenceGoal, preservedInputPaths)
+  const exactInputPaths = inferExactInputPaths(positiveEvidenceGoal, preservedInputPaths, { preservationReads: copies.pairs.length === 0 })
     .filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const explicitInputReadPaths = inferExactInputPaths(positiveEvidenceGoal, preservedInputPaths, { preservationReads: false })
     .filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
-  const emptyOutputs = emptyOutputIntent(evidenceGoal, exactOutputPaths);
+  let artifactGoal = evidenceGoal;
+  for (const span of [...copies.spans].sort((a, b) => b.start - a.start)) artifactGoal = artifactGoal.slice(0, span.start) + " ".repeat(span.end - span.start) + artifactGoal.slice(span.end);
+  const emptyOutputs = emptyOutputIntent(artifactGoal, exactOutputPaths);
   let requiredArtifactKinds = inferRequestedArtifactRequirements(
     emptyOutputs.artifactGoal,
     taskProfile
@@ -3478,6 +3531,8 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     forbiddenActions: inferForbiddenActions(evidenceGoal),
     exactOutputPaths,
     exactEmptyOutputPaths: emptyOutputs.paths,
+    exactCopyRequirements: copies.pairs.map(pair => ({ ...pair, destinationPath: applyScopedArtifactRoot([pair.destinationPath], artifactRoot)[0] })),
+    copyRequirementsOverflow: copies.overflow,
     requiredArtifactKinds,
     artifactRepairRequirements: packetContract.repairRequirements,
     artifactQualityIssues: packetContract.qualityIssues,
@@ -5317,9 +5372,168 @@ function evaluateSourceGrounding(contract = {}, files = [], options = {}) {
   };
 }
 
+const MAX_COPY_VERIFICATION_BYTES = 64 * 1024 * 1024;
+
+// A bounded native CLI observation, not a retained-descriptor sandbox or a
+// transaction with an external writer. Never return file contents or open a
+// secret/outside/special path merely because a model mentioned a copy.
+function copyFileDigest(commandCwd, rawPath, { readOnlyRoots = [], destination = false } = {}) {
+  try {
+    if (!Number.isInteger(fs.constants.O_NOFOLLOW) || !Number.isInteger(fs.constants.O_NONBLOCK)) return null;
+    if (isSensitiveWorkspacePath(rawPath)) return null;
+    const absolute = resolveContractPath(commandCwd, rawPath), canonical = fs.realpathSync(absolute);
+    if (isSensitiveWorkspacePath(canonical)) return null;
+    const roots = [];
+    for (const [index, root] of [commandCwd, ...(destination ? [] : readOnlyRoots)].entries()) {
+      try {
+        const name = path.resolve(root), real = fs.realpathSync(name), stat = fs.statSync(real, { bigint: true });
+        if (index === 0 && !stat.isDirectory()) return null;
+        const relative = path.relative(real, canonical);
+        if ((stat.isDirectory() && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) || (stat.isFile() && canonical === real)) roots.push({ name, real, dev: stat.dev, ino: stat.ino });
+      } catch (error) {
+        if (index === 0 || !["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"].includes(error.code)) return null;
+      }
+    }
+    if (!roots.length) return null;
+    const identity = stat => [stat.dev, stat.ino, stat.uid, stat.gid, stat.mode, stat.nlink, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(":");
+    const before = fs.lstatSync(absolute, { bigint: true });
+    if (!before.isFile() || destination && before.nlink !== 1n || before.size > BigInt(MAX_COPY_VERIFICATION_BYTES)) return null;
+    const fd = fs.openSync(canonical, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    try {
+      const opened = fs.fstatSync(fd, { bigint: true });
+      if (!opened.isFile() || identity(before) !== identity(opened)) return null;
+      const hash = crypto.createHash("sha256"), chunk = Buffer.alloc(64 * 1024);
+      let remaining = Number(opened.size);
+      while (remaining) {
+        const count = fs.readSync(fd, chunk, 0, Math.min(chunk.length, remaining), null);
+        if (!count) return null;
+        hash.update(chunk.subarray(0, count)); remaining -= count;
+      }
+      if (identity(fs.fstatSync(fd, { bigint: true })) !== identity(opened) || identity(fs.lstatSync(absolute, { bigint: true })) !== identity(opened) || fs.realpathSync(absolute) !== canonical) return null;
+      for (const root of roots) {
+        const stat = fs.statSync(root.name, { bigint: true });
+        if (fs.realpathSync(root.name) !== root.real || stat.dev !== root.dev || stat.ino !== root.ino) return null;
+      }
+      const isCurrent = () => {
+        try {
+          return identity(fs.lstatSync(absolute, { bigint: true })) === identity(opened) && fs.realpathSync(absolute) === canonical && roots.every(root => {
+            const stat = fs.statSync(root.name, { bigint: true });
+            return fs.realpathSync(root.name) === root.real && stat.dev === root.dev && stat.ino === root.ino;
+          });
+        } catch { return false; }
+      };
+      return { sha256: hash.digest("hex"), bytes: Number(opened.size), dev: String(opened.dev), ino: String(opened.ino), isCurrent };
+    } finally { fs.closeSync(fd); }
+  } catch { return null; }
+}
+
+function copySnapshotBeforePublication(pair, { commandCwd, events, state }) {
+  const samePath = (a, b) => resolveContractPath(commandCwd, a) === resolveContractPath(commandCwd, b);
+  const revision = Number(state.meta?.goalContract?.revision || 0);
+  if (!Number.isSafeInteger(revision) || revision <= 0) return null;
+  const taskGoal = String(state.meta?.goalContract?.taskGoal || state.goal || "").trim();
+  const taskHash = taskGoal ? crypto.createHash("sha256").update(taskGoal).digest("hex") : null;
+  const mutations = state.meta?.projectVerification?.mutationHistory || [];
+  let sourceHash = null, sourceRevision = 0, receipt = null, originalSource = null, sourceMutationSeen = false;
+  for (const event of events) {
+    const data = event.data || {};
+    if (event.type === "conversation.continued" && data.preservesTaskBoundary !== true) {
+      sourceHash = null;sourceRevision = 0;receipt = null;originalSource = null;sourceMutationSeen = false;
+      continue;
+    }
+    const file = data.path || data.args?.path || "";
+    // Started/failed events do not all carry a goal revision. They cannot grant
+    // evidence, but must invalidate a prior observation before another publish.
+    if (["tool.started", "tool.failed"].includes(event.type)) {
+      const unknownMutator = !["read_file", "write_file", "apply_patch", "list_files", "search_files", "inspect_project", "finish"].includes(data.toolName);
+      if (samePath(file, pair.sourcePath) || unknownMutator) sourceHash = null;
+      if (unknownMutator || ["write_file", "apply_patch"].includes(data.toolName) && samePath(file, pair.sourcePath)) sourceMutationSeen = true;
+      if (["write_file", "apply_patch"].includes(data.toolName) && samePath(file, pair.destinationPath)) receipt = null;
+    }
+    if (!Number.isSafeInteger(data.goalRevision) || data.goalRevision <= 0 || data.goalRevision > revision) continue;
+    if (event.type !== "tool.completed" || data.ok !== true || data.blocked) continue;
+    const name = data.toolName;
+    const hash = name === "read_file" ? data.sha256 : data.change?.afterHash;
+    if (!["read_file", "write_file", "apply_patch"].includes(name) || !/^[a-f0-9]{64}$/.test(hash || "")) continue;
+    if (samePath(file, pair.sourcePath)) {
+      if (name !== "read_file") sourceMutationSeen = true;
+      sourceHash = hash;sourceRevision = data.goalRevision;
+      if (!sourceMutationSeen && !originalSource) originalSource = { hash, revision: sourceRevision };
+    }
+    if (["write_file", "apply_patch"].includes(name) && samePath(file, pair.destinationPath)) {
+      if (name === "write_file" && data.copiedFrom && samePath(data.copiedFrom.path, pair.sourcePath) && /^[a-f0-9]{64}$/.test(data.copiedFrom.sha256 || "")) {
+        sourceHash = data.copiedFrom.sha256;sourceRevision = data.goalRevision;
+        if (!sourceMutationSeen && !originalSource) originalSource = { hash: sourceHash, revision: sourceRevision };
+      }
+      // A backup requested before an edit binds the original observed bytes,
+      // even if publication is delayed. A later edit/read/copy receipt cannot
+      // redefine that snapshot. Explicit edit-then-copy instead binds the latest.
+      const expected = pair.sourceEditBeforeCopy ? { hash: sourceHash, revision: sourceRevision } : originalSource;
+      const expectedRevision = expected?.revision;
+      const mutation = mutations.find(item => item.revision === data.projectMutationRevision && item.goalRevision === data.goalRevision && item.paths?.some(value => samePath(value, pair.destinationPath)));
+      const sourceEntry = state.meta?.goalContract?.history?.find(item => item.revision === expectedRevision);
+      const sourceTaskHash = sourceEntry?.taskHash || (sourceEntry?.kind === "initial" ? sourceEntry.hash : null);
+      const sourceBound = expectedRevision === revision || sourceTaskHash === taskHash && currentGoalRevisionBelongsToActiveTask(state, { goalRevision: expectedRevision, taskHash });
+      receipt = expected?.hash && sourceBound && mutation && taskHash && mutation.taskHash === taskHash && currentGoalRevisionBelongsToActiveTask(state, mutation) ? { sourceHash: expected.hash, destinationHash: hash } : null;
+    }
+  }
+  return receipt;
+}
+
+function evaluateExactCopies(contract, { commandCwd, readOnlyRoots, events, state }) {
+  const issues = [], receipts = [], observations = [];
+  if (contract.copyRequirementsOverflow) issues.push({ reason: "copy-operand-limit" });
+  for (const pair of contract.exactCopyRequirements || []) {
+    const snapshot = pair.sourceMayChange ? copySnapshotBeforePublication(pair, { commandCwd, events, state }) : null;
+    const source = pair.sourceMayChange ? null : copyFileDigest(commandCwd, pair.sourcePath, { readOnlyRoots });
+    const destination = copyFileDigest(commandCwd, pair.destinationPath, { destination: true });
+    let alias = resolveContractPath(commandCwd, pair.sourcePath) === resolveContractPath(commandCwd, pair.destinationPath);
+    try { alias ||= fs.realpathSync(resolveContractPath(commandCwd, pair.sourcePath)) === fs.realpathSync(resolveContractPath(commandCwd, pair.destinationPath)); } catch { /* Missing paths remain unverified below. */ }
+    const reason = alias ? "copy-source-destination-alias"
+      : !destination || (pair.sourceMayChange ? !snapshot : !source) ? "copy-bytes-unverified"
+      : pair.sourceMayChange ? (snapshot.sourceHash !== snapshot.destinationHash || destination.sha256 !== snapshot.destinationHash ? "copy-snapshot-mismatch" : null)
+      : source.dev === destination.dev && source.ino === destination.ino ? "copy-source-destination-alias"
+      : source.sha256 !== destination.sha256 ? "copy-bytes-mismatch" : null;
+    if (reason) issues.push({ ...pair, reason });
+    else {
+      const receipt = { ...pair, sha256: destination.sha256, bytes: destination.bytes };
+      receipts.push(receipt); observations.push({ pair, source, destination, receipt });
+    }
+  }
+  // Recheck after both operands and all requested pairs have been observed.
+  // This detects ordinary concurrent drift; it is not a filesystem transaction.
+  for (const observation of observations) if (!observation.destination.isCurrent() || observation.source && !observation.source.isCurrent()) {
+    issues.push({ ...observation.pair, reason: "copy-observation-changed" });
+    receipts.splice(receipts.indexOf(observation.receipt), 1);
+  }
+  return { ok: issues.length === 0, checked: Boolean(contract.exactCopyRequirements?.length || contract.copyRequirementsOverflow), issues, receipts, maxFileBytes: MAX_COPY_VERIFICATION_BYTES };
+}
+
+// The generic source-repair no-op guard ignores newline/whitespace changes.
+// A byte-copy contract can require exactly those changes. Admit only a complete
+// current destination anchor and a replacement hashing to its proven source.
+export function exactCopyPatchChangesRequiredBytes(contract, { commandCwd, readOnlyRoots = [], events = [], state = {}, args = {} }) {
+  if (typeof args.path !== "string" || typeof args.search !== "string" || typeof args.replace !== "string" || Buffer.byteLength(args.replace) > MAX_COPY_VERIFICATION_BYTES) return false;
+  const pairs = (contract.exactCopyRequirements || []).filter(pair => resolveContractPath(commandCwd, pair.destinationPath) === resolveContractPath(commandCwd, args.path));
+  if (!pairs.length || contract.copyRequirementsOverflow) return false;
+  const destination = copyFileDigest(commandCwd, args.path, { destination: true });
+  const digest = value => crypto.createHash("sha256").update(value).digest("hex");
+  if (!destination || digest(args.search) !== destination.sha256 || Buffer.byteLength(args.search) !== destination.bytes || digest(args.replace) === destination.sha256) return false;
+  const sources = [];
+  for (const pair of pairs) {
+    if (resolveContractPath(commandCwd, pair.sourcePath) === resolveContractPath(commandCwd, args.path)) return false;
+    const source = pair.sourceMayChange ? null : copyFileDigest(commandCwd, pair.sourcePath, { readOnlyRoots });
+    const snapshot = pair.sourceMayChange ? copySnapshotBeforePublication(pair, { commandCwd, events, state }) : null;
+    const expected = pair.sourceMayChange ? snapshot?.sourceHash : source?.sha256;
+    if (!expected || digest(args.replace) !== expected || source && source.dev === destination.dev && source.ino === destination.ino) return false;
+    if (source) sources.push(source);
+  }
+  return destination.isCurrent() && sources.every(source => source.isCurrent());
+}
+
 export function evaluateScsSemanticContract(
   contract = {},
-  { commandCwd = process.cwd(), events = [], state = {} } = {}
+  { commandCwd = process.cwd(), events = [], state = {}, readOnlyRoots = [] } = {}
 ) {
   const exactOutputPaths = Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : [];
   const requiredTextTerms = Array.isArray(contract.requiredTextTerms) ? contract.requiredTextTerms : [];
@@ -5333,12 +5547,13 @@ export function evaluateScsSemanticContract(
     commandCwd,
     state,
   });
+  const exactCopies = evaluateExactCopies(contract, { commandCwd, readOnlyRoots, events, state });
   if (
     !exactOutputPaths.length &&
     !requiredTextTerms.length &&
     !requiredExecutableTerms.length &&
     !forbiddenTextTerms.length &&
-    !requestedArtifacts.checked
+    !requestedArtifacts.checked && !exactCopies.checked
   ) {
     return projectTestVerification.checked
       ? {
@@ -5350,7 +5565,7 @@ export function evaluateScsSemanticContract(
       : { ok: true, checked: false, projectTestVerification, reason: "No semantic file contract was inferred." };
   }
   if (!exactOutputPaths.length) {
-    const ok = executable.ok && projectTestVerification.ok && requestedArtifacts.ok;
+    const ok = executable.ok && projectTestVerification.ok && requestedArtifacts.ok && exactCopies.ok;
     return {
       ok,
       checked: executable.checked || projectTestVerification.checked || requestedArtifacts.checked,
@@ -5395,6 +5610,7 @@ export function evaluateScsSemanticContract(
   const ok =
     missingFiles.length === 0 &&
     nonemptyFiles.length === 0 &&
+    exactCopies.ok &&
     missingRequiredText.length === 0 &&
     presentForbiddenText.length === 0 &&
     executable.ok &&
@@ -5411,6 +5627,7 @@ export function evaluateScsSemanticContract(
     requestedArtifacts,
     missingFiles,
     nonemptyFiles,
+    exactCopies,
     missingRequiredText,
     missingExecutableTerms: executable.missingExecutableTerms,
     executableSourcePaths: executable.executableSourcePaths,
@@ -5435,6 +5652,7 @@ export function evaluateScsSemanticContract(
       : [
           missingFiles.length ? `Missing exact output files: ${missingFiles.join(", ")}` : "",
           nonemptyFiles.length ? `Outputs required to be exactly empty contain bytes: ${nonemptyFiles.join(", ")}` : "",
+          !exactCopies.ok ? `Exact copy bytes are not verified: ${exactCopies.issues.map(issue => `${issue.sourcePath || ""} -> ${issue.destinationPath || ""} (${issue.reason})`).join(", ")}. Read the current source and repair only the destination; preserve its BOM, line endings and trailing newline. Verification is bounded to regular files up to ${MAX_COPY_VERIFICATION_BYTES} bytes in approved roots.` : "",
           missingRequiredText.length ? `Missing required text terms: ${missingRequiredText.join(", ")}` : "",
           !executable.ok ? executable.reason : "",
           presentForbiddenText.length ? `Forbidden text terms present: ${presentForbiddenText.join(", ")}` : "",
@@ -6193,6 +6411,7 @@ export function summarizeScsContractEvidence({ contract = {}, ledger = {}, evalu
       forbiddenActions: contract.forbiddenActions || [],
       exactOutputPaths: contract.exactOutputPaths || [],
       exactEmptyOutputPaths: contract.exactEmptyOutputPaths || [],
+      exactCopyRequirements: contract.exactCopyRequirements || [],
       requiredArtifactKinds: contract.requiredArtifactKinds || [],
       artifactRepairRequirements: contract.artifactRepairRequirements || [],
       artifactQualityIssues: contract.artifactQualityIssues || [],

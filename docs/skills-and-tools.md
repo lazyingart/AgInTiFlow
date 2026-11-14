@@ -37,6 +37,43 @@ remain readable before the canonical output is patched. A previous goal's read
 does not satisfy that step. Protected files named only to be left unchanged
 do not become mandatory data reads, and input reads never add mutation paths.
 
+## Exact File Copies
+
+For a bounded UTF-8 copy, read the source and call `write_file` with
+`path`, `copyFromPath` and `copyFromSha256` from that read, omitting `content`.
+This create-only mode revalidates the permitted source snapshot and copies its
+exact bytes through the existing atomic publisher. It keeps the 220,000-byte
+read/write limits, secret-content checks and ordinary write permission. It
+cannot overwrite an existing target or bypass read scopes or binary guards.
+
+Named file-copy requests retain distinct input and output roles. A copy must
+exist at the requested destination and match the source bytes; changing the
+original, producing a summary or writing an unrelated file cannot satisfy it.
+The native completion check hashes regular files in the workspace and approved
+read-only input roots, up to 64 MiB per file. It rejects aliases to the same inode,
+shared output hardlinks, secret/special/outside paths and changed observations.
+These path-based checks are not retained-descriptor storage or an application
+sandbox. Independent report/compilation requirements remain in force.
+
+For a small text copy, `read_file` accepts `preserveLineEndings:true` on a complete
+read. Its default display still normalizes CRLF to LF for source inspection;
+the option preserves newline characters without weakening redaction, path or
+byte limits. It cannot be combined with `startLine`, `lineLimit` or `limit`.
+Keep the BOM and trailing newline when writing the destination. A truncated or
+redacted preview is not authority to reconstruct missing or private bytes.
+The fidelity view reports `lineEndingCounts` (CRLF, lone LF and lone CR),
+`hasUtf8Bom` and `endsWithLineEnding`; CRLF requires both CR and LF characters.
+For an unambiguous native copy task, the runtime selects this presentation on
+a complete read of the named source when the caller has not chosen a view.
+It clears that purpose on a later non-copy goal and never changes tool arguments
+or grants access to another path. Separately requested source edits require
+typed native snapshot/publication evidence for the earlier copy; old-goal or
+missing evidence cannot substitute for that proof.
+For backup-then-edit requests, the backup stays bound to the pre-edit read:
+later source mutations cannot redefine it. Explicit edit-then-copy requests
+instead bind the later copy to the edited snapshot. Late publication of the
+original snapshot is allowed if its native evidence and exact bytes remain valid.
+
 ## Built-In Skills
 
 The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, source ingestion/OCR, structured JSON, autonomous artifact pipelines, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, skill creation, novel writing, and supervision/student-agent training.

@@ -121,7 +121,7 @@ import { isMcpBridgeTool } from "./mcp/policy.js";
 import { executeMcpBridgeTool } from "./mcp/tool-bridge.js";
 import { longJobStatus, startLongJob } from "./long-job-tools.js";
 import { executeAgentLinkTool, isAgentLinkTool } from "./agentlink.js";
-import { classifyGoalIntent, isDirectAnswerIntent } from "./goal-intent.js";
+import { classifyGoalIntent, isDirectAnswerIntent, currentGoalRevisionBelongsToActiveTask } from "./goal-intent.js";
 import { normalizeProviderBaseURL, normalizeProviderId, providerRequiresApiKey } from "./provider-contract.js";
 import {
   resolveProviderHandoff,
@@ -162,6 +162,7 @@ import {
   deterministicFinishBlocker,
   evaluateScsEvidence,
   evaluateScsSemanticContract,
+  exactCopyPatchChangesRequiredBytes,
   evaluateRequestedArtifactRequirements,
   evaluateReaderFacingResearchEvidenceClaims,
   augmentScsTaskContractWithProjectVerification,
@@ -18824,62 +18825,6 @@ function exactOutputPathsForState(state = {}) {
   ], exclusions).slice(0, 32);
 }
 
-function currentGoalRevisionBelongsToActiveTask(state = {}, mutation = {}) {
-  const goalContract = state.meta?.goalContract || {};
-  const currentGoalRevision = Math.max(0, Number(goalContract.revision || 0));
-  const mutationGoalRevision = Math.max(0, Number(mutation?.goalRevision || 0));
-  if (
-    currentGoalRevision <= 0 ||
-    mutationGoalRevision <= 0 ||
-    mutationGoalRevision > currentGoalRevision
-  ) {
-    return false;
-  }
-  const taskGoal = String(goalContract.taskGoal || state.goal || "").trim();
-  const currentTaskHash = taskGoal ? hashForLog(taskGoal) : "";
-  const goalHistory = Array.isArray(goalContract.history)
-    ? goalContract.history
-    : [];
-  const mutationGoalEntry = goalHistory.find(
-    (entry) => Number(entry?.revision || 0) === mutationGoalRevision
-  );
-  const mutationTaskHash = String(
-    mutation?.taskHash ||
-      mutationGoalEntry?.taskHash ||
-      (mutationGoalEntry?.kind === "initial" ? mutationGoalEntry?.hash : "") ||
-      ""
-  );
-  if (
-    currentTaskHash &&
-    mutationTaskHash &&
-    mutationTaskHash !== currentTaskHash
-  ) {
-    return false;
-  }
-  if (mutationGoalRevision === currentGoalRevision) return true;
-  const explicitMutationTaskHash = String(mutation?.taskHash || "");
-  if (
-    !currentTaskHash ||
-    !explicitMutationTaskHash ||
-    explicitMutationTaskHash !== currentTaskHash
-  ) {
-    return false;
-  }
-  const interveningGoalEntries = goalHistory.filter((entry) => {
-    const revision = Number(entry?.revision || 0);
-    return revision > mutationGoalRevision && revision <= currentGoalRevision;
-  });
-  if (!interveningGoalEntries.length) return false;
-  return interveningGoalEntries.every((entry) => {
-    const relation = String(entry?.relation || "");
-    const kind = String(entry?.kind || "");
-    const entryTaskHash = String(entry?.taskHash || "");
-    return (
-      (relation === "same-task" || kind === "same-task-continuation") &&
-      entryTaskHash === currentTaskHash
-    );
-  });
-}
 
 function currentGoalDocumentArtifactStillExists(candidate = "", state = {}, config = {}) {
   const normalized = safeTaskOwnedCommitPath(candidate);
@@ -19902,6 +19847,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     state
   );
   delete runtimeConfig.completionFreshMutationInputReadPaths;
+  delete runtimeConfig.completionExactCopySourcePaths;
   const advisory = currentAdvisoryInvocationState(state, config);
   if (advisory.contract?.beforeMutation && advisory.kind !== "succeeded") {
     runtimeConfig.advisoryPrerequisitePending = true;
@@ -19923,7 +19869,19 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       ? state.meta.activeExecutionContract || {}
       : {};
   const groundingTaskContract = completionTaskContract(config, state);
-  const separateSourceDeliverable = Boolean(
+  if (groundingTaskContract.exactCopyRequirements?.length) runtimeConfig.completionExactCopySourcePaths = [...new Set(groundingTaskContract.exactCopyRequirements.map(pair => pair.sourcePath))];
+  // A requested backup must be creatable before its separately requested
+  // source edit. Do not force a patch of the only existing source merely
+  // because the named backup has not been created yet. This leaves ordinary
+  // creation tools available; copy bytes and the remaining task still gate finish.
+  const pendingCopyBeforeSourceEdit = (groundingTaskContract.exactCopyRequirements || []).some(pair => {
+    if (!pair.sourceMayChange || pair.sourceEditBeforeCopy) return false;
+    try {
+      const target = resolveWorkspacePath(runtimeConfig, pair.destinationPath);
+      return !fsSync.existsSync(target.absolutePath);
+    } catch { return false; }
+  });
+  const separateSourceDeliverable = pendingCopyBeforeSourceEdit || Boolean(
     groundingTaskContract.exactOutputPaths?.length &&
       groundingTaskContract.exactInputPaths?.length &&
       groundingTaskContract.exactInputPaths.every(
@@ -21655,6 +21613,7 @@ async function refreshArtifactValidationPreflight(
   const evidence = evaluateScsEvidence(contract, ledger);
   const semantic = evaluateScsSemanticContract(contract, {
     commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
+    readOnlyRoots: [...(config.readOnlyRoots || []), ...(config.skillReadOnlyRoots || [])],
     events,
     state,
   });
@@ -24417,14 +24376,19 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       observers.event("tool.failed", result);
       return result;
     }
-    if (patchContextBinding.noOp) {
+    const requiredCopyByteRepair = patchContextBinding.noOp && exactCopyPatchChangesRequiredBytes(completionTaskContract(config, state), {
+      commandCwd: config.commandCwd || state.commandCwd || process.cwd(),
+      readOnlyRoots: [...(config.readOnlyRoots || []), ...(config.skillReadOnlyRoots || [])],
+      events: await store.loadEvents(), state, args,
+    });
+    if (patchContextBinding.noOp && !requiredCopyByteRepair) {
       const result = {
         ok: false,
         blocked: false,
         recoverable: true,
         stopRun: false,
         reason:
-          "The proposed replacement is identical to the refreshed current-source anchor after normalizing line endings and trailing whitespace. Provide a materially revised complete anchor that addresses the retained failure.",
+          "The proposed replacement is identical to the refreshed current-source anchor after normalizing line endings and trailing whitespace. Provide a materially revised complete anchor that addresses the retained failure. For an exact byte copy, only the proven source bytes qualify: preserve its actual CR/LF characters, BOM and trailing newline, not unrelated whitespace.",
         error:
           "Patch replacement made no material change to the revision-bound current-source anchor.",
         category: "patch-context-noop",
@@ -26552,6 +26516,7 @@ async function evaluateCompletionEvidence({ config, state, store }) {
   const evidence = evaluateScsEvidence(contract, ledger);
   const semantic = evaluateScsSemanticContract(contract, {
     commandCwd: config.commandCwd,
+    readOnlyRoots: [...(config.readOnlyRoots || []), ...(config.skillReadOnlyRoots || [])],
     events: scoped.events,
     state: scoped.state,
   });
@@ -31196,12 +31161,16 @@ async function runAgentOnceUnlocked(config) {
       const currentContract = completionTaskContract(config, state);
       const previousEmpty = state.meta.scs.taskContract?.exactEmptyOutputPaths || [];
       const currentEmpty = currentContract.exactEmptyOutputPaths || [];
-      if ((previousEmpty.length || currentEmpty.length) && JSON.stringify(previousEmpty) !== JSON.stringify(currentEmpty)) {
+      const previousCopies = state.meta.scs.taskContract?.exactCopyRequirements || [];
+      const currentCopies = currentContract.exactCopyRequirements || [];
+      if (((previousEmpty.length || currentEmpty.length) && JSON.stringify(previousEmpty) !== JSON.stringify(currentEmpty)) ||
+          ((previousCopies.length || currentCopies.length) && (JSON.stringify(previousCopies) !== JSON.stringify(currentCopies) ||
+            JSON.stringify(state.meta.scs.taskContract?.exactInputPaths || []) !== JSON.stringify(currentContract.exactInputPaths || [])))) {
         // Rebase the presentation of this content constraint once. An older
         // cached document-format plan must not demand filler or a side artifact.
         state.meta.scs.taskContract = currentContract;
         state.meta.scs.supervisorInstructionInjected = false;
-        await store.appendEvent("scs.empty_output_contract_refreshed", { paths: currentEmpty });
+        await store.appendEvent(currentCopies.length || previousCopies.length ? "scs.copy_contract_refreshed" : "scs.empty_output_contract_refreshed", { paths: currentEmpty, copies: currentCopies });
         await store.saveState(state);
       }
     }

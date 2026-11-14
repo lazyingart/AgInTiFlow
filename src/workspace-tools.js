@@ -794,6 +794,15 @@ async function readTextFile(target, config, { allowLargeLineLimited = false, max
 
 async function readFile(config, args) {
   const target = resolveWorkspacePath(config, args.path, { allowReadOnlyRoots: true });
+  if (args.preserveLineEndings !== undefined && typeof args.preserveLineEndings !== "boolean") throw new Error("preserveLineEndings must be a boolean.");
+  const hasLineRange = ["startLine", "lineLimit", "limit"].some(key => Object.hasOwn(args, key));
+  const copySourceRead = args.preserveLineEndings === undefined && !hasLineRange &&
+    (config.completionExactCopySourcePaths || []).some(source => {
+      try { return resolveWorkspacePath(config, source, { allowReadOnlyRoots: true }).absolutePath === target.absolutePath; }
+      catch { return false; }
+    });
+  const preserveLineEndings = args.preserveLineEndings === true || copySourceRead;
+  if (preserveLineEndings && hasLineRange) throw new Error("preserveLineEndings requires a complete bounded file read, without line-range arguments.");
   const requestedLineLimit = Number(args.lineLimit || args.limit || 0);
   const lineLimit = Number.isFinite(requestedLineLimit) && requestedLineLimit > 0 ? Math.min(requestedLineLimit, 1000) : 0;
   const { stat, content, hash } = await readTextFile(target, config, { allowLargeLineLimited: lineLimit > 0 });
@@ -807,7 +816,17 @@ async function readFile(config, args) {
     path: target.relativePath,
     bytes: stat.size,
     sha256: hash,
-    content: redactSensitiveText(selectedContent),
+    content: redactSensitiveText(preserveLineEndings ? content : selectedContent),
+    ...(preserveLineEndings ? {
+      lineEndingsPreserved: true,
+      lineEndingCounts: {
+        crlf: (content.match(/\r\n/g) || []).length,
+        lf: (content.match(/(?<!\r)\n/g) || []).length,
+        cr: (content.match(/\r(?!\n)/g) || []).length,
+      },
+      hasUtf8Bom: content.startsWith("\uFEFF"),
+      endsWithLineEnding: /[\r\n]$/.test(content),
+    } : {}),
     startLine,
     lineLimit: lineLimit || null,
     lineCount: lines.length,
@@ -1156,6 +1175,10 @@ async function deleteChange(target, config, action = "delete_file", details = {}
 }
 
 async function writeFile(config, args) {
+  const fromSource = Object.hasOwn(args, "copyFromPath") || Object.hasOwn(args, "copyFromSha256");
+  if (fromSource && (Object.hasOwn(args, "content") || typeof args.copyFromPath !== "string" || !args.copyFromPath || !/^[a-f0-9]{64}$/.test(args.copyFromSha256 || "") || args.mode === "overwrite")) {
+    throw new Error("A source copy requires copyFromPath and its exact copyFromSha256, mode=create, and no content field.");
+  }
   const target = resolveWorkspacePath(config, args.path, { writeAccess: true });
   const mode = args.mode === "overwrite" ? "overwrite" : "create";
   const exists = await fs
@@ -1166,7 +1189,16 @@ async function writeFile(config, args) {
     throw new Error(`File already exists. Use mode=overwrite to modify it: ${target.relativePath}`);
   }
 
-  const change = await writeChange(target, args.content || "", mode === "overwrite" ? "overwrite_file" : "create_file", {
+  let content = args.content || "", copiedFrom = null;
+  if (fromSource) {
+    const source = resolveWorkspacePath(config, args.copyFromPath, { allowReadOnlyRoots: true });
+    if (!pathPolicy("read_file", source.relativePath).allowed) throw workspaceReadBoundaryError();
+    const snapshot = await readTextFile(source, config);
+    if (snapshot.hash !== args.copyFromSha256 || !snapshot.buffer.equals(Buffer.from(snapshot.content, "utf8"))) throw new Error("Copy source changed or cannot round-trip as bounded UTF-8; read it again before copying.");
+    content = snapshot.content;
+    copiedFrom = { path: source.relativePath, sha256: snapshot.hash, bytes: snapshot.buffer.length };
+  }
+  const change = await writeChange(target, content, mode === "overwrite" ? "overwrite_file" : "create_file", {
     mode,
   }, { createOnly: mode === "create" });
   return {
@@ -1174,6 +1206,7 @@ async function writeFile(config, args) {
     toolName: "write_file",
     path: target.relativePath,
     change,
+    ...(copiedFrom ? { copiedFrom } : {}),
     ...(change.artifactValidation ? { artifactValidation: change.artifactValidation } : {}),
   };
 }

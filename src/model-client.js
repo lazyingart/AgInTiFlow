@@ -2672,12 +2672,13 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "read_file",
           description:
-            "Read a small UTF-8 workspace file. Small files return full content; larger files return a truncated preview with contentTruncated=true, so do not quote or reproduce omitted content unless you read it another way. Secret paths, .git internals, files outside the workspace, binary files, and huge files are blocked.",
+            "Read a small UTF-8 workspace file. For an exact copy, set preserveLineEndings=true for a complete bounded read: default display normalizes CRLF to LF. Check lineEndingCounts, hasUtf8Bom and endsWithLineEnding: CRLF is TWO characters, JSON \\r\\n; \\n alone changes the bytes. Preserve the returned BOM and trailing newline. Do not combine this option with line-range arguments. Small files return full content; larger files return a truncated preview with contentTruncated=true, so do not quote or reproduce omitted content unless you read it another way. Secret paths, .git internals, files outside the workspace, binary files, and huge files are blocked.",
           parameters: {
             type: "object",
             properties: {
               path: { type: "string", description: "Workspace-relative file path." },
               startLine: { type: "integer", description: "Optional 1-based first line to read." },
+              preserveLineEndings: { type: "boolean", description: "Preserve original newline characters in a complete UTF-8 read for copying. No line-range arguments; redaction and existing byte/path limits remain." },
               lineLimit: { type: "integer", description: "Optional maximum number of lines to read; use this for large source files." },
               limit: { type: "integer", description: "Alias for lineLimit for compatibility with older prompts." },
             },
@@ -2710,15 +2711,17 @@ export async function requestNextStep(client, config, messages) {
         function: {
           name: "write_file",
           description:
-            "Create or overwrite a small UTF-8 workspace file. Use mode=create with a descriptive non-conflicting filename for newly generated standalone content. Use mode=overwrite only when the user explicitly asks to replace/update that file, or after reading the file and the task is clearly to modify it. Secret paths, .git, node_modules writes, and outside-workspace paths are blocked. The runtime records before/after hashes and a compact diff. For .svg files, the runtime reports deterministic XML/SVG validation; if that validation is not ok, repair the file before claiming it is valid.",
+            "Create or overwrite a small UTF-8 workspace file. Supply content for authored text. For an exact copy, read the source first, then supply copyFromPath and copyFromSha256 from read_file instead of content: native file code preserves all source bytes without retranscription. Source-copy mode only creates a new file, never overwrites. Use mode=create with a descriptive non-conflicting filename for newly generated standalone content. Use mode=overwrite only when the user explicitly asks to replace/update that file, or after reading the file and the task is clearly to modify it. Secret paths, .git, node_modules writes, and outside-workspace paths are blocked. The runtime records before/after hashes and a compact diff. For .svg files, the runtime reports deterministic XML/SVG validation; if that validation is not ok, repair the file before claiming it is valid.",
           parameters: {
             type: "object",
             properties: {
               path: { type: "string", description: "Workspace-relative file path." },
               content: { type: "string" },
+              copyFromPath: { type: "string", minLength: 1, description: "Exact permitted source path from read_file, instead of content. Create-only bounded UTF-8 copy." },
+              copyFromSha256: { type: "string", pattern: "^[a-f0-9]{64}$", description: "Exact current source SHA-256 returned by read_file." },
               mode: { type: "string", enum: ["create", "overwrite"] },
             },
-            required: ["path", "content"],
+            required: ["path"],
             additionalProperties: false,
           },
         },

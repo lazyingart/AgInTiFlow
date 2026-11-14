@@ -1,3 +1,66 @@
+import crypto from "node:crypto";
+
+function hashForLog(value) {
+  return crypto.createHash("sha256").update(String(value ?? "")).digest("hex");
+}
+
+export function currentGoalRevisionBelongsToActiveTask(state = {}, mutation = {}) {
+  const goalContract = state.meta?.goalContract || {};
+  const currentGoalRevision = Math.max(0, Number(goalContract.revision || 0));
+  const mutationGoalRevision = Math.max(0, Number(mutation?.goalRevision || 0));
+  if (
+    currentGoalRevision <= 0 ||
+    mutationGoalRevision <= 0 ||
+    mutationGoalRevision > currentGoalRevision
+  ) {
+    return false;
+  }
+  const taskGoal = String(goalContract.taskGoal || state.goal || "").trim();
+  const currentTaskHash = taskGoal ? hashForLog(taskGoal) : "";
+  const goalHistory = Array.isArray(goalContract.history)
+    ? goalContract.history
+    : [];
+  const mutationGoalEntry = goalHistory.find(
+    (entry) => Number(entry?.revision || 0) === mutationGoalRevision
+  );
+  const mutationTaskHash = String(
+    mutation?.taskHash ||
+      mutationGoalEntry?.taskHash ||
+      (mutationGoalEntry?.kind === "initial" ? mutationGoalEntry?.hash : "") ||
+      ""
+  );
+  if (
+    currentTaskHash &&
+    mutationTaskHash &&
+    mutationTaskHash !== currentTaskHash
+  ) {
+    return false;
+  }
+  if (mutationGoalRevision === currentGoalRevision) return true;
+  const explicitMutationTaskHash = String(mutation?.taskHash || "");
+  if (
+    !currentTaskHash ||
+    !explicitMutationTaskHash ||
+    explicitMutationTaskHash !== currentTaskHash
+  ) {
+    return false;
+  }
+  const interveningGoalEntries = goalHistory.filter((entry) => {
+    const revision = Number(entry?.revision || 0);
+    return revision > mutationGoalRevision && revision <= currentGoalRevision;
+  });
+  if (!interveningGoalEntries.length) return false;
+  return interveningGoalEntries.every((entry) => {
+    const relation = String(entry?.relation || "");
+    const kind = String(entry?.kind || "");
+    const entryTaskHash = String(entry?.taskHash || "");
+    return (
+      (relation === "same-task" || kind === "same-task-continuation") &&
+      entryTaskHash === currentTaskHash
+    );
+  });
+}
+
 const GREETING_PATTERNS = [
   /^(hi|hello|hey|hiya|yo|sup|howdy|good\s+(morning|afternoon|evening))[\s!.。！]*$/i,
   /^(你好|您好|嗨|哈喽|哈啰|早上好|下午好|晚上好)[\s!.。！]*$/i,
