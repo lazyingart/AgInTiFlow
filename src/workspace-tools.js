@@ -1178,6 +1178,17 @@ async function writeFile(config, args) {
   };
 }
 
+function usesOnlyCrlf(text) {
+  return text.includes("\r\n") && !/(^|[^\r])\n|\r(?!\n)/.test(text);
+}
+
+function patchLineEndings(text, crlf) {
+  // read_file and patch envelopes expose LF line separators. Adapt only those
+  // separators to an unambiguous existing CRLF convention; never trim, fold
+  // whitespace or guess a convention for mixed/bare-CR source files.
+  return crlf && !/\r(?!\n)/.test(text) ? text.replace(/\r?\n/g, "\r\n") : text;
+}
+
 async function applyPatch(config, args) {
   if (typeof args.patch === "string" && args.patch.trim()) {
     return applyPatchDocument(config, args);
@@ -1188,8 +1199,9 @@ async function applyPatch(config, args) {
   if (args.baseHash && args.baseHash !== hash) {
     throw new Error(`Base hash mismatch for ${target.relativePath}; read the file again before patching.`);
   }
-  const search = String(args.search || "");
-  const replace = String(args.replace ?? "");
+  const crlf = usesOnlyCrlf(beforeText);
+  const search = patchLineEndings(String(args.search || ""), crlf);
+  const replace = patchLineEndings(String(args.replace ?? ""), crlf);
   if (!search) throw new Error("Patch search text is required.");
 
   const matches = beforeText.split(search).length - 1;
@@ -1431,14 +1443,17 @@ async function applyPatchDocument(config, args) {
     }
 
     const { content: beforeText, hash: beforeHash } = await readTextFile(target, config, { writeAccess: true });
+    const crlf = usesOnlyCrlf(beforeText);
     let afterText = beforeText;
     for (const hunk of operation.hunks || []) {
       if (!hunk.search) throw new Error(`Patch hunk for ${target.relativePath} has no removable/context lines.`);
-      const matches = countOccurrences(afterText, hunk.search);
+      const search = patchLineEndings(hunk.search, crlf);
+      const replace = patchLineEndings(hunk.replace, crlf);
+      const matches = countOccurrences(afterText, search);
       if (matches !== 1) {
         throw new Error(`Patch hunk for ${target.relativePath} expected exactly 1 match, found ${matches}. Add more context or read the file again.`);
       }
-      afterText = replaceOnce(afterText, hunk.search, hunk.replace);
+      afterText = replaceOnce(afterText, search, replace);
     }
     if (afterText === beforeText && !operation.newPath) throw new Error(`Patch made no changes to ${target.relativePath}.`);
     planned.push({ operation, target, afterText, beforeHash });
