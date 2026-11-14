@@ -1,6 +1,6 @@
 {
   "name": "@lazyingart/agintilite",
-  "version": "0.1.0-preview.19",
+  "version": "0.1.0-preview.20",
   "private": true,
   "description": "Bounded text-only application tool loop with explicit providers and read-only callbacks.",
   "type": "module",
@@ -25,7 +25,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "check": "node --check test/restricted-native-history.test.js && node --check test/restricted-proposal-review.test.js && node --check src/restricted-application.js && node --check src/restricted-deepseek-client.js && node --check src/restricted-deepseek-http.js && node --check test/restricted-deepseek-http.test.js && node --check src/restricted-application-contract.js && node --check src/redaction.js && node --check test/restricted-application.test.js && node --check test/distribution.test.js && node --check test/wire-integrity.test.js && node --check test/deepseek-profile.test.js && node --check test/provider-failure.test.js && node --check test/finalization-budget.test.js && node --check test/json-enum.test.js && node --check test/tool-failure.test.js && node --check test/restricted-root-proposal.test.js && node --check test/fixtures/restricted-root-proposal.js && node --check test/native-error-envelope.test.js && node --check test/restricted-callback-result.test.js && node --check test/restricted-cancellation-observation.test.js && node --check test/restricted-native-call-identity.test.js && node --check test/restricted-native-failure-classification.test.js && node --check test/restricted-native-finalizer.test.js",
+    "check": "node --check test/quoted-credential-boundary.test.js && node --check test/restricted-native-history.test.js && node --check test/restricted-proposal-review.test.js && node --check src/restricted-application.js && node --check src/restricted-deepseek-client.js && node --check src/restricted-deepseek-http.js && node --check test/restricted-deepseek-http.test.js && node --check src/restricted-application-contract.js && node --check src/redaction.js && node --check test/restricted-application.test.js && node --check test/distribution.test.js && node --check test/wire-integrity.test.js && node --check test/deepseek-profile.test.js && node --check test/provider-failure.test.js && node --check test/finalization-budget.test.js && node --check test/json-enum.test.js && node --check test/tool-failure.test.js && node --check test/restricted-root-proposal.test.js && node --check test/fixtures/restricted-root-proposal.js && node --check test/native-error-envelope.test.js && node --check test/restricted-callback-result.test.js && node --check test/restricted-cancellation-observation.test.js && node --check test/restricted-native-call-identity.test.js && node --check test/restricted-native-failure-classification.test.js && node --check test/restricted-native-finalizer.test.js",
     "test": "node --experimental-test-module-mocks --test test/*.test.js",
     "pack:dry-run": "npm pack --dry-run --ignore-scripts --offline",
     "pack:local": "npm pack --ignore-scripts --offline --pack-destination artifacts"

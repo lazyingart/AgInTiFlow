@@ -1,13 +1,10 @@
 # AgInTiLite
 
-AgInTiLite is a bounded, text-only application tool loop for Node 22 ESM.
-It accepts an explicit provider, dispatches only declared read-only callbacks,
-and returns a validated JSON proposal. It has zero runtime dependencies.
-
-This is a local preview distribution, not a published npm release or a general
-agent service. `private: true` prevents npm publication. It includes no CLI,
-HTTP server, shell, filesystem tools, browser, vision provider, MCP, plugins,
-skill discovery, environment loader, session store or automatic fallback.
+AgInTiLite is a bounded text-only Node22 ESM loop: explicit providers, declared
+read-only callbacks, validated JSON proposals and zero runtime dependencies.
+This local preview is private, unpublished and not a general agent service.
+It includes no CLI/server, shell/filesystem/browser/vision tools, MCP, plugins,
+skills, environment loader, session store or automatic fallback.
 
 ## Consumption
 
@@ -20,12 +17,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.19.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.20.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.19.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.20.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -112,21 +109,15 @@ Tool shape:
 Dispatch is sequential. The entire call batch is validated before the first
 callback. Unknown tools, duplicate normalized call IDs and unexpected arguments reject.
 
-Native provider response IDs are not application operation identities. The
-OpenAI and DeepSeek native adapters preserve ordinary IDs, but assign a fresh
-invocation-local ID when a later response reuses an earlier one. Assistant
-calls, tool results and callback metadata use that same checked local ID. A
-duplicate inside one batch, malformed ID or invalid call is never repaired into
-new work. Custom normalized providers retain the invocation-wide uniqueness
-rule. Step/read budgets, cancellation, no-retry and host scope remain unchanged.
-Call IDs are neither account authorization nor durable idempotency keys.
+Native adapters preserve ordinary response IDs and rename only collisions with
+earlier responses, consistently across calls, results and callback metadata.
+Malformed IDs, invalid calls and within-batch duplicates reject. Normalized
+providers require invocation-wide unique IDs. IDs grant neither authentication
+nor durable idempotency. Budgets, cancellation and no-retry policy are unchanged.
 
-An app callback that already projected a raw native response into
-`{type:"final",value}` or `{type:"tool_calls",calls}` owns that projection's
-validation. A vendor upgrade cannot recover error/finish/metadata evidence it
-discarded. Use the native factories with the original transport response when
-possible; qualify any app-specific parser before using its normalized result.
-Tool arguments, schemas and provider requests are detached frozen snapshots.
+Use native factories with the original transport response. A normalized callback
+owns any discarded error/finish/metadata evidence; an upgrade cannot recover it.
+Qualify app parsers separately. Arguments, schemas and requests are frozen copies.
 
 The detached, deeply frozen success object is:
 
@@ -135,12 +126,10 @@ The detached, deeply frozen success object is:
  proposal:<schema-validated JSON>,usage:{steps,toolCalls}}
 ```
 
-The app owns authentication, book/account scope, provider consent/routing,
-retrieval, citation/edition/locator checks, durable history, quotas and
-revision-checked idempotent writes. Schema validity is not grounding,
-instruction-following or semantic correctness. A model can return a
-schema-valid invented citation; the app must reject it. Retrieved text is
-untrusted, not permission to acquire more tools or change providers.
+Apps own authentication, book/account scope, provider consent/routing, retrieval,
+citation/edition/locator checks, history, quotas and revision-checked idempotent
+writes. Schema validity proves neither grounding nor instruction-following nor
+semantics. Reject invented citations; retrieved text grants no tools or providers.
 
 ### Optional host proposal review
 
@@ -161,10 +150,8 @@ data. Host feedback grants no additional authority. Each final candidate must
 pass review; repeated rejection or no remaining step yields `PROPOSAL_REJECTED`
 without returning a partial proposal.
 
-For a rewrite, a host reviewer can reject an unchanged draft. For a citation,
-it can check the returned ID/locator against current authorized reads. Those
-checks are application policy, not facts inferred by Lite. Review never
-commits data or replaces current-state CAS and idempotency on apply.
+Review may reject unchanged edits or check citation IDs/locators against current
+reads. These are host policies; review never commits or replaces CAS/idempotency.
 
 Omitting review skips the callback/refinement and retains two-field usage.
 Opted-in usage adds `proposalReviews` and `proposalRevisions` (zero or one).
@@ -180,26 +167,26 @@ callback throws/model text cannot forge it. Classification authorizes no retry.
 
 ## Native final proposal encoding
 
-Preview 19 encodes strict JSON assistant history matching the application schema
-in DeepSeek's required `{proposal: value}` envelope for non-object roots. Host
-history stays unchanged; ordinary prose remains literal. OpenAI and object-root
-wire forms are unchanged. Unwrapped incoming replies still fail closed.
-
-Preview 18 uses a private native function named `__aginti_return_proposal` only
-when the DeepSeek read catalog has closed after at least one observed read.
-Its arguments encode the original final schema; no host function executes.
-The name cannot be registered as an application tool. Only this exact forced
-choice is admitted by the fixed HTTPS profile; it cannot select another tool.
-Read permissions, host callback counts, steps, output-token cap and deadline do
-not expand. No extra model call or retry is added. Initial no-read DeepSeek and
-generic OpenAI requests retain their existing wire form.
-
-Exactly one complete native call, valid ID, strict JSON and the original output
-schema are required. Truncated/mixed/foreign calls, blank output and invalid data
-still fail closed. Valid ordinary JSON replies remain compatible. A generated
-proposal is never an application commit; the host still validates current facts.
+DeepSeek wraps schema-valid JSON assistant history for non-object roots in
+`{proposal:value}`. Host history, prose, OpenAI and object-root forms stay unchanged;
+unwrapped incoming responses reject. After an observed read closes the catalog,
+the fixed HTTPS profile may force `__aginti_return_proposal` to encode the original
+schema. It is not an app tool or host callback. Only one complete call with valid
+ID/JSON/schema is accepted; truncated, mixed, foreign, blank or malformed results
+reject. Ordinary JSON remains compatible. Initial no-read/OpenAI forms, permissions,
+callback counts, step/token/deadline limits and no-extra-call/retry policy remain
+unchanged. Proposals still require host fact checks and an application commit.
 
 ## Providers and fallback
+
+Preview 20 rejects recognized quoted credential assignments in input, history,
+read results, proposals and review feedback. JSON field-name escapes and
+truncated quoted values are covered; log/event redaction also masks recognized
+string-valued credential fields without mutating caller data. Explicit masks,
+empty values, typed parameters, environment lookups and an unfilled Bearer prefix
+remain usable. This is a pattern guard, not a universal secret detector: hosts
+must exclude credentials from all supplied data, including arbitrary encodings.
+The provider, tool, schema, deadline and fallback contracts are unchanged.
 
 `createRestrictedOpenAIProvider({model,supportsImages:false,complete})` is an
 optional pure wire adapter. It imports no OpenAI SDK and opens no connection.
@@ -238,23 +225,21 @@ unqualified. Do not switch provider or output mode automatically.
 Keep credentials in the transport closure, never in runner data. Disable
 automatic transport/SDK retries; qualify response bounds and real cancellation.
 
-Callback exceptions yield safe `PROVIDER_FAILED` or `TOOL_FAILED` without raw
-messages/stacks/causes. Trusted same-module transports can throw
-`createRestrictedProviderFailure({category,retryAfterMs?})`. Frozen metadata is
-`{schemaVersion:"aginti-provider-failure-v1",category,retryAfterMs}`.
-Categories: authentication, permission, quota, rate_limit, unavailable, timeout,
-protocol. Omitted cooldown is null; integers0..86400000ms are allowed only for
-rate_limit/unavailable. Nothing schedules a retry, wait or provider switch.
+Exceptions yield safe `PROVIDER_FAILED`/`TOOL_FAILED`, without raw message, stack
+or cause. Trusted same-module transports may throw
+`createRestrictedProviderFailure({category,retryAfterMs?})`; its frozen metadata
+is `{schemaVersion:"aginti-provider-failure-v1",category,retryAfterMs}`. Categories
+are authentication, permission, quota, rate_limit, unavailable, timeout, protocol.
+Cooldown is null by default; integers0..86400000ms apply only to rate_limit and
+unavailable. This metadata schedules no wait, retry or fallback.
 
-`createRestrictedToolFailure` issues the separate same-module tool channel:
-`toolFailure` schema aginti-tool-failure-v1, same categories plus not_found/conflict,
-same cooldown bounds. Provider/tool callbacks cannot impersonate each other.
-Unknown errors/properties/Proxies/JSON clones/other SDK instances cannot forge
-either brand. Cancellation/deadline wins even for synchronous throws after
-expiry. Only the host classifies observed responses; unavailable is not absence.
-A failed read stops before later reads/model turns. Hosts own pending intent,
-ambiguity, consent, quotas, factual/citation checks, revision CAS, idempotency
-and writes. Proposal completion or transport status does not authorize a save.
+`createRestrictedToolFailure` uses separate `toolFailure` metadata with schema
+aginti-tool-failure-v1, the same bounds, and additional not_found/conflict values.
+Only the host classifies observations; unavailable is not absence. Callbacks,
+arbitrary errors, properties, Proxies, JSON clones and other SDK instances cannot
+forge or exchange brands. Cancellation/deadline wins even for late synchronous
+throws. A failed read stops later dispatch. Hosts retain pending intent, ambiguity,
+consent, quotas, evidence validation, revision CAS, idempotency and writes.
 
 ## Bounds and cancellation
 
@@ -282,19 +267,14 @@ format, regex, coercion and arbitrary prototypes reject. Sparse arrays,
 accessors, proxies, hidden/symbol keys, JSON hooks, cycles and nonfinite numbers
 are rejected before using their content.
 
-The deadline covers preparation, provider/tool waits and final validation.
-Cancellation signals pending callbacks and prevents subsequent dispatch or
-late success. Callbacks ignoring abort remain charged against runner capacity
-until settlement; late rejection is observed. Synchronous JavaScript and remote
-requests cannot be forcibly interrupted here. Use process isolation for hard
-termination. Fresh runner instances do not share a global admission limit.
-
-Node 22 native disposable abort subscriptions prevent another listener's
-`stopImmediatePropagation()` from suppressing cancellation. Checkpoints also
-inspect the native parent-signal state before continuing or returning a final
-proposal. Only the SDK's own subscription is disposed; caller listeners remain
-untouched. The optional DeepSeek HTTP client uses the same resistant mechanism.
-Local request close accounting and remote-termination limitations are unchanged.
+The deadline includes preparation, callback waits and final validation. Cancel
+signals pending callbacks and blocks later dispatch/success. Ignored aborts keep
+capacity charged until settlement; late rejection is observed. Synchronous code
+and remote requests require separate hard termination. Runners share no global
+admission limit. Node22 disposable abort subscriptions resist another listener's
+`stopImmediatePropagation()`; native signal checkpoints also guard continuation
+and return. Only owned subscriptions are disposed. The optional HTTP client uses
+the same mechanism, without changing physical-close or remote-stop limitations.
 
 Stable error codes include `CANCELLED`, `TIMEOUT`, `BUSY`, `STEP_LIMIT`,
 `CONTEXT_LIMIT`, `DATA_LIMIT`, `SENSITIVE_DATA`, `INVALID_CONTRACT`,
@@ -313,28 +293,16 @@ start network activity.
 import { createRestrictedDeepSeekClient } from "@lazyingart/agintilite/deepseek-http";
 import { createRestrictedApplicationRunner } from "@lazyingart/agintilite";
 
-const client = createRestrictedDeepSeekClient({
-  apiKey: appOwnedCredential,
-  model: "deepseek-flash", // alternatively, explicitly "deepseek-v4-pro"
-  userId: opaqueAppPrincipalToken,
-  timeoutMs: 30000,
-  maxConcurrency: 4,
-});
+const client = createRestrictedDeepSeekClient({ apiKey: appOwnedCredential,
+  model: "deepseek-flash", userId: opaqueAppPrincipalToken,
+  timeoutMs: 30000, maxConcurrency: 4 });
 try {
   const runner = createRestrictedApplicationRunner({
-    provider: client.provider,
-    instructions: "Use only the supplied record. Return a proposal; do not save it.",
-    tools: [],
-    outputSchema: {
-      type: "object", properties: { reply: { type: "string", maxLength: 2000 } },
-      required: ["reply"], additionalProperties: false,
-    },
+    ...appOwnedRunnerOptions, provider: client.provider,
   });
-  const result = await runner.run({ input: [{ type: "text", text: suppliedRecord }] });
-  // Authenticate, validate facts/revision/consent, then apply in the host.
-} finally {
-  await client.close();
-}
+  const result = await runner.run(appOwnedRequest, { signal: appAbortSignal });
+  // Host validates scope, facts, revision and consent before any apply.
+} finally { await client.close(); }
 ```
 
 Construction requires an explicit visible-ASCII credential of 16–512 characters,
@@ -387,18 +355,14 @@ signals prevent rejected-promise busy loops. Remote termination/billing,
 response-loss idempotency and cross-process exactly-once are not promised;
 never automatically retry ambiguous work.
 
-The client depends on the trusted Node TLS/DNS/runtime boundary. It offers no
-OS sandbox or protection from a compromised same-process dependency. Credentials
-are retained only in the client closure and authorization header, with literal
-reflection checks on request/response data; this is not memory zeroization or
-a universal privacy filter. Apps retain authentication, account-scoped history,
-read authorization, factual/citation checks, revision CAS, writes, quotas and
-provider consent. Existing callback providers and app routes remain unchanged.
-
-The optional HTTPS import adds two runtime files. Seven core exports and the
-three-file core graph stay unchanged; the nine-file package remains private,
-dependency-free and without install hooks. Loopback HTTP fixtures prove neither
-live TLS nor application deployment readiness.
+The client trusts Node TLS/DNS/runtime; it is no OS sandbox or protection from
+compromised same-process dependencies. Credentials stay in its closure/header;
+literal request/response reflection checks provide neither memory zeroization nor
+universal privacy. App authentication, scope/history, reads, evidence, CAS, writes,
+quotas and consent remain host-owned. Callback providers/routes are unchanged.
+The optional import adds two files; seven exports, three-file core graph and
+private nine-file dependency-free/no-hook package stay intact. Loopback tests
+qualify neither live TLS nor application deployment.
 
 See NOTICE for Apache-2.0 provenance. Package tests enforce the closed import
 graph, private distribution, zero dependencies and exact exports. Offline tests
