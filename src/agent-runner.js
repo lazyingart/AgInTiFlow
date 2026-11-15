@@ -1576,7 +1576,7 @@ export async function groundWritingSpecialistArgsFromReadEvidence(
   state = {},
   config = {}
 ) {
-  if (!writingRequestNeedsSourceGrounding(args)) {
+  if (config.allowFileTools === false || !writingRequestNeedsSourceGrounding(args)) {
     return { args, groundedPaths: [], groundedBytes: 0 };
   }
   const messages = Array.isArray(state.messages) ? state.messages : [];
@@ -1608,21 +1608,25 @@ export async function groundWritingSpecialistArgsFromReadEvidence(
   for (const item of selected) {
     if (groundedBytes >= maxTotalBytes) break;
     try {
-      const target = resolveWorkspacePath(config, item.path, { allowReadOnlyRoots: true });
-      const stat = await fs.stat(target.absolutePath);
-      if (!stat.isFile() || stat.size <= 0 || stat.size > maxFileBytes) continue;
       const remaining = maxTotalBytes - groundedBytes;
-      if (stat.size > remaining) continue;
-      const raw = await fs.readFile(target.absolutePath, "utf8");
-      if (!raw.trim() || raw.includes("\u0000")) continue;
+      // This secondary reader must share native read_file's canonical scope,
+      // live-handle identity and byte bound; a former read grants no authority
+      // to follow a later alias or consume a file that grew after stat.
+      const target = await resolveWorkspaceReadTarget(config, item.path);
+      const { buffer } = await target.readBytes(Math.min(maxFileBytes, remaining));
+      if (!buffer.length || buffer.includes(0)) continue;
+      const raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
+      if (!raw.trim()) continue;
       const content = redactSensitiveText(raw);
+      const contentBytes = Buffer.byteLength(content, "utf8");
+      if (contentBytes > maxFileBytes || contentBytes > remaining) continue;
       sourceBlocks.push([
         `SOURCE: ${String(item.path).replace(/\\/g, "/")}`,
         content,
         "END SOURCE",
       ].join("\n"));
       groundedPaths.push(String(item.path).replace(/\\/g, "/"));
-      groundedBytes += Buffer.byteLength(content, "utf8");
+      groundedBytes += contentBytes;
     } catch {
       // Only already verified, still-readable source files may cross into the writer.
     }
@@ -24265,7 +24269,7 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       reason: "revision-bound-patch-context",
     };
   }
-  if (toolName === "writing_specialist") {
+  if (toolName === "writing_specialist" && checkToolUse({ toolName, args, snapshot, config }).allowed) {
     const grounded = await groundWritingSpecialistArgsFromReadEvidence(args, state, config);
     args = grounded.args;
     if (grounded.groundedPaths.length) {

@@ -30,6 +30,15 @@ Smart hosted routes fail over only toward the local trust boundary. If a hosted 
 
 Long writing tasks use an additional tool boundary: `writing_specialist`. The main model still plans the run, manages files, formats Markdown/LaTeX/Final Draft output, compiles/checks artifacts, and finishes. The specialist gets only the writing brief, canon, style guide, prior draft, target, audience, constraints, and format intent, then returns prose plus a formatter handoff. It follows the active LocalLLM provider by default even when hosted keys exist. Cross-provider writing requires both an explicit target (`AGINTI_WRITING_PROVIDER` or a per-run provider override) and `AGINTI_ALLOW_HOSTED_WRITING_SPECIALIST=true` (or the equivalent per-run permission flag); language detection and ambient credentials never grant that permission.
 
+For source-backed writing, the runtime refreshes previously read files through the
+same canonical path, read-scope and live-handle checks as `read_file`. A previous
+read does not authorize a later path replacement or a revoked read root. Source
+text must be valid UTF-8 without NUL bytes and fit within 24 KiB per file and
+32 KiB combined, including any redaction expansion. Unavailable or unsafe files
+are omitted rather than forwarded to the writer. Disabled file tools or a denied
+writer route prevent this secondary read. These checks enforce the native file
+tool boundary; applications still need process and storage isolation.
+
 ## CLI Commands
 
 ```bash
