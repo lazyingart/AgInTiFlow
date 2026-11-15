@@ -172,3 +172,79 @@ test("a required pass does not grant permission to write in a read-only task", (
   assert.equal(hasReadOnlyDiagnosticIntent(request, "code"), true);
   assert.equal(isReadOnlyDiagnosticGoal(request, "code"), false);
 });
+
+function assessImplicit(f, events = f.events, context = {}, contract = completionTaskContract(f.config, f.state)) {
+  const ledger = buildScsEvidenceLedger({ state: f.state, contract, context: { events, ...context } });
+  return { ledger, result: evaluateScsEvidence(contract, ledger) };
+}
+for (const presentation of ["events", "checkpoint"]) test(`shared SCS ledger derives proven diagnostic scope from ${presentation}`, async t => {
+  const f = await fixture(t); observe(f);
+  const context = Object.freeze({ events: presentation === "events" ? f.events : [] });
+  const contract = completionTaskContract(f.config, f.state);
+  const ledger = buildScsEvidenceLedger({ state: f.state, contract, context });
+  assert.equal(evaluateScsEvidence(contract, ledger).ok, true);
+  assert.equal(Object.hasOwn(context, "readOnlyDiagnostic"), false);
+  assert.ok(ledger.items.some(item => item.diagnosticOnly && item.passed === false));
+  assert.equal(f.state.meta.projectVerification.testRuns.at(-1).passed, false);
+});
+test("an explicit diagnostic disable is preserved by the shared SCS ledger", async t => {
+  const f = await fixture(t); observe(f); assert.equal(assessImplicit(f, f.events, { readOnlyDiagnostic: false }).result.ok, false);
+});
+test("implicit diagnostic scope needs the exact current runtime authority", async t => {
+  const f = await fixture(t); observe(f); delete f.state.meta.activeExecutionContract;
+  assert.equal(assessImplicit(f).result.ok, false);
+});
+test("implicit diagnostic scope cannot override a non-diagnostic contract", async t => {
+  const f = await fixture(t); observe(f);
+  const contract = { ...completionTaskContract(f.config, f.state), readOnlyDiagnostic: false };
+  assert.equal(assessImplicit(f, f.events, {}, contract).result.ok, false);
+});
+test("implicit diagnostic scope rejects intervening edits", async t => {
+  const f = await fixture(t); observe(f);
+  recordProjectVerificationOutcome(f.state, { toolName: "apply_patch", ok: true, path: "check.mjs", changes: [{ path: "check.mjs", beforeHash: hash("old"), afterHash: hash("new") }] }, f.config);
+  assert.equal(assessImplicit(f).result.ok, false);
+});
+test("implicit diagnostic scope preserves an explicit pass requirement", async t => {
+  const f = await fixture(t, `Read-only: run \`${command}\`; all tests must pass.`); observe(f);
+  assert.equal(assessImplicit(f).result.ok, false);
+});
+test("implicit diagnostic scope requires complete saved continuation lineage", async t => {
+  const f = await fixture(t); observe(f); applyContinuationContractTransition(f.state, "Please continue from where you stopped.");
+  assert.equal(assessImplicit(f, []).result.ok, true);
+  delete f.state.meta.goalContract.history.at(-1).taskHash;
+  assert.equal(assessImplicit(f, []).result.ok, false);
+});
+
+for (const request of [
+  "Why did the last check fail? Did you change any file? Do not rerun it or modify any file.",
+  "Why did the last check fail? Did you modify any file? Do not rerun it or modify any file.",
+  "刚才为什么失败？有没有改动检查文件？不要重跑，也不要修改文件。",
+  "先ほどのチェックはなぜ失敗しましたか？ファイルを変更しましたか？再実行せず、読み取り専用で答えてください。",
+]) test(`historical diagnostic explanation does not invent fresh work: ${request}`, async t => {
+  const f = await fixture(t, request), contract = completionTaskContract(f.config, f.state);
+  assert.equal(contract.requiresExternalEvidence, false); assert.equal(contract.requiresWorkspaceMutation, false);
+  assert.equal(contract.requiresFileMutation, false); assert.equal(contract.readOnlyDiagnostic, true);
+  assert.deepEqual(contract.requiredProjectCommands, []); assert.deepEqual(contract.exactOutputPaths, []);
+  assert.equal(contract.outcome, "Active task: " + request); assert.equal(nextStepRuntimeConfig(f.config, f.state).readOnlyDiagnosticIntent, true);
+});
+for (const request of [
+  `Why did the last check fail? Run \`${command}\` again. Do not modify any file.`,
+  "Why did the last check fail? Inspect check.mjs and identify the current bug. Do not modify any file.",
+  "Why did the last check fail? Create diagnosis.md. Do not modify check.mjs.",
+  "Why did the last check fail? Research the latest upstream fix. Read-only.",
+  `刚才为什么失败？现在重新运行 \`${command}\`。不要修改文件。`,
+  "刚才为什么失败？请查看 check.mjs 的当前内容。不要修改文件。",
+  "先ほどのチェックはなぜ失敗しましたか？今チェックを実行してください。読み取り専用で答えてください。",
+  "What is the current status of check.mjs? Do not modify any file.",
+  `Why did the last check fail, run \`${command}\` again? Do not modify any file.`,
+  "Why did the last check fail fix check.mjs until tests pass? Do not modify unrelated files.",
+]) test(`historical wording cannot erase a current action: ${request}`, async t => {
+  const f = await fixture(t, request), contract = completionTaskContract(f.config, f.state);
+  assert.equal(contract.requiresExternalEvidence, true);
+});
+test("a historical question cannot erase retained unfinished task requirements", async t => {
+  const f = await fixture(t, "Why did the last check fail? Do not rerun it or modify any file.");
+  f.state.meta.goalContract.taskGoal = "Create report.md with the observed results.";
+  const contract = completionTaskContract(f.config, f.state);
+  assert.equal(contract.requiresExternalEvidence, true); assert.ok(contract.exactOutputPaths.includes("report.md"));
+});

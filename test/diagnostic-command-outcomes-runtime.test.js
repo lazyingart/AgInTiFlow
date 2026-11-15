@@ -9,8 +9,14 @@ import test from "node:test";
 
 const goal = "Run `node --test check.mjs` once and tell me the result. Do not repair anything or create or modify any file.";
 const failedReport = "The check failed: 1 assertion, expected 2 but observed 1. No task files were changed.";
-for (const mode of ["failed-honest", "passed-honest", "failed-false-en", "failed-false-zh", "failed-false-ja", "empty-after-fail", "empty-finish", "handoff", "must-pass-zh", "compound", "compound-empty", "write-after-result"]) test(`real native diagnostic outcome: ${mode}`, { timeout: 40000 }, async t => {
+for (const scsMode of ["off", "on"]) for (const mode of ["failed-honest", "passed-honest", "failed-false-en", "failed-false-zh", "failed-false-ja", "empty-after-fail", "empty-finish", "handoff", "must-pass-zh", "compound", "compound-empty", "write-after-result", "explain-en", "explain-zh", "explain-ja"]) test(`real native diagnostic outcome: ${mode} (SCS ${scsMode})`, { timeout: 40000 }, async t => {
   const compound = mode.startsWith("compound"), emptyReply = mode === "empty-after-fail" || mode === "compound-empty";
+  const explaining = mode.startsWith("explain-");
+  const explanations = {
+    "explain-en": { prompt: "Why did the last check fail? Did you change any file? Do not rerun it or modify any file.", result: "The check failed because the assertion expected 2 but observed 1. No check file was modified or rerun." },
+    "explain-zh": { prompt: "刚才为什么失败？有没有改动检查文件？不要重跑，也不要修改文件。", result: "检查失败是因为断言期望2，实际为1。检查文件没有改动，也没有重新运行。" },
+    "explain-ja": { prompt: "先ほどのチェックはなぜ失敗しましたか？ファイルを変更しましたか？再実行せず、読み取り専用で答えてください。", result: "チェックは期待値2に対して実際の値が1だったため失敗しました。ファイルは変更せず、再実行もしていません。" },
+  };
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-diagnostic-native-")), workspace = path.join(root, "workspace");
   t.after(async () => { await fs.rm(root, { recursive: true, force: true }); await assert.rejects(fs.stat(root), { code: "ENOENT" }); });
   await fs.mkdir(workspace);
@@ -35,7 +41,7 @@ for (const mode of ["failed-honest", "passed-honest", "failed-false-en", "failed
       } else if (mode === "write-after-result") message = { tool_calls: [call("write_file", { path: "unrequested.md", mode: "create", content: "Unrequested repair" })] };
       else if (emptyReply) message = { content: "" };
       else {
-        const report = compound ? "The first check exited with code 0; the second check failed with code 1. No task files were changed."
+        const report = explaining && phase === "resume" ? explanations[mode].result : compound ? "The first check exited with code 0; the second check failed with code 1. No task files were changed."
           : mode === "empty-finish" ? "" : mode === "passed-honest" ? "The check passed: 1 test, 0 failures. No task files were changed."
           : mode === "failed-false-en" ? "All tests passed. No failures remain."
           : mode === "failed-false-zh" ? "所有测试全部通过，没有失败。"
@@ -52,9 +58,9 @@ for (const mode of ["failed-honest", "passed-honest", "failed-false-en", "failed
   t.after(async () => { server.closeAllConnections(); await new Promise(r => server.close(r)); });
   async function run() {
     const child = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/native-diagnostic-command-outcomes.js", import.meta.url)), root,
-      "http://127.0.0.1:" + server.address().port + "/v1", phase === "start" ? request : "Please continue from where you stopped.", phase], {
+      "http://127.0.0.1:" + server.address().port + "/v1", phase === "start" ? request : explaining ? explanations[mode].prompt : "Please continue from where you stopped.", phase], {
       cwd: workspace, env: { PATH: process.env.PATH, HOME: root, LANG: "C.UTF-8", AGINTIFLOW_HOME: root + "/home",
-        AGINTIFLOW_HOUSEKEEPING: "0", AGINTIFLOW_NO_AUTO_UPDATE: "1", AGINTIFLOW_NO_WEB_AUTO_START: "1", AGINTIFLOW_NO_AUTH_PROMPT: "1",
+        AGINTIFLOW_HOUSEKEEPING: "0", AGINTIFLOW_NO_AUTO_UPDATE: "1", AGINTIFLOW_NO_WEB_AUTO_START: "1", AGINTIFLOW_NO_AUTH_PROMPT: "1", AGINTI_TEST_SCS_MODE: scsMode,
         ...(process.env.AGINTI_TEST_BASELINE_RUNTIME ? { AGINTI_TEST_BASELINE_RUNTIME: process.env.AGINTI_TEST_BASELINE_RUNTIME } : {}) },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -65,10 +71,17 @@ for (const mode of ["failed-honest", "passed-honest", "failed-false-en", "failed
   }
   let result = await run();
   if (mode === "handoff") { assert.equal(result.status, 402); phase = "resume"; result = await run(); }
+  let originalDiagnosticState;
+  if (explaining) {
+    assert.notEqual(result.result.stopped, true);
+    originalDiagnosticState = JSON.parse(await fs.readFile(root + "/sessions/diagnostic-status/state.json", "utf8"));
+    assert.equal(originalDiagnosticState.meta.projectVerification.testRuns.at(-1).passed, false);
+    phase = "resume"; result = await run();
+  }
   const state = JSON.parse(await fs.readFile(root + "/sessions/diagnostic-status/state.json", "utf8"));
   const events = (await fs.readFile(root + "/sessions/diagnostic-status/events.jsonl", "utf8")).trim().split("\n").map(JSON.parse);
   const commands = events.filter(e => e.type === "tool.completed" && e.data?.toolName === "run_command");
-  const testRun = state.meta.projectVerification.testRuns.at(-1), finishes = events.filter(e => e.type === "session.finished");
+  const testRun = (originalDiagnosticState || state).meta.projectVerification?.testRuns.at(-1), finishes = events.filter(e => e.type === "session.finished");
   assert.equal(result.resolved, true); assert.equal(commands.length, compound ? 2 : 1); assert.equal(commands[0].data.exitCode, mode === "passed-honest" || compound ? 0 : 1);
   if (compound) assert.equal(commands[1].data.exitCode, 1);
   assert.equal(await fs.readFile(workspace + "/check.mjs", "utf8"), source);
@@ -90,8 +103,8 @@ for (const mode of ["failed-honest", "passed-honest", "failed-false-en", "failed
     assert.ok(events.some(e => e.type === "completion.verified_fallback")); assert.ok(requests <= (compound ? 5 : 4));
     if (compound) assert.match(result.result.result, /other-check\.mjs/);
   } else {
-    assert.notEqual(result.result.stopped, true); assert.equal(state.meta.goalContract.status, "completed"); assert.equal(finishes.length, 1);
-    assert.equal(result.result.result, compound ? "The first check exited with code 0; the second check failed with code 1. No task files were changed."
+    assert.notEqual(result.result.stopped, true); assert.equal(state.meta.goalContract.status, "completed"); assert.equal(finishes.length, explaining ? 2 : 1);
+    assert.equal(result.result.result, explaining ? explanations[mode].result : compound ? "The first check exited with code 0; the second check failed with code 1. No task files were changed."
       : mode === "passed-honest" ? "The check passed: 1 test, 0 failures. No task files were changed." : failedReport);
   }
   if (mode === "handoff") {
@@ -99,9 +112,17 @@ for (const mode of ["failed-honest", "passed-honest", "failed-false-en", "failed
     assert.equal(state.meta.activeExecutionContract.revision, 1); assert.equal(requests, 3);
     assert.deepEqual(models.map(m => m.model), ["deepseek-v4-flash", "deepseek-v4-flash", "deepseek-v4-pro"]);
   }
+  if (explaining) {
+    assert.equal(state.meta.runtimeConfig.revision, 2); assert.equal(state.meta.goalContract.revision, 2);
+    assert.equal(state.meta.projectVerification, undefined, "Do not promote prior diagnostic execution as current task verification");
+    assert.deepEqual(models.slice(0, 2).map(m => m.model), ["deepseek-v4-flash", "deepseek-v4-flash"]);
+    assert.ok(models.length >= 3 && models.length <= 4);
+    assert.ok(models.slice(2).every(m => m.model === "deepseek-v4-pro"));
+  }
   assert.deepEqual(errors, []); await assert.rejects(fs.stat(root + "/sessions/diagnostic-status/.agent-run.lock"), { code: "ENOENT" });
   assert.ok((await fs.readdir(root + "/sessions/diagnostic-status")).every(name => !name.startsWith(".agent-run.")));
-  console.log(JSON.stringify({ mode, realNativeRuntime: true, commandExecutions: commands.length, observedExitCode: commands[0].data.exitCode,
+  assert.equal(state.meta.scs?.active === true, scsMode === "on");
+  console.log(JSON.stringify({ mode, scsMode, realNativeRuntime: true, commandExecutions: commands.length, observedExitCode: commands[0].data.exitCode,
     testPassed: testRun?.passed ?? null, goalStatus: state.meta.goalContract.status, runtimeRevision: state.meta.runtimeConfig.revision,
     taskFilesUnchanged: true, privateRuntimeCacheAllowed: entries.includes(".aginti/codebase-map.json"), externalModelCalls: 0,
     providerRequests: requests, explicitModels: models.map(m => m.model), sessionReleased: true }));

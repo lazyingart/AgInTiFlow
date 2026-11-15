@@ -2049,10 +2049,37 @@ function goalRequestsFileMutation(goal = "", taskProfile = "") {
   );
 }
 
+function isHistoricalDiagnosticQuestion(goal = "") {
+  const text = stripForbiddenLanguage(goal).trim().replace(/^Active task:[ \t]*\r?\n/u, "");
+  if (!text || text.length > 1200 || /[&|]/u.test(text)) return false;
+  const clauses = text.split(/[?？!！。;；\n]+/u).map(value => value.trim().replace(/[.]$/u, "")).filter(Boolean);
+  if (!clauses.length || clauses.length > 4) return false;
+  let explanation = false;
+  for (const clause of clauses) {
+    // Mixed requests keep the ordinary execution/inspection contract. This
+    // bounded grammar recognizes past-result questions, never new work.
+    if (/(?:\b(?:and|then|also|now|next|but|please)\s+|[,，:：]\s*)(?:actually\s+)?(?:run|rerun|execute|read|inspect|open|check|verify|validate|search|browse|create|modify|edit|fix|repair|write|build|compile|install|publish|delete|generate)\b/iu.test(clause) ||
+        /(?:然后|然後|接下来|接下來|现在|現在|同时|同時|请|請)(?:帮我|幫我)?(?:运行|運行|重跑|读取|讀取|查看|检查|檢查|验证|驗證|修改|改动|修复|修復|创建|創建|生成|编译|編譯|安装|安裝|发布|發布|删除|刪除)/u.test(clause) ||
+        /(?:実行|変更|修正|調査|確認)してください/u.test(clause)) return false;
+    const english = /^(?:(?:please\s+)?(?:explain|tell me)\s+)?(?:why\s+(?:did|was|were)\s+.{1,160}\s+(?:fail(?:ed)?|succeed(?:ed)?|pass(?:ed)?|stop(?:ped)?)|what\s+(?:failed|happened)(?:\s+.{1,160})?)$/iu.test(clause) &&
+      !/\b(?:read|inspect|open|verify|validate|search|browse|create|modify|edit|fix|repair|write|build|compile|install|publish|delete|generate|execute|rerun)\b/iu.test(clause) &&
+      /\b(?:checks?|tests?|commands?|runs?|assertions?|failures?|results?|errors?)\b/iu.test(clause);
+    const chinese = /^(?:刚才|剛才|之前|先前|上次|上一(?:次|轮|輪))(?:(?:的)?(?:检查|檢查|测试|測試|命令|运行|運行|执行|執行|任务|任務|操作|结果|結果|它))?(?:为什么|為什麼|为何|為何|怎么|怎麼)(?:会|會|又|就)?(?:失败|失敗|出错|出錯|成功|通过|通過|停止)(?:了|的|呢)?$/u.test(clause);
+    const japanese = /^(?:先ほど|さっき|前回|直前)(?:の)?(?:チェック|テスト|検証|実行|操作|結果)?(?:は|が)?(?:なぜ|どうして)(?:失敗|成功|停止)(?:した|しました)(?:か|のですか)?$/u.test(clause);
+    if (english || chinese || japanese) { explanation = true; continue; }
+    if (/^(?:did|have|had)\s+you\s+(?:chang(?:e|ed)|modify|modified|edit(?:ed)?|touch(?:ed)?|creat(?:e|ed)|delet(?:e|ed)|run|rerun|execut(?:e|ed))\s+.{1,120}$/iu.test(clause) ||
+        /^(?:你|您)?(?:有没有|有沒有|是否)(?:改动|改動|修改|编辑|編輯|更改)(?:过|過|了)?(?:任何|这些|這些|那个|那個|这个|這個)?(?:检查|檢查|测试|測試|原始|源)?(?:文件|檔案|源码|源碼|代码|代碼)(?:吗|嗎|呢)?$/u.test(clause) ||
+        /^(?:ファイル|ソース|チェック用ファイル)を(?:変更|修正|編集)(?:しましたか|したのですか)$/u.test(clause) ||
+        /^(?:再実行せず[、,]\s*)?(?:読み取り専用|読取専用)で(?:答えて|回答して|説明して)ください$/u.test(clause)) continue;
+    return false;
+  }
+  return explanation;
+}
+
 export function hasReadOnlyDiagnosticIntent(goal = "", taskProfile = "") {
   const text = String(goal || "");
   const explicitReadOnly = /\bread[- ]only\b|\breview\s+only\b|\b(?:do not|don't|without)\b[^.!?;\n]{0,100}\b(?:chang(?:e|ing)|modif(?:y|ying)|edit(?:ing)?|writ(?:e|ing))\b[^.!?;\n]{0,50}\b(?:any\s+)?files?\b|只读|只讀|(?:不要|请勿|請勿)[^。；\n]{0,60}(?:修改|编辑|編輯)(?:文件|檔案)|読み取り専用|読取専用/i.test(text);
-  return explicitReadOnly && !goalRequestsWorkspaceMutation(text, taskProfile);
+  return explicitReadOnly && (isHistoricalDiagnosticQuestion(text) || !goalRequestsWorkspaceMutation(text, taskProfile));
 }
 
 export function isReadOnlyDiagnosticGoal(goal = "", taskProfile = "") {
@@ -3559,7 +3586,12 @@ export function inferAuthoritativeReadOnlyRoutine(goal = "") {
 }
 
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
-  const evidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
+  const originalEvidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
+  // A bounded question about an already observed result is an answer request,
+  // not permission to execute the old task again. Keep prohibitions/outcome,
+  // but do not turn historical nouns into fresh file/command obligations.
+  const evidenceGoal = isHistoricalDiagnosticQuestion(originalEvidenceGoal) && hasReadOnlyDiagnosticIntent(originalEvidenceGoal, taskProfile)
+    ? "" : originalEvidenceGoal;
   const copies = namedCopyIntent(evidenceGoal);
   const positiveEvidenceGoal = stripForbiddenLanguage(normalizeFileCreationIntent(evidenceGoal));
   const authoritativeRoutine = inferAuthoritativeReadOnlyRoutine(goal);
@@ -3639,11 +3671,11 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   );
   return {
     version: 1,
-    outcome: compact(evidenceGoal || "Complete the requested task.", 500),
+    outcome: compact(originalEvidenceGoal || "Complete the requested task.", 500),
     taskProfile: String(taskProfile || "auto"),
     requiresExternalEvidence,
     requiredEvidence,
-    forbiddenActions: inferForbiddenActions(evidenceGoal),
+    forbiddenActions: inferForbiddenActions(originalEvidenceGoal),
     exactOutputPaths,
     exactEmptyOutputPaths: emptyOutputs.paths,
     exactCopyRequirements: copies.pairs.map(pair => ({ ...pair, destinationPath: applyScopedArtifactRoot([pair.destinationPath], artifactRoot)[0] })),
@@ -3662,7 +3694,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     advisoryInvocation,
     declaredSourceRoots,
     readOnlyReadiness: isReadOnlyReadinessTask(evidenceGoal),
-    readOnlyDiagnostic: isReadOnlyDiagnosticGoal(evidenceGoal, taskProfile),
+    readOnlyDiagnostic: isReadOnlyDiagnosticGoal(originalEvidenceGoal, taskProfile),
     requiresPerSourceChecks: requiresPerSourceChecks(evidenceGoal),
     requiredToolCalls,
     requiredGitActions,
@@ -6281,6 +6313,13 @@ function checkpointedCommandEvidence(state, existing, context = {}) {
 }
 
 export function buildScsEvidenceLedger({ state = {}, context = {}, contract = {} } = {}) {
+  // Every final/progress gate consumes the same diagnostic evidence. A caller
+  // may explicitly disable it, but need not repeat the runtime's authority flag
+  // when the contract and exact current execution already prove that scope.
+  if (!Object.hasOwn(context, "readOnlyDiagnostic") && contract.readOnlyDiagnostic === true &&
+      isCurrentReadOnlyDiagnosticExecution(state)) {
+    context = { ...context, readOnlyDiagnostic: true };
+  }
   const events = reconcileTmuxGitEvidenceEvents(
     Array.isArray(context.events) ? context.events : []
   );

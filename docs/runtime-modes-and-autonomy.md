@@ -418,3 +418,17 @@ or unknown history cannot be used. If a provider returns no answer after the
 bounded empty-response repair, the verified fallback can report the recorded
 diagnostic exits without claiming that failed checks passed. No provider switch
 or additional model call is introduced by that fallback.
+
+SCS progress and final review use the same diagnostic evidence authority. When
+the caller has not explicitly disabled that scope, the shared ledger derives it
+from the current validated execution and read-only diagnostic contract. A missing
+caller flag cannot turn an observed failed check into unexecuted work; stale or
+unproven execution still cannot supply diagnostic completion evidence.
+
+A bounded historical diagnostic question can ask why the prior check failed or
+whether task files were changed, without requesting that work again. English,
+Chinese and Japanese question forms are supported. The runtime retains the raw
+question and prohibitions while inferring no fresh execution from those past
+references. This supplies no new passing test, source snapshot or artifact proof.
+Mixed requests, current inspection and retained unfinished task requirements
+keep their ordinary evidence gates; unfamiliar phrasing remains conservative.
