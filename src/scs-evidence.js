@@ -653,14 +653,41 @@ function explicitCopySourceEditPositions(source, sourcePath) {
     const before = source.slice(clause.start, match.index);
     if (clause.quoted || /\b(?:explain|describe|discuss|suggest|quote|say|example|suppose|imagine|if|when|unless)\b|如果|假如|解释|解釋|说明|説明|例として|もし/iu.test(before)) continue;
     const directEdit = /(?:^|[.;!?。！？；,，\n]|\b(?:and|then|also)\b)\s*(?:(?:please|kindly|could you|can you|would you)\s+)?(?:update|edit|modify|patch|fix|repair|rewrite|replace|overwrite|write|save|create|change)\s+(?:(?:the|original|existing|source|file)\s+){0,3}$/iu.test(before);
+    const fieldEdit = /(?:^|[.;!?。！？；,，\n]|\b(?:and|then|also)\b)\s*(?:(?:please|kindly|could you|can you|would you)\s+)?(?:update|edit|modify|patch|fix|repair|rewrite|replace|change)\s+(?:(?:the|a|an|original|existing|source|project)\s+){0,3}(?:title|heading|name|value|label|field|text|contents?|words?|phrase|lines?|paragraphs?|sentences?|sections?|status|code|identifier|configuration|settings?|numbers?|dates?)\s+(?:in|inside|within|of)\s+$/iu.test(before);
     const chineseEdit = /(?:^|[。！？；，\n])\s*(?:先|首先|然后|然後|再|然后再|然後再)?\s*(?:请|請)?(?:修改|更新|编辑|編輯|更改|重写|重寫|替换|替換|覆盖|覆蓋|写入|寫入|创建|建立)\s*$/u.test(before);
-    if (directEdit || chineseEdit) positions.push(match.index);
+    if (directEdit || fieldEdit || chineseEdit) positions.push(match.index);
     if (positions.length >= 64) break;
   }
   for (const clause of japaneseFileIntentClauses(source).filter(item => item.kind === "update")) {
-    if (preservationFileReferences(clause.body).some(reference => normalizedContractPath(reference.path) === sourcePath)) positions.push(clause.index);
+    const start = source.indexOf(clause.body, clause.index);
+    if (start < clause.index || start + clause.body.length > clause.index + clause.length) continue;
+    for (const reference of preservationFileReferences(clause.body)) if (normalizedContractPath(reference.path) === sourcePath) positions.push(start + reference.index);
   }
   return positions;
+}
+
+function copyDestinationLiteralReplacement(source, pair, span, edits) {
+  if (pair.sourceMayChange || edits.length !== 1) return null;
+  const reference = [...source.matchAll(literalFileReferencePattern(pair.destinationPath))].find(match => match.index === edits[0]);
+  if (!reference) return null;
+  const between = source.slice(span.end, reference.index);
+  const verbs = [...between.matchAll(/\b(?:update|edit|modify|patch|fix|repair|rewrite|replace|overwrite|write|save|create|change|add|append|delete|remove)\b/giu)];
+  if (verbs.length !== 1 || !/^[\s.,;!?。！？；]*(?:(?:and|then|also|please|kindly)\s+)*$/iu.test(between.slice(0, verbs[0].index))) return null;
+  const start = reference.index + reference[0].length;
+  const literal = '(?:"([^"\\\\\\r\\n]{1,160})"|`([^`\\\\\\r\\n]{1,160})`|([^.;!?。！？；\\r\\n"`\\\\]{1,160}?))';
+  const match = source.slice(start).match(new RegExp('^\\s+from\\s+' + literal + '\\s+to\\s+' + literal + '(?=\\s*(?:$|[.;!?。！？；\\r\\n]))', 'iu'));
+  if (!match) return null;
+  const search = match[1] ?? match[2] ?? match[3].trim(), replace = match[4] ?? match[5] ?? match[6].trim();
+  if (!search.trim() || !replace.trim() || search === replace || !search.isWellFormed() || !replace.isWellFormed() ||
+      [search, replace].some(value => Buffer.byteLength(value) > 512 || /[\x00-\x1f\x7f]/u.test(value)) ||
+      [match[3], match[6]].some(value => value && /\b(?:from|to|and|then|unless|if)\b/iu.test(value))) return null;
+  // An unparsed additional edit must not be collapsed into this one exact
+  // replacement. General copy/edit tasks retain native ordered-phase proof.
+  const end = start + match[0].length;
+  let rest = source.slice(0, span.start) + " ".repeat(end - span.start) + source.slice(end);
+  for (const clause of filePreservationClauses(source)) rest = rest.slice(0, clause.index) + " ".repeat(clause.length) + rest.slice(clause.index + clause.length);
+  if (/\b(?:write|create|generate|edit|modify|patch|repair|rewrite|replace|overwrite|change|update|add|append|delete|remove)\b|修改|更新|编辑|編輯|更改|重写|重寫|替换|替換|追加|削除/iu.test(stripForbiddenLanguage(rest))) return null;
+  return { search, replace };
 }
 
 function namedCopyIntent(goal = "") {
@@ -697,11 +724,18 @@ function namedCopyIntent(goal = "") {
     for (const span of [...spans].sort((a, b) => b.start - a.start)) remainder = remainder.slice(0, span.start) + " ".repeat(span.end - span.start) + remainder.slice(span.end);
     for (const pair of pairs) {
       const edits = explicitCopySourceEditPositions(remainder, pair.sourcePath);
-      if (!edits.length) continue;
-      pair.sourceMayChange = true;
       const span = spans.find(item => preservationFileReferences(item.sourceToken).some(reference => normalizedContractPath(reference.path) === pair.sourcePath) &&
         preservationFileReferences(item.destinationToken).some(reference => normalizedContractPath(reference.path) === pair.destinationPath));
-      if (span && edits.some(index => index < span.start)) pair.sourceEditBeforeCopy = true;
+      if (edits.length) {
+        pair.sourceMayChange = true;
+        if (span && edits.some(index => index < span.start)) pair.sourceEditBeforeCopy = true;
+      }
+      const destinationEdits = span ? explicitCopySourceEditPositions(remainder, pair.destinationPath).filter(index => index >= span.end) : [];
+      if (destinationEdits.length) {
+        pair.destinationMayChange = true;
+        const replacement = copyDestinationLiteralReplacement(source, pair, span, destinationEdits);
+        if (replacement) pair.destinationReplacement = replacement;
+      }
     }
   }
   return { pairs: pairs.slice(0, 16), overflow: pairs.length > 16, spans };
@@ -5398,7 +5432,7 @@ const MAX_COPY_VERIFICATION_BYTES = 64 * 1024 * 1024;
 // A bounded native CLI observation, not a retained-descriptor sandbox or a
 // transaction with an external writer. Never return file contents or open a
 // secret/outside/special path merely because a model mentioned a copy.
-function copyFileDigest(commandCwd, rawPath, { readOnlyRoots = [], destination = false } = {}) {
+function copyFileDigest(commandCwd, rawPath, { readOnlyRoots = [], destination = false, literalReplacement = null } = {}) {
   try {
     if (!Number.isInteger(fs.constants.O_NOFOLLOW) || !Number.isInteger(fs.constants.O_NONBLOCK)) return null;
     if (isSensitiveWorkspacePath(rawPath)) return null;
@@ -5424,11 +5458,21 @@ function copyFileDigest(commandCwd, rawPath, { readOnlyRoots = [], destination =
       const opened = fs.fstatSync(fd, { bigint: true });
       if (!opened.isFile() || identity(before) !== identity(opened)) return null;
       const hash = crypto.createHash("sha256"), chunk = Buffer.alloc(64 * 1024);
+      const textChunks = literalReplacement && opened.size <= 220000n ? [] : null;
       let remaining = Number(opened.size);
       while (remaining) {
         const count = fs.readSync(fd, chunk, 0, Math.min(chunk.length, remaining), null);
         if (!count) return null;
-        hash.update(chunk.subarray(0, count)); remaining -= count;
+        hash.update(chunk.subarray(0, count));if (textChunks) textChunks.push(Buffer.from(chunk.subarray(0, count)));remaining -= count;
+      }
+      let derivedSha256 = null;
+      if (textChunks) {
+        const bytes = Buffer.concat(textChunks), text = bytes.toString("utf8"), { search, replace } = literalReplacement;
+        const index = text.indexOf(search);
+        if (Buffer.from(text, "utf8").equals(bytes) && index >= 0 && text.indexOf(search, index + search.length) < 0) {
+          const derived = Buffer.from(text.slice(0, index) + replace + text.slice(index + search.length), "utf8");
+          if (derived.length <= 220000) derivedSha256 = crypto.createHash("sha256").update(derived).digest("hex");
+        }
       }
       if (identity(fs.fstatSync(fd, { bigint: true })) !== identity(opened) || identity(fs.lstatSync(absolute, { bigint: true })) !== identity(opened) || fs.realpathSync(absolute) !== canonical) return null;
       for (const root of roots) {
@@ -5443,25 +5487,28 @@ function copyFileDigest(commandCwd, rawPath, { readOnlyRoots = [], destination =
           });
         } catch { return false; }
       };
-      return { sha256: hash.digest("hex"), bytes: Number(opened.size), dev: String(opened.dev), ino: String(opened.ino), isCurrent };
+      return { sha256: hash.digest("hex"), bytes: Number(opened.size), dev: String(opened.dev), ino: String(opened.ino), isCurrent, ...(literalReplacement ? { derivedSha256 } : {}) };
     } finally { fs.closeSync(fd); }
   } catch { return null; }
 }
 
-function copySnapshotBeforePublication(pair, { commandCwd, events, state }) {
+function copySnapshotBeforePublication(pair, { commandCwd, events, state, derivedSource = null }) {
   const samePath = (a, b) => resolveContractPath(commandCwd, a) === resolveContractPath(commandCwd, b);
   const revision = Number(state.meta?.goalContract?.revision || 0);
   if (!Number.isSafeInteger(revision) || revision <= 0) return null;
   const taskGoal = String(state.meta?.goalContract?.taskGoal || state.goal || "").trim();
   const taskHash = taskGoal ? crypto.createHash("sha256").update(taskGoal).digest("hex") : null;
   const mutations = state.meta?.projectVerification?.mutationHistory || [];
-  let sourceHash = null, sourceRevision = 0, receipt = null, originalSource = null, sourceMutationSeen = false;
+  let sourceHash = null, sourceRevision = 0, receipt = null, originalSource = null, sourceMutationSeen = false, destinationPending = false;
   for (const event of events) {
     const data = event.data || {};
     if (event.type === "conversation.continued" && data.preservesTaskBoundary !== true) {
-      sourceHash = null;sourceRevision = 0;receipt = null;originalSource = null;sourceMutationSeen = false;
+      sourceHash = null;sourceRevision = 0;receipt = null;originalSource = null;sourceMutationSeen = false;destinationPending = false;
       continue;
     }
+    // This controller-owned event denotes atomic rejection before dispatch;
+    // it is not evidence that an unknown tool changed the original source.
+    if (event.type === "tool.failed" && data.toolName === "tool_call_batch" && data.blocked === true && data.category === "tool-contract-violation") continue;
     const file = data.path || data.args?.path || "";
     // Started/failed events do not all carry a goal revision. They cannot grant
     // evidence, but must invalidate a prior observation before another publish.
@@ -5469,7 +5516,11 @@ function copySnapshotBeforePublication(pair, { commandCwd, events, state }) {
       const unknownMutator = !["read_file", "write_file", "apply_patch", "list_files", "search_files", "inspect_project", "finish"].includes(data.toolName);
       if (samePath(file, pair.sourcePath) || unknownMutator) sourceHash = null;
       if (unknownMutator || ["write_file", "apply_patch"].includes(data.toolName) && samePath(file, pair.sourcePath)) sourceMutationSeen = true;
-      if (["write_file", "apply_patch"].includes(data.toolName) && samePath(file, pair.destinationPath)) receipt = null;
+      if (unknownMutator || ["write_file", "apply_patch"].includes(data.toolName) && samePath(file, pair.destinationPath)) {
+        const authorizedEdit = pair.destinationMayChange && receipt?.publicationHash && !unknownMutator && event.type === "tool.started";
+        if (!authorizedEdit) receipt = null;
+        destinationPending = Boolean(authorizedEdit);
+      }
     }
     if (!Number.isSafeInteger(data.goalRevision) || data.goalRevision <= 0 || data.goalRevision > revision) continue;
     if (event.type !== "tool.completed" || data.ok !== true || data.blocked) continue;
@@ -5491,33 +5542,51 @@ function copySnapshotBeforePublication(pair, { commandCwd, events, state }) {
       // redefine that snapshot. Explicit edit-then-copy instead binds the latest.
       const expected = pair.sourceEditBeforeCopy ? { hash: sourceHash, revision: sourceRevision } : originalSource;
       const expectedRevision = expected?.revision;
-      const mutation = mutations.find(item => item.revision === data.projectMutationRevision && item.goalRevision === data.goalRevision && item.paths?.some(value => samePath(value, pair.destinationPath)));
+      const matchingMutations = Number.isSafeInteger(data.projectMutationRevision) && data.projectMutationRevision > 0
+        ? mutations.filter(item => item.revision === data.projectMutationRevision && item.goalRevision === data.goalRevision && item.paths?.some(value => samePath(value, pair.destinationPath))) : [];
+      const mutation = matchingMutations.length === 1 ? matchingMutations[0] : null;
       const sourceEntry = state.meta?.goalContract?.history?.find(item => item.revision === expectedRevision);
       const sourceTaskHash = sourceEntry?.taskHash || (sourceEntry?.kind === "initial" ? sourceEntry.hash : null);
       const sourceBound = expectedRevision === revision || sourceTaskHash === taskHash && currentGoalRevisionBelongsToActiveTask(state, { goalRevision: expectedRevision, taskHash });
-      receipt = expected?.hash && sourceBound && mutation && taskHash && mutation.taskHash === taskHash && currentGoalRevisionBelongsToActiveTask(state, mutation) ? { sourceHash: expected.hash, destinationHash: hash } : null;
+      const nativeChange = !pair.destinationMayChange || data.change?.ok === true && samePath(data.change.path, pair.destinationPath) && data.change.contentSha256 === hash;
+      const owned = nativeChange && expected?.hash && sourceBound && mutation && taskHash && mutation.taskHash === taskHash && currentGoalRevisionBelongsToActiveTask(state, mutation);
+      if (!pair.destinationMayChange) receipt = owned ? { sourceHash: expected.hash, destinationHash: hash } : null;
+      else if (owned && derivedSource?.sha256 === expected.hash && derivedSource.derivedSha256 === hash) {
+        // Whole-file equality to the host-requested deterministic derivation
+        // proves a combined copy/customize write without inventing an earlier
+        // physical copy phase. No source text is returned or persisted here.
+        receipt = { sourceHash: expected.hash, publicationHash: hash, destinationHash: hash, lastMutationRevision: mutation.revision, edited: true, derivation: "literal-replacement" };
+      } else if (owned && hash === expected.hash) {
+        // Establish the actual byte-copy phase. A final customized file alone,
+        // or a model claim that a copy happened, cannot establish this receipt.
+        receipt = { sourceHash: expected.hash, publicationHash: hash, destinationHash: hash, lastMutationRevision: mutation.revision, edited: false };
+      } else if (owned && receipt?.publicationHash && data.change?.beforeHash === receipt.destinationHash && mutation.revision > receipt.lastMutationRevision) {
+        receipt = { ...receipt, destinationHash: hash, lastMutationRevision: mutation.revision, edited: hash !== receipt.publicationHash };
+      } else receipt = null;
+      destinationPending = false;
     }
   }
-  return receipt;
+  return destinationPending ? null : receipt;
 }
 
 function evaluateExactCopies(contract, { commandCwd, readOnlyRoots, events, state }) {
   const issues = [], receipts = [], observations = [];
   if (contract.copyRequirementsOverflow) issues.push({ reason: "copy-operand-limit" });
   for (const pair of contract.exactCopyRequirements || []) {
-    const snapshot = pair.sourceMayChange ? copySnapshotBeforePublication(pair, { commandCwd, events, state }) : null;
-    const source = pair.sourceMayChange ? null : copyFileDigest(commandCwd, pair.sourcePath, { readOnlyRoots });
+    const source = pair.sourceMayChange ? null : copyFileDigest(commandCwd, pair.sourcePath, { readOnlyRoots, literalReplacement: pair.destinationReplacement || null });
+    const snapshot = pair.sourceMayChange || pair.destinationMayChange ? copySnapshotBeforePublication(pair, { commandCwd, events, state, derivedSource: source }) : null;
     const destination = copyFileDigest(commandCwd, pair.destinationPath, { destination: true });
     let alias = resolveContractPath(commandCwd, pair.sourcePath) === resolveContractPath(commandCwd, pair.destinationPath);
     try { alias ||= fs.realpathSync(resolveContractPath(commandCwd, pair.sourcePath)) === fs.realpathSync(resolveContractPath(commandCwd, pair.destinationPath)); } catch { /* Missing paths remain unverified below. */ }
-    const reason = alias ? "copy-source-destination-alias"
-      : !destination || (pair.sourceMayChange ? !snapshot : !source) ? "copy-bytes-unverified"
+    const reason = alias || source && destination && source.dev === destination.dev && source.ino === destination.ino ? "copy-source-destination-alias"
+      : !destination || (pair.sourceMayChange ? !snapshot : !source) || pair.destinationMayChange && !snapshot?.publicationHash ? "copy-bytes-unverified"
+      : pair.destinationMayChange && !snapshot.edited ? "copy-edit-unverified"
+      : pair.destinationMayChange ? (snapshot.derivation !== "literal-replacement" && snapshot.sourceHash !== snapshot.publicationHash || !pair.sourceMayChange && source.sha256 !== snapshot.sourceHash || destination.sha256 !== snapshot.destinationHash || source?.derivedSha256 && destination.sha256 !== source.derivedSha256 ? "copy-snapshot-mismatch" : null)
       : pair.sourceMayChange ? (snapshot.sourceHash !== snapshot.destinationHash || destination.sha256 !== snapshot.destinationHash ? "copy-snapshot-mismatch" : null)
-      : source.dev === destination.dev && source.ino === destination.ino ? "copy-source-destination-alias"
       : source.sha256 !== destination.sha256 ? "copy-bytes-mismatch" : null;
     if (reason) issues.push({ ...pair, reason });
     else {
-      const receipt = { ...pair, sha256: destination.sha256, bytes: destination.bytes };
+      const receipt = { ...pair, sha256: destination.sha256, bytes: destination.bytes, ...(pair.destinationMayChange ? snapshot.derivation ? { derivation: snapshot.derivation, derivedFromSha256: snapshot.sourceHash } : { copiedSha256: snapshot.publicationHash } : {}) };
       receipts.push(receipt); observations.push({ pair, source, destination, receipt });
     }
   }
@@ -5673,7 +5742,7 @@ export function evaluateScsSemanticContract(
       : [
           missingFiles.length ? `Missing exact output files: ${missingFiles.join(", ")}` : "",
           nonemptyFiles.length ? `Outputs required to be exactly empty contain bytes: ${nonemptyFiles.join(", ")}` : "",
-          !exactCopies.ok ? `Exact copy bytes are not verified: ${exactCopies.issues.map(issue => `${issue.sourcePath || ""} -> ${issue.destinationPath || ""} (${issue.reason})`).join(", ")}. Read the current source and repair only the destination; preserve its BOM, line endings and trailing newline. Verification is bounded to regular files up to ${MAX_COPY_VERIFICATION_BYTES} bytes in approved roots.` : "",
+          !exactCopies.ok ? `Exact copy bytes are not verified: ${exactCopies.issues.map(issue => `${issue.sourcePath || ""} -> ${issue.destinationPath || ""} (${issue.reason})`).join(", ")}. ${exactCopies.issues.some(issue => issue.destinationMayChange) ? "Verify the original copy publication and the ordered native changes to its destination. Do not undo an authorized customization merely to make the final file equal the template; an unproven copy phase must be repaired before reapplying that customization." : "Read the current source and repair only the destination; preserve its BOM, line endings and trailing newline."} Verification is bounded to regular files up to ${MAX_COPY_VERIFICATION_BYTES} bytes in approved roots.` : "",
           missingRequiredText.length ? `Missing required text terms: ${missingRequiredText.join(", ")}` : "",
           !executable.ok ? executable.reason : "",
           presentForbiddenText.length ? `Forbidden text terms present: ${presentForbiddenText.join(", ")}` : "",

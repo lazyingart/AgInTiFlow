@@ -77,6 +77,25 @@ Mentioning the source in a separate report, explanation or quoted edit instructi
 is not permission to change it. Only a direct request to edit that named source
 relaxes its copy-source protection.
 
+For a general copy-then-edit request, verification treats the copy and edit as
+ordered phases. Native mutation evidence must prove a byte-identical copy first,
+then the requested destination edit through its before/after hash chain. The
+current destination must match the last recorded change, while an unedited
+source must still match the copied snapshot. A customized final file alone,
+an old copy or a model's claim cannot supply the missing publication evidence.
+Completion does not restore the template over a valid customized result. Separate
+content and artifact requirements still apply; this is not a general semantic
+verifier. Same-task continuation can retain the proof with existing task hashes.
+
+An explicit single literal replacement has a bounded alternative: for an unchanged
+UTF-8 source up to 220,000 bytes, completion can compute the expected full output
+from one unique matching source string and the user-requested replacement. A
+current-task native publication must match every expected byte, including the
+unchanged status text, BOM and newlines. This permits a combined copy/customize
+write without inventing an intermediate copy or regenerating a correct result.
+Ambiguous replacements and additional edits retain the general phase-proof path;
+arbitrary pre-existing files or model claims do not supply publication evidence.
+
 ## Built-In Skills
 
 The package ships built-in skills for code engineering, website/app building, LaTeX manuscripts, books, Microsoft Word documents, image generation, GitHub maintenance, system maintenance, source ingestion/OCR, structured JSON, autonomous artifact pipelines, tmux session control, Android, R/Stan, Python, C/C++, shell scripting, AAPS, skill creation, novel writing, and supervision/student-agent training.
