@@ -466,7 +466,7 @@ try {
         }],
       },
       failedTestDiagnostic: {
-        packetVersion: 17,
+        packetVersion: 18,
         mutationRevision: 0,
         failureSignature: "python-entrypoint-order",
         focuses: [{
@@ -7545,10 +7545,10 @@ try {
         }],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 17,
+        packetVersion: 18,
         mutationRevision: 7,
         failureSignature: "pre-repair-failure",
-        content: "Bounded failed-test evidence packet v17.",
+        content: "Bounded failed-test evidence packet v18.",
       },
     },
   };
@@ -9344,6 +9344,7 @@ try {
       taskProfile: "slides",
       commandCwd: workspace,
       goal: failedAfterProducerState.goal,
+      readOnlyRoots: [generatedDeckValidatorPath],
     },
     failedAfterProducerState
   );
@@ -9353,7 +9354,7 @@ try {
     "a fresh generated-artifact failure dropped its latest mutable producer or retained an explicitly immutable input"
   );
   failedAfterProducerState.meta.failedTestRecoveryPacket = {
-    packetVersion: 17,
+    packetVersion: 18,
     content: failedAfterProducerPacket.content,
     paths: failedAfterProducerPacket.paths,
     repairPaths: failedAfterProducerPacket.repairPaths,
@@ -9367,6 +9368,7 @@ try {
       taskProfile: "slides",
       commandCwd: workspace,
       goal: failedAfterProducerState.goal,
+      readOnlyRoots: [generatedDeckValidatorPath],
     },
     failedAfterProducerState
   );
@@ -9378,10 +9380,8 @@ try {
   assert(
     JSON.stringify(failedAfterProducerRuntime.testFailureDiagnosticReadPaths) ===
       JSON.stringify([generatedDeckValidatorPath]) &&
-      failedAfterProducerRuntime.readOnlyRoots.includes(
-        path.dirname(generatedDeckValidatorPath)
-      ),
-    "an exact external validator from the retained failed command was not exposed through a narrow read-only root"
+      JSON.stringify(failedAfterProducerRuntime.readOnlyRoots) === JSON.stringify([generatedDeckValidatorPath]),
+    "an explicitly selected external validator lost its exact file scope or widened to its parent"
   );
   const consumedExternalValidatorState = structuredClone(failedAfterProducerState);
   consumedExternalValidatorState.meta.toolLoop =
@@ -9403,11 +9403,13 @@ try {
       taskProfile: "slides",
       commandCwd: workspace,
       goal: consumedExternalValidatorState.goal,
+      readOnlyRoots: [generatedDeckValidatorPath],
     },
     consumedExternalValidatorState
   );
   assert(
-    consumedExternalValidatorRuntime.testFailureDiagnosticReadPaths.length === 0,
+    consumedExternalValidatorRuntime.testFailureDiagnosticReadPaths.length === 0 &&
+      JSON.stringify(consumedExternalValidatorRuntime.readOnlyRoots) === JSON.stringify([generatedDeckValidatorPath]),
     "an exact external validator remained exposed after its bounded read completed"
   );
   await fs.mkdir(path.join(workspace, "artifacts"), { recursive: true });
@@ -9462,7 +9464,7 @@ try {
     "manifest lacks STEP/STL/3MF validation evidence",
   ];
   generatedManifestFailureState.meta.failedTestRecoveryPacket = {
-    packetVersion: 17,
+    packetVersion: 18,
     content: "Current source packet for the generated manifest failure.",
     paths: ["build_deck.py"],
     repairPaths: ["build_deck.py"],
@@ -9838,7 +9840,7 @@ try {
     "explicit pass/outcome/measurement evidence was mistaken for semantic drift"
   );
   generatedManifestFailureState.meta.failedTestRecoveryPacket = {
-    packetVersion: 17,
+    packetVersion: 18,
     content: generatedManifestSemanticPacket.content,
     paths: generatedManifestSemanticPacket.paths,
     repairPaths: generatedManifestSemanticPacket.repairPaths,
@@ -12772,8 +12774,8 @@ try {
     "a same-task refresh could not rebuild a missing failed-test evidence packet"
   );
   missingRecoveryPacketState.meta.failedTestRecoveryPacket = {
-    packetVersion: 17,
-    content: "Bounded failed-test evidence packet v17.",
+    packetVersion: 18,
+    content: "Bounded failed-test evidence packet v18.",
     mutationRevision: 6,
     failureSignature: "same-failure",
   };
@@ -13506,7 +13508,7 @@ try {
     },
   };
   const sourceEvidencePacket = await buildFailedTestRecoveryPacket(
-    { commandCwd: workspace },
+    { commandCwd: workspace, readOnlyRoots: [validatorPath] },
     sourceEvidenceState
   );
   assert(
@@ -13569,7 +13571,7 @@ try {
     },
   };
   const aliasedOrderPacket = await buildFailedTestRecoveryPacket(
-    { commandCwd: workspace },
+    { commandCwd: workspace, readOnlyRoots: [aliasedValidatorPath] },
     aliasedOrderState
   );
   const aliasedOrderFocus = aliasedOrderState.meta.failedTestDiagnostic?.focuses?.find(
@@ -13631,7 +13633,7 @@ try {
         ],
       },
       failedTestDiagnostic: {
-        packetVersion: 17,
+        packetVersion: 18,
         mutationRevision: 0,
         failureSignature: "partial-derived-order",
         focuses: [
@@ -14996,7 +14998,7 @@ try {
         ],
       },
       failedTestRecoveryPacket: {
-        packetVersion: 17,
+        packetVersion: 18,
         content: "bounded packet",
         paths: [ownedTestPath, ownedProductionPath],
         repairPaths: [ownedProductionPath],
@@ -17095,7 +17097,7 @@ Do not prefix, suffix, wrap, redirect, pipe, or combine that validator command.`
         },
       },
       failedTestRecoveryPacket: {
-        packetVersion: 17,
+        packetVersion: 18,
         content: "Fresh exact failure-scoped source and artifact evidence.",
         command: stagnantValidatorCommand,
         failureSignature: "unchanged-validator-diagnostic",

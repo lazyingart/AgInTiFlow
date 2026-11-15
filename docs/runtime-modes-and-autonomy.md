@@ -329,3 +329,22 @@ secret redaction and a persisted native SCS tool loop with one producer executio
 `npm run test:output-clause-boundary` checks output requests and negative cases.
 These tests use local fixtures; they do not establish model quality or application
 sandbox readiness.
+# Failed-test repair context
+
+Automatic repair context uses the same canonical workspace read checks as
+`read_file`, including selected read-only roots, secret-path exclusions,
+file-tool permission, byte limits and strict text decoding. A failed command
+does not grant access to an external validator or its parent directory. Explicit
+validator-source exclusions also apply to automatic context. Sensitive content
+is redacted; redacted snippets cannot serve as exact patch anchors. Obsolete
+automatic repair packets are discarded when a session resumes.
+
+A request to create a named missing file can reach creation before a possible
+future repair clause. An observed test or source-quality failure still requires
+repair and verification. Native host commands set `PYTHONDONTWRITEBYTECODE=1`
+to avoid creating stale timestamp-based caches during rapid Python edit/test
+loops. Existing caches and Python modes that ignore environment variables are
+outside that guarantee.
+
+These checks enforce path policy using current filesystem observations. They do
+not provide retained-descriptor isolation against hostile same-user mutations.

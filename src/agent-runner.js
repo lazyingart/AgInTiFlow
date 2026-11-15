@@ -272,7 +272,7 @@ const CONSTRAINED_SOURCE_MUTATION_OUTPUT_TOKEN_CAP = 8192;
 const MALFORMED_TOOL_RESPONSE_RETRY_OUTPUT_TOKEN_CAP = 6144;
 const MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS = 4;
 const FAILED_TEST_EVIDENCE_VERSION = 2;
-const FAILED_TEST_RECOVERY_PACKET_VERSION = 17;
+const FAILED_TEST_RECOVERY_PACKET_VERSION = 18;
 const MAX_FAILED_TEST_CANONICAL_REREADS = 4;
 const PATCH_CONTEXT_REFRESH_VERSION = 1;
 const PATCH_CONTEXT_REPAIR_VERSION = 1;
@@ -3613,9 +3613,18 @@ export function buildMalformedToolResponseRetryMessages(
 }
 
 export function repairModelMessageHistory(state, config = {}) {
+  let retiredRecoveryState = false;
+  for (const key of ["failedTestRecoveryPacket", "failedTestDiagnostic"]) {
+    const value = state?.meta?.[key];
+    if (value !== undefined && Number(value?.packetVersion || 0) !== FAILED_TEST_RECOVERY_PACKET_VERSION) {
+      delete state.meta[key];
+      retiredRecoveryState = true;
+    }
+  }
   if (!Array.isArray(state?.messages)) {
     return {
-      changed: false,
+      changed: retiredRecoveryState,
+      droppedRecoveryMessages: 0,
       droppedAssistantMessages: 0,
       convertedAssistantMessages: 0,
       droppedToolMessages: 0,
@@ -3624,8 +3633,18 @@ export function repairModelMessageHistory(state, config = {}) {
     };
   }
 
-  const messages = state.messages.map(redactRetainedModelMessage);
-  const redactedHistory = messages.some((message, index) => message !== state.messages[index]);
+  const genuineRequests = new Set([
+    config.goal, state.goal,
+    ...(Array.isArray(state.chat) ? state.chat.filter(item => item?.role === "user").map(item => item.content) : []),
+  ].filter(value => typeof value === "string"));
+  const retainedMessages = state.messages.filter(message => {
+    if (message?.role !== "user" || genuineRequests.has(message.content)) return true;
+    const version = String(message.content || "").trim().match(/^Bounded failed-test evidence packet(?: v(\d+))?\./);
+    return !version || Number(version[1] || 0) === FAILED_TEST_RECOVERY_PACKET_VERSION;
+  });
+  const droppedRecoveryMessages = state.messages.length - retainedMessages.length;
+  const messages = retainedMessages.map(redactRetainedModelMessage);
+  const redactedHistory = messages.some((message, index) => message !== retainedMessages[index]);
   const repaired = [];
   let droppedAssistantMessages = 0;
   let convertedAssistantMessages = 0;
@@ -3745,7 +3764,7 @@ export function repairModelMessageHistory(state, config = {}) {
     repaired.push(message);
   }
 
-  const changed = redactedHistory ||
+  const changed = retiredRecoveryState || droppedRecoveryMessages > 0 || redactedHistory ||
     droppedAssistantMessages > 0 ||
     convertedAssistantMessages > 0 ||
     droppedToolMessages > 0 ||
@@ -3758,6 +3777,7 @@ export function repairModelMessageHistory(state, config = {}) {
 
   return {
     changed,
+    droppedRecoveryMessages,
     droppedAssistantMessages,
     convertedAssistantMessages,
     droppedToolMessages,
@@ -7263,6 +7283,9 @@ function safeExecutionEnv() {
     HOME: home,
     LANG: process.env.LANG || "C.UTF-8",
     LC_ALL: process.env.LC_ALL || "C.UTF-8",
+    // Fast edit/test loops must not create timestamp-based workspace bytecode
+    // that can execute the previous same-size source within the same second.
+    PYTHONDONTWRITEBYTECODE: "1",
     ...(process.env.CONDA_PREFIX ? { CONDA_PREFIX: process.env.CONDA_PREFIX } : {}),
     ...(process.env.CONDA_DEFAULT_ENV ? { CONDA_DEFAULT_ENV: process.env.CONDA_DEFAULT_ENV } : {}),
     ...(process.env.VIRTUAL_ENV ? { VIRTUAL_ENV: process.env.VIRTUAL_ENV } : {}),
@@ -8650,7 +8673,24 @@ export function failedTestMembershipPredicates(failureSummary = "") {
   return predicates.slice(0, 8);
 }
 
-async function failedTestTracebackSourceDocuments(testRun = {}, config = {}) {
+async function readFailedTestSourceText(config, inputPath, maxBytes, forbiddenPaths = []) {
+  if (config.allowFileTools === false) return "";
+  try {
+    const target = await resolveWorkspaceReadTarget(config, inputPath);
+    for (const forbidden of forbiddenPaths) {
+      if (target.absolutePath === forbidden) return "";
+      if (await fs.realpath(forbidden).catch(() => "") === target.canonicalPath) return "";
+    }
+    const { buffer } = await target.readBytes(maxBytes);
+    if (buffer.includes(0)) return "";
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
+  } catch {
+    // Diagnostic context never gains more read authority than the native tool.
+    return "";
+  }
+}
+
+async function failedTestTracebackSourceDocuments(testRun = {}, config = {}, forbiddenPaths = []) {
   const summary = String(testRun.failureSummary || "");
   const command = String(testRun.command || "");
   const commandCwd = path.resolve(config.commandCwd || process.cwd());
@@ -8677,9 +8717,7 @@ async function failedTestTracebackSourceDocuments(testRun = {}, config = {}) {
     ) {
       continue;
     }
-    const stat = await fs.stat(absolutePath).catch(() => null);
-    if (!stat?.isFile() || stat.size <= 0 || stat.size > 256000) continue;
-    const raw = await fs.readFile(absolutePath, "utf8").catch(() => "");
+    const raw = await readFailedTestSourceText(config, absolutePath, 256000, forbiddenPaths);
     if (!raw) continue;
     documents.push({ absolutePath, line, raw });
     if (documents.length >= 5) break;
@@ -8687,9 +8725,9 @@ async function failedTestTracebackSourceDocuments(testRun = {}, config = {}) {
   return documents;
 }
 
-async function failedTestTracebackSourceEvidence(testRun = {}, config = {}) {
+function failedTestTracebackSourceEvidence(documents = []) {
   const excerpts = [];
-  for (const document of await failedTestTracebackSourceDocuments(testRun, config)) {
+  for (const document of documents) {
     const lines = redactSensitiveText(document.raw).replace(/\r/g, "").split("\n");
     const line = document.line;
     const start = Math.max(0, line - 9);
@@ -11676,25 +11714,31 @@ export function failedTestExternalDiagnosticReadPaths(
   state = {},
   testRun = null
 ) {
+  if (config.allowFileTools === false) return [];
   const failure = testRun || currentFailedProjectTest(state)?.test;
   const command = String(failure?.command || "").trim();
   if (!command) return [];
   const commandCwd = path.resolve(
     config.commandCwd || state.commandCwd || process.cwd()
   );
+  let canonicalCwd;
+  try { canonicalCwd = fsSync.realpathSync(commandCwd); } catch { return []; }
   const candidates = [];
   for (const token of tokenizeShellWords(command)) {
     const rawPath = String(token || "").replace(/[;,]+$/g, "").trim();
     if (!rawPath || !path.isAbsolute(rawPath)) continue;
     let realPath = "";
+    let target;
     try {
-      realPath = fsSync.realpathSync(rawPath);
+      // A failed command is evidence of a failure, never a grant of file scope.
+      target = resolveWorkspacePath(config, rawPath, { allowReadOnlyRoots: true });
+      realPath = fsSync.realpathSync(target.absolutePath);
       const stat = fsSync.statSync(realPath);
       if (!stat.isFile() || stat.size > 1_000_000) continue;
     } catch {
       continue;
     }
-    const relative = path.relative(commandCwd, realPath);
+    const relative = path.relative(canonicalCwd, realPath);
     if (!relative.startsWith("..") && !path.isAbsolute(relative)) continue;
     const normalized = realPath.replace(/\\/g, "/");
     if (
@@ -11706,11 +11750,11 @@ export function failedTestExternalDiagnosticReadPaths(
           normalized
         )
       ) ||
-      candidates.includes(realPath)
+      candidates.includes(target.absolutePath)
     ) {
       continue;
     }
-    candidates.push(realPath);
+    candidates.push(target.absolutePath);
     if (candidates.length >= 3) break;
   }
   return candidates;
@@ -11797,6 +11841,7 @@ export function failedTestWorkspaceDiagnosticReadPaths(
   state = {},
   testRun = null
 ) {
+  if (config.allowFileTools === false) return [];
   const failure = testRun || currentFailedProjectTest(state)?.test;
   const failureText = [
     failure?.failureSummary,
@@ -11895,7 +11940,8 @@ async function generatedArtifactSemanticGapDiagnostics(
   config = {},
   state = {},
   testRun = {},
-  repairPaths = []
+  repairPaths = [],
+  forbiddenPaths = []
 ) {
   const failureText = [
     testRun.failureSummary,
@@ -11913,7 +11959,6 @@ async function generatedArtifactSemanticGapDiagnostics(
     return [];
   }
 
-  const commandCwd = path.resolve(config.commandCwd || state.commandCwd || process.cwd());
   const validationKeyPattern = /(?:validat|verif|checks?|evidence|inspect|integrity|probe|quality|status)/i;
   const outputKinds = namedGeneratedOutputKinds(failureText);
   const producerPaths = repairPaths
@@ -11925,10 +11970,7 @@ async function generatedArtifactSemanticGapDiagnostics(
 
   for (const relativePath of failedTestWorkspaceDiagnosticReadPaths(config, state, testRun)) {
     if (path.extname(relativePath).toLowerCase() !== ".json") continue;
-    const absolutePath = path.resolve(commandCwd, relativePath);
-    const stat = await fs.stat(absolutePath).catch(() => null);
-    if (!stat?.isFile() || stat.size <= 0 || stat.size > 1_000_000) continue;
-    const raw = await fs.readFile(absolutePath, "utf8").catch(() => "");
+    const raw = await readFailedTestSourceText(config, relativePath, 1_000_000, forbiddenPaths);
     if (!raw) continue;
     let payload;
     try {
@@ -12705,8 +12747,26 @@ async function pythonAgentCreatedTestHarnessPathDefects(
 }
 
 export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
+  if (config.allowFileTools === false) return { content: "", paths: [] };
   const testRun = currentFailedProjectTest(state)?.test;
   if (!testRun) return { content: "", paths: [] };
+  const forbiddenValidatorPaths = [];
+  if (taskForbidsExternalValidatorSourceRead(config, state)) {
+    const cwd = path.resolve(config.commandCwd || state.commandCwd || process.cwd());
+    const canonicalCwd = await fs.realpath(cwd).catch(() => "");
+    const candidates = [
+      ...failedTestExternalDiagnosticReadPaths(config, state, testRun),
+      ...[...String(testRun.failureSummary || "").matchAll(/File\s+"([^"]+)",\s+line\s+\d+/g)]
+        .slice(0, 5).map(match => path.resolve(cwd, match[1])),
+    ];
+    for (const candidate of [...new Set(candidates)].slice(0, 8)) {
+      try {
+        const target = await resolveWorkspaceReadTarget(config, candidate);
+        const relative = path.relative(canonicalCwd, target.canonicalPath);
+        if (!canonicalCwd || relative.startsWith("..") || path.isAbsolute(relative)) forbiddenValidatorPaths.push(target.absolutePath);
+      } catch { /* Unreadable paths cannot become recovery context. */ }
+    }
+  }
   const verification = state.meta?.projectVerification || {};
   const taskContract = deriveScsTaskContract({
     goal: completionContractGoal(config, state),
@@ -12774,7 +12834,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
   const diagnosticFocuses = [];
   const authoritativeTestRestores = [];
   const literalOperands = failedTestLiteralOperands(testRun.failureSummary || "").slice(0, 6);
-  const tracebackSourceDocuments = await failedTestTracebackSourceDocuments(testRun, config);
+  const tracebackSourceDocuments = await failedTestTracebackSourceDocuments(testRun, config, forbiddenValidatorPaths);
   const commandCwd = path.resolve(config.commandCwd || process.cwd());
   const tracebackEvidencePaths = new Set();
   for (const document of [...tracebackSourceDocuments].reverse()) {
@@ -12798,12 +12858,13 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
     )
     .slice(0, 6);
   const membershipPredicates = failedTestMembershipPredicates(testRun.failureSummary || "");
-  const tracebackSourceEvidence = await failedTestTracebackSourceEvidence(testRun, config);
+  const tracebackSourceEvidence = failedTestTracebackSourceEvidence(tracebackSourceDocuments);
   const generatedSemanticDiagnostics = await generatedArtifactSemanticGapDiagnostics(
     config,
     state,
     testRun,
-    mutationRepairPaths
+    mutationRepairPaths,
+    forbiddenValidatorPaths
   );
   let retainedChars = 0;
   const maxChars = 16000;
@@ -12811,15 +12872,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
     const relativePath = queue.shift();
     if (!relativePath || attempted.has(relativePath)) continue;
     attempted.add(relativePath);
-    let target;
-    try {
-      target = resolveWorkspacePath(config, relativePath);
-    } catch {
-      continue;
-    }
-    const stat = await fs.stat(target.absolutePath).catch(() => null);
-    if (!stat?.isFile() || stat.size <= 0 || stat.size > 128000) continue;
-    const raw = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+    const raw = await readFailedTestSourceText(config, relativePath, 128000, forbiddenValidatorPaths);
     if (!raw) continue;
     if (failedTestPathIsTestEvidence(relativePath)) {
       const restoreCandidate = await authoritativeTestRestoreCandidate(
@@ -13339,18 +13392,23 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
     }
   }
   if (excerpts.length === 0) return { content: "", paths: [] };
+  const safeExactRepairEvidence = item => {
+    const serialized = JSON.stringify(item);
+    return redactSensitiveText(serialized) === serialized;
+  };
+  const safeDiagnosticFocuses = diagnosticFocuses.filter(safeExactRepairEvidence);
   state.meta = state.meta || {};
   state.meta.failedTestDiagnostic = {
     packetVersion: FAILED_TEST_RECOVERY_PACKET_VERSION,
     mutationRevision: Math.max(0, Number(testRun.mutationRevision || 0)),
     failureSignature: String(testRun.failureSignature || ""),
     at: new Date().toISOString(),
-    focuses: diagnosticFocuses,
+    focuses: safeDiagnosticFocuses,
   };
   const evidencePaths = [...seen].filter((item) =>
     excerpts.some((excerpt) => excerpt.startsWith(`### ${item}\n`))
   );
-  const diagnosticRepairPaths = diagnosticFocuses
+  const diagnosticRepairPaths = safeDiagnosticFocuses
     .map((focus) => safeRecoveryEvidencePath(focus?.path))
     .filter(Boolean);
   const preferredRepairPaths = [
@@ -13375,9 +13433,9 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
       ? preferredRepairPaths
       : fallbackRepairPaths
     ).slice(0, 6),
-    authoritativeTestRestores: authoritativeTestRestores.slice(0, 4),
-    content: [
-      `Bounded failed-test evidence packet v${FAILED_TEST_RECOVERY_PACKET_VERSION}. These are exact current workspace excerpts selected from the discovered test and its local dependencies. Use them to calculate the producing transformation; do not restart broad discovery.`,
+    authoritativeTestRestores: authoritativeTestRestores.filter(safeExactRepairEvidence).slice(0, 4),
+    content: redactSensitiveText([
+      `Bounded failed-test evidence packet v${FAILED_TEST_RECOVERY_PACKET_VERSION}. These are current workspace excerpts selected from the discovered test and its local dependencies. Sensitive text may be redacted; a redacted snippet is not exact patch authority. Use the evidence to calculate the producing transformation; do not restart broad discovery.`,
       testRun.command ? `Verification command: ${testRun.command}` : "",
       ...mockBehaviorDiagnostics,
       String(testRun.failureSummary || "").slice(0, 1800),
@@ -13388,7 +13446,7 @@ export async function buildFailedTestRecoveryPacket(config = {}, state = {}) {
       ...excerpts,
     ]
       .filter(Boolean)
-      .join("\n\n"),
+      .join("\n\n")),
   };
 }
 
@@ -19885,7 +19943,18 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       return !fsSync.existsSync(target.absolutePath);
     } catch { return false; }
   });
-  const separateSourceDeliverable = pendingCopyBeforeSourceEdit || Boolean(
+  // A future repair clause must not force editing the only existing checker
+  // before an explicitly requested new deliverable can be created. Observed
+  // quality/test failures still retain their independent repair gates below.
+  const pendingNamedOutputCreation = (groundingTaskContract.exactInputPaths || []).every(
+    input => !documentSourceMutationExplicitlyRequested(state, config, input)
+  ) && (groundingTaskContract.exactOutputPaths || []).some(output => {
+    try {
+      const target = resolveWorkspacePath(runtimeConfig, output, { writeAccess: true });
+      return !fsSync.existsSync(target.absolutePath);
+    } catch { return false; }
+  });
+  const separateSourceDeliverable = pendingCopyBeforeSourceEdit || pendingNamedOutputCreation || Boolean(
     groundingTaskContract.exactOutputPaths?.length &&
       groundingTaskContract.exactInputPaths?.length &&
       groundingTaskContract.exactInputPaths.every(
@@ -20488,16 +20557,6 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     ]
       .filter((item, index, items) => items.indexOf(item) === index)
       .slice(0, 4);
-    if (runtimeConfig.testFailureExternalDiagnosticReadPaths.length) {
-      runtimeConfig.readOnlyRoots = [
-        ...(Array.isArray(runtimeConfig.readOnlyRoots)
-          ? runtimeConfig.readOnlyRoots
-          : []),
-        ...runtimeConfig.testFailureExternalDiagnosticReadPaths.map((candidate) =>
-          path.dirname(candidate)
-        ),
-      ].filter((item, index, items) => items.indexOf(item) === index);
-    }
     const currentRecoveryPacket = Boolean(
       state.meta?.failedTestRecoveryPacket &&
         Number(state.meta.failedTestRecoveryPacket.packetVersion || 0) ===

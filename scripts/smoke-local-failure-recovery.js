@@ -707,12 +707,12 @@ const focusedRecoveryState = {
       }],
     },
     failedTestRecoveryPacket: {
-      packetVersion: 17,
+      packetVersion: 18,
       mutationRevision: 4,
       failureSignature: "missing-service-seams",
       paths: ["tests/test_service_ctl.py", "service_ctl.py"],
       content: [
-        "Bounded failed-test evidence packet v17.",
+        "Bounded failed-test evidence packet v18.",
         'with mock.patch.object(service_ctl, "launch_service") as launch:',
         'with mock.patch.object(service_ctl, "wait_until_healthy", return_value=True):',
         "### service_ctl.py",
@@ -756,7 +756,7 @@ assert.match(
   focusedRecoveryText,
   /Required acceptance seams: service_ctl\.launch_service, service_ctl\.wait_until_healthy/
 );
-assert.match(focusedRecoveryText, /Bounded failed-test evidence packet v17/);
+assert.match(focusedRecoveryText, /Bounded failed-test evidence packet v18/);
 assert.match(focusedRecoveryText, /requires one coherent source mutation before verification/i);
 
 const durablePatchArgs = {
