@@ -432,3 +432,5 @@ question and prohibitions while inferring no fresh execution from those past
 references. This supplies no new passing test, source snapshot or artifact proof.
 Mixed requests, current inspection and retained unfinished task requirements
 keep their ordinary evidence gates; unfamiliar phrasing remains conservative.
+In particular, adding a requirement that checks pass is fresh verification work,
+even inside the same question. A historical failure cannot satisfy it.

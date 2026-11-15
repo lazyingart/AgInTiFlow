@@ -2058,16 +2058,16 @@ function isHistoricalDiagnosticQuestion(goal = "") {
   for (const clause of clauses) {
     // Mixed requests keep the ordinary execution/inspection contract. This
     // bounded grammar recognizes past-result questions, never new work.
-    if (/(?:\b(?:and|then|also|now|next|but|please)\s+|[,，:：]\s*)(?:actually\s+)?(?:run|rerun|execute|read|inspect|open|check|verify|validate|search|browse|create|modify|edit|fix|repair|write|build|compile|install|publish|delete|generate)\b/iu.test(clause) ||
+    if (/\b(?:and|then|also|now|next|but|plus|ensure|guarantee|requir(?:e[ds]?|ing)|must|should|needs?|make\s+sure|as\s+well\s+as)\b/iu.test(clause) ||
+        /(?:\bplease\s+|[,，:：]\s*)(?:actually\s+)?(?:run|rerun|execute|read|inspect|open|check|verify|validate|search|browse|create|modify|edit|fix|repair|write|build|compile|install|publish|delete|generate)\b/iu.test(clause) ||
         /(?:然后|然後|接下来|接下來|现在|現在|同时|同時|请|請)(?:帮我|幫我)?(?:运行|運行|重跑|读取|讀取|查看|检查|檢查|验证|驗證|修改|改动|修复|修復|创建|創建|生成|编译|編譯|安装|安裝|发布|發布|删除|刪除)/u.test(clause) ||
         /(?:実行|変更|修正|調査|確認)してください/u.test(clause)) return false;
-    const english = /^(?:(?:please\s+)?(?:explain|tell me)\s+)?(?:why\s+(?:did|was|were)\s+.{1,160}\s+(?:fail(?:ed)?|succeed(?:ed)?|pass(?:ed)?|stop(?:ped)?)|what\s+(?:failed|happened)(?:\s+.{1,160})?)$/iu.test(clause) &&
-      !/\b(?:read|inspect|open|verify|validate|search|browse|create|modify|edit|fix|repair|write|build|compile|install|publish|delete|generate|execute|rerun)\b/iu.test(clause) &&
-      /\b(?:checks?|tests?|commands?|runs?|assertions?|failures?|results?|errors?)\b/iu.test(clause);
+    const subject = "(?:(?:the|a|my|our|this|that|last|previous|prior|earlier|latest|owned|diagnostic|integration|unit|regression)\\s+){0,5}(?:checks?|tests?|commands?|runs?|assertions?|failures?|results?|errors?)";
+    const english = new RegExp("^(?:(?:please\\s+)?(?:explain|tell me)\\s+)?(?:why\\s+(?:did|was|were)\\s+" + subject + "\\s+(?:fail(?:ed)?|succeed(?:ed)?|pass(?:ed)?|stop(?:ped)?)|what\\s+(?:failed|happened)(?:\\s+(?:to|with|in|during)\\s+" + subject + ")?)$", "iu").test(clause);
     const chinese = /^(?:刚才|剛才|之前|先前|上次|上一(?:次|轮|輪))(?:(?:的)?(?:检查|檢查|测试|測試|命令|运行|運行|执行|執行|任务|任務|操作|结果|結果|它))?(?:为什么|為什麼|为何|為何|怎么|怎麼)(?:会|會|又|就)?(?:失败|失敗|出错|出錯|成功|通过|通過|停止)(?:了|的|呢)?$/u.test(clause);
     const japanese = /^(?:先ほど|さっき|前回|直前)(?:の)?(?:チェック|テスト|検証|実行|操作|結果)?(?:は|が)?(?:なぜ|どうして)(?:失敗|成功|停止)(?:した|しました)(?:か|のですか)?$/u.test(clause);
     if (english || chinese || japanese) { explanation = true; continue; }
-    if (/^(?:did|have|had)\s+you\s+(?:chang(?:e|ed)|modify|modified|edit(?:ed)?|touch(?:ed)?|creat(?:e|ed)|delet(?:e|ed)|run|rerun|execut(?:e|ed))\s+.{1,120}$/iu.test(clause) ||
+    if (/^(?:did|have|had)\s+you\s+(?:chang(?:e|ed)|modify|modified|edit(?:ed)?|touch(?:ed)?|creat(?:e|ed)|delet(?:e|ed)|run|rerun|execut(?:e|ed))\s+(?:(?:any|the|these|those|this|that|check|test|source|task|original)\s+){0,5}(?:files?|code|source|checks?|tests?|commands?)$/iu.test(clause) ||
         /^(?:你|您)?(?:有没有|有沒有|是否)(?:改动|改動|修改|编辑|編輯|更改)(?:过|過|了)?(?:任何|这些|這些|那个|那個|这个|這個)?(?:检查|檢查|测试|測試|原始|源)?(?:文件|檔案|源码|源碼|代码|代碼)(?:吗|嗎|呢)?$/u.test(clause) ||
         /^(?:ファイル|ソース|チェック用ファイル)を(?:変更|修正|編集)(?:しましたか|したのですか)$/u.test(clause) ||
         /^(?:再実行せず[、,]\s*)?(?:読み取り専用|読取専用)で(?:答えて|回答して|説明して)ください$/u.test(clause)) continue;
@@ -2082,10 +2082,13 @@ export function hasReadOnlyDiagnosticIntent(goal = "", taskProfile = "") {
   return explicitReadOnly && (isHistoricalDiagnosticQuestion(text) || !goalRequestsWorkspaceMutation(text, taskProfile));
 }
 
+function goalRequiresSuccessfulCheck(goal = "") {
+  if (/\b(?:get|make)\b[^.!?;\n]{0,50}\b(?:tests?|checks?|suite)\b[^.!?;\n]{0,30}\b(?:pass|passing|green|succeed|successful)\b/i.test(stripForbiddenLanguage(goal))) return true;
+  return /\b(?:must|requir(?:e[ds]?|ing)|ensure|guarantee|make\s+sure)\b[^.!?;\n]{0,80}\b(?:pass|passing|green|succeed|successful)\b|\b(?:tests?|checks?|suite)\s+(?:must|should|need(?:s)?\s+to)\s+(?:pass|be\s+green|succeed)\b|(?:必须|必須|务必|務必|确保|確保|保证|保證|需要|必ず)[^。；.!?\n]{0,80}(?:通过|通過|成功|全绿|全綠|合格|パス)|(?:テスト|検証|検査|チェック)[^。\n]{0,60}(?:合格|成功|通過|通る|パス)[^。\n]{0,30}(?:必要|必須)/i.test(stripForbiddenLanguage(goal));
+}
+
 export function isReadOnlyDiagnosticGoal(goal = "", taskProfile = "") {
-  const text = String(goal || "");
-  const mustPass = /\b(?:must|requir(?:e[ds]?|ing)|ensure|make\s+sure)\b[^.!?;\n]{0,80}\b(?:pass|passing|green|succeed|successful)\b|\b(?:tests?|checks?|suite)\s+(?:must|should|need(?:s)?\s+to)\s+(?:pass|be\s+green|succeed)\b|(?:必须|必須|务必|務必|确保|確保|保证|保證|需要|必ず)[^。；.!?\n]{0,80}(?:通过|通過|成功|全绿|全綠|合格|パス)|(?:テスト|検証|検査|チェック)[^。\n]{0,60}(?:合格|成功|通過|通る|パス)[^。\n]{0,30}(?:必要|必須)/i.test(stripForbiddenLanguage(text));
-  return hasReadOnlyDiagnosticIntent(text, taskProfile) && !mustPass;
+  return hasReadOnlyDiagnosticIntent(goal, taskProfile) && !goalRequiresSuccessfulCheck(goal);
 }
 
 export function isCurrentReadOnlyDiagnosticExecution(state = {}, verification = state.meta?.projectVerification || {}) {
@@ -2396,7 +2399,7 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   if (!explanatoryOnly && (directCommandSignal || (validationSignal && codeProfileRequiresCommand(positiveGoal)))) {
     categories.add("command");
   }
-  if (goalRequestsTestExecution(positiveGoal)) {
+  if (goalRequestsTestExecution(positiveGoal) || (goalRequiresSuccessfulCheck(positiveGoal) && /\b(?:tests?|checks?|suite)\b|测试|測試|检查|檢查|テスト|検証|検査|チェック/iu.test(positiveGoal))) {
     categories.add("test");
   }
   if (
@@ -3590,7 +3593,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   // A bounded question about an already observed result is an answer request,
   // not permission to execute the old task again. Keep prohibitions/outcome,
   // but do not turn historical nouns into fresh file/command obligations.
-  const evidenceGoal = isHistoricalDiagnosticQuestion(originalEvidenceGoal) && hasReadOnlyDiagnosticIntent(originalEvidenceGoal, taskProfile)
+  const evidenceGoal = isHistoricalDiagnosticQuestion(originalEvidenceGoal) && isReadOnlyDiagnosticGoal(originalEvidenceGoal, taskProfile)
     ? "" : originalEvidenceGoal;
   const copies = namedCopyIntent(evidenceGoal);
   const positiveEvidenceGoal = stripForbiddenLanguage(normalizeFileCreationIntent(evidenceGoal));

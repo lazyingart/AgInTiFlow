@@ -238,6 +238,8 @@ for (const request of [
   "What is the current status of check.mjs? Do not modify any file.",
   `Why did the last check fail, run \`${command}\` again? Do not modify any file.`,
   "Why did the last check fail fix check.mjs until tests pass? Do not modify unrelated files.",
+  "What happened to the last check, push the branch? Do not modify any file.",
+  "What happened with the last check save summary.md? Do not modify any file.",
 ]) test(`historical wording cannot erase a current action: ${request}`, async t => {
   const f = await fixture(t, request), contract = completionTaskContract(f.config, f.state);
   assert.equal(contract.requiresExternalEvidence, true);
@@ -247,4 +249,22 @@ test("a historical question cannot erase retained unfinished task requirements",
   f.state.meta.goalContract.taskGoal = "Create report.md with the observed results.";
   const contract = completionTaskContract(f.config, f.state);
   assert.equal(contract.requiresExternalEvidence, true); assert.ok(contract.exactOutputPaths.includes("report.md"));
+});
+
+for (const request of [
+  "Why did the last check fail and ensure tests pass? Do not modify any file.",
+  "Why did the last check fail and guarantee tests pass? Do not modify any file.",
+  "Why did the last check fail and get the tests to pass? Do not modify any file.",
+  "Why did the last check fail and tests must pass? Do not modify any file.",
+  "Why did the last check fail? Did you modify any file and ensure tests pass? Do not modify any file.",
+  "Why did the last check fail? Did you change any file, then check the current tests? Do not modify any file.",
+  "刚才为什么失败？必须保证检查全部通过。不要修改文件。",
+  "先ほどのチェックはなぜ失敗しましたか？テストは必ず合格してください。読み取り専用で答えてください。",
+]) test(`mixed historical question preserves fresh evidence obligations: ${request}`, async t => {
+  const f = await fixture(t, request), contract = completionTaskContract(f.config, f.state);
+  assert.equal(contract.requiresExternalEvidence, true);
+  if (!request.includes("then check the current tests")) {
+    assert.equal(contract.readOnlyDiagnostic, false);
+    assert.ok(contract.requiredEvidence.some(item => item.category === "test"));
+  }
 });

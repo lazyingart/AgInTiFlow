@@ -9,9 +9,11 @@ import test from "node:test";
 
 const goal = "Run `node --test check.mjs` once and tell me the result. Do not repair anything or create or modify any file.";
 const failedReport = "The check failed: 1 assertion, expected 2 but observed 1. No task files were changed.";
-for (const scsMode of ["off", "on"]) for (const mode of ["failed-honest", "passed-honest", "failed-false-en", "failed-false-zh", "failed-false-ja", "empty-after-fail", "empty-finish", "handoff", "must-pass-zh", "compound", "compound-empty", "write-after-result", "explain-en", "explain-zh", "explain-ja"]) test(`real native diagnostic outcome: ${mode} (SCS ${scsMode})`, { timeout: 40000 }, async t => {
+for (const scsMode of ["off", "on"]) for (const mode of ["failed-honest", "passed-honest", "failed-false-en", "failed-false-zh", "failed-false-ja", "empty-after-fail", "empty-finish", "handoff", "must-pass-zh", "compound", "compound-empty", "write-after-result", "explain-en", "explain-zh", "explain-ja", "mixed-explanation", "mixed-explanation-guarantee", "mixed-explanation-get"]) test(`real native diagnostic outcome: ${mode} (SCS ${scsMode})`, { timeout: 40000 }, async t => {
   const compound = mode.startsWith("compound"), emptyReply = mode === "empty-after-fail" || mode === "compound-empty";
   const explaining = mode.startsWith("explain-");
+  const mixedExplanation = mode.startsWith("mixed-explanation"), followup = explaining || mixedExplanation;
+  const mixedRequest = "Why did the last check fail and " + (mode.endsWith("-guarantee") ? "guarantee tests pass" : mode.endsWith("-get") ? "get the tests to pass" : "ensure tests pass") + "? Do not modify any file.";
   const explanations = {
     "explain-en": { prompt: "Why did the last check fail? Did you change any file? Do not rerun it or modify any file.", result: "The check failed because the assertion expected 2 but observed 1. No check file was modified or rerun." },
     "explain-zh": { prompt: "刚才为什么失败？有没有改动检查文件？不要重跑，也不要修改文件。", result: "检查失败是因为断言期望2，实际为1。检查文件没有改动，也没有重新运行。" },
@@ -58,7 +60,7 @@ for (const scsMode of ["off", "on"]) for (const mode of ["failed-honest", "passe
   t.after(async () => { server.closeAllConnections(); await new Promise(r => server.close(r)); });
   async function run() {
     const child = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/native-diagnostic-command-outcomes.js", import.meta.url)), root,
-      "http://127.0.0.1:" + server.address().port + "/v1", phase === "start" ? request : explaining ? explanations[mode].prompt : "Please continue from where you stopped.", phase], {
+      "http://127.0.0.1:" + server.address().port + "/v1", phase === "start" ? request : explaining ? explanations[mode].prompt : mixedExplanation ? mixedRequest : "Please continue from where you stopped.", phase], {
       cwd: workspace, env: { PATH: process.env.PATH, HOME: root, LANG: "C.UTF-8", AGINTIFLOW_HOME: root + "/home",
         AGINTIFLOW_HOUSEKEEPING: "0", AGINTIFLOW_NO_AUTO_UPDATE: "1", AGINTIFLOW_NO_WEB_AUTO_START: "1", AGINTIFLOW_NO_AUTH_PROMPT: "1", AGINTI_TEST_SCS_MODE: scsMode,
         ...(process.env.AGINTI_TEST_BASELINE_RUNTIME ? { AGINTI_TEST_BASELINE_RUNTIME: process.env.AGINTI_TEST_BASELINE_RUNTIME } : {}) },
@@ -72,7 +74,7 @@ for (const scsMode of ["off", "on"]) for (const mode of ["failed-honest", "passe
   let result = await run();
   if (mode === "handoff") { assert.equal(result.status, 402); phase = "resume"; result = await run(); }
   let originalDiagnosticState;
-  if (explaining) {
+  if (followup) {
     assert.notEqual(result.result.stopped, true);
     originalDiagnosticState = JSON.parse(await fs.readFile(root + "/sessions/diagnostic-status/state.json", "utf8"));
     assert.equal(originalDiagnosticState.meta.projectVerification.testRuns.at(-1).passed, false);
@@ -94,8 +96,8 @@ for (const scsMode of ["off", "on"]) for (const mode of ["failed-honest", "passe
     assert.notEqual(commands[0].data.diagnosticCommandObserved, true);
     if (testRun) assert.equal(testRun.passed, false);
   } else assert.equal(testRun.passed, mode === "passed-honest");
-  if (mode.startsWith("failed-false") || mode === "must-pass-zh" || mode === "empty-finish" || mode === "write-after-result") {
-    assert.equal(result.result.stopped, true); assert.equal(finishes.length, 0); assert.notEqual(state.meta.goalContract.status, "completed");
+  if (mode.startsWith("failed-false") || mode === "must-pass-zh" || mode === "empty-finish" || mode === "write-after-result" || mixedExplanation) {
+    assert.equal(result.result.stopped, true); assert.equal(finishes.length, mixedExplanation ? 1 : 0); assert.notEqual(state.meta.goalContract.status, "completed");
   } else if (emptyReply) {
     assert.notEqual(result.result.stopped, true); assert.equal(finishes.length, 1); assert.equal(state.meta.goalContract.status, "completed");
     assert.doesNotMatch(result.result.result, /could not verify.*executed/i);
@@ -118,6 +120,11 @@ for (const scsMode of ["off", "on"]) for (const mode of ["failed-honest", "passe
     assert.deepEqual(models.slice(0, 2).map(m => m.model), ["deepseek-v4-flash", "deepseek-v4-flash"]);
     assert.ok(models.length >= 3 && models.length <= 4);
     assert.ok(models.slice(2).every(m => m.model === "deepseek-v4-pro"));
+  }
+  if (mixedExplanation) {
+    assert.equal(state.meta.runtimeConfig.revision, 2); assert.equal(state.meta.goalContract.revision, 2);
+    assert.equal(originalDiagnosticState.meta.projectVerification.testRuns.at(-1).passed, false);
+    assert.equal(state.meta.projectVerification?.testRuns?.length || 0, 0, "A prior failed diagnostic is not fresh pass evidence");
   }
   assert.deepEqual(errors, []); await assert.rejects(fs.stat(root + "/sessions/diagnostic-status/.agent-run.lock"), { code: "ENOENT" });
   assert.ok((await fs.readdir(root + "/sessions/diagnostic-status")).every(name => !name.startsWith(".agent-run.")));
