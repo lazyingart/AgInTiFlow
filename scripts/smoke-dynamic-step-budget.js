@@ -3897,8 +3897,11 @@ try {
       JSON.stringify(["python3 -m unittest discover -s tests -v"]),
     "ordinary operator examples became mandatory acceptance commands"
   );
+  const refreshedAcceptanceWorkspace = path.join(workspace, "refreshed-acceptance");
+  await fs.mkdir(refreshedAcceptanceWorkspace);
+  await fs.writeFile(path.join(refreshedAcceptanceWorkspace, "README.md"), operatorGuideMarkdown);
   const refreshedAcceptanceState = {
-    commandCwd: workspace,
+    commandCwd: refreshedAcceptanceWorkspace,
     meta: {
       projectVerification: {
         requiredOutputs: ["stale-output.txt"],
@@ -3912,13 +3915,8 @@ try {
   };
   recordProjectVerificationOutcome(
     refreshedAcceptanceState,
-    {
-      ok: true,
-      toolName: "read_file",
-      path: "README.md",
-      content: operatorGuideMarkdown,
-    },
-    { commandCwd: workspace, taskProfile: "devops" }
+    await executeWorkspaceTool("read_file", { path: "README.md" }, { commandCwd: refreshedAcceptanceWorkspace, allowFileTools: true }),
+    { commandCwd: refreshedAcceptanceWorkspace, taskProfile: "devops" }
   );
   assert(
     JSON.stringify(refreshedAcceptanceState.meta.projectVerification.requiredCommands) ===

@@ -132,6 +132,44 @@ function offered(f) {
   const config = nextStepRuntimeConfig(f.config, f.state);
   return { config, tools: selectProgressiveTools(tools, { config, goal: f.state.goal, profile: "code", messages: f.state.messages }) };
 }
+for (const mode of ["prefix", "suffix", "byte-preview"]) test(`partial ${mode} read cannot authorize creation before its verifier`, async t => {
+  const f = await fixture(t);
+  const beforeEdits = "First run the check before making any changes.\n";
+  await fs.writeFile(f.file, mode === "suffix" ? beforeEdits + brief : brief + beforeEdits);
+  const read = await executeWorkspaceTool("read_file", { path: "TASK.md", ...(mode === "prefix" ? { lineLimit: brief.split("\n").length - 1 } : mode === "suffix" ? { startLine: 2, lineLimit: 1000 } : {}) }, f.config);
+  if (mode === "byte-preview") { read.content = brief; read.contentTruncated = true; }
+  recordProjectVerificationOutcome(f.state, read, f.config);
+  assert.equal(f.state.meta.projectVerification.acceptanceBySource["TASK.md"].commandsAreFinalVerification, false);
+  assert.deepEqual(offered(f).config.requiredProjectCommandCreationPaths || [], []);
+});
+for (const field of ["startLine", "contentTruncatedByLines", "lineCount", "bytes", "sha256"]) test(`missing ${field} read evidence cannot authorize completion-time ordering`, async t => {
+  const f = await fixture(t), read = await executeWorkspaceTool("read_file", { path: "TASK.md" }, f.config);
+  delete read[field]; recordProjectVerificationOutcome(f.state, read, f.config);
+  assert.equal(f.state.meta.projectVerification.acceptanceBySource["TASK.md"].commandsAreFinalVerification, false);
+  assert.deepEqual(offered(f).config.requiredProjectCommandCreationPaths || [], []);
+});
+test("a read receipt cannot authorize ordering after its source has changed", async t => {
+  const f = await fixture(t), read = await executeWorkspaceTool("read_file", { path: "TASK.md" }, f.config);
+  await fs.appendFile(f.file, "First run the check before making any changes.\n");
+  recordProjectVerificationOutcome(f.state, read, f.config);
+  assert.equal(f.state.meta.projectVerification.acceptanceBySource["TASK.md"].commandsAreFinalVerification, false);
+  assert.deepEqual(offered(f).config.requiredProjectCommandCreationPaths || [], []);
+});
+test("a partial reread cannot erase previously complete output or command obligations", async t => {
+  const f = await fixture(t);
+  await fs.writeFile(f.file, "# Current status\n\n" + brief);
+  recordProjectVerificationOutcome(f.state, await executeWorkspaceTool("read_file", { path: "TASK.md", lineLimit: 1 }, f.config), f.config);
+  assert.deepEqual(f.state.meta.projectVerification.requiredOutputs, ["report.md"]);
+  assert.deepEqual(f.state.meta.projectVerification.requiredCommands, ["node check.mjs"]);
+  assert.equal(f.state.meta.projectVerification.acceptanceBySource["TASK.md"].commandsAreFinalVerification, false);
+});
+for (const mode of ["complete-range", "crlf", "unicode"]) test(`complete ${mode} read still proves final-verification ordering`, async t => {
+  const f = await fixture(t);
+  await fs.writeFile(f.file, mode === "crlf" ? brief.replaceAll("\n", "\r\n") : mode === "unicode" ? "# 项目 — 検証\n" + brief : brief);
+  const read = await executeWorkspaceTool("read_file", { path: "TASK.md", ...(mode === "complete-range" ? { startLine: 1, lineLimit: 1000 } : {}) }, f.config);
+  recordProjectVerificationOutcome(f.state, read, f.config);
+  assert.equal(f.state.meta.projectVerification.acceptanceBySource["TASK.md"].commandsAreFinalVerification, true);
+});
 test("required verification coexists with create-only exact missing outputs", async t => {
   const f = await fixture(t); resume(f); const view = offered(f);
   assert.equal(view.config.requiredProjectCommandPending, true);

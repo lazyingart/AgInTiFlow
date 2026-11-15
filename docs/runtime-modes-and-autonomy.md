@@ -398,3 +398,6 @@ repair, file permissions and final fresh verification remain independently enfor
 For older sessions without an ordering marker, a complete current source may
 establish completion-time ordering only if both retained obligation lists match
 exactly. This observation cannot replace or erase the saved requirements.
+Partial reads retain prior requirements and cannot establish completion-time
+ordering. A complete native read must include its range, byte count and hash,
+and still match the bounded current source before replacing saved requirements.

@@ -9463,6 +9463,26 @@ function acceptanceCommandsAreFinalVerification(content = "") {
   return final && !commandMustPrecedeMutation(text);
 }
 
+function completeProjectAcceptanceRead(result = {}, commandCwd) {
+  // A prefix or suffix may omit a before-edit instruction. Missing metadata is
+  // unknown evidence, never permission to weaken the command-first boundary.
+  if (result.ok !== true || result.startLine !== 1 ||
+      result.contentTruncatedByLines !== false || result.contentTruncated === true ||
+      typeof result.content !== "string" || result.content.includes("\u0000") ||
+      !Number.isSafeInteger(result.lineCount) || result.lineCount < 1 ||
+      result.content.split(/\r?\n/).length !== result.lineCount ||
+      !Number.isSafeInteger(result.bytes) || result.bytes < 1 || result.bytes > 220_000 ||
+      typeof result.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(result.sha256)) return false;
+  try {
+    const { buffer } = resolveWorkspaceReadTargetSync({ commandCwd }, result.path || result.args?.path).readBytes(220_000);
+    if (buffer.length !== result.bytes || buffer.includes(0) || crypto.createHash("sha256").update(buffer).digest("hex") !== result.sha256) return false;
+    const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
+    // Native range reads normalize CRLF; exact-copy reads retain it. Both must
+    // account for every source byte. Redacted/changed/unknown reads stay strict.
+    return result.content === content || result.content === content.replace(/\r\n/g, "\n");
+  } catch { return false; }
+}
+
 function commandMustPrecedeMutation(content = "") {
   return /\b(?:before|prior\s+to)\s+(?:(?:any|all|the|making|creating|writing)\s+)*(?:edits?|changes?|mutations?|modif\w*|creat\w*|writ\w*|touch\w*|patch\w*|delet\w*|remov\w*)\b|\bfirst\s+(?:run|execute|verify|check|test)\b|(?:修改|编辑|写入|创建|删除|変更|編集|作成|削除)[^\n。！？.!?]{0,12}(?:之前|前)|(?:首先|先行|最初に|先に|先)(?:运行|执行|検証|実行|確認)/u.test(String(content).toLowerCase());
 }
@@ -10071,10 +10091,12 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
           readAt: verification.acceptanceReadAt || "",
         };
       }
+      const completeRead = completeProjectAcceptanceRead(toolResult, acceptanceOptions.commandCwd);
+      const previous = acceptanceBySource[sourceKey] || (legacySourceKey === sourceKey ? verification : {});
       acceptanceBySource[sourceKey] = {
-        requiredOutputs: acceptance.requiredOutputs,
-        requiredCommands: acceptance.requiredCommands,
-        commandsAreFinalVerification: acceptanceCommandsAreFinalVerification(toolResult.content),
+        requiredOutputs: completeRead ? acceptance.requiredOutputs : [...new Set([...(previous.requiredOutputs || []), ...acceptance.requiredOutputs])].slice(0, 64),
+        requiredCommands: completeRead ? acceptance.requiredCommands : [...new Set([...(previous.requiredCommands || []), ...acceptance.requiredCommands])].slice(0, 64),
+        commandsAreFinalVerification: completeRead && acceptanceCommandsAreFinalVerification(toolResult.content),
         readAt: now,
       };
       verification.acceptanceBySource = Object.fromEntries(
