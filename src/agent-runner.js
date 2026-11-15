@@ -31043,11 +31043,13 @@ function preInferenceFailureDetail(error, config) {
 }
 
 async function recordPreInferenceFailure({ error, config, state, store, observers, sessionId }) {
+  // These notifications claim a saved outcome. A failed state/event write must
+  // surface before delivery, including when the original reason was an abort.
   if (isAbortError(error, config)) {
     state.updatedAt = new Date().toISOString();
     updateGoalStatus(state, "paused", "user_interrupt_preflight", state.updatedAt);
-    await store.saveState(state).catch(() => {});
-    await store.appendEvent("session.stopped", { reason: "user_interrupt", stage: "preflight" }).catch(() => {});
+    await store.saveState(state);
+    await store.appendEvent("session.stopped", { reason: "user_interrupt", stage: "preflight" });
     observers.event("session.stopped", { reason: "user_interrupt", stage: "preflight", sessionId });
     return;
   }
@@ -31063,8 +31065,8 @@ async function recordPreInferenceFailure({ error, config, state, store, observer
   updateGoalStatus(state, "failed", detail.reason || "provider_preflight_failed", state.updatedAt);
   state.messages.push({ role: "assistant", content: result });
   appendChatEntry(state, "assistant", result);
-  await store.saveState(state).catch(() => {});
-  await store.appendEvent("session.failed", detail).catch(() => {});
+  await store.saveState(state);
+  await store.appendEvent("session.failed", detail);
   observers.event("session.failed", { ...detail, sessionId });
   emitConsole(config, result, { kind: "error", error: true });
 }
@@ -33747,8 +33749,8 @@ async function runAgentOnceUnlocked(config) {
       state.stepsCompleted = state.stepsCompleted || 0;
       state.updatedAt = new Date().toISOString();
       updateGoalStatus(state, "failed", "model_timeout", state.updatedAt);
-      await store.saveState(state).catch(() => {});
-      await store.appendEvent("session.failed", detail).catch(() => {});
+      await store.saveState(state);
+      await store.appendEvent("session.failed", detail);
       observers.event("session.failed", {
         ...detail,
         sessionId,
@@ -33778,7 +33780,8 @@ async function runAgentOnceUnlocked(config) {
     state.stepsCompleted = state.stepsCompleted || 0;
     state.updatedAt = new Date().toISOString();
     updateGoalStatus(state, "paused", "user_interrupt", state.updatedAt);
-    await store.saveState(state).catch(() => {});
+    // Do not acknowledge a paused session when its durable save failed.
+    await store.saveState(state);
     await store.appendEvent("session.stopped", {
       reason: "user_interrupt",
     });

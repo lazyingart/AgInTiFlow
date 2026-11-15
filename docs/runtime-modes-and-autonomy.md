@@ -244,6 +244,13 @@ Once completion persistence is admitted, its I/O establishes the durable
 outcome. A later cancellation does not retract a durably confirmed completion
 or undo its file changes. Delivery interruptions retain that saved outcome.
 
+Stopped notifications and saved-state messages require successful state and event
+writes. If saving a pause or anticipated provider failure fails, the invocation
+surfaces that storage error before emitting its stopped/failed notification or
+returning a saved outcome. A rename that succeeded before a later I/O error may
+already have persisted state; inspect the saved session before explicitly resuming.
+Confirmed tool effects are retained, and no storage failure triggers a retry of them.
+
 ## Provider quota interruptions
 
 The native runtime treats HTTP402 and explicit HTTP429 quota/billing codes as
