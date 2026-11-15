@@ -184,7 +184,8 @@ import {
   inferSuccessfulGitActionsFromCommandResult,
   inferSuccessfulGitActionsFromTmuxCapture,
   isResponseOnlyEvidenceScope,
-  isReadOnlyDiagnosticGoal,
+  isCurrentReadOnlyDiagnosticExecution,
+  hasReadOnlyDiagnosticIntent,
   successfulGitCommitProvesFileMutation,
   isObservationalGitAction,
   gitActionsSatisfyContract,
@@ -3372,7 +3373,9 @@ export function buildKnownConstrainedPhasePlan(
         ? [
             `1. Run the exact user-requested project command now: ${command}`,
             "2. Do not substitute a nearby test or repeat Git operations.",
-            "3. If it passes, continue from retained evidence; if it fails, repair only from its concrete diagnostics.",
+            runtimeConfig.readOnlyDiagnosticIntent
+              ? "3. Keep the workspace read-only. Report each observed exit status; do not repair or repeat completed checks. An explicitly required pass remains an unmet condition if the check fails."
+              : "3. If it passes, continue from retained evidence; if it fails, repair only from its concrete diagnostics.",
           ].join("\n")
         : verificationPending
           ? [
@@ -4541,7 +4544,7 @@ async function maybeExtendStepBudget({ client, config, state, store, observers, 
         const pendingCommands = effectiveRequiredProjectCommands(state, verification, config).filter(
           (command) =>
             !(verification.commandRuns || []).some((run) =>
-              requiredCommandRunIsCurrent(verification, command, run, config)
+              requiredCommandRunIsCurrent(verification, command, run, config, state)
             )
         );
         const testsCurrent = (verification.testRuns || []).some(
@@ -9903,21 +9906,27 @@ function requiredCommandRunIsCurrent(
   verification = {},
   requiredCommand = "",
   run = {},
-  config = {}
+  config = {},
+  state = {}
 ) {
   const authoritativeRoutineEvidence = runHasAuthoritativeRoutineEvidence(
     run,
     requiredCommand,
     config
   );
-  if (!run?.ok && !authoritativeRoutineEvidence) return false;
+  const diagnosticObservation = currentWorkIsReadOnlyDiagnostic(state) &&
+    run?.diagnosticCommandObserved === true &&
+    run.diagnosticGoalRevision === state.meta?.activeExecutionContract?.revision &&
+    Number.isSafeInteger(run.diagnosticExitCode) && run.diagnosticExitCode > 0 && run.diagnosticExitCode <= 255 &&
+    ![126, 127].includes(run.diagnosticExitCode);
+  if (!run?.ok && !authoritativeRoutineEvidence && !diagnosticObservation) return false;
   const required = normalizeProjectCommand(requiredCommand);
   const observed = normalizeProjectCommand(run.command || "");
   const boundRequired = normalizeProjectCommand(run.requiredProjectCommand || "");
   if (
     Object.prototype.hasOwnProperty.call(run, "explicitExitStatus") &&
     run.explicitExitStatus !== 0 &&
-    !authoritativeRoutineEvidence
+    !authoritativeRoutineEvidence && !diagnosticObservation
   ) {
     return false;
   }
@@ -10536,6 +10545,17 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       toolResult.repositoryStateInspection = verification.repositoryStateInspection;
       toolResult.repositoryStateObservedPaths = entries.map((entry) => entry.path);
     }
+    const diagnosticExitCode = exitProbe.present ? exitProbe.status : toolResult.exitCode;
+    const diagnosticCommandObserved = Boolean(
+      requiredCommand && !commandSucceeded && !authoritativeRoutineObserved && currentWorkIsReadOnlyDiagnostic(state, verification) &&
+      !projectContentMutation && !commandReportsInvalidTestInvocation(toolResult) &&
+      Number.isSafeInteger(diagnosticExitCode) && diagnosticExitCode > 0 && diagnosticExitCode <= 255 &&
+      ![126, 127].includes(diagnosticExitCode) &&
+      (toolResult.signal === undefined || toolResult.signal === null) &&
+      ['blocked', 'skipped', 'timedOut', 'cancelled', 'aborted', 'terminationUnproven'].every(key =>
+        toolResult[key] === undefined || toolResult[key] === false) && !config.abortSignal?.aborted &&
+      verification.privateMutationRevision === 0
+    );
     const run = {
       command,
       at: now,
@@ -10546,6 +10566,10 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       ...(requiredCommand ? { requiredProjectCommand: requiredCommand } : {}),
       ...(exitProbe.present ? { explicitExitStatus: exitProbe.status } : {}),
       ...(generatedArtifactProducer ? { generatedArtifactProducer } : {}),
+      ...(diagnosticCommandObserved ? {
+        diagnosticCommandObserved: true, diagnosticExitCode,
+        diagnosticGoalRevision: activeExecutionContract.revision,
+      } : {}),
       ...(authoritativeRoutineObserved
         ? {
             authoritativeReadOnlyRoutine: true,
@@ -10618,7 +10642,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
           state.meta.generatedArtifactProducerFailure;
       }
     }
-    if (requiredCommand && (commandSucceeded || authoritativeRoutineObserved)) {
+    if (requiredCommand && (commandSucceeded || authoritativeRoutineObserved || diagnosticCommandObserved)) {
       if (!requiredBatch && requiredMutatingCommands.length === 0) {
         requiredBatch = startRequiredCommandBatch(verification, requiredCommands, {
           goalRevision: state.meta?.goalContract?.revision || 0,
@@ -10642,6 +10666,10 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     }
     verification.commandRuns = [...verification.commandRuns, run].slice(-40);
     toolResult.projectMutationRevision = verification.mutationRevision;
+    if (diagnosticCommandObserved) {
+      toolResult.diagnosticCommandObserved = true;
+      toolResult.diagnosticExitCode = diagnosticExitCode;
+    }
     if (run.requiredCommandBatchId) {
       toolResult.requiredCommandBatchId = run.requiredCommandBatchId;
     }
@@ -10774,17 +10802,8 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
   return verification;
 }
 
-function currentWorkIsReadOnlyDiagnostic(state = {}) {
-  const active = state.meta?.activeExecutionContract || {};
-  const verification = state.meta?.projectVerification || {};
-  return Boolean(
-    Number.isSafeInteger(active.revision) && active.revision > 0 && active.revision === state.meta?.goalContract?.revision &&
-    Number.isSafeInteger(active.startedMutationRevision) &&
-    Number.isSafeInteger(verification.mutationRevision) && verification.mutationRevision === active.startedMutationRevision &&
-    verification.privateMutationRevision === 0 &&
-    active.requiresWorkspaceMutation === false &&
-    isReadOnlyDiagnosticGoal(state.meta?.goalContract?.currentRequest || state.goal || "", verification.taskProfile || "auto")
-  );
+function currentWorkIsReadOnlyDiagnostic(state = {}, verification = state.meta?.projectVerification || {}) {
+  return isCurrentReadOnlyDiagnosticExecution(state, verification);
 }
 
 function currentFailedProjectTest(state = {}) {
@@ -20027,6 +20046,10 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const runtimeConfig = applyLocalContextOutputAdaptation(
     {
       ...applyLocalFailureRecovery(config, state),
+      readOnlyDiagnosticIntent: hasReadOnlyDiagnosticIntent(
+        state.meta?.goalContract?.activeGoal || state.goal || config.goal || "",
+        config.taskProfile || state.meta?.taskProfile || "auto"
+      ),
       ...(retainedDataDiscoveryReady ? { dataProjectDiscoveryReady: true } : {}),
       ...(currentWorkHasCompletedDeepResearch(state, config)
         ? { deepResearchCompletedForCurrentWork: true }
@@ -26144,7 +26167,7 @@ function projectVerificationDeficits(state = {}, config = {}) {
     .filter(
       (command) =>
         !(verification.commandRuns || []).some((run) =>
-          requiredCommandRunIsCurrent(verification, command, run, config)
+          requiredCommandRunIsCurrent(verification, command, run, config, state)
         )
     )
     .filter((command) => {
@@ -27233,7 +27256,12 @@ async function completionEvidenceDecisionInner({ config, state, store, observers
   // narrative must not become successful merely because SCS is active.
   await revalidateProjectTestEvidence({ state, config, store, observers });
   let assessment = await evaluateCompletionEvidence({ config, state, store });
-  const projectTestBlock = projectTestVerificationFinishBlock(state, candidateResult);
+  // Empty assistant output is handled by the bounded empty-response repair and
+  // verified fallback below. It is not a claim that a failed diagnostic passed.
+  // An explicit empty finish call still has to satisfy the report contract.
+  const deferEmptyDiagnosticReport = mode === "assistant-content" &&
+    typeof candidateResult === "string" && !candidateResult.trim() && currentWorkIsReadOnlyDiagnostic(state);
+  const projectTestBlock = projectTestVerificationFinishBlock(state, deferEmptyDiagnosticReport ? undefined : candidateResult);
   if (projectTestBlock) {
     assessment = {
       ...assessment,
@@ -28097,6 +28125,18 @@ function completionCommandOutputRecords(scoped = {}) {
 
 function verifiedCompletionFallback(assessment = {}, state = {}) {
   const contract = assessment.contract || {};
+  let diagnosticSummary = "";
+  if (assessment.ok && currentWorkIsReadOnlyDiagnostic(state)) {
+    const verification = state.meta.projectVerification || {};
+    const commands = normalizedRequiredProjectCommands(contract.requiredProjectCommands || []);
+    const observations = commands.map(command => [...(verification.commandRuns || [])].reverse().find(run =>
+      requiredCommandRunIsCurrent(verification, command, run, {}, state)));
+    if (observations.length && observations.every(Boolean) && observations.some(run => run.diagnosticCommandObserved === true)) {
+      diagnosticSummary = observations.map(run => run.diagnosticCommandObserved === true
+        ? `Observed diagnostic failure: ${publicCompletionText(run.command, 240)} exited with code ${run.diagnosticExitCode}.`
+        : `Observed command completion: ${publicCompletionText(run.command, 240)}.`).join(" ") + " No repair was performed.";
+    }
+  }
   const handoff = launchOnlyHandoffReceipt(state);
   if (assessment.ok && handoff) return deferredJobLaunchSummary(handoff);
   const nativeResearch = retainedReadOnlyResearchAnswer({ goal: contract.outcome || state.goal || "" }, state);
@@ -28119,6 +28159,7 @@ function verifiedCompletionFallback(assessment = {}, state = {}) {
         `Command output: ${publicCompletionText(preferredOutput.output, 600)}.`
     : "";
   return [
+    diagnosticSummary,
     outputSummary,
     "Verified from runtime evidence.",
     paths.length ? `Verified output: ${paths.join(", ")}.` : "",

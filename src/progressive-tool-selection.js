@@ -2307,7 +2307,8 @@ export function selectProgressiveTools(
   { config = {}, goal = "", profile = "", messages = [] } = {}
 ) {
   const validated = validatedUniqueTools(tools);
-  const baselineEnabled = validated.filter(({ name }) => !toolIsDisabled(name, config));
+  const baselineEnabled = validated.filter(({ name }) => !toolIsDisabled(name, config) &&
+    !(config.readOnlyDiagnosticIntent === true && ["write_file", "apply_patch"].includes(name)));
   const enabled = baselineEnabled.filter(
     ({ name }) => !toolIsConvergenceSuppressed(name, config)
   );

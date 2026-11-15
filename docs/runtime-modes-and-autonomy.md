@@ -401,3 +401,20 @@ exactly. This observation cannot replace or erase the saved requirements.
 Partial reads retain prior requirements and cannot establish completion-time
 ordering. A complete native read must include its range, byte count and hash,
 and still match the bounded current source before replacing saved requirements.
+
+An explicit read-only diagnostic request can complete by reporting a closed
+nonzero command outcome. That observation remains a failed check; it never
+becomes a passing test or a completed repair. Explicit pass requirements still
+need success. The runtime hides direct file writers for a read-only diagnostic
+intent and tells the model to report results rather than repair unrequested work.
+This does not sandbox arbitrary host commands or prove that a requested program
+had no side effects.
+
+Checkpoint continuation preserves the same diagnostic execution epoch only with
+complete task and active-goal lineage. A concrete rerun, repair, new task or
+observed file edit requires new evidence. Conservative command revisions from
+exact requested diagnostics need their own digest-bound native receipts; missing
+or unknown history cannot be used. If a provider returns no answer after the
+bounded empty-response repair, the verified fallback can report the recorded
+diagnostic exits without claiming that failed checks passed. No provider switch
+or additional model call is introduced by that fallback.

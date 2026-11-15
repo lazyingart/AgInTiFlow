@@ -2049,11 +2049,71 @@ function goalRequestsFileMutation(goal = "", taskProfile = "") {
   );
 }
 
+export function hasReadOnlyDiagnosticIntent(goal = "", taskProfile = "") {
+  const text = String(goal || "");
+  const explicitReadOnly = /\bread[- ]only\b|\breview\s+only\b|\b(?:do not|don't|without)\b[^.!?;\n]{0,100}\b(?:chang(?:e|ing)|modif(?:y|ying)|edit(?:ing)?|writ(?:e|ing))\b[^.!?;\n]{0,50}\b(?:any\s+)?files?\b|只读|只讀|(?:不要|请勿|請勿)[^。；\n]{0,60}(?:修改|编辑|編輯)(?:文件|檔案)|読み取り専用|読取専用/i.test(text);
+  return explicitReadOnly && !goalRequestsWorkspaceMutation(text, taskProfile);
+}
+
 export function isReadOnlyDiagnosticGoal(goal = "", taskProfile = "") {
   const text = String(goal || "");
-  const explicitReadOnly = /\bread[- ]only\b|\breview\s+only\b|\b(?:do not|don't|without)\b[^.!?;\n]{0,100}\b(?:chang(?:e|ing)|modif(?:y|ying)|edit(?:ing)?|writ(?:e|ing))\b[^.!?;\n]{0,50}\b(?:any\s+)?files?\b|只读|只讀|(?:不要|请勿|請勿)[^。；\n]{0,60}(?:修改|编辑|編輯)(?:文件|檔案)/i.test(text);
-  const mustPass = /\b(?:must|require|ensure)\b[^.!?;\n]{0,80}\b(?:pass|green)\b|\b(?:tests?|suite)\s+must\s+pass\b|必须[^。；\n]{0,40}测试[^。；\n]{0,30}通过|必須[^。；\n]{0,40}測試[^。；\n]{0,30}通過/i.test(stripForbiddenLanguage(text));
-  return explicitReadOnly && !mustPass && !goalRequestsWorkspaceMutation(text, taskProfile);
+  const mustPass = /\b(?:must|requir(?:e[ds]?|ing)|ensure|make\s+sure)\b[^.!?;\n]{0,80}\b(?:pass|passing|green|succeed|successful)\b|\b(?:tests?|checks?|suite)\s+(?:must|should|need(?:s)?\s+to)\s+(?:pass|be\s+green|succeed)\b|(?:必须|必須|务必|務必|确保|確保|保证|保證|需要|必ず)[^。；.!?\n]{0,80}(?:通过|通過|成功|全绿|全綠|合格|パス)|(?:テスト|検証|検査|チェック)[^。\n]{0,60}(?:合格|成功|通過|通る|パス)[^。\n]{0,30}(?:必要|必須)/i.test(stripForbiddenLanguage(text));
+  return hasReadOnlyDiagnosticIntent(text, taskProfile) && !mustPass;
+}
+
+export function isCurrentReadOnlyDiagnosticExecution(state = {}, verification = state.meta?.projectVerification || {}) {
+  const goal = state.meta?.goalContract || {}, active = state.meta?.activeExecutionContract || {};
+  if (!Number.isSafeInteger(goal.revision) || !Number.isSafeInteger(active.revision) ||
+      active.revision < 1 || active.revision > goal.revision ||
+      (Number.isSafeInteger(goal.taskBoundaryRevision) && active.revision < goal.taskBoundaryRevision) ||
+      (Object.hasOwn(goal, 'activeGoalRevision') && goal.activeGoalRevision !== active.revision) ||
+      !Number.isSafeInteger(active.startedMutationRevision) || !Number.isSafeInteger(verification.mutationRevision) ||
+      verification.mutationRevision < active.startedMutationRevision || verification.privateMutationRevision !== 0 ||
+      active.requiresWorkspaceMutation !== false || active.requiresFileMutation === true) return false;
+  const activeGoal = String(goal.activeGoal || state.goal || goal.taskGoal || goal.currentRequest || '').trim();
+  if (!isReadOnlyDiagnosticGoal(activeGoal, verification.taskProfile || state.meta?.taskProfile || 'auto')) return false;
+  const digest = s => crypto.createHash('sha256').update(s).digest('hex');
+  const taskHash = digest(String(goal.taskGoal || state.goal || '').trim()), activeHash = digest(activeGoal);
+  // A requested diagnostic may advance the conservative command revision even
+  // when no task-file edit was observed. Admit only its exact native receipt;
+  // never ignore a file edit, an unknown command, or a missing mutation row.
+  // This is execution-intent continuity, not an OS read-only sandbox guarantee.
+  const mutations = Array.isArray(verification.mutationHistory) ? verification.mutationHistory : [];
+  if (verification.mutationRevision - active.startedMutationRevision > mutations.length) return false;
+  const requested = new Set((active.requiredProjectCommands || []).map(normalizeProjectCommand));
+  for (let revision = active.startedMutationRevision + 1; revision <= verification.mutationRevision; revision++) {
+    const entries = mutations.filter(m => m?.revision === revision);
+    if (entries.length !== 1) return false;
+    const mutation = entries[0];
+    if (mutation.toolName !== 'run_command' || !Array.isArray(mutation.paths) || mutation.paths.length ||
+        !Number.isSafeInteger(mutation.goalRevision) || mutation.goalRevision < active.revision ||
+        mutation.goalRevision > goal.revision || mutation.taskHash !== taskHash) return false;
+    const runs = (verification.commandRuns || []).filter(run => run?.mutationRevision === revision && run.at === mutation.at &&
+      run.ok === true && requested.has(normalizeProjectCommand(run.requiredProjectCommand || '')));
+    if (runs.length !== 1 || runs[0].nativeResultCheckpoint?.schemaVersion !== 2 ||
+        runs[0].nativeResultCheckpoint.taskHash !== taskHash ||
+        runs[0].nativeResultCheckpoint.runSha256 !== nativeCommandVerificationDigest(runs[0])) return false;
+    const checkpoint = runs[0].nativeResultCheckpoint;
+    if (typeof checkpoint.resultJson !== 'string' || !checkpoint.resultJson.isWellFormed() ||
+        Buffer.byteLength(checkpoint.resultJson, 'utf8') > 131072 || digest(checkpoint.resultJson) !== checkpoint.resultSha256) return false;
+    try {
+      const result = JSON.parse(checkpoint.resultJson);
+      if (result.toolName !== 'run_command' || result.ok !== true || result.goalRevision !== mutation.goalRevision ||
+          result.projectMutationRevision !== revision || !Number.isSafeInteger(result.exitCode) ||
+          JSON.stringify(boundedNativeCommandCheckpointResult({ ...result, commandPolicy: { noMatchExitIsSuccess: result.noMatchExitIsSuccess } })) !== checkpoint.resultJson) return false;
+    } catch { return false; }
+  }
+  if (active.revision === goal.revision) return true;
+  // A checkpoint resumes the same execution epoch. A concrete new request,
+  // missing lineage, or a different task must not inherit this observation.
+  const history = Array.isArray(goal.history) ? goal.history : [];
+  if (goal.revision - active.revision > history.length) return false;
+  for (let revision = active.revision + 1; revision <= goal.revision; revision++) {
+    const entries = history.filter(entry => entry?.revision === revision);
+    if (entries.length !== 1 || entries[0].kind !== 'same-task-continuation' || entries[0].relation !== 'same-task' ||
+        entries[0].refreshExecutionContract !== false || entries[0].taskHash !== taskHash || entries[0].activeHash !== activeHash) return false;
+  }
+  return true;
 }
 
 function goalRequestsScopedArtifactDeliverable(goal = "") {
@@ -6110,12 +6170,15 @@ export function boundedNativeCommandCheckpointResult(result) {
     authoritativeRoutineObserved: result.authoritativeRoutineObserved === true,
     authoritativeRoutineId: text(result.authoritativeRoutineId, 128),
     authoritativeRoutineOutcome: text(result.authoritativeRoutineOutcome, 32),
+    ...(result.diagnosticCommandObserved === true ? {
+      diagnosticCommandObserved: true, diagnosticExitCode: result.diagnosticExitCode,
+    } : {}),
     projectTest: result.projectTest ? { passed: result.projectTest.passed === true,
       mutationRevision: result.projectTest.mutationRevision } : null,
   };
 }
 
-function checkpointedCommandEvidence(state, existing) {
+function checkpointedCommandEvidence(state, existing, context = {}) {
   const goal = state.meta?.goalContract || {}, task = String(goal.taskGoal || state.goal || "").trim();
   if (!task || !Number.isSafeInteger(goal.revision) || !Number.isSafeInteger(goal.taskBoundaryRevision) ||
       goal.taskBoundaryRevision < 1 || goal.taskBoundaryRevision > goal.revision) return [];
@@ -6157,9 +6220,18 @@ function checkpointedCommandEvidence(state, existing) {
         payload.goalRevision > goal.revision) continue;
     const routineObserved = payload.authoritativeReadOnlyRoutine === true && payload.authoritativeRoutineObserved === true &&
       run.authoritativeReadOnlyRoutine === true && run.authoritativeRoutineObserved === true;
+    const active = state.meta?.activeExecutionContract || {};
+    const diagnosticObserved = context.readOnlyDiagnostic === true && isCurrentReadOnlyDiagnosticExecution(state) && payload.diagnosticCommandObserved === true &&
+      run.diagnosticCommandObserved === true && run.diagnosticGoalRevision === active.revision &&
+      payload.goalRevision >= active.revision && payload.goalRevision <= goal.revision && run.mutationRevision === state.meta.projectVerification.mutationRevision &&
+      run.privateMutationRevision === 0 && Number.isSafeInteger(payload.diagnosticExitCode) &&
+      payload.diagnosticExitCode > 0 && payload.diagnosticExitCode <= 255 &&
+      ![126, 127].includes(payload.diagnosticExitCode) &&
+      payload.diagnosticExitCode === run.diagnosticExitCode &&
+      payload.diagnosticExitCode === (Object.hasOwn(run, 'explicitExitStatus') ? run.explicitExitStatus : payload.exitCode);
     const noMatch = payload.noMatch === true && payload.semanticOutcome === "no-match" &&
       payload.noMatchExitIsSuccess === true && payload.exitCode === 1 && !payload.stdout && !payload.stderr;
-    if ((!payload.ok && !routineObserved) || (payload.exitCode !== 0 && !noMatch && !routineObserved) ||
+    if ((!payload.ok && !routineObserved && !diagnosticObserved) || (payload.exitCode !== 0 && !noMatch && !routineObserved && !diagnosticObserved) ||
         (payload.projectTest?.passed === true && run.ok !== true)) continue;
     if (payload.projectTest?.passed === true &&
         (payload.projectTest.mutationRevision !== run.mutationRevision ||
@@ -6182,6 +6254,18 @@ function checkpointedCommandEvidence(state, existing) {
       ...(run.requiredProjectCommand ? { requiredProjectCommand: run.requiredProjectCommand } : {}),
       ...(payload.projectTest ? { projectTest: { ...payload.projectTest, command: run.command } } : {}),
     };
+    if (diagnosticObserved) {
+      for (const category of ['command', 'test']) {
+        const item = {
+        category, source: 'native-diagnostic-checkpoint', toolName: 'run_command', command: normalizeProjectCommand(run.command),
+        target: compact(run.command, 260), proof: 'Observed diagnostic failure; not a passing test or repair.',
+        verified: true, diagnosticOnly: true, passed: false, goalRevision: payload.goalRevision,
+        mutationRevision: run.mutationRevision, requiredCommandBatchId: String(run.requiredCommandBatchId || ''),
+        requiredProjectCommand: normalizeProjectCommand(run.requiredProjectCommand || ''),
+        };
+        if (!known.has(key(item))) { known.add(key(item)); evidence.push(item); }
+      }
+    }
     for (const item of toolPayloadToEvidence(observation, "native-command-checkpoint")) {
       if (!["command", "test"].includes(item.category) || known.has(key(item))) continue;
       if (item.category === "command" && Object.prototype.hasOwnProperty.call(item, "explicitExitStatus")) {
@@ -6203,21 +6287,26 @@ export function buildScsEvidenceLedger({ state = {}, context = {}, contract = {}
   const messages = Array.isArray(state.messages) ? state.messages : [];
   const eventEvidence = events.flatMap(eventToEvidence);
   // A diagnostic failure proves an observation, never a passing test or repair.
-  // Only the runtime may opt in after checking the current read-only goal and
-  // unchanged mutation boundary. Keep the distinction in every ledger item.
+  // Only the runtime may opt in after checking the current read-only execution
+  // and its exact authorized command history. Keep each outcome diagnostic-only.
   if (context.readOnlyDiagnostic === true) {
     for (const event of events) {
       const data = event?.data || {};
       const active = state.meta?.activeExecutionContract || {};
       if (event.type !== "tool.completed" || data.toolName !== "run_command" || data.blocked ||
           data.projectTest?.passed !== false || data.projectTest.invalidInvocation === true || !Number.isInteger(data.exitCode) ||
-          data.goalRevision !== active.revision || data.projectMutationRevision !== active.startedMutationRevision ||
+          data.goalRevision < active.revision || data.goalRevision > state.meta?.goalContract?.revision ||
+          data.projectMutationRevision !== (data.diagnosticCommandObserved === true ? state.meta?.projectVerification?.mutationRevision : active.startedMutationRevision) ||
           !(Date.parse(String(event.timestamp || "")) >= Date.parse(String(active.refreshedAt || ""))) ||
           typeof data.args?.command !== "string") continue;
       for (const category of ["command", "test"]) eventEvidence.push({
         category, source: "runtime-diagnostic-observation", toolName: "run_command", target: compact(data.args.command, 260),
         command: normalizeProjectCommand(data.args.command), proof: "Observed failed diagnostic test; not a passing test or completed repair.",
         verified: true, diagnosticOnly: true, passed: false,
+        ...(data.diagnosticCommandObserved === true ? {
+          requiredCommandBatchId: String(data.requiredCommandBatchId || ''),
+          requiredProjectCommand: normalizeProjectCommand(data.requiredProjectCommand || ''),
+        } : {}),
         goalRevision: Math.max(0, Number(data.goalRevision || 0)), mutationRevision: Math.max(0, Number(data.projectMutationRevision || 0)),
       });
     }
@@ -6228,7 +6317,7 @@ export function buildScsEvidenceLedger({ state = {}, context = {}, contract = {}
   // action sequences and fabricate ordered Git completion.
   const hasCompletedToolEvents = events.some((event) => String(event?.type || "") === "tool.completed");
   const messageEvidence = hasCompletedToolEvents ? [] : messages.flatMap(messageToEvidence);
-  const checkpointEvidence = checkpointedCommandEvidence(state, [...eventEvidence, ...messageEvidence]);
+  const checkpointEvidence = checkpointedCommandEvidence(state, [...eventEvidence, ...messageEvidence], context);
   const items = [...eventEvidence, ...messageEvidence, ...checkpointEvidence]
     .slice(-80)
     .map((item) => revalidateArtifactEvidence(item, state, context, contract));
