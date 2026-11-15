@@ -8719,6 +8719,21 @@ async function readFailedTestSourceText(config, inputPath, maxBytes, forbiddenPa
   }
 }
 
+// Native mutation preparation gets no authority beyond the current file reader.
+// Keep a complete bounded snapshot: lossy decoding or a partial source cannot
+// ground an exact patch, a no-op claim, or prospective syntax validation.
+async function readNativeMutationSourceText(config, inputPath) {
+  if (config.allowFileTools === false || isOpaqueBinaryPath(inputPath)) return null;
+  try {
+    const target = await resolveWorkspaceReadTarget(config, inputPath);
+    const { buffer } = await target.readBytes(220_000);
+    if (buffer.includes(0)) return null;
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
+  } catch {
+    return null;
+  }
+}
+
 async function failedTestTracebackSourceDocuments(testRun = {}, config = {}, forbiddenPaths = []) {
   const summary = String(testRun.failureSummary || "");
   const command = String(testRun.command || "");
@@ -14748,7 +14763,7 @@ async function proposedRequiredSymbolSource(state, args = {}, config = {}) {
   } catch {
     return null;
   }
-  const currentContent = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  const currentContent = await readNativeMutationSourceText(config, target.absolutePath);
   if (!currentContent) return null;
 
   if (typeof args.patch === "string" && args.patch.trim()) {
@@ -15026,7 +15041,7 @@ export async function failedTestRepairPatchBlock(state, toolName, args = {}, con
     };
   }
 
-  const content = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  const content = await readNativeMutationSourceText(config, target.absolutePath);
   if (!content) return null;
   const searchStart = content.indexOf(args.search);
   if (searchStart < 0) return null;
@@ -26201,6 +26216,9 @@ function pathIsWithinTestRoot(sourcePath = "", root = ".") {
 }
 
 async function runPythonSyntaxCheck({ absolutePath = "", source = null } = {}) {
+  if (typeof source !== "string") {
+    return { checked: false, ok: true, reason: "No complete authorized source snapshot is available." };
+  }
   return await new Promise((resolve) => {
     let settled = false;
     let stderr = "";
@@ -26211,18 +26229,17 @@ async function runPythonSyntaxCheck({ absolutePath = "", source = null } = {}) {
       if (timer) clearTimeout(timer);
       resolve(result);
     };
-    const readsFromStdin = source !== null;
     const child = spawn(
       "python3",
       [
+        "-I",
+        "-S",
         "-c",
-        readsFromStdin
-          ? "import ast, sys; ast.parse(sys.stdin.read(), filename=sys.argv[1])"
-          : "import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'), filename=sys.argv[1])",
+        "import ast, sys; ast.parse(sys.stdin.buffer.read(), filename=sys.argv[1])",
         absolutePath,
       ],
       {
-        stdio: [readsFromStdin ? "pipe" : "ignore", "ignore", "pipe"],
+        stdio: ["pipe", "ignore", "pipe"],
         windowsHide: true,
       }
     );
@@ -26230,10 +26247,8 @@ async function runPythonSyntaxCheck({ absolutePath = "", source = null } = {}) {
       child.kill("SIGKILL");
       finish({ checked: false, ok: true, reason: "Python syntax check timed out." });
     }, 5000);
-    if (readsFromStdin) {
-      child.stdin?.on("error", () => {});
-      child.stdin?.end(String(source));
-    }
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(source);
     child.stderr?.on("data", (chunk) => {
       if (stderr.length < 12000) stderr += String(chunk || "");
     });
@@ -26260,14 +26275,10 @@ async function runPythonSyntaxCheck({ absolutePath = "", source = null } = {}) {
       finish({
         checked: true,
         ok: Number(code || 0) === 0 && !signal,
-        reason: diagnostic || (signal ? `python3 exited via ${signal}` : `python3 exited ${code}`),
+        reason: redactSensitiveText(diagnostic || (signal ? `python3 exited via ${signal}` : `python3 exited ${code}`)),
       });
     });
   });
-}
-
-async function pythonSyntaxCheck(absolutePath = "") {
-  return runPythonSyntaxCheck({ absolutePath });
 }
 
 export async function ambiguousDeclarationTokenPatchBlock(
@@ -26322,7 +26333,7 @@ export async function ambiguousDeclarationTokenPatchBlock(
   }
   if (!identity || !replacementPattern) return null;
 
-  const beforeText = await fs.readFile(target.absolutePath, "utf8").catch(() => null);
+  const beforeText = await readNativeMutationSourceText(config, target.absolutePath);
   if (beforeText === null) return null;
   const first = beforeText.indexOf(args.search);
   if (first < 0 || beforeText.indexOf(args.search, first + args.search.length) >= 0) return null;
@@ -26368,7 +26379,7 @@ export async function ambiguousPythonMainGuardPatchBlock(
   }
   if (!String(target.relativePath || "").toLowerCase().endsWith(".py")) return null;
 
-  const beforeText = await fs.readFile(target.absolutePath, "utf8").catch(() => null);
+  const beforeText = await readNativeMutationSourceText(config, target.absolutePath);
   if (beforeText === null) return null;
   const first = beforeText.indexOf(args.search);
   if (first < 0 || beforeText.indexOf(args.search, first + args.search.length) >= 0) return null;
@@ -26432,12 +26443,12 @@ export async function prospectivePythonExactPatchSyntaxBlock(
   }
   if (!String(target.relativePath || "").toLowerCase().endsWith(".py")) return null;
 
-  const beforeText = await fs.readFile(target.absolutePath, "utf8").catch(() => null);
+  const beforeText = await readNativeMutationSourceText(config, target.absolutePath);
   if (beforeText === null) return null;
   const matches = beforeText.split(args.search).length - 1;
   if (matches < 1 || matches > 20) return null;
 
-  const beforeSyntax = await pythonSyntaxCheck(target.absolutePath);
+  const beforeSyntax = await runPythonSyntaxCheck({ absolutePath: target.absolutePath, source: beforeText });
   if (!beforeSyntax.checked || !beforeSyntax.ok) return null;
 
   const afterText = beforeText.split(args.search).join(args.replace);
@@ -26564,10 +26575,10 @@ export async function validateMutatedPythonSourceQuality(config = {}, state = {}
     } catch {
       continue;
     }
-    const content = await fs.readFile(target.absolutePath, "utf8").catch(() => null);
+    const content = await readNativeMutationSourceText(config, target.absolutePath);
     if (content === null) continue;
     checkedPaths.push(sourcePath);
-    const syntax = await pythonSyntaxCheck(target.absolutePath);
+    const syntax = await runPythonSyntaxCheck({ absolutePath: target.absolutePath, source: content });
     if (syntax.checked && !syntax.ok) {
       defects.push({
         code: "python-syntax-error",
@@ -28600,7 +28611,7 @@ export async function recoverFocusedWholeFileWriteAsExactPatch(
   } catch {
     return null;
   }
-  const current = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  const current = await readNativeMutationSourceText(config, target.absolutePath);
   if (!current || current === args.content || current.includes("\0") || args.content.includes("\0")) return null;
   const terminalLineEnding = (value) => String(value || "").match(/(?:\r\n|\n|\r)$/)?.[0] || "";
   const currentLineEnding = terminalLineEnding(current);
@@ -28829,7 +28840,7 @@ export async function recoverUnanchoredCompletePatchAsWholeFileWrite(
   } catch {
     return null;
   }
-  const current = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  const current = await readNativeMutationSourceText(config, target.absolutePath);
   const replacement = String(args.replace);
   if (!current || current === replacement || current.includes("\0")) return null;
   const currentBytes = Buffer.byteLength(current, "utf8");
@@ -28971,7 +28982,8 @@ export async function recoverFocusedPatchTrailingWhitespaceAsExactPatch(
   } catch {
     return null;
   }
-  const current = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  const current = await readNativeMutationSourceText(config, target.absolutePath);
+  if (current === null) return null;
   const firstMatch = current.indexOf(canonicalSearch);
   if (
     !current ||
@@ -29095,7 +29107,8 @@ export async function recoverFocusedPatchAlreadyAppliedAsExactNoop(
   } catch {
     return null;
   }
-  const current = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  const current = await readNativeMutationSourceText(config, target.absolutePath);
+  if (current === null) return null;
   const canonicalStart = current.indexOf(canonicalSearch);
   if (
     !current ||
@@ -29219,7 +29232,8 @@ export async function recoverFocusedPatchUniqueSubrangeAsExactPatch(
   } catch {
     return null;
   }
-  const current = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  const current = await readNativeMutationSourceText(config, target.absolutePath);
+  if (current === null) return null;
   const canonicalStart = current.indexOf(canonicalSearch);
   if (
     !current ||
@@ -29754,7 +29768,8 @@ export async function recoverGroundedPathlessPatchAsExactPatch(
   } catch {
     return null;
   }
-  const current = await fs.readFile(target.absolutePath, "utf8").catch(() => "");
+  const current = await readNativeMutationSourceText(config, target.absolutePath);
+  if (!current) return null;
   const currentHash = crypto.createHash("sha256").update(current, "utf8").digest("hex");
   if (!current || currentHash !== String(args.baseHash).toLowerCase()) return null;
 

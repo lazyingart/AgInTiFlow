@@ -367,3 +367,12 @@ packets before a provider sees them; current artifact validation gates remain.
 The POSIX native reader opens with O_NONBLOCK before requiring a regular file,
 so a FIFO cannot strand it waiting for a writer. Regular-file behavior is
 unchanged. This is not a general filesystem deadline or retained storage proof.
+
+Native patch preparation uses the same canonical read boundary and a complete
+220,000-byte source limit. Unavailable, excluded, changed or malformed source
+cannot become an exact patch anchor, a recovered no-op or a syntax diagnostic.
+Prospective Python checks parse the captured bytes through standard input with
+isolated interpreter flags; they do not reopen the source pathname or load
+ambient Python site hooks. Syntax diagnostics use the normal secret redaction.
+These checks preserve the actual file-tool permissions and publication gates;
+they do not add application sandbox or retained-storage authority.
