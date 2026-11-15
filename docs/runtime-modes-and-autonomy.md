@@ -232,6 +232,18 @@ Large tasks should not stop because an early high-level plan ran out. AgInTiFlow
 
 This keeps the agent sober. It avoids giant low-quality plans while still allowing long autonomous work.
 
+## Cancellation and completion
+
+Cancellation observed after final review or an asynchronous inbox read pauses
+an active invocation before it admits a new completed-state save. Confirmed
+tool and file receipts remain available for explicit same-session continuation;
+the cancelled invocation emits a stopped outcome rather than task completion.
+Response-only final validation uses the same admission boundary.
+
+Once completion persistence is admitted, its I/O establishes the durable
+outcome. A later cancellation does not retract a durably confirmed completion
+or undo its file changes. Delivery interruptions retain that saved outcome.
+
 ## Provider quota interruptions
 
 The native runtime treats HTTP402 and explicit HTTP429 quota/billing codes as

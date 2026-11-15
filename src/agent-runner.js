@@ -6800,6 +6800,9 @@ async function finishWithResponseOnlyModelTurn({ client, config, state, store, o
     });
   }
 
+  // Final validation can await model/observer work. Cancellation still owns
+  // the invocation until we admit its completed-state save below.
+  throwIfAborted(config);
   state.meta = state.meta || {};
   state.meta.responseOnly = {
     completedAt: new Date().toISOString(),
@@ -33134,6 +33137,7 @@ async function runAgentOnceUnlocked(config) {
             goal: config.goal,
             taskContract: completionDecision.assessment?.contract,
           });
+          throwIfAborted(config);
           state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || DEFAULT_SCS_MODE, active: true };
           state.meta.scs.lastStudentDecision = decision;
           await store.appendEvent(`scs.student.${decision.decision}`, decision);
@@ -33141,6 +33145,7 @@ async function runAgentOnceUnlocked(config) {
             decision: decision.decision,
             reason: decision.reason,
           });
+          throwIfAborted(config);
           if (decision.decision === "finish_rejected") {
             state.meta.scs.finishRejects = (state.meta.scs.finishRejects || 0) + 1;
             const replanned = await requestScsReplan({
@@ -33173,6 +33178,7 @@ async function runAgentOnceUnlocked(config) {
           emitConsole(config, `SCS: finish approved (${Math.round((decision.confidence || 0) * 100)}%).`, { kind: "meta" });
         }
         if (await fenceQueuedInput([], "before-completion")) continue;
+        throwIfAborted(config);
         appendChatEntry(state, "assistant", fallback);
         state.stepsCompleted = step;
         state.updatedAt = new Date().toISOString();
@@ -33431,6 +33437,7 @@ async function runAgentOnceUnlocked(config) {
               goal: config.goal,
               taskContract: completionDecision.assessment?.contract,
             });
+            throwIfAborted(config);
             state.meta.scs = state.meta.scs || { enabled: true, mode: config.enableScs || DEFAULT_SCS_MODE, active: true };
             state.meta.scs.lastStudentDecision = decision;
             await store.appendEvent(`scs.student.${decision.decision}`, decision);
@@ -33438,6 +33445,7 @@ async function runAgentOnceUnlocked(config) {
               decision: decision.decision,
               reason: decision.reason,
             });
+            throwIfAborted(config);
             if (decision.decision === "finish_rejected") {
               state.meta.scs.finishRejects = (state.meta.scs.finishRejects || 0) + 1;
               const replanned = await requestScsReplan({
@@ -33478,6 +33486,9 @@ async function runAgentOnceUnlocked(config) {
             continueForQueuedInput = true;
             break;
           }
+          // Inbox reads and review callbacks may accept cancellation. Fence
+          // before terminal state mutation, never after a completed save.
+          throwIfAborted(config);
           state.stepsCompleted = step;
           state.updatedAt = new Date().toISOString();
           state.meta.lastUrl = browserState.page?.url() || state.meta.lastUrl;
