@@ -68,6 +68,7 @@ import {
   parsePatchDocument,
   resolveWorkspacePath,
   resolveWorkspaceReadTarget,
+  resolveWorkspaceReadTargetSync,
   summarizeWorkspaceTools,
   WORKSPACE_TOOL_NAMES,
 } from "./workspace-tools.js";
@@ -26768,6 +26769,7 @@ export function completionRepairMutationRequirement({
 
 function inferredLatexArtifactProducerCommand(state = {}, config = {}, contract = {}) {
   if (
+    config.allowFileTools === false || config.allowShellTool === false ||
     contract?.hostManagedDocumentCompilation === true ||
     hostManagedDocumentCompilationRequested(completionContractGoal(config, state))
   ) {
@@ -26780,16 +26782,19 @@ function inferredLatexArtifactProducerCommand(state = {}, config = {}, contract 
     .map(safeTaskOwnedCommitPath)
     .find((candidate) => /\.tex$/iu.test(candidate));
   if (!sourcePath) return "";
-  let engine = "pdflatex";
+  let source;
   try {
-    const target = resolveWorkspacePath(config, sourcePath);
-    const source = fsSync.readFileSync(target.absolutePath, "utf8");
-    if (/\\(?:usepackage\s*\{fontspec\}|setmainfont\b|setCJKmainfont\b)/u.test(source)) {
-      engine = "xelatex";
-    }
+    // A historical output path does not authorize compiling an external alias.
+    const target = resolveWorkspaceReadTargetSync({ ...config, readOnlyRoots: [], skillReadOnlyRoots: [], allowOutsideWorkspaceFileTools: false }, sourcePath);
+    const { buffer } = target.readBytes(220_000);
+    if (buffer.includes(0)) return "";
+    source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
+    if (!source.trim()) return "";
   } catch {
-    // The bounded producer will report a concrete source/path failure.
+    // No valid snapshot means no inferred command or default-engine guess.
+    return "";
   }
+  const engine = /\\(?:usepackage\s*\{fontspec\}|setmainfont\b|setCJKmainfont\b)/u.test(source) ? "xelatex" : "pdflatex";
   const quotedPath = shellQuoteArgument(sourcePath);
   return quotedPath
     ? `${engine} -interaction=nonstopmode -halt-on-error ${quotedPath}`

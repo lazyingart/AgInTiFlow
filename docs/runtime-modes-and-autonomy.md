@@ -376,3 +376,12 @@ isolated interpreter flags; they do not reopen the source pathname or load
 ambient Python site hooks. Syntax diagnostics use the normal secret redaction.
 These checks preserve the actual file-tool permissions and publication gates;
 they do not add application sandbox or retained-storage authority.
+
+Automatic document producer selection also uses a complete bounded source
+snapshot, while preserving its synchronous decision API. It does not block on a
+FIFO waiting for a writer. Missing, nonregular, malformed, oversized or excluded
+sources supply no inferred compiler command or default-engine guess. Optional
+external read roots do not authorize compilation of a replaced workspace output.
+Valid workspace TeX still selects the existing PDF engine. This shares the native
+canonical read policy; it is not a general deadline for regular-file I/O or a
+retained-descriptor isolation guarantee.

@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { XMLValidator } from "fast-xml-parser";
 import { publishWorkspaceTextFile } from "./workspace-file-publication.js";
-import { createWorkspaceReadBoundary, readWorkspaceFileSnapshot, workspaceReadBoundaryError, isSensitiveWorkspacePath as isSensitivePath } from "./workspace-read-boundary.js";
+import { createWorkspaceReadBoundary, createWorkspaceReadBoundarySync, readWorkspaceFileSnapshot, readWorkspaceFileSnapshotSync, workspaceReadBoundaryError, isSensitiveWorkspacePath as isSensitivePath } from "./workspace-read-boundary.js";
 import { hasSensitiveText, redactSensitiveText } from "./redaction.js";
 
 export const WORKSPACE_TOOL_NAMES = ["inspect_project", "list_files", "read_file", "search_files", "write_file", "apply_patch"];
@@ -483,8 +483,8 @@ function pathPolicy(toolName, relativePath) {
   return { allowed: true };
 }
 
-async function workspaceReadBoundary(config, target, { writeAccess = false } = {}) {
-  return createWorkspaceReadBoundary({
+function workspaceReadBoundaryOptions(config, target, { writeAccess = false } = {}) {
+  return {
     root: workspaceRoot(config),
     readOnlyRoots: [...(Array.isArray(config.readOnlyRoots) ? config.readOnlyRoots : []),
       ...(Array.isArray(config.skillReadOnlyRoots) ? config.skillReadOnlyRoots : [])],
@@ -492,7 +492,10 @@ async function workspaceReadBoundary(config, target, { writeAccess = false } = {
     writeAccess,
     allowOutside: target.outsideWorkspace === true && config.allowOutsideWorkspaceFileTools === true &&
       config.sandboxMode === "host" && config.allowDestructive === true,
-  });
+  };
+}
+async function workspaceReadBoundary(config, target, options) {
+  return createWorkspaceReadBoundary(workspaceReadBoundaryOptions(config, target, options));
 }
 
 // Shared by native image/browser readers. This is a path-policy observation,
@@ -508,6 +511,22 @@ export async function resolveWorkspaceReadTarget(config, inputPath) {
       await revalidate();
       const result = await readWorkspaceFileSnapshot(target.absolutePath, boundary, { maxBytes });
       await revalidate();
+      return result;
+    },
+  });
+}
+
+export function resolveWorkspaceReadTargetSync(config, inputPath) {
+  const target = resolveWorkspacePath(config, inputPath, { allowReadOnlyRoots: true });
+  if (!pathPolicy("read_file", target.relativePath).allowed) throw workspaceReadBoundaryError();
+  const boundary = createWorkspaceReadBoundarySync(workspaceReadBoundaryOptions(config, target));
+  const canonicalPath = boundary.resolve(target.absolutePath);
+  const revalidate = () => boundary.revalidate(target.absolutePath, canonicalPath);
+  return Object.freeze({ ...target, canonicalPath, revalidate,
+    readBytes(maxBytes) {
+      revalidate();
+      const result = readWorkspaceFileSnapshotSync(target.absolutePath, boundary, { maxBytes });
+      revalidate();
       return result;
     },
   });
