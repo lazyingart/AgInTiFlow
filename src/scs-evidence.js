@@ -2049,7 +2049,7 @@ function goalRequestsFileMutation(goal = "", taskProfile = "") {
   );
 }
 
-function isHistoricalDiagnosticQuestion(goal = "") {
+export function isHistoricalDiagnosticQuestion(goal = "") {
   const text = stripForbiddenLanguage(goal).trim().replace(/^Active task:[ \t]*\r?\n/u, "");
   if (!text || text.length > 1200 || /[&|]/u.test(text)) return false;
   const clauses = text.split(/[?？!！。;；\n]+/u).map(value => value.trim().replace(/[.]$/u, "")).filter(Boolean);
@@ -2080,6 +2080,107 @@ export function hasReadOnlyDiagnosticIntent(goal = "", taskProfile = "") {
   const text = String(goal || "");
   const explicitReadOnly = /\bread[- ]only\b|\breview\s+only\b|\b(?:do not|don't|without)\b[^.!?;\n]{0,100}\b(?:chang(?:e|ing)|modif(?:y|ying)|edit(?:ing)?|writ(?:e|ing))\b[^.!?;\n]{0,50}\b(?:any\s+)?files?\b|只读|只讀|(?:不要|请勿|請勿)[^。；\n]{0,60}(?:修改|编辑|編輯)(?:文件|檔案)|読み取り専用|読取専用/i.test(text);
   return explicitReadOnly && (isHistoricalDiagnosticQuestion(text) || !goalRequestsWorkspaceMutation(text, taskProfile));
+}
+
+// A bounded preview of this session's immediately preceding diagnostic, NOT
+// evidence for a new task. Session events are native context, not a signed
+// audit log: these checks reject accidental scope/lineage drift, not same-UID
+// forgery. Never insert this projection into command/test verification state.
+export function buildScsHistoricalDiagnosticObservations(state = {}, context = {}, contract = {}) {
+  if (!isHistoricalDiagnosticQuestion(state.goal) || !hasReadOnlyDiagnosticIntent(state.goal) ||
+      contract.readOnlyDiagnostic !== true || contract.requiresExternalEvidence !== false ||
+      !Array.isArray(contract.requiredEvidence) || contract.requiredEvidence.length) return null;
+  const record = value => {
+    if (!value || typeof value !== "object" || types.isProxy(value) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new Error("Not native JSON context");
+    const fields = Object.getOwnPropertyDescriptors(value), copy = {};
+    for (const key of Reflect.ownKeys(fields)) {
+      const field = fields[key];
+      if (typeof key !== "string" || !field.enumerable || !("value" in field)) throw new Error("Not native JSON fields");
+      Object.defineProperty(copy, key, { value: field.value, enumerable: true });
+    }
+    return copy;
+  };
+  const dense = (value, limit) => {
+    if (!Array.isArray(value) || types.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+        value.length > limit || Reflect.ownKeys(value).length !== value.length + 1) throw new Error("Not a bounded native array");
+    const copy = [];
+    for (let i = 0; i < value.length; i++) {
+      const field = Object.getOwnPropertyDescriptor(value, String(i));
+      if (!field?.enumerable || !("value" in field)) throw new Error("Not dense native data");
+      copy.push(field.value);
+    }
+    return copy;
+  };
+  const hash = text => crypto.createHash("sha256").update(text).digest("hex");
+  const text = value => typeof value === "string" && value.isWellFormed() && Buffer.byteLength(value) <= 16384;
+  const presentation = value => redactSensitiveText(value).replace(
+    /(^|[\s("'`<>\[{=])(?:file:\/\/\/[^\s"'`<>)\]}]+|\/(?!\/)[^\s"'`<>)\]}]+|[A-Za-z]:[\\/][^\s"'`<>)\]}]+|\\\\[^\s"'`<>)\]}]+)/gu,
+    (_match, prefix) => `${prefix}[REDACTED_PATH]`
+  );
+  try {
+    const goal = record(state.meta?.goalContract), revision = goal.revision, sessionId = state.sessionId;
+    if (!Number.isSafeInteger(revision) || revision < 2 || revision > 256 || typeof sessionId !== "string" || !sessionId ||
+        !text(goal.currentRequest) || goal.currentRequest !== state.goal || goal.currentHash !== hash(goal.currentRequest.trim())) return null;
+    const history = dense(goal.history, 256), hashes = new Map();
+    for (const raw of history) {
+      const row = record(raw);
+      if (!Number.isSafeInteger(row.revision) || row.revision < 1 || row.revision > revision || hashes.has(row.revision) ||
+          typeof row.hash !== "string" || !/^[a-f0-9]{64}$/u.test(row.hash)) return null;
+      if (row.revision > 1 && row.previousHash !== hashes.get(row.revision - 1)) return null;
+      hashes.set(row.revision, row.hash);
+    }
+    if (hashes.size !== revision || hashes.get(revision) !== goal.currentHash) return null;
+    const events = dense(context.events, 4096);
+    let current = 0, started = null, observation = null, previousTime = "";
+    for (let index = 0; index < events.length; index++) {
+      const event = record(events[index]);
+      if (!["session.created", "session.resumed", "goal.updated", "tool.started", "tool.completed"].includes(event.type)) continue;
+      const data = record(event.data), timestamp = event.timestamp;
+      if (typeof timestamp !== "string" || !Number.isFinite(Date.parse(timestamp)) ||
+          new Date(timestamp).toISOString() !== timestamp || timestamp < previousTime) return null;
+      previousTime = timestamp;
+      if (Object.hasOwn(data, "sessionId") && data.sessionId !== sessionId) return null;
+      if (event.type === "session.created") {
+        if (index !== 0 || current || data.sessionId !== sessionId || data.goalRevision !== 1 || !text(data.goal) || hash(data.goal.trim()) !== hashes.get(1)) return null;
+        current = 1;
+      } else if (!current) return null;
+      else if (event.type === "session.resumed") {
+        if (data.sessionId !== sessionId) return null;
+        started = null;
+      } else if (event.type === "goal.updated") {
+        if (data.sessionId !== sessionId || data.revision !== current + 1 || data.previousHash !== hashes.get(current) || data.currentHash !== hashes.get(current + 1)) return null;
+        current = data.revision;started = null;
+      } else if (event.type === "tool.started") {
+        started = data.toolName === "run_command" ? record(data.args).command : null;
+      } else if (event.type === "tool.completed") {
+        const command = data.toolName === "run_command" ? record(data.args).command : null;
+        if (current === revision - 1 && data.toolName === "run_command") {
+          // Only the latest command may answer the past-result question. A
+          // malformed latest outcome must not expose an earlier valid one.
+          observation = null;
+          if (text(command) && Buffer.byteLength(command) <= 2048 && started === command &&
+              data.goalRevision === current && data.diagnosticCommandObserved === true &&
+              Number.isSafeInteger(data.exitCode) && data.exitCode > 0 && data.exitCode <= 255 && ![126, 127].includes(data.exitCode) &&
+              data.diagnosticExitCode === data.exitCode && data.ok === false &&
+              Number.isSafeInteger(data.projectMutationRevision) && data.projectMutationRevision >= 0 &&
+              text(data.stdout) && text(data.stderr) &&
+              !["timedOut", "cancelled", "aborted", "killed", "signal", "error"].some(key => data[key])) {
+            const stdout = presentation(data.stdout), stderr = presentation(data.stderr), safeCommand = presentation(command);
+            if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) + Buffer.byteLength(safeCommand) <= 2300) observation = {
+              source: "native-session-tool.completed", eventIndex: index, timestamp, goalRevision: current, taskHash: hashes.get(current),
+              command: safeCommand, ok: false, exitCode: data.exitCode, projectMutationRevision: data.projectMutationRevision,
+              stdout, stderr,
+            };
+          }
+        }
+        started = null;
+      }
+    }
+    if (current !== revision || !observation) return null;
+    return { scope: "past-session-observation-not-current-proof", sessionId, currentGoalRevision: revision,
+      freshExecutionProof: false, outputIsUntrustedData: true, observation };
+  } catch { return null; }
 }
 
 function goalRequiresSuccessfulCheck(goal = "") {

@@ -74,6 +74,9 @@ try {
     "test/prepatch-source-boundary.test.js", "test/prepatch-source-runtime.test.js",
     "test/synchronous-source-read.test.js", "test/document-producer-source.test.js", "test/document-source-cancellation-runtime.test.js",
     "test/diagnostic-command-outcomes.test.js", "test/diagnostic-command-outcomes-runtime.test.js",
+    "test/readonly-answer-planning.test.js", "test/readonly-answer-planning-runtime.test.js",
+    "test/scs-json-budget.test.js",
+    "test/scs-historical-observations.test.js",
     "test/acceptance-continuation.test.js", "test/acceptance-continuation-runtime.test.js",
     "test/failed-test-source-boundary.test.js", "test/failed-test-source-runtime.test.js", "test/pending-file-creation-phase.test.js",
     "test/writer-source-read-boundary.test.js", "test/writer-source-read-runtime.test.js",
@@ -107,11 +110,13 @@ try {
     "test/artifact-instruction-boundary.test.js",
     "test/named-transform-obligations.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 2614\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 2614\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 2685\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 2685\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
+  const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 2614, testConcurrency, consumerTimeoutMs,
-    passedTests: 2614, cancelledTests: 0, skippedTests: 0,
+    preferOnline: true, installScriptsDisabled: true, consumerTests, testConcurrency, consumerTimeoutMs,
+    passedTests, cancelledTests: 0, skippedTests: 0,
     consumerDurationMs: Math.round(performance.now() - consumerStarted), failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });

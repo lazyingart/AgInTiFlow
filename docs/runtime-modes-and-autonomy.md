@@ -434,3 +434,28 @@ Mixed requests, current inspection and retained unfinished task requirements
 keep their ordinary evidence gates; unfamiliar phrasing remains conservative.
 In particular, adding a requirement that checks pass is fresh verification work,
 even inside the same question. A historical failure cannot satisfy it.
+
+When such a bounded question has an explicit read-only contract with no fresh
+execution, source-grounding, artifact or acceptance obligations, thorough/SCS
+execution uses a fixed answer phase instead of asking a model to draft one.
+Existing permission, completion and SCS final-review gates still run; a rejected
+answer keeps the normal review/replan path. The phase supplies no new evidence
+and does not force a finish-only tool turn. If no prior result is recorded, the
+answer must explain what is unknown. Mixed requests and current execution
+requirements retain their normal planning; existing approved plans are kept.
+
+For this question type, the review preview can also include the preceding
+diagnostic command's bounded stdout/stderr. It checks the native session event
+anchor, goal-hash transitions, command-start/result pairing and failure outcome.
+The preview labels these as past observations, never fresh command/test proof.
+Missing, foreign, inconsistent or oversized history is omitted. Secrets and
+absolute host paths are redacted. Native event history is not a signed audit
+log or protection against an actor able to rewrite the session's own files.
+
+SCS JSON roles can use the caller's available output allowance up to 4,096 tokens.
+That allowance includes reasoning on models that charge reasoning against the
+completion limit. A smaller explicit caller ceiling still wins, and the runtime
+does not retry or change models merely to obtain review JSON. Existing timeout,
+resident-model routing and hard evidence gates remain. If a deliberately small
+budget cannot produce JSON, the existing fallback decision is not proof of a
+successful model review.

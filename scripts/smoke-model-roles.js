@@ -672,7 +672,7 @@ const localScsCommitteeLane = resolveScsJsonLane(
 );
 assert(localScsCommitteeLane.model === "localllm-deep", "SCS committee did not reuse the selected resident LocalLLM");
 assert(localScsCommitteeLane.role === "executor", "resident LocalLLM SCS lane did not report its executor role");
-assert(localScsCommitteeLane.maxOutputTokens === 1536, "SCS committee output was not bounded");
+assert(localScsCommitteeLane.maxOutputTokens === 4096, "SCS committee output was not bounded");
 assert(localScsCommitteeLane.modelTimeoutMs === 45000, "Local SCS committee timeout was not bounded");
 const localScsValidatorLane = resolveScsJsonLane(
   {
@@ -684,7 +684,7 @@ const localScsValidatorLane = resolveScsJsonLane(
   },
   "SCS student validator"
 );
-assert(localScsValidatorLane.maxOutputTokens === 768, "SCS validator output was not bounded");
+assert(localScsValidatorLane.maxOutputTokens === 4096, "SCS validator output was not bounded");
 assert(localScsValidatorLane.model === "localllm-deep", "SCS validator did not reuse the selected resident LocalLLM");
 assert(resolveScsValidationMode({ provider: "localllm" }) === "deterministic", "LocalLLM should use runtime validation in auto mode");
 assert(resolveScsValidationMode({ provider: "deepseek" }) === "model", "hosted providers should keep model validation in auto mode");

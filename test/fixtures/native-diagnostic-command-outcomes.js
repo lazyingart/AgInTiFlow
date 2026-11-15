@@ -9,9 +9,11 @@ globalThis.fetch=(input,options)=>{const u=new URL(typeof input==='string'||inpu
 const model=phase==='start'?'deepseek-v4-flash':'deepseek-v4-pro';
 const scsMode=process.env.AGINTI_TEST_SCS_MODE||'off';
 if(!['off','on'].includes(scsMode))throw Error('INVALID_DIAGNOSTIC_TEST_SCS_MODE');
+const validationMode=process.env.AGINTI_TEST_SCS_VALIDATION_MODE||'deterministic';
+if(!['deterministic','model'].includes(validationMode))throw Error('INVALID_DIAGNOSTIC_TEST_SCS_VALIDATION_MODE');
 const config=resolveRuntimeConfig({provider:'deepseek',model,routingMode:'manual',taskProfile:'code',goal,commandCwd:root+'/workspace',maxSteps:6,dynamicSteps:'off'},
  {baseDir:root+'/workspace',packageDir:runtime,sessionId:'diagnostic-status',baseURL,apiKey:'synthetic-diagnostic-only',enableScs:scsMode,sandboxMode:'host',packageInstallPolicy:'block',allowFileTools:true,allowShellTool:true,allowDestructive:true,allowWrapperTools:false,allowAuxiliaryTools:false,allowWebSearch:false,allowMcpTools:false,allowParallelScouts:false,onConsole:()=>{},onLog:()=>{}});
-Object.assign(config,{sessionsDir:root+'/sessions',projectSessionsDir:root+'/pointers',allowProviderHandoff:false,modelTimeoutMs:4000,scsValidationMode:'deterministic',routeProvider:'deepseek',routeModel:model,mainProvider:'deepseek',mainModel:model,spareProvider:'deepseek',spareModel:model,...(phase==='resume'?{resume:'diagnostic-status',expectedRuntimeRevision:1,runtimePatch:{model,routeModel:model,mainModel:model,spareModel:model}}:{})});
+Object.assign(config,{sessionsDir:root+'/sessions',projectSessionsDir:root+'/pointers',allowProviderHandoff:false,modelTimeoutMs:4000,scsValidationMode:validationMode,routeProvider:'deepseek',routeModel:model,mainProvider:'deepseek',mainModel:model,spareProvider:'deepseek',spareModel:model,...(phase==='resume'?{resume:'diagnostic-status',expectedRuntimeRevision:1,runtimePatch:{model,routeModel:model,mainModel:model,spareModel:model}}:{})});
 try{console.log(JSON.stringify({resolved:true,result:await runAgent(config)}));}
 catch(e){console.log(JSON.stringify({resolved:false,code:e.code||'ERROR',status:e.status||0,message:e.message}));}
 finally{globalThis.fetch=fetch0;closeSessionIndexConnections();}

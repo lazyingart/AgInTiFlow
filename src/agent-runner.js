@@ -185,6 +185,7 @@ import {
   inferSuccessfulGitActionsFromTmuxCapture,
   isResponseOnlyEvidenceScope,
   isCurrentReadOnlyDiagnosticExecution,
+  isHistoricalDiagnosticQuestion,
   hasReadOnlyDiagnosticIntent,
   successfulGitCommitProvesFileMutation,
   isObservationalGitAction,
@@ -3182,6 +3183,52 @@ export function buildContextBudgetCompactionMessages(state, config, snapshot, st
     recoveryInstruction:
       "Continue from the authoritative goal, plan, and retained evidence above. If a required exact source body was removed by compaction, reread that exact file once; otherwise reuse retained evidence. Do not restart broad discovery or repeat completed work, and finish only after the remaining acceptance criteria are verified.",
   });
+}
+
+export function buildKnownReadOnlyAnswerPhasePlan(config = {}, state = {}) {
+  if (state.plan) return null;
+  const goal = scopedChatopsEvidenceGoal(completionContractGoal(config, state), config.taskProfile || state.meta?.taskProfile || "auto");
+  if (!isHistoricalDiagnosticQuestion(goal)) return null;
+  const active = state.meta?.activeExecutionContract;
+  if (active && (
+    typeof active !== "object" || Array.isArray(active) ||
+    active.requiresWorkspaceMutation === true || active.requiresFileMutation === true || active.requiresSourceGrounding === true ||
+    (active.requiredProjectCommands !== undefined && (!Array.isArray(active.requiredProjectCommands) || active.requiredProjectCommands.length > 0))
+  )) return null;
+  const contract = completionTaskContract(config, state);
+  // This selects a planning workflow, not evidence or permission. All ordinary
+  // execution and SCS completion gates still assess the actual answer.
+  if (
+    contract.version !== 1 ||
+    contract.readOnlyDiagnostic !== true ||
+    contract.requiresExternalEvidence !== false ||
+    contract.requiresWorkspaceMutation !== false ||
+    contract.requiresFileMutation !== false ||
+    contract.requiresSourceGrounding !== false ||
+    contract.requiresPerSourceChecks !== false ||
+    contract.readOnlyReadiness !== false ||
+    contract.scopedArtifactDeliverable !== false ||
+    contract.scopedArtifactOperation !== false ||
+    contract.copyRequirementsOverflow !== false ||
+    contract.artifactRoot || contract.authoritativeRoutine || contract.advisoryInvocation ||
+    ["requiredEvidence", "requiredToolCalls", "requiredGitActions", "requiredProjectCommands",
+      "exactInputPaths", "explicitInputReadPaths", "preservedInputPaths", "declaredSourceRoots",
+      "exactOutputPaths", "exactEmptyOutputPaths", "exactCopyRequirements", "requiredArtifactKinds",
+      "artifactRepairRequirements", "artifactQualityIssues", "successCriteria"].some(
+      key => !Array.isArray(contract[key]) || contract[key].length !== 0
+    )
+  ) return null;
+  return {
+    mode: "read-only-answer",
+    command: "",
+    reason: "The current contract requires only a read-only answer, not a separate model-generated phase plan.",
+    plan: [
+      "1. Answer the current read-only question from the conversation and recorded observations.",
+      "2. Keep past execution distinct from fresh evidence. If history cannot establish an answer, explain what remains unknown.",
+      "3. Respect the current prohibitions. Do not rerun, repair or change task files simply to explain a past result.",
+      "4. Finish once the question is answered; ordinary permissions and final evidence validation still apply.",
+    ].join("\n"),
+  };
 }
 
 export function buildKnownConstrainedPhasePlan(
@@ -31536,7 +31583,7 @@ async function runAgentOnceUnlocked(config) {
 
     const knownConstrainedPhase =
       !state.plan && executionPolicy.requiresPlan
-        ? buildKnownConstrainedPhasePlan(config, state)
+        ? buildKnownConstrainedPhasePlan(config, state) || buildKnownReadOnlyAnswerPhasePlan(config, state)
         : null;
     const scoutsWillRun = !knownConstrainedPhase && shouldRunParallelScouts(config, state);
     if (!scoutsWillRun && !knownConstrainedPhase) {
@@ -31550,7 +31597,7 @@ async function runAgentOnceUnlocked(config) {
           command: redactSensitiveText(knownConstrainedPhase.command),
           provider: config.provider,
           model: config.model,
-          reason: "retained evidence already determines the next bounded phase",
+          reason: knownConstrainedPhase.reason || "retained evidence already determines the next bounded phase",
         };
         state.meta.constrainedPhaseLaunch = {
           ...detail,
