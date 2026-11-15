@@ -240,6 +240,54 @@ keys or refusal metadata cannot gain native wire checks by swapping a library.
 Keep app-owned provider consent, quotas and commit receipts authoritative.
 Source references and framework tests do not prove a production deployment.
 
+### Offline test of native normalization
+
+From a pinned source checkout, run `npm run test:restricted-provider-conformance`
+for the supported adapters and adversarial controls. The reusable developer kit
+is `scripts/fixtures/restricted-provider-conformance.js`:
+
+```js
+import { qualifyRestrictedProviderFactory }
+  from './scripts/fixtures/restricted-provider-conformance.js';
+import { createRestrictedDeepSeekProvider }
+  from './src/restricted-application.js';
+
+const report = await qualifyRestrictedProviderFactory(({ complete, model }) =>
+  createRestrictedDeepSeekProvider({ complete, model }), { profile: 'read-only' });
+if (!report.passed) process.exitCode = 1;
+console.log(JSON.stringify(report));
+```
+
+Replace that factory with the application's **actual normalization**, changing
+only its native transport to the supplied synthetic `complete` callback. The
+factory is synchronous and receives no real key, endpoint or user data. It must
+return the restricted `{supportsImages, complete}` provider. Do not pre-extract
+or repair the fixture's native envelope in the test bridge. Otherwise the test
+does not describe the production path. A custom fetch adapter can wrap a native
+fixture in an in-memory Response before its original parser, without networking.
+
+Choose exact `profile:'no-tools'` for a chat-only adapter (19 cases, no read
+advertised or executed) or `profile:'read-only'` (20 cases, including one valid
+scoped read). The default is read-only. These are test profiles, not permissions
+issued to an application or claims about other model protocols.
+
+The fixed cases exercise valid answers/reads, contradictory errors,
+duplicates, truncation/refusal, competing native metadata, and forbidden/mixed
+read batches. The frozen report contains closed diagnostics and counters, no
+raw output or exceptions. A rejected read must perform zero callbacks. A factory
+that never uses the fixture transport or always rejects cannot pass the positive
+controls. A global runner upgrade cannot fix evidence lost inside that factory.
+
+This is trusted developer JavaScript, not an untrusted-plugin sandbox or runtime
+attestation. Run it only with an offline factory; the kit cannot prevent that
+code from reading files, doing network I/O or blocking the event loop. There is
+no automatic provider discovery, fallback, production probe or credential load.
+Per-case SDK deadlines do not terminate arbitrary host code. Even a fully passing
+report says `productionReady:false`: authentication, transport bytes/TLS,
+cancellation under real load, consent, semantic fidelity, current source checks,
+CAS/idempotency and deployment identity require separate application evidence.
+This source-only kit does not change the qualified 420 runtime or app pins.
+
 ## Ownership and security boundary
 
 `npm run test:restricted-retrieved-instructions` exercises hostile quoted
