@@ -95,7 +95,9 @@ export async function createWorkspaceReadBoundary({ root, readOnlyRoots = [], sc
 export async function readWorkspaceFileSnapshot(file, boundary, { maxBytes, text = false }) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > 64 * 1024 * 1024) throw new Error("Invalid bounded workspace read limit.");
   const canonical = await boundary.resolve(file);
-  const handle = await fs.open(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+  // Reject FIFOs/devices by fstat without first blocking in open waiting for a
+  // writer. Regular files ignore O_NONBLOCK; this is not a general I/O deadline.
+  const handle = await fs.open(canonical, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
   try {
     const stat = await handle.stat({ bigint: true });
     if (!stat.isFile()) throw new Error("Workspace read requires a regular file.");

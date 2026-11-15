@@ -63,6 +63,7 @@ import { redactSensitiveText, redactValue } from "./redaction.js";
 import {
   captureWorkspaceVerificationFingerprint,
   executeWorkspaceTool,
+  isOpaqueBinaryPath,
   normalizeWorkspaceInputPath,
   parsePatchDocument,
   resolveWorkspacePath,
@@ -273,6 +274,7 @@ const MALFORMED_TOOL_RESPONSE_RETRY_OUTPUT_TOKEN_CAP = 6144;
 const MAX_COMPLETION_EVIDENCE_REPAIR_ATTEMPTS = 4;
 const FAILED_TEST_EVIDENCE_VERSION = 2;
 const FAILED_TEST_RECOVERY_PACKET_VERSION = 18;
+const ARTIFACT_VALIDATION_CONTEXT_VERSION = 1;
 const MAX_FAILED_TEST_CANONICAL_REREADS = 4;
 const PATCH_CONTEXT_REFRESH_VERSION = 1;
 const PATCH_CONTEXT_REPAIR_VERSION = 1;
@@ -3614,6 +3616,18 @@ export function buildMalformedToolResponseRetryMessages(
 
 export function repairModelMessageHistory(state, config = {}) {
   let retiredRecoveryState = false;
+  const progress = state.meta?.artifactProgress;
+  const retireArtifactContext = Boolean(config.resume) || config.allowFileTools === false ||
+    progress?.contextVersion !== ARTIFACT_VALIDATION_CONTEXT_VERSION;
+  let retiredArtifactState = false;
+  if (progress && retireArtifactContext) {
+    retiredArtifactState = progress.contextVersion !== ARTIFACT_VALIDATION_CONTEXT_VERSION ||
+      progress.outputEmbedded === true || Boolean(progress.embeddedOutputPaths?.length) || Boolean(progress.contextDigest);
+    progress.contextVersion = ARTIFACT_VALIDATION_CONTEXT_VERSION;
+    progress.outputEmbedded = false;
+    progress.embeddedOutputPaths = [];
+    progress.contextDigest = "";
+  }
   for (const key of ["failedTestRecoveryPacket", "failedTestDiagnostic"]) {
     const value = state?.meta?.[key];
     if (value !== undefined && Number(value?.packetVersion || 0) !== FAILED_TEST_RECOVERY_PACKET_VERSION) {
@@ -3623,8 +3637,9 @@ export function repairModelMessageHistory(state, config = {}) {
   }
   if (!Array.isArray(state?.messages)) {
     return {
-      changed: retiredRecoveryState,
+      changed: retiredRecoveryState || retiredArtifactState,
       droppedRecoveryMessages: 0,
+      droppedArtifactMessages: 0,
       droppedAssistantMessages: 0,
       convertedAssistantMessages: 0,
       droppedToolMessages: 0,
@@ -3637,12 +3652,25 @@ export function repairModelMessageHistory(state, config = {}) {
     config.goal, state.goal,
     ...(Array.isArray(state.chat) ? state.chat.filter(item => item?.role === "user").map(item => item.content) : []),
   ].filter(value => typeof value === "string"));
+  let droppedArtifactMessages = 0;
   const retainedMessages = state.messages.filter(message => {
     if (message?.role !== "user" || genuineRequests.has(message.content)) return true;
+    const content = String(message.content || "").trim();
+    if (/^The exact output content is embedded below\./.test(content) ||
+        (/^Bounded artifact validation context v\d+\./.test(content) &&
+          (retireArtifactContext || !content.startsWith(`Bounded artifact validation context v${ARTIFACT_VALIDATION_CONTEXT_VERSION}.`)))) {
+      droppedArtifactMessages++;
+      return false;
+    }
     const version = String(message.content || "").trim().match(/^Bounded failed-test evidence packet(?: v(\d+))?\./);
     return !version || Number(version[1] || 0) === FAILED_TEST_RECOVERY_PACKET_VERSION;
   });
-  const droppedRecoveryMessages = state.messages.length - retainedMessages.length;
+  const droppedRecoveryMessages = state.messages.length - retainedMessages.length - droppedArtifactMessages;
+  if (progress && droppedArtifactMessages > 0) {
+    progress.outputEmbedded = false;
+    progress.embeddedOutputPaths = [];
+    progress.contextDigest = "";
+  }
   const messages = retainedMessages.map(redactRetainedModelMessage);
   const redactedHistory = messages.some((message, index) => message !== retainedMessages[index]);
   const repaired = [];
@@ -3764,7 +3792,7 @@ export function repairModelMessageHistory(state, config = {}) {
     repaired.push(message);
   }
 
-  const changed = retiredRecoveryState || droppedRecoveryMessages > 0 || redactedHistory ||
+  const changed = retiredRecoveryState || retiredArtifactState || droppedArtifactMessages > 0 || droppedRecoveryMessages > 0 || redactedHistory ||
     droppedAssistantMessages > 0 ||
     convertedAssistantMessages > 0 ||
     droppedToolMessages > 0 ||
@@ -3778,6 +3806,7 @@ export function repairModelMessageHistory(state, config = {}) {
   return {
     changed,
     droppedRecoveryMessages,
+    droppedArtifactMessages,
     droppedAssistantMessages,
     convertedAssistantMessages,
     droppedToolMessages,
@@ -21413,7 +21442,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
         !artifactValidationReadyToFinish &&
         (state.meta.artifactProgress.needsCommand === true || completionNeedsCommand),
       artifactValidationNeedsSourceRead: state.meta.artifactProgress.needsSourceRead === true,
-      artifactValidationOutputEmbedded: state.meta.artifactProgress.outputEmbedded === true,
+      artifactValidationOutputEmbedded: artifactValidationContextIsEmbedded(state),
       artifactValidationRepairAttempts: Number(state.meta.artifactProgress.repairAttempts || 0),
       artifactValidationNeedsGitEvidence:
         !artifactValidationReadyToFinish && missingCompletionEvidence.includes("git"),
@@ -21599,58 +21628,115 @@ export function shouldResetStaticDiscoveryPhase(toolResult = {}) {
 }
 
 function isArtifactRuntimeInstruction(content = "") {
-  return /^(?:Runtime phase transition:|Deterministic artifact preflight|SCS student rejected|Loop guard:)/.test(
+  return /^(?:Runtime phase transition:|Deterministic artifact preflight|SCS student rejected|Loop guard:|The exact output content is embedded below\.|Bounded artifact validation context v\d+\.)/.test(
     String(content || "").trim()
   );
 }
 
-async function compactArtifactValidationContext(state, config = {}, instruction = "") {
+function clipArtifactContextUtf8(value, maximumBytes) {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= maximumBytes) return value;
+  let end = Math.max(0, maximumBytes);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString("utf8");
+}
+
+function artifactValidationContextDigest(state, content, embeddedOutputPaths) {
+  return hashForLog(JSON.stringify({
+    version: ARTIFACT_VALIDATION_CONTEXT_VERSION,
+    goalRevision: Number(state.meta?.goalContract?.revision || 0),
+    exactOutputPaths: state.meta?.artifactProgress?.exactOutputPaths || [],
+    embeddedOutputPaths,
+    content,
+  }));
+}
+
+export function artifactValidationContextIsEmbedded(state = {}) {
+  const progress = state.meta?.artifactProgress;
+  if (progress?.contextVersion !== ARTIFACT_VALIDATION_CONTEXT_VERSION ||
+      progress.outputEmbedded !== true || !/^[a-f0-9]{64}$/.test(progress.contextDigest || "") ||
+      !Array.isArray(progress.exactOutputPaths) || !progress.exactOutputPaths.length || progress.exactOutputPaths.length > 16 ||
+      progress.exactOutputPaths.some(item => typeof item !== "string" || !item || item.length > 4096) ||
+      !Array.isArray(progress.embeddedOutputPaths)) return false;
+  const paths = new Set(progress.exactOutputPaths);
+  if (paths.size !== progress.embeddedOutputPaths.length || progress.embeddedOutputPaths.some(item => !paths.has(item))) return false;
+  return (state.messages || []).some(message => message?.role === "user" &&
+    String(message.content || "").startsWith("Bounded artifact validation context v" + ARTIFACT_VALIDATION_CONTEXT_VERSION + ".") &&
+    artifactValidationContextDigest(state, message.content, progress.embeddedOutputPaths) === progress.contextDigest);
+}
+
+// Internal native context projection, not application storage/sandbox authority.
+export async function compactArtifactValidationContext(state, config = {}, instruction = "") {
   const provider = normalizeProviderId(config.provider);
   const currentMessageChars = (state.messages || []).reduce(
-    (sum, message) => sum + String(message?.content || "").length,
-    0
+    (sum, message) => sum + String(message?.content || "").length, 0
   );
   if (!["localllm", "deepseek"].includes(provider) && currentMessageChars < 160_000) return false;
   const systemMessages = (state.messages || [])
-    .filter((message) => message?.role === "system")
-    .slice(0, 1)
-    .map((message) => ({ role: "system", content: compactMultiline(message.content, 6000) }));
+    .filter(message => message?.role === "system").slice(0, 1)
+    .map(message => ({ role: "system", content: compactMultiline(message.content, 6000) }));
   const recentUserContext = (state.messages || [])
-    .filter((message) => message?.role === "user" && !isArtifactRuntimeInstruction(message.content))
-    .slice(-1)
-    .map((message) => ({ role: "user", content: compactMultiline(message.content, 2500) }));
-  const commandCwd = config.commandCwd || state.commandCwd || process.cwd();
-  const artifactSections = [];
-  const embeddedOutputPaths = [];
-  for (const rawPath of state.meta?.artifactProgress?.exactOutputPaths || []) {
-    const absolutePath = comparableOutputPath(rawPath, commandCwd);
+    .filter(message => message?.role === "user" && !isArtifactRuntimeInstruction(message.content))
+    .slice(-1).map(message => ({ role: "user", content: compactMultiline(message.content, 2500) }));
+  const requested = Array.isArray(state.meta?.artifactProgress?.exactOutputPaths)
+    ? state.meta.artifactProgress.exactOutputPaths : [];
+  const sections = [], embeddedOutputPaths = [], observed = new Set(), names = new Set();
+  let usedBytes = 0;
+  const append = text => {
+    const count = Buffer.byteLength(text, "utf8") + (sections.length ? 2 : 0);
+    if (usedBytes + count > 18000) return false;
+    usedBytes += count; sections.push(text); return true;
+  };
+  for (const rawPath of requested.slice(0, 16)) {
+    if (names.has(rawPath)) continue;
+    names.add(rawPath);
+    const name = clipArtifactContextUtf8(redactSensitiveText(typeof rawPath === "string" ? rawPath : "(invalid output)"), 512);
+    const unavailable = () => append("Output " + name + ": not embedded; use an authorized bounded or format-aware read if needed.");
+    if (typeof rawPath !== "string" || !rawPath || rawPath.length > 4096 ||
+        config.allowFileTools === false || isOpaqueBinaryPath(rawPath)) {
+      unavailable(); continue;
+    }
+    if (18000 - usedBytes < 256) break;
     try {
-      const content = await fs.readFile(absolutePath, "utf8");
-      artifactSections.push(`Exact output ${rawPath}:\n${compactMultiline(content, 16000)}`);
-      embeddedOutputPaths.push(rawPath);
+      const target = await resolveWorkspaceReadTarget(config, rawPath);
+      if (observed.has(target.canonicalPath)) { unavailable(); continue; }
+      observed.add(target.canonicalPath);
+      const { buffer } = await target.readBytes(128000);
+      if (buffer.includes(0)) { unavailable(); continue; }
+      const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
+      const redacted = redactSensitiveText(content);
+      const full = "Full output " + name + ":\n" + content;
+      if (name === rawPath && redacted === content && buffer.length <= 16000 && append(full)) {
+        embeddedOutputPaths.push(rawPath); continue;
+      }
+      const header = "Excerpt output " + name + " (not complete exact patch context):\n";
+      const suffix = "\n[Omitted or redacted content; use bounded read_file for any needed exact range.]";
+      const available = Math.min(16000, 18000 - usedBytes - (sections.length ? 2 : 0) -
+        Buffer.byteLength(header + suffix, "utf8"));
+      if (available > 0) append(header + clipArtifactContextUtf8(redacted, available) + suffix);
     } catch {
-      artifactSections.push(`Exact output ${rawPath}: unavailable`);
+      unavailable();
     }
   }
   state.messages = [
     ...systemMessages,
-    {
-      role: "user",
-      content: `Current task (authoritative):\n${compactMultiline(config.goal || state.goal || "", 4000)}`,
-    },
+    { role: "user", content: "Current task (authoritative):\n" + compactMultiline(config.goal || state.goal || "", 4000) },
     ...recentUserContext,
-    {
-      role: "user",
-      content: [
-        "The exact output content is embedded below. Do not call read_file for an embedded output; patch it directly from this packet when repair is required.",
-        compactMultiline(artifactSections.join("\n\n"), 18000),
-      ].join("\n\n"),
-    },
+    { role: "user", content: [
+      "Bounded artifact validation context v" + ARTIFACT_VALIDATION_CONTEXT_VERSION + ".",
+      "Only full unredacted snapshots below are exact patch context. Excerpts, unavailable and opaque outputs need bounded authorized reads or format-aware validation when required. Preserve the actual verification gates.",
+      sections.join("\n\n"),
+    ].join("\n\n") },
     { role: "user", content: compactMultiline(instruction, 6000) },
-  ];
+  ].map(redactRetainedModelMessage);
+  state.meta = state.meta || {};
   state.meta.artifactProgress = {
     ...state.meta.artifactProgress,
-    outputEmbedded: embeddedOutputPaths.length > 0,
+    contextVersion: ARTIFACT_VALIDATION_CONTEXT_VERSION,
+    contextDigest: artifactValidationContextDigest(state, state.messages.find(message => message?.role === "user" &&
+      message.content.startsWith("Bounded artifact validation context v" + ARTIFACT_VALIDATION_CONTEXT_VERSION + "."))?.content || "", embeddedOutputPaths),
+    outputEmbedded: requested.length > 0 && requested.length <= 16 &&
+      embeddedOutputPaths.length === new Set(requested).size,
     embeddedOutputPaths,
   };
   return true;

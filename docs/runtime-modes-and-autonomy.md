@@ -348,3 +348,22 @@ outside that guarantee.
 
 These checks enforce path policy using current filesystem observations. They do
 not provide retained-descriptor isolation against hostile same-user mutations.
+
+## Artifact verification context
+
+Artifact preflight projects authorized text through the same native read
+boundary. It reads at most 16 files, 128,000 bytes per file, and supplies at most
+16,000 UTF-8 bytes per excerpt and 18,000 bytes of aggregate output context.
+Opaque binaries remain with format-aware validators. Invalid text, NULs,
+denied scope and changed live bindings do not become inline artifact content.
+
+Only complete, unredacted snapshots with complete names can suppress redundant
+output reads. Excerpts and omitted outputs carry no such claim. The context
+digest binds the actual packet, output paths and goal revision; a boolean alone
+cannot advertise absent context. This digest detects accidental drift, not
+same-user forgery or application authentication. Resume retires cached automatic
+packets before a provider sees them; current artifact validation gates remain.
+
+The POSIX native reader opens with O_NONBLOCK before requiring a regular file,
+so a FIFO cannot strand it waiting for a writer. Regular-file behavior is
+unchanged. This is not a general filesystem deadline or retained storage proof.

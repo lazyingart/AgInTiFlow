@@ -451,7 +451,7 @@ function isNodeModulesPath(relativePath) {
   return pathSegments(relativePath).includes("node_modules");
 }
 
-function isOpaqueBinaryPath(relativePath) {
+export function isOpaqueBinaryPath(relativePath) {
   return OPAQUE_BINARY_EXTENSIONS.has(path.extname(String(relativePath || "")).toLowerCase());
 }
 

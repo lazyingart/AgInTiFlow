@@ -43,6 +43,7 @@ import {
   completionEvidenceNeedsCommand,
   completionRepairMutationRequirement,
   compactFailedTestEvidence,
+  compactArtifactValidationContext,
   consumeGeneratedArtifactProducerDiagnosticRead,
   consumePatchContextRefreshRead,
   continuationAddsConcreteRequirement,
@@ -15163,6 +15164,15 @@ try {
   );
   artifactState.meta.artifactProgress.needsRepair = true;
   artifactState.meta.artifactProgress.outputEmbedded = true;
+  assert(
+    nextStepRuntimeConfig({ provider: "localllm" }, artifactState).artifactValidationOutputEmbedded !== true,
+    "a raw embedding boolean became authority without its bounded packet"
+  );
+  await fs.writeFile(path.join(workspace, "MEDIA_ROUTINE_READINESS.md"), "accepted\n", "utf8");
+  await compactArtifactValidationContext(
+    artifactState, { provider: "localllm", commandCwd: workspace, allowFileTools: true },
+    "Deterministic artifact preflight fixture: retain current repair requirements."
+  );
   artifactState.meta.artifactProgress.usedValidationTools = ["read_file"];
   const repairConfig = nextStepRuntimeConfig({ provider: "localllm" }, artifactState);
   assert(repairConfig.artifactValidationNeedsRepair === true, "artifact repair state was not propagated");

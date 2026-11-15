@@ -70,6 +70,7 @@ try {
     "test/workspace-patch-line-endings.test.js", "test/native-patch-line-endings.test.js",
     "test/workspace-file-publication.test.js", "test/workspace-file-publication-runtime.test.js",
     "test/workspace-read-authority.test.js",
+    "test/artifact-validation-context.test.js", "test/artifact-validation-runtime.test.js",
     "test/failed-test-source-boundary.test.js", "test/failed-test-source-runtime.test.js", "test/pending-file-creation-phase.test.js",
     "test/writer-source-read-boundary.test.js", "test/writer-source-read-runtime.test.js",
     "test/project-cache-authority.test.js",
@@ -102,11 +103,11 @@ try {
     "test/artifact-instruction-boundary.test.js",
     "test/named-transform-obligations.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 2272\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 2272\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 2320\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 2320\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
-    preferOnline: true, installScriptsDisabled: true, consumerTests: 2272, testConcurrency, consumerTimeoutMs,
-    passedTests: 2272, cancelledTests: 0, skippedTests: 0,
+    preferOnline: true, installScriptsDisabled: true, consumerTests: 2320, testConcurrency, consumerTimeoutMs,
+    passedTests: 2320, cancelledTests: 0, skippedTests: 0,
     consumerDurationMs: Math.round(performance.now() - consumerStarted), failures: 0, cliVersionsVerified: true };
 } finally {
   await fs.rm(temporary, { recursive: true, force: true });
