@@ -385,3 +385,16 @@ external read roots do not authorize compilation of a replaced workspace output.
 Valid workspace TeX still selects the existing PDF engine. This shares the native
 canonical read policy; it is not a general deadline for regular-file I/O or a
 retained-descriptor isolation guarantee.
+
+Same-task continuations retain each previously observed acceptance source's
+requirements when that source is missing, invalid or cannot be read safely.
+A successful complete reread can still replace obsolete requirements; a failure
+does not erase them, including when another source refresh succeeds. A new task
+keeps its separate contract. Before final verification, the runtime may offer
+create-only tools for exact missing declared outputs alongside a source-observed
+completion-time checker. Directly requested commands and unknown/before-edit
+ordering keep the existing command-first gate. Existing-file edits, failed-test
+repair, file permissions and final fresh verification remain independently enforced.
+For older sessions without an ordering marker, a complete current source may
+establish completion-time ordering only if both retained obligation lists match
+exactly. This observation cannot replace or erase the saved requirements.

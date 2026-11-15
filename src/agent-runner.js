@@ -62,6 +62,7 @@ import {
 import { redactSensitiveText, redactValue } from "./redaction.js";
 import {
   captureWorkspaceVerificationFingerprint,
+  checkWorkspaceToolUse,
   executeWorkspaceTool,
   isOpaqueBinaryPath,
   normalizeWorkspaceInputPath,
@@ -6828,7 +6829,18 @@ function refreshPersistedProjectAcceptance(state = {}) {
   if (!sources.length) return false;
 
   const commandCwd = path.resolve(state.commandCwd || process.cwd());
-  const refreshed = {};
+  // Refresh is an observation, not authority to revoke an unobserved source's
+  // requirements. Keep each last-known acceptance until that exact source can
+  // be read completely again. This also preserves older single-source sessions.
+  const refreshed = { ...priorBySource };
+  const legacySource = normalizedProjectAcceptancePath(verification.acceptanceSource, commandCwd);
+  if (!Object.keys(priorBySource).length && legacySource) {
+    refreshed[legacySource] = {
+      requiredOutputs: Array.isArray(verification.requiredOutputs) ? [...verification.requiredOutputs] : [],
+      requiredCommands: Array.isArray(verification.requiredCommands) ? [...verification.requiredCommands] : [],
+      readAt: verification.acceptanceReadAt || "",
+    };
+  }
   let inspected = 0;
   for (const source of [...new Set(sources)].slice(-16)) {
     const sourceKey = normalizedProjectAcceptancePath(source, commandCwd);
@@ -6840,21 +6852,28 @@ function refreshPersistedProjectAcceptance(state = {}) {
     }
     const absolutePath = path.resolve(commandCwd, sourceKey);
     if (absolutePath !== commandCwd && !absolutePath.startsWith(`${commandCwd}${path.sep}`)) continue;
-    inspected += 1;
-    if (!fsSync.existsSync(absolutePath)) continue;
     try {
+      // This host metadata refresh is confined to previously selected workspace
+      // sources. It does not grant a model a read or execute permission.
+      const target = resolveWorkspaceReadTargetSync({ commandCwd }, sourceKey);
+      const { buffer } = target.readBytes(220_000);
+      if (buffer.includes(0)) continue;
+      const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
+      if (!content.trim()) continue;
       const acceptance = projectAcceptanceFromMarkdown(
-        fsSync.readFileSync(absolutePath, "utf8"),
+        content,
         sourceKey,
         { commandCwd, authoritativePaths: [sourceKey] }
       );
       refreshed[sourceKey] = {
         requiredOutputs: acceptance.requiredOutputs,
         requiredCommands: acceptance.requiredCommands,
+        commandsAreFinalVerification: acceptanceCommandsAreFinalVerification(content),
         readAt: new Date().toISOString(),
       };
+      inspected += 1;
     } catch {
-      inspected -= 1;
+      // Missing, unreadable, changed or invalid input cannot erase durable work.
     }
   }
   if (!inspected) return false;
@@ -9436,6 +9455,48 @@ export function projectAcceptanceFromMarkdown(content = "", sourcePath = "", opt
   };
 }
 
+function acceptanceCommandsAreFinalVerification(content = "") {
+  // Only an explicitly observed completion-time requirement permits creation
+  // beside its verifier. Unknown or before-edit ordering keeps the old gate.
+  const text = String(content);
+  const final = /\bbefore\s+completion\b|(?:完成|完了)前/u.test(text.toLowerCase());
+  return final && !commandMustPrecedeMutation(text);
+}
+
+function commandMustPrecedeMutation(content = "") {
+  return /\b(?:before|prior\s+to)\s+(?:(?:any|all|the|making|creating|writing)\s+)*(?:edits?|changes?|mutations?|modif\w*|creat\w*|writ\w*|touch\w*|patch\w*|delet\w*|remov\w*)\b|\bfirst\s+(?:run|execute|verify|check|test)\b|(?:修改|编辑|写入|创建|删除|変更|編集|作成|削除)[^\n。！？.!?]{0,12}(?:之前|前)|(?:首先|先行|最初に|先に|先)(?:运行|执行|検証|実行|確認)/u.test(String(content).toLowerCase());
+}
+
+function observedFinalAcceptanceCommands(state = {}) {
+  const verification = state.meta?.projectVerification || {};
+  let entries = Object.entries(verification.acceptanceBySource || {});
+  if (!entries.length && verification.acceptanceSource) entries = [[verification.acceptanceSource, verification]];
+  const commands = new Set();
+  for (const [sourcePath, source] of entries.slice(-16)) {
+    if (!Array.isArray(source?.requiredCommands) || !source.requiredCommands.length) continue;
+    let final = source.commandsAreFinalVerification === true;
+    if (!Object.hasOwn(source, "commandsAreFinalVerification")) {
+      // Older sessions have no ordering marker. A complete current observation
+      // may establish timing only when both old obligation lists still match;
+      // it may not replace, drop or invent any requirement here.
+      const cwd = path.resolve(state.commandCwd || process.cwd());
+      const key = normalizedProjectAcceptancePath(sourcePath, cwd);
+      try {
+        if (!key || !projectAcceptanceSourceIsAuthoritative(key, { commandCwd: cwd, authoritativePaths: [key] })) continue;
+        const { buffer } = resolveWorkspaceReadTargetSync({ commandCwd: cwd }, key).readBytes(220_000);
+        if (buffer.includes(0)) continue;
+        const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer);
+        const observed = projectAcceptanceFromMarkdown(content, key, { commandCwd: cwd, authoritativePaths: [key] });
+        final = JSON.stringify(observed.requiredCommands) === JSON.stringify(source.requiredCommands) &&
+          JSON.stringify(observed.requiredOutputs) === JSON.stringify(source.requiredOutputs) && acceptanceCommandsAreFinalVerification(content);
+      } catch { /* Unknown timing remains command-first. */ }
+    }
+    if (!final) return new Set();
+    for (const command of source.requiredCommands) commands.add(command);
+  }
+  return commands;
+}
+
 function requiredCommandBatchKey(commands = []) {
   return JSON.stringify(
     [...new Set(
@@ -10013,6 +10074,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       acceptanceBySource[sourceKey] = {
         requiredOutputs: acceptance.requiredOutputs,
         requiredCommands: acceptance.requiredCommands,
+        commandsAreFinalVerification: acceptanceCommandsAreFinalVerification(toolResult.content),
         readAt: now,
       };
       verification.acceptanceBySource = Object.fromEntries(
@@ -19954,6 +20016,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     state
   );
   delete runtimeConfig.completionFreshMutationInputReadPaths;
+  delete runtimeConfig.requiredProjectCommandCreationPaths;
   delete runtimeConfig.completionExactCopySourcePaths;
   const advisory = currentAdvisoryInvocationState(state, config);
   if (advisory.contract?.beforeMutation && advisory.kind !== "succeeded") {
@@ -21280,6 +21343,26 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     runtimeConfig.requiredProjectCommandPending = true;
     runtimeConfig.requiredProjectCommand = pendingRequiredProjectCommands[0];
     runtimeConfig.pendingRequiredProjectCommands = pendingRequiredProjectCommands;
+    // A final verifier must stay available without making creation of its
+    // declared missing outputs impossible. This is create-only, with the same
+    // file permissions/path policy; observed failures retain repair-only tools.
+    const directCommands = deriveScsTaskContract({ goal: completionContractGoal(config, state), taskProfile: config.taskProfile || state.meta?.taskProfile || "auto" }).requiredProjectCommands || [];
+    if (pendingNamedOutputCreation && groundingTaskContract.requiresFileMutation === true && directCommands.length === 0 &&
+        !commandMustPrecedeMutation(completionContractGoal(config, state)) &&
+        typeof state.commandCwd === "string" && state.commandCwd === runtimeConfig.commandCwd &&
+        runtimeConfig.allowFileTools === true && runtimeConfig.workspaceWritePolicy !== "prompt") {
+      const observedFinalCommands = observedFinalAcceptanceCommands(state);
+      runtimeConfig.requiredProjectCommandCreationPaths = [...new Set(
+        (pendingRequiredProjectCommands.every(command => observedFinalCommands.has(command)) ? groundingTaskContract.exactOutputPaths || [] : []).filter(output => {
+          if (isOpaqueBinaryPath(output) || (groundingTaskContract.preservedInputPaths || []).includes(output)) return false;
+          try {
+            const target = resolveWorkspacePath(runtimeConfig, output, { writeAccess: true });
+            return !target.outsideWorkspace && !fsSync.existsSync(target.absolutePath) &&
+              checkWorkspaceToolUse("write_file", { path: output, mode: "create" }, runtimeConfig).allowed;
+          } catch { return false; }
+        })
+      )].slice(0, 16);
+    }
   }
   const taskOwnedCompletionCommit = verification.taskOwnedCompletionCommit || {};
   const completionRepairAt = Date.parse(String(completionRepair.at || ""));

@@ -1267,6 +1267,27 @@ function constrainWriteFilePaths(tool, paths = []) {
   };
 }
 
+function constrainRequiredOutputCreate(tool, paths = []) {
+  const create = constrainWriteFilePaths(tool, paths);
+  if (!create) return null;
+  return {
+    ...create,
+    function: {
+      ...create.function,
+      description: "Create one exact missing declared output before final verification. Existing files, unrelated paths and repair of observed test failures are not authorized. The exact required checker remains available and must pass after the outputs exist.",
+      parameters: {
+        ...create.function.parameters,
+        required: [...new Set([...(create.function.parameters.required || []), "path", "mode"])],
+        properties: {
+          ...create.function.parameters.properties,
+          path: { ...create.function.parameters.properties.path, description: "Exact missing output path from the active acceptance contract." },
+          mode: { ...create.function.parameters.properties.mode, description: "Create only; never overwrite an existing output." },
+        },
+      },
+    },
+  };
+}
+
 function constrainWriteFileExtensions(tool, extensions = []) {
   const normalizedExtensions = [...new Set(
     (Array.isArray(extensions) ? extensions : [])
@@ -2506,7 +2527,8 @@ export function selectProgressiveTools(
         config.requiredProjectCommand,
         "Run this exact outstanding project command before Git completion or final artifact acceptance. Preserve the generated outputs and do not substitute another status, commit, or discovery command."
       );
-      return [requiredCommand, finish].filter(Boolean);
+      const create = constrainRequiredOutputCreate(available.get("write_file"), config.requiredProjectCommandCreationPaths || []);
+      return [create, requiredCommand, finish].filter(Boolean);
     }
     const pendingGitActions = Array.isArray(config.artifactValidationPendingGitActions)
       ? config.artifactValidationPendingGitActions.map((item) => String(item || "").toLowerCase())
@@ -2772,9 +2794,10 @@ export function selectProgressiveTools(
     const requiredCommand = constrainRunCommand(
       available.get("run_command"),
       config.requiredProjectCommand,
-      "Run this exact user-requested project command now. It is retained as a first-class acceptance requirement. Do not substitute a nearby test, repeat Git operations, or restart discovery. If it fails, its concrete output will reopen bounded repair tools."
+      "Run this exact required project command before completion. Create its exact missing declared outputs first when needed; the command remains available for an initial diagnostic. Do not substitute a nearby test, repeat Git operations, or restart discovery. If it fails, its concrete output will reopen bounded repair tools."
     );
-    return [requiredCommand, finish].filter(Boolean);
+    const create = constrainRequiredOutputCreate(available.get("write_file"), config.requiredProjectCommandCreationPaths || []);
+    return [create, requiredCommand, finish].filter(Boolean);
   }
 
   if (config.testVerificationPending === true) {
