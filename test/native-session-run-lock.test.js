@@ -5,8 +5,10 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fork } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { acquireSessionRunLock, runAgent } from "../src/agent-runner.js";
+import { resolveRuntimeConfig } from "../src/config.js";
 import { processIdentityForPid } from "../src/integration-durable-common.js";
 import { SessionStore } from "../src/session-store.js";
 import { closeSessionIndexConnections, globalSessionPaths, listSessionIndex } from "../src/session-index.js";
@@ -29,6 +31,179 @@ async function bounded(promise, label) {
 }
 
 const observe = promise => promise.then(value => ({ value }), error => ({ error }));
+
+// Actual native runtime with scripted providers only. Intercept the exact lease
+// unlink boundary to make the old handoff race deterministic, without a model,
+// listener, sleep-based authority or production injection seam.
+async function handoffFixture(t, options = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-handoff-lease-"));
+  const previousHome = process.env.AGINTIFLOW_HOME;
+  process.env.AGINTIFLOW_HOME = path.join(root, "home");
+  t.after(async () => {
+    closeSessionIndexConnections();
+    if (previousHome === undefined) delete process.env.AGINTIFLOW_HOME;
+    else process.env.AGINTIFLOW_HOME = previousHome;
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const workspace = path.join(root, "workspace"), sessionsDir = path.join(root, "sessions");
+  await fs.mkdir(workspace);
+  const requestedId = options.generated ? "" : "handoff-owner-fixture";
+  const publications = [], removals = [], requests = [], factoryOwners = [];
+  const controller = new AbortController();
+  const nativeLink = fs.link, nativeUnlink = fs.unlink;
+  let primaryId = requestedId, pendingUnlink = false, contenderResult = null, contenderError = null;
+  const isPrimaryLock = name => path.basename(String(name)) === ".agent-run.lock" &&
+    path.dirname(path.dirname(String(name))) === sessionsDir &&
+    (!primaryId || path.basename(path.dirname(String(name))) === primaryId);
+  t.mock.method(fs, "link", async (from, to) => {
+    const result = await Reflect.apply(nativeLink, fs, [from, to]);
+    if (isPrimaryLock(to)) {
+      primaryId ||= path.basename(path.dirname(to));
+      publications.push(JSON.parse(await fs.readFile(to, "utf8")));
+    }
+    return result;
+  });
+  const complete = content => ({ choices: [{ message: { role: "assistant", content } }] });
+  const clientFactory = async config => {
+    factoryOwners.push(JSON.parse(await fs.readFile(path.join(sessionsDir, primaryId, ".agent-run.lock"), "utf8")));
+    if (config.provider === "localllm" && options.beforeTarget) {
+      await options.beforeTarget({ config, primaryId, sessionsDir, workspace });
+    }
+    return { chat: { completions: { create: async payload => {
+      requests.push(config.provider);
+      if (config.provider === "deepseek") {
+        throw Object.assign(new Error("Synthetic provider refusal"), { status: options.sourceStatus || 402 });
+      }
+      if (options.targetFailure) throw Object.assign(new Error("Synthetic target refusal"), { status: 400 });
+      return complete(JSON.stringify(payload.messages).includes("CONTENDER_REQUEST_OK")
+        ? "CONTENDER_REQUEST_OK" : "LEASE_CONTINUATION_OK");
+    } } } };
+  };
+  clientFactory.agintiDeterministicTest = true;
+  const config = resolveRuntimeConfig({
+    goal: "Return exactly LEASE_CONTINUATION_OK. Do not create or modify any file.", provider: "deepseek", model: "deepseek-v4-pro",
+    routingMode: options.manual ? "manual" : "smart", taskProfile: "research", commandCwd: workspace,
+  }, {
+    baseDir: workspace, packageDir: fileURLToPath(new URL("../", import.meta.url)), sessionId: requestedId,
+    clientFactory, providerReadinessMode: "deterministic-test", sandboxMode: "host", useDockerSandbox: false,
+    allowShellTool: false, allowFileTools: false, allowWrapperTools: false, allowAuxiliaryTools: false,
+    allowWebSearch: false, allowMcpTools: false, allowParallelScouts: false, enableScs: "off",
+  });
+  Object.assign(config, {
+    apiKey: options.preflight ? "" : "offline-owned-placeholder", clientFactory, providerReadinessMode: "deterministic-test",
+    sessionsDir, projectSessionsDir: path.join(workspace, ".aginti-sessions"), useDockerSandbox: false,
+    sandboxMode: "host", enableScs: "off", scsActive: false, dynamicSteps: "off", maxSteps: 4, modelTimeoutMs: 1000,
+    allowProviderHandoff: true, providerHandoffProvider: "localllm", abortSignal: controller.signal,
+    onEvent(type) { if (options.cancelOnHandoff && type === "provider.handoff_requested") controller.abort(); },
+  });
+  t.mock.method(fs, "unlink", async name => {
+    const result = await Reflect.apply(nativeUnlink, fs, [name]);
+    if (!isPrimaryLock(name)) return result;
+    const state = JSON.parse(await fs.readFile(path.join(sessionsDir, primaryId, "state.json"), "utf8"));
+    removals.push({ status: state.meta?.providerHandoff?.status || null, goalStatus: state.meta?.goalContract?.status });
+    if (options.interleave && state.meta?.providerHandoff?.status === "pending" && !pendingUnlink) {
+      pendingUnlink = true;
+      const contenderFactory = async () => ({ chat: { completions: { create: async () => complete("CONTENDER_REQUEST_OK") } } });
+      contenderFactory.agintiDeterministicTest = true;
+      const outcome = await bounded(observe(runAgent({ ...config, resume: primaryId, sessionId: primaryId,
+        goal: "Return exactly CONTENDER_REQUEST_OK. Do not create or modify any file.", clientFactory: contenderFactory })), "competing resume");
+      contenderResult = outcome.value; contenderError = outcome.error;
+    }
+    return result;
+  });
+  const outcome = await bounded(observe(runAgent(config)), "native provider handoff");
+  const state = JSON.parse(await fs.readFile(path.join(sessionsDir, primaryId, "state.json"), "utf8"));
+  const events = (await fs.readFile(path.join(sessionsDir, primaryId, "events.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+  await assert.rejects(fs.stat(path.join(sessionsDir, primaryId, ".agent-run.lock")), { code: "ENOENT" });
+  // Snapshot the receipt before a separate successful post-settlement claim.
+  const receipt = { outcome, state, events, primaryId, publications: [...publications], removals: [...removals], requests: [...requests],
+    factoryOwners: [...factoryOwners], pendingUnlink, contenderResult, contenderError };
+  const release = await acquireSessionRunLock({ sessionsDir }, primaryId); await release();
+  return receipt;
+}
+
+test("native quota handoff retains the identical lease owner through both provider attempts", async t => {
+  const result = await handoffFixture(t);
+  assert.equal(result.outcome.error, undefined);
+  assert.equal(result.outcome.value.result, "LEASE_CONTINUATION_OK");
+  assert.deepEqual(result.requests, ["deepseek", "localllm"]);
+  assert.equal(result.publications.length, 1);
+  assert.deepEqual(result.factoryOwners, [result.publications[0], result.publications[0]]);
+  assert.equal(result.state.meta.goalContract.revision, 1);
+  assert.equal(result.state.meta.runtimeConfig.revision, 2);
+  assert.deepEqual(result.removals, [{ status: "active", goalStatus: "completed" }]);
+});
+
+test("no intermediate canonical unlink lets a competing resume replace the handoff goal", async t => {
+  const result = await handoffFixture(t, { interleave: true });
+  assert.equal(result.pendingUnlink, false, "a still-pending public invocation released its native lease");
+  assert.equal(result.contenderResult, null);
+  assert.equal(result.outcome.value?.result, "LEASE_CONTINUATION_OK");
+  assert.equal(result.state.meta.goalContract.revision, 1);
+  assert.doesNotMatch(JSON.stringify(result.state.messages), /CONTENDER_REQUEST_OK/);
+  assert.equal(result.publications.length, 1);
+});
+
+test("pre-inference handoff keeps one lease and starts only the scripted target", async t => {
+  const result = await handoffFixture(t, { preflight: true });
+  assert.equal(result.outcome.error, undefined);
+  assert.deepEqual(result.requests, ["localllm"]);
+  assert.equal(result.publications.length, 1);
+  assert.deepEqual(result.factoryOwners, result.publications);
+  assert.equal(result.state.meta.goalContract.revision, 1);
+});
+
+test("explicit manual provider failure releases its single lease without a handoff", async t => {
+  const result = await handoffFixture(t, { manual: true, sourceStatus: 400 });
+  assert.ok(result.outcome.error);
+  assert.deepEqual(result.requests, ["deepseek"]);
+  assert.equal(result.publications.length, 1);
+  assert.equal(result.events.filter(event => event.type === "provider.handoff_requested").length, 0);
+});
+
+test("a failed target releases the whole invocation lease exactly once", async t => {
+  const result = await handoffFixture(t, { targetFailure: true });
+  assert.ok(result.outcome.error);
+  assert.deepEqual(result.requests, ["deepseek", "localllm"]);
+  assert.equal(result.publications.length, 1);
+  assert.equal(result.removals.length, 1);
+  assert.equal(result.events.filter(event => event.type === "session.finished").length, 0);
+});
+
+test("cancellation at persisted handoff stops before target inference and releases once", async t => {
+  const result = await handoffFixture(t, { cancelOnHandoff: true });
+  assert.deepEqual(result.requests, ["deepseek"]);
+  assert.equal(result.state.meta.goalContract.status, "paused");
+  assert.equal(result.publications.length, 1);
+  assert.equal(result.removals.length, 1);
+  assert.equal(result.events.filter(event => event.type === "session.finished").length, 0);
+});
+
+test("handoff ownership blocks the same session while allowing an independent session", async t => {
+  let sameDenied = false, otherResult;
+  const result = await handoffFixture(t, { beforeTarget: async ({ config, primaryId, sessionsDir, workspace }) => {
+    await assert.rejects(runAgent({ ...config, resume: primaryId, sessionId: primaryId, goal: "Return another answer." }), error => {
+      sameDenied = error.code === "SESSION_RUN_ACTIVE";return sameDenied;
+    });
+    const factory = async () => ({ chat: { completions: { create: async () => ({ choices: [{ message: { role: "assistant", content: "OTHER_SESSION_OK" } }] }) } } });
+    factory.agintiDeterministicTest = true;
+    otherResult = await bounded(runAgent({ ...config, resume: "", sessionId: "independent-session", sessionsDir,
+      baseDir: workspace, commandCwd: workspace, goal: "Return exactly OTHER_SESSION_OK.", routingMode: "manual", clientFactory: factory }), "independent session");
+  } });
+  assert.equal(sameDenied, true);
+  assert.equal(otherResult.result, "OTHER_SESSION_OK");
+  assert.equal(result.outcome.value.result, "LEASE_CONTINUATION_OK");
+  assert.equal(result.publications.length, 1);
+});
+
+test("an automatically generated native session ID remains stable through one leased handoff", async t => {
+  const result = await handoffFixture(t, { generated: true });
+  assert.match(result.primaryId, /^web-agent-[a-f0-9-]+$/);
+  assert.equal(result.outcome.value.sessionId, result.primaryId);
+  assert.equal(result.publications.length, 1);
+  assert.equal(result.state.sessionId, result.primaryId);
+  assert.equal(result.state.meta.goalContract.revision, 1);
+});
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-native-session-lock-"));

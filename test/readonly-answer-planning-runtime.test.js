@@ -6,6 +6,89 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { runAgent } from "../src/agent-runner.js";
+import { resolveRuntimeConfig } from "../src/config.js";
+import { closeSessionIndexConnections } from "../src/session-index.js";
+
+async function suppliedStatusFixture(t, { scsMode = "off", creation = false, read = false } = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-supplied-status-"));
+  const workspace = path.join(root, "workspace"), previousHome = process.env.AGINTIFLOW_HOME;
+  process.env.AGINTIFLOW_HOME = path.join(root, "home");
+  t.after(async () => {
+    closeSessionIndexConnections();
+    if (previousHome === undefined) delete process.env.AGINTIFLOW_HOME; else process.env.AGINTIFLOW_HOME = previousHome;
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  await fs.mkdir(workspace);
+  const source = "The draft is ready. The appendix still needs review.\n";
+  await fs.writeFile(path.join(workspace, "draft.md"), source);
+  const reply = "The draft is ready; the appendix still needs review.";
+  const requests = [];let reads = 0;
+  const tool = (name, args) => ({ id: "status_" + requests.length, type: "function", function: { name, arguments: JSON.stringify(args) } });
+  const clientFactory = async () => ({ chat: { completions: { create: async body => {
+    requests.push(body);
+    const system = String(body.messages?.[0]?.content || "");
+    const message = !body.tools && system.includes("SCS committee planner")
+      ? { content: JSON.stringify({ role: "committee", phase_goal: "Answer the current request truthfully", plan: "Use the supplied note and preserve its status and file restrictions.", acceptance_criteria: ["Answer without unsupported actions"], allowed_tools: ["finish"], stop_conditions: ["Missing mandatory evidence remains a blocker"] }) }
+      : !body.tools && system.includes("independent SCS student validator")
+        ? { content: JSON.stringify({ role: "student", decision: "approve_plan", confidence: 0.99, evidence: ["Runtime evidence remains authoritative"], reason: "Bounded planning", next_required_action: "answer" }) }
+        : !body.tools ? { content: "Answer the current question from the supplied note. Do not create an unrequested artifact." }
+          : read && reads++ === 0 ? { tool_calls: [tool("read_file", { path: "draft.md" })] }
+            : { tool_calls: [tool("finish", { result: creation ? "Here is a proposed short letter." : reply })] };
+    return { choices: [{ index: 0, finish_reason: message.tool_calls ? "tool_calls" : "stop", message: { role: "assistant", content: null, ...message } }] };
+  } } } });
+  clientFactory.agintiDeterministicTest = true;
+  const sessionId = "supplied-status";
+  const goal = creation ? "Draft a short letter and save it as letter.md."
+    : read ? "Read draft.md and briefly explain its status here. No file changes."
+      : "could you give me a quick status from this note pls? The draft is ready, appendix still needs review. Just answer here, no file changes.";
+  const config = resolveRuntimeConfig({ provider: "deepseek", model: "deepseek-flash", routingMode: "manual", taskProfile: "auto", goal, commandCwd: workspace }, {
+    baseDir: workspace, packageDir: fileURLToPath(new URL("../", import.meta.url)), sessionId, clientFactory,
+    providerReadinessMode: "deterministic-test", sandboxMode: "host", useDockerSandbox: false,
+    allowFileTools: read || creation, allowShellTool: false, allowWrapperTools: false, allowAuxiliaryTools: false,
+    allowWebSearch: false, allowMcpTools: false, allowParallelScouts: false, enableScs: scsMode,
+  });
+  Object.assign(config, { apiKey: "offline-owned-placeholder", clientFactory, providerReadinessMode: "deterministic-test", sessionsDir: path.join(root, "sessions"),
+    projectSessionsDir: path.join(root, "pointers"), enableScs: scsMode, scsActive: scsMode === "on", scsValidationMode: "deterministic",
+    dynamicSteps: "off", maxSteps: 4, modelTimeoutMs: 1000, allowProviderHandoff: false,
+    routeProvider: "deepseek", routeModel: "deepseek-flash", mainProvider: "deepseek", mainModel: "deepseek-flash", spareProvider: "deepseek", spareModel: "deepseek-flash" });
+  const first = await runAgent(config);
+  let second;
+  if (!creation && !read) second = await runAgent({ ...config, resume: sessionId,
+    goal: "same note, can you restate the draft status briefly? Don't change any files.", expectedRuntimeRevision: 1,
+    runtimePatch: { model: "deepseek-v4-pro", routeModel: "deepseek-v4-pro", mainModel: "deepseek-v4-pro", spareModel: "deepseek-v4-pro" } });
+  const state = JSON.parse(await fs.readFile(path.join(config.sessionsDir, sessionId, "state.json"), "utf8"));
+  const events = (await fs.readFile(path.join(config.sessionsDir, sessionId, "events.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+  assert.equal(await fs.readFile(path.join(workspace, "draft.md"), "utf8"), source);
+  await assert.rejects(fs.stat(path.join(config.sessionsDir, sessionId, ".agent-run.lock")), { code: "ENOENT" });
+  return { first, second, state, events, requests, workspace, reply };
+}
+
+for (const scsMode of ["off", "on"]) test(`supplied draft status completes initial and explicit Pro resume without artifact work: SCS ${scsMode}`, { timeout: 15000 }, async t => {
+  const result = await suppliedStatusFixture(t, { scsMode });
+  assert.notEqual(result.first.stopped, true);assert.notEqual(result.second.stopped, true);
+  assert.equal(result.first.result, result.reply);assert.equal(result.second.result, result.reply);
+  assert.equal(result.state.meta.goalContract.status, "completed");assert.equal(result.state.meta.runtimeConfig.revision, 2);
+  assert.equal(result.state.meta.runtimeConfig.model, "deepseek-v4-pro");
+  assert.equal(result.events.some(event => event.type === "completion.evidence_rejected"), false);
+  assert.equal(result.events.filter(event => event.type === "tool.completed" && event.data?.toolName !== "finish").length, 0);
+  assert.equal(result.state.meta.projectVerification?.mutationRevision || 0, 0);
+});
+
+test("an affirmative saved-draft request still rejects a proposal without its actual file", { timeout: 15000 }, async t => {
+  const result = await suppliedStatusFixture(t, { creation: true });
+  assert.equal(result.first.stopped, true);
+  assert.notEqual(result.state.meta.goalContract.status, "completed");
+  assert.ok(result.events.some(event => event.type === "completion.evidence_rejected"));
+  await assert.rejects(fs.stat(path.join(result.workspace, "letter.md")), { code: "ENOENT" });
+});
+
+test("draft.md is still a required read input rather than an output artifact", { timeout: 15000 }, async t => {
+  const result = await suppliedStatusFixture(t, { read: true });
+  assert.notEqual(result.first.stopped, true);assert.equal(result.first.result, result.reply);
+  assert.equal(result.events.filter(event => event.type === "tool.completed" && event.data?.toolName === "read_file").length, 1);
+  assert.equal(result.state.meta.projectVerification?.mutationRevision || 0, 0);
+});
 
 const question = {
   en: "Why did the previous test fail? Did you edit any file? Do not rerun it or modify any file.",

@@ -33813,35 +33813,34 @@ export async function acquireSessionRunLock(config = {}, sessionId = "") {
   return acquireNativeSessionRunLock(config, sessionId);
 }
 
-async function runAgentOnce(config) {
+export async function runAgent(config) {
+  assertIntegrationRunAgentInvocation(config);
   const sessionId = config.resume || config.sessionId || `web-agent-${crypto.randomUUID()}`;
   const releaseRunLock = await acquireSessionRunLock(config, sessionId);
   try {
     const runConfig = config.resume || config.sessionId
       ? config
       : { ...config, sessionId };
-    return await runAgentOnceUnlocked(runConfig);
+    try {
+      return await runAgentOnceUnlocked(runConfig);
+    } catch (error) {
+      if (!(error instanceof ProviderHandoffSignal)) throw error;
+      const decision = error.decision;
+      const nextConfig = {
+        ...runConfig,
+        goal: "",
+        resume: error.sessionId,
+        sessionId: error.sessionId,
+        runtimePatch: decision.runtimePatch,
+        expectedRuntimeRevision: error.expectedRuntimeRevision,
+      };
+      assertIntegrationRunAgentInvocation(nextConfig);
+      // Provider attempts are one public invocation. Keep its native session
+      // owner through cleanup and the persisted route change, so another
+      // resume cannot replace the goal before this handoff continues it.
+      return await runAgentOnceUnlocked(nextConfig);
+    }
   } finally {
     await releaseRunLock();
-  }
-}
-
-export async function runAgent(config) {
-  assertIntegrationRunAgentInvocation(config);
-  try {
-    return await runAgentOnce(config);
-  } catch (error) {
-    if (!(error instanceof ProviderHandoffSignal)) throw error;
-    const decision = error.decision;
-    const nextConfig = {
-      ...config,
-      goal: "",
-      resume: error.sessionId,
-      sessionId: error.sessionId,
-      runtimePatch: decision.runtimePatch,
-      expectedRuntimeRevision: error.expectedRuntimeRevision,
-    };
-    assertIntegrationRunAgentInvocation(nextConfig);
-    return runAgentOnce(nextConfig);
   }
 }

@@ -1,6 +1,65 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildKnownReadOnlyAnswerPhasePlan, buildKnownConstrainedPhasePlan, completionTaskContract } from "../src/agent-runner.js";
+import { deriveScsTaskContract } from "../src/scs-evidence.js";
+
+for (const goal of [
+  "Could you summarize this note? The draft is ready. Just answer here, no file changes.",
+  "The draft is ready; the appendix needs review. Just answer here. Do not change any files.",
+  "Is the draft ready? Just tell me.",
+  'Explain the phrase "draft a letter". Do not create anything.',
+  "What is the status of the draft?",
+  "A draft of the letter was rejected. Explain the note only.",
+  "The prior draft already exists. Summarize the supplied note.",
+  "Read draft.md and explain its contents. No file changes.",
+  "内容里说 draft 已准备好。只用文字回答，不要修改文件。",
+  "この文の draft は完成済みです。説明だけしてください。",
+  "The team asked to draft a report last week. Summarize this note only.",
+  "Draft status: ready. Explain this status only.",
+]) test(`artifact nouns and quoted instructions do not request a new draft: ${goal}`, () => {
+  const contract = deriveScsTaskContract({ goal, taskProfile: "auto" });
+  assert.equal(contract.requiredEvidence.some(item => item.category === "artifact"), false);
+  if (!goal.includes("draft.md")) assert.equal(contract.requiresExternalEvidence, false);
+});
+
+for (const goal of [
+  "Draft a short letter.", "Please draft a release note.", "Could you draft a short memo?",
+  "I want you to draft a plan.", "I need a draft.", "I'd like a draft of the report.",
+  "Give me a rough draft.", "Return the revised draft.", "Finish the existing draft.",
+  "The draft is ready; now draft the conclusion.", "Explain the draft; then create a PDF.",
+  "Read draft.md, then create final.pdf.",
+]) test(`affirmative draft/artifact requests keep their evidence gate: ${goal}`, () => {
+  const contract = deriveScsTaskContract({ goal, taskProfile: "auto" });
+  assert.equal(contract.requiresExternalEvidence, true);
+  assert.equal(contract.requiredEvidence.some(item => item.category === "artifact"), true);
+});
+
+for (const clause of ["No file changes.", "Please just no workspace modifications.", "No file writes."]) {
+  test(`a closed no-mutation clause is a prohibition, not fresh execution: ${clause}`, () => {
+    const contract = deriveScsTaskContract({ goal: `Summarize the supplied status. ${clause}`, taskProfile: "auto" });
+    assert.equal(contract.requiresExternalEvidence, false);
+    assert.deepEqual(contract.requiredEvidence, []);
+    assert.ok(contract.forbiddenActions.includes("User forbids: modify files"));
+  });
+}
+test("no file changes preserves a separately requested diagnostic command", () => {
+  const contract = deriveScsTaskContract({ goal: "No file changes; run `node --test check.mjs` once.", taskProfile: "auto" });
+  assert.equal(contract.requiresExternalEvidence, true);
+  assert.ok(contract.requiredEvidence.some(item => item.category === "command"));
+  assert.ok(contract.requiredEvidence.some(item => item.category === "test"));
+  assert.ok(contract.forbiddenActions.includes("User forbids: modify files"));
+});
+
+for (const goal of [
+  'Create letter.md containing the text "No file changes."',
+  "Write note.txt with the exact text No file changes.",
+  'Explain the phrase "No file writes."',
+  "No file changes to original.md; create report.md.",
+]) test(`quoted, data and scoped no-change prose cannot issue a global file ban: ${goal}`, () => {
+  const contract = deriveScsTaskContract({ goal, taskProfile: "auto" });
+  assert.equal(contract.forbiddenActions.includes("User forbids: modify files"), false);
+  if (/^(?:Create|Write)/.test(goal)) assert.ok(contract.requiredEvidence.some(item => item.category === "file"));
+});
 
 function context(request, extra = {}) {
   const config = { goal: request, taskProfile: "code" };

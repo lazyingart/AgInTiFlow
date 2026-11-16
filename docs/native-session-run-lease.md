@@ -5,6 +5,13 @@ A concurrent resume returns `SESSION_RUN_ACTIVE` before loading or changing its
 state, invoking a tool, or requesting a model response. Follow-ups can use the
 session inbox or wait until the active invocation finishes.
 
+The lease covers the entire public invocation, including cleanup between a
+provider failure and its bounded same-session handoff. A route change retains
+the original owner record rather than releasing and reacquiring it. Another
+resume cannot replace the active goal in that interval. Different session IDs
+remain independent. Completion, cancellation and either provider's failure
+release ownership only after that invocation has settled.
+
 The owner record is fully written and synced before atomic no-replace hard-link
 publication. Recovery retains the old inode and checks a unique removal link,
 link count and current name before unlinking. A delayed recovery operation cannot
@@ -37,5 +44,8 @@ automatically restarted by this change.
 
 `npm run test:native-session-run-lock` exercises deterministic reaper races,
 publication/removal crashes, ownership ambiguity, PID reuse, malformed records,
-release failures and four-process mutual exclusion. It is also run from the
+release failures and four-process mutual exclusion. Native handoff cases also
+check the exact owner across both attempts, a competing resume at canonical
+unlink, preflight failures, cancellation, generated IDs and unrelated sessions.
+It is also run from the
 installed archive by `npm run pack:verify-runtime`.

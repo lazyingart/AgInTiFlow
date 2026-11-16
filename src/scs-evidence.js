@@ -2459,10 +2459,47 @@ function isExplanatoryOnlyTask(goal = "") {
   return explanation && !codeInspection && !goalRequestsWorkspaceMutation(text) && !hasPositiveExecutionRequest(text);
 }
 
+function artifactSignalsWithoutDraftMentions(text = "") {
+  // "Draft a letter" is an action; "the draft is ready" and quoted examples
+  // are data. A bare ambiguous noun must not manufacture an artifact duty.
+  const syntax = outputIntentSyntax(text);
+  let boundaryCursor = 0, quoteCursor = 0, start = 0;
+  const preamble = /^(?:(?:please|kindly|now|actually|quickly|briefly|just|first|next|finally)\s+|(?:can|could|would|will)\s+you\s+|(?:i|we)\s+(?:want|need|would\s+like)\s+you\s+to\s+|(?:you|we)\s+(?:must|should|can|could|need\s+to|have\s+to)\s+|(?:请|請|帮我|幫我|麻烦|麻煩)\s*)/iu;
+  return text.replace(/\bdrafts?\b/giu, (word, index) => {
+    while (boundaryCursor < syntax.boundaries.length && syntax.boundaries[boundaryCursor] < index) start = syntax.boundaries[boundaryCursor++] + 1;
+    while (quoteCursor < syntax.quotes.length && syntax.quotes[quoteCursor].end <= index) quoteCursor++;
+    const quote = syntax.quotes[quoteCursor];
+    if (quote && quote.start < index && quote.end > index || index - start > 512) return " ".repeat(word.length);
+    const after = text.slice(index + word.length, index + word.length + 80);
+    if (/^\s+(?:is|are|was|were|has|have|had|seems?|looks?|remains?|needs?)\b|^\s+status\s*[:：]|^(?:\.[a-z0-9]|[/\\])/iu.test(after)) return " ".repeat(word.length);
+    let lead = text.slice(start, index).split(/[,，]|\b(?:and|then|also)\b/iu).at(-1).trimStart();
+    while (preamble.test(lead)) lead = lead.replace(preamble, "").trimStart();
+    if (!lead.trim() && word.toLowerCase() === "draft") return word;
+    const requestedNoun = /^(?:(?:give|provide|return|send|show|create|prepare|write|make|edit|revise|finish|complete|attach|upload)\s+(?:(?:me|us)\s+)?|(?:i|we)(?:'d|\s+would)?\s+(?:need|want|like)\s+|(?:need|want)\s+)(?:(?:a|an|the|one|some|new|short|brief|rough|initial|existing|revised|final)\s+)*$/iu;
+    return requestedNoun.test(lead.trim() + " ") ? word : " ".repeat(word.length);
+  });
+}
+
+const NO_FILE_CHANGES = /\bno\s+(?:file|workspace)\s+(?:changes|edits|modifications|writes)\b(?=\s*(?:$|[.!?。！？;；,，\n]))/giu;
+
+function noFileChangeDirectives(text = "") {
+  const syntax = outputIntentSyntax(text), indices = new Set();
+  let boundaryCursor = 0, quoteCursor = 0, start = 0;
+  for (const match of text.matchAll(NO_FILE_CHANGES)) {
+    while (boundaryCursor < syntax.boundaries.length && syntax.boundaries[boundaryCursor] < match.index) start = syntax.boundaries[boundaryCursor++] + 1;
+    while (quoteCursor < syntax.quotes.length && syntax.quotes[quoteCursor].end <= match.index) quoteCursor++;
+    const quote = syntax.quotes[quoteCursor];
+    if (quote && quote.start < match.index && quote.end > match.index || match.index - start > 256) continue;
+    const lead = text.slice(start, match.index).split(/[,，]|\b(?:and|but|then|also)\b/iu).at(-1).trim();
+    if (/^(?:(?:please|kindly|just)\s+)*(?:(?:i|we)\s+(?:want|need|require)\s+)?$/iu.test(lead ? lead + " " : "")) indices.add(match.index);
+  }
+  return indices;
+}
+
 function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCriteria = []) {
   const positiveGoal = stripForbiddenLanguage(normalizeFileCreationIntent(goal));
   const text = normalizedText(positiveGoal);
-  const artifactSignalText = text
+  const artifactSignalText = artifactSignalsWithoutDraftMentions(text)
     .replace(
       /\b(?:clean(?:\s+up)?|remove|delete|clear|purge)\b[^.\n;]{0,120}\b(?:(?:disposable|generated|temporary|stale|test|build)\s+){0,4}(?:debris|caches?|byproducts?|outputs?|artifacts?|files?|directories?|folders?)\b/gi,
       ""
@@ -2563,6 +2600,7 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
 function inferForbiddenActions(goal = "") {
   const text = normalizeSoftLineWraps(goal);
   const forbidden = [];
+  if (noFileChangeDirectives(text).size) forbidden.push("User forbids: modify files");
   const isAction = (value = "") =>
     /\b(use|open|click|browse|browser|upload|attach|submit|publish|deploy|run|execute|install|delete|remove|commit|push|call|api|alter|chang(?:e|ing)|edit(?:ing)?|fix(?:ing)?|modif(?:y|ying)|patch(?:ing)?|repair(?:ing)?|rewrit(?:e|ing)|send(?:ing)?|touch(?:ing)?|writ(?:e|ing))\b/i.test(
       value
@@ -2635,7 +2673,9 @@ function stripForbiddenLanguage(goal = "") {
   for (const span of negativeSpans.sort((left, right) => right.start - left.start)) {
     source = source.slice(0, span.start) + source.slice(span.start, span.end).replace(/[^\r\n]/g, " ") + source.slice(span.end);
   }
+  const noFileChanges = noFileChangeDirectives(source);
   return source
+    .replace(NO_FILE_CHANGES, (clause, index) => noFileChanges.has(index) ? " ".repeat(clause.length) : clause)
     .replace(
       /\b(?:create|attach|return|send|write|generate|produce)(?:\s*,?\s*(?:and|or)\s*(?:create|attach|return|send|write|generate|produce))*\s+no\s+(?:files?|attachments?|artifacts?)\b/gi,
       ""
