@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { acquireNativeInboxMutationLock, removeDeadNativeInboxMutationLock } from "./session-inbox-lock.js";
 import { deleteSessionIndex, globalSessionPaths, isSafeSessionId, upsertSessionIndex } from "./session-index.js";
 import { enqueueHousekeepingEvent } from "./housekeeping.js";
 import {
@@ -21,8 +22,6 @@ const DIRECTORY_SYNC_UNSUPPORTED_CODES = new Set(["EBADF", "EINVAL", "EISDIR", "
 const DEFAULT_INBOX_COMPACTION_RECORD_THRESHOLD = 128;
 const DEFAULT_INBOX_COMPACTION_BYTE_THRESHOLD = 256 * 1024;
 const DEFAULT_INBOX_LOCK_TIMEOUT_MS = 10_000;
-const INBOX_LOCK_RETRY_MS = 10;
-const INBOX_LOCK_HARD_STALE_MS = 120_000;
 const INBOX_CLAIM_HARD_STALE_MS = 24 * 60 * 60 * 1000;
 
 async function syncDirectory(directoryPath) {
@@ -160,10 +159,6 @@ function isInboxClaimLive(claim) {
   if (!String(claim?.consumerId || "").trim() || !Number.isInteger(pid) || pid <= 0) return false;
   if (Number.isFinite(claimedAt) && Date.now() - claimedAt >= INBOX_CLAIM_HARD_STALE_MS) return false;
   return isProcessAlive(pid);
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 export class SessionStore {
@@ -416,30 +411,7 @@ export class SessionStore {
       if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
         return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "removeStaleInboxLock");
       }
-      let stat;
-      let owner = null;
-      try {
-        stat = await fs.stat(this.inboxLockPath);
-        owner = await fs.readFile(this.inboxLockPath, "utf8").then(JSON.parse).catch(() => null);
-      } catch (error) {
-        if (error?.code === "ENOENT") return true;
-        throw error;
-      }
-
-      const ageMs = Math.max(Date.now() - stat.mtimeMs, 0);
-      const ownerDead = Number.isInteger(owner?.pid) && !isProcessAlive(owner.pid);
-      if (!ownerDead && ageMs < INBOX_LOCK_HARD_STALE_MS) return false;
-
-      const stalePath = `${this.inboxLockPath}.stale.${process.pid}.${crypto.randomUUID()}`;
-      try {
-        await fs.rename(this.inboxLockPath, stalePath);
-        await fs.unlink(stalePath).catch(() => {});
-        await syncDirectory(this.sessionDir);
-        return true;
-      } catch (error) {
-        if (error?.code === "ENOENT") return true;
-        throw error;
-      }
+      return removeDeadNativeInboxMutationLock(this.sessionDir);
     });
   }
 
@@ -448,48 +420,8 @@ export class SessionStore {
       if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
         return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "acquireInboxLock");
       }
-      await fs.mkdir(this.sessionDir, { recursive: true, mode: 0o700 });
-      const token = crypto.randomUUID();
-      const ownerPath = path.join(this.sessionDir, `.inbox-lock-owner.${process.pid}.${token}`);
-      const owner = {
-        token,
-        pid: process.pid,
-        createdAt: new Date().toISOString(),
-      };
-      await atomicWriteFile(ownerPath, `${JSON.stringify(owner)}\n`);
-      const deadline = Date.now() + this.inboxLockTimeoutMs;
-      let acquired = false;
-
-      try {
-        while (!acquired) {
-          try {
-            await fs.link(ownerPath, this.inboxLockPath);
-            await syncDirectory(this.sessionDir);
-            acquired = true;
-          } catch (error) {
-            if (error?.code !== "EEXIST") throw error;
-            if (await this.removeStaleInboxLock()) continue;
-            if (Date.now() >= deadline) {
-              const timeoutError = new Error(`Timed out waiting for the session inbox mutation lock for ${this.sessionId}.`);
-              timeoutError.code = "INBOX_LOCK_TIMEOUT";
-              throw timeoutError;
-            }
-            await delay(INBOX_LOCK_RETRY_MS);
-          }
-        }
-      } finally {
-        await fs.unlink(ownerPath).catch(() => {});
-      }
-
-      return async () =>
-        this.withIntegrationOperation("releaseInboxLock", async () => {
-          const current = await fs.readFile(this.inboxLockPath, "utf8").then(JSON.parse).catch(() => null);
-          if (current?.token !== token) return;
-          await fs.unlink(this.inboxLockPath).catch((error) => {
-            if (error?.code !== "ENOENT") throw error;
-          });
-          await syncDirectory(this.sessionDir);
-        });
+      const release = await acquireNativeInboxMutationLock(this.sessionDir, this.inboxLockTimeoutMs);
+      return () => this.withIntegrationOperation("releaseInboxLock", release);
     });
   }
 
