@@ -74,6 +74,7 @@ try {
     "test/workspace-cancellation.test.js", "test/native-workspace-cancellation.test.js",
     "test/native-tool-context.test.js", "test/native-tool-context-runtime.test.js",
     "test/stale-source-recovery.test.js", "test/native-stale-source-runtime.test.js",
+    "test/workspace-source-metadata.test.js", "test/native-patch-artifact-evidence.test.js", "test/native-move-metadata.test.js",
     "test/artifact-validation-context.test.js", "test/artifact-validation-runtime.test.js",
     "test/prepatch-source-boundary.test.js", "test/prepatch-source-runtime.test.js",
     "test/synchronous-source-read.test.js", "test/document-producer-source.test.js", "test/document-source-cancellation-runtime.test.js",
@@ -114,8 +115,8 @@ try {
     "test/artifact-instruction-boundary.test.js",
     "test/named-transform-obligations.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 3029\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 3029\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 3084\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 3084\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,

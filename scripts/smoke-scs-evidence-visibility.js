@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -115,7 +116,8 @@ assert.deepEqual(deriveScsTaskContract({
 }).excludedOutputPaths, ["source.json"], "postfix write protection leaked onto a later output");
 assert.deepEqual(evaluateScsSemanticContract(immutableInputsContract, {
   commandCwd: scopedReadThenWriteRoot,
-  events: [{ type: "tool.completed", data: { ok: true, toolName: "read_file", path: "notes.txt", content: "first input" } }],
+  events: [{ type: "tool.completed", data: { ok: true, toolName: "read_file", path: "notes.txt", content: "first input",
+    sha256: createHash("sha256").update("first input").digest("hex"), bytes: Buffer.byteLength("first input") } }],
 }).missingSourceReads, ["risks.txt"], "write protection erased an unread input requirement");
 assert.deepEqual(
   groupBriefingContract.requiredArtifactKinds.map((item) => item.id),

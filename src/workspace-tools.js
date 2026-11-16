@@ -1200,7 +1200,7 @@ async function writeFile(config, args) {
     throw new Error(`File already exists. Use mode=overwrite to modify it: ${target.relativePath}`);
   }
 
-  let content = args.content || "", copiedFrom = null;
+  let content = args.content || "", copiedFrom = null, metadataSource;
   if (fromSource) {
     const source = resolveWorkspacePath(config, args.copyFromPath, { allowReadOnlyRoots: true });
     if (!pathPolicy("read_file", source.relativePath).allowed) throw workspaceReadBoundaryError();
@@ -1208,10 +1208,16 @@ async function writeFile(config, args) {
     if (snapshot.hash !== args.copyFromSha256 || !snapshot.buffer.equals(Buffer.from(snapshot.content, "utf8"))) throw new Error("Copy source changed or cannot round-trip as bounded UTF-8; read it again before copying.");
     content = snapshot.content;
     copiedFrom = { path: source.relativePath, sha256: snapshot.hash, bytes: snapshot.buffer.length };
+    // A permitted read alias copies its approved target, not the symlink. Move
+    // semantics deliberately do not follow aliases when removing the source.
+    const approvedSource = await resolveWorkspaceReadTarget(config, args.copyFromPath);
+    metadataSource = { ...source, absolutePath: approvedSource.canonicalPath };
   }
   const change = await writeChange(target, content, mode === "overwrite" ? "overwrite_file" : "create_file", {
     mode,
-  }, { createOnly: mode === "create", signal: config.abortSignal });
+  }, { createOnly: mode === "create", signal: config.abortSignal,
+    ...(metadataSource ? { metadataSource, expectedSourceHash: copiedFrom.sha256 } : {}),
+  });
   return {
     ok: change.artifactValidation ? change.artifactValidation.ok : true,
     toolName: "write_file",
@@ -1527,7 +1533,7 @@ async function applyPatchDocument(config, args) {
         if (!policy.allowed) throw new Error(policy.reason);
         const destination = await writeChange(newTarget, item.afterText, "apply_patch_move_destination", {
           sourcePath: target.relativePath, movePending: true, patchFormat: "multi-file",
-        }, { createOnly: true, signal: config.abortSignal });
+        }, { createOnly: true, signal: config.abortSignal, metadataSource: target, expectedSourceHash: item.beforeHash, preserveSourceMode: true });
         changes.push(destination);
         throwIfWorkspaceAborted(config.abortSignal);
         const source = await readTextFile(target, config, { writeAccess: true });

@@ -11,7 +11,7 @@ import {
 } from "./shell-syntax.js";
 import { firstJsonObject } from "./json-extraction.js";
 import { deriveAdvisoryInvocationContract } from "./advisory-invocation.js";
-import { isSensitiveWorkspacePath } from "./workspace-read-boundary.js";
+import { isSensitiveWorkspacePath, createWorkspaceReadBoundarySync, readWorkspaceFileSnapshotSync } from "./workspace-read-boundary.js";
 import { currentGoalRevisionBelongsToActiveTask } from "./goal-intent.js";
 
 const CATEGORY_LABELS = {
@@ -5945,7 +5945,8 @@ export function evaluateScsSemanticContract(
   { commandCwd = process.cwd(), events = [], state = {}, readOnlyRoots = [] } = {}
 ) {
   const inputReads = evaluateExplicitInputReads(contract, { commandCwd, events, state });
-  if (!inputReads.ok) return { ok: false, checked: true, inputReads, reason: `Requested input reads are missing: ${inputReads.missingInputReads.join(", ")}` };
+  if (!inputReads.ok) return { ok: false, checked: true, inputReads, missingSourceReads: [...inputReads.missingInputReads],
+    reason: `Requested input reads are missing: ${inputReads.missingInputReads.join(", ")}` };
   const exactOutputPaths = Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : [];
   const requiredTextTerms = Array.isArray(contract.requiredTextTerms) ? contract.requiredTextTerms : [];
   const requiredExecutableTerms = Array.isArray(contract.requiredExecutableTerms)
@@ -6114,6 +6115,54 @@ function eventToEvidence(event = {}) {
   return evidence;
 }
 
+function nativePublishedPath(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 4096 && value.isWellFormed() &&
+    !value.includes("\\") && !value.includes("\0") && !path.isAbsolute(value) && path.posix.normalize(value) === value &&
+    value !== "." && value !== ".." && !value.startsWith("../") && !isSensitiveWorkspacePath(value);
+}
+
+function nativeArtifactChange(change) {
+  if (!change || typeof change !== "object" || types.isProxy(change) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(change))) return null;
+  const fields = Object.getOwnPropertyDescriptors(change);
+  if (Reflect.ownKeys(fields).some(key => typeof key !== "string" || !fields[key].enumerable || !("value" in fields[key]))) return null;
+  const value = key => fields[key]?.value;
+  const target = value("path"), digest = value("afterHash"), bytes = value("afterBytes");
+  if (value("ok") !== true || !nativePublishedPath(target)) return null;
+  if (value("action") === "apply_patch_delete") {
+    return value("deleted") === true && digest === null && bytes === 0 && typeof value("beforeHash") === "string" &&
+      /^[a-f0-9]{64}$/.test(value("beforeHash")) ? { target, deleted: true } : null;
+  }
+  if (value("deleted") === true || value("movePending") === true ||
+      !["apply_patch_add", "apply_patch_update", "apply_patch_replace", "apply_patch_move"].includes(value("action")) ||
+      typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest) ||
+      !Number.isSafeInteger(bytes) || bytes < 0 || bytes > 220_000) return null;
+  let metadata = null;
+  const publication = value("publication");
+  if (!publication || typeof publication !== "object" || types.isProxy(publication) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(publication))) return null;
+  {
+    const pub = Object.getOwnPropertyDescriptors(publication);
+    if (Reflect.ownKeys(pub).some(key => !["method", "fileSynced", "sourceMetadata", "stagingCleanupPending", "stagingPath"].includes(key) ||
+        !pub[key].enumerable || !("value" in pub[key])) ||
+        !["rename", "exclusive-link"].includes(pub.method?.value) || pub.fileSynced?.value !== true) return null;
+    const descriptor = pub.sourceMetadata;
+    if (descriptor) {
+      if (!descriptor.enumerable || !("value" in descriptor)) return null;
+      const raw = descriptor.value;
+      if (!raw || typeof raw !== "object" || types.isProxy(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw))) return null;
+      const data = Object.getOwnPropertyDescriptors(raw), keys = Reflect.ownKeys(data);
+      if (keys.length !== 3 || keys.some(key => !["mode", "uid", "gid"].includes(key) || !data[key].enumerable || !("value" in data[key]))) return null;
+      const mode = data.mode?.value, uid = data.uid?.value, gid = data.gid?.value;
+      if (!Number.isInteger(mode) || mode < 0 || mode > 0o777 ||
+          !Number.isSafeInteger(uid) || uid < 0 || uid > 0xffffffff || !Number.isSafeInteger(gid) || gid < 0 || gid > 0xffffffff) return null;
+      metadata = { mode, uid, gid };
+    }
+  }
+  if (value("action") === "apply_patch_move" && (!metadata || !nativePublishedPath(value("fromPath")) || value("fromPath") === target)) return null;
+  return { target, sha256: digest, bytes, ...(metadata ? { metadata } : {}) };
+}
+
 function toolPayloadToEvidence(payload = {}, source = "tool") {
   const authoritativeRoutineObserved = Boolean(
     payload?.authoritativeReadOnlyRoutine === true &&
@@ -6161,6 +6210,27 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
       `${toolName || "tool"} produced file/workspace evidence`,
       payload.path || payload.reportPath || args.path || ""
     );
+  }
+  // A successful multi-file patch has no single top-level path. Its closed
+  // per-file native receipts, rather than the now-removed input read or model
+  // summary, identify the durable output. Pending copies and deletions are not
+  // completed artifact receipts. Revalidate bytes/metadata below on every use.
+  const changes = payload.changes;
+  if (toolName === "apply_patch" && payload.ok === true && !types.isProxy(changes) &&
+      Array.isArray(changes) && Object.getPrototypeOf(changes) === Array.prototype && changes.length <= 64 &&
+      Reflect.ownKeys(changes).length === changes.length + 1) {
+    const records = [], paths = new Set();
+    let valid = true;
+    for (let index = 0; index < changes.length; index++) {
+      const field = Object.getOwnPropertyDescriptor(changes, String(index));
+      if (!field?.enumerable || !("value" in field)) { valid = false; break; }
+      const record = nativeArtifactChange(field.value);
+      if (!record || paths.has(record.target)) { valid = false; break; }
+      paths.add(record.target); records.push(record);
+    }
+    if (valid) for (const record of records) if (!record.deleted) push("artifact", "native per-file patch publication", record.target,
+        { target: record.target, nativeFileChange: { sha256: record.sha256, bytes: record.bytes,
+          ...(record.metadata ? { metadata: record.metadata } : {}) } });
   }
   if (
     toolName === "run_command" &&
@@ -6333,7 +6403,7 @@ function firstArtifactPath(...values) {
 
 function revalidateArtifactEvidence(item = {}, state = {}, context = {}, contract = {}) {
   if (item?.category !== "artifact" || item?.verified === false || item?.virtualArtifact === true) return item;
-  const candidate = firstArtifactPath(item.target, item.proof);
+  const candidate = item.nativeFileChange ? item.target : firstArtifactPath(item.target, item.proof);
   if (!candidate) {
     return item.toolName === "run_command"
       ? {
@@ -6352,11 +6422,24 @@ function revalidateArtifactEvidence(item = {}, state = {}, context = {}, contrac
   const resolved = path.isAbsolute(candidate) ? candidate : path.resolve(commandCwd, candidate);
   let durable = false;
   try {
-    const stat = fs.statSync(resolved);
+    const stat = item.nativeFileChange ? fs.lstatSync(resolved) : fs.statSync(resolved);
     const exactEmpty = (contract.exactEmptyOutputPaths || []).some(raw => resolveContractPath(commandCwd, raw) === resolved);
-    durable = exactEmpty
-      ? ownedEmptyOutputFile(commandCwd, resolved)?.size === 0
-      : stat.isDirectory() || stat.isFile() && stat.size > 0;
+    if (item.nativeFileChange) {
+      if (!stat.isFile() || stat.isSymbolicLink() ||
+          fs.realpathSync(resolved) !== path.resolve(fs.realpathSync(commandCwd), candidate)) {
+        throw new Error("Native output is no longer a regular file at its published path.");
+      }
+      const boundary = createWorkspaceReadBoundarySync({ root: commandCwd });
+      const current = readWorkspaceFileSnapshotSync(resolved, boundary, { maxBytes: 220_000, text: true });
+      const expected = item.nativeFileChange, metadata = expected.metadata;
+      durable = stat.isFile() && current.buffer.length === expected.bytes &&
+        crypto.createHash("sha256").update(current.buffer).digest("hex") === expected.sha256 &&
+        (!metadata || (stat.mode & 0o7777) === metadata.mode && stat.uid === metadata.uid && stat.gid === metadata.gid);
+    } else {
+      durable = exactEmpty
+        ? ownedEmptyOutputFile(commandCwd, resolved)?.size === 0
+        : stat.isDirectory() || stat.isFile() && stat.size > 0;
+    }
   } catch {
     durable = false;
   }

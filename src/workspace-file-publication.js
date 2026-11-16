@@ -76,14 +76,14 @@ async function boundedBytes(handle, stat) {
   return bytes;
 }
 
-async function snapshot(file) {
+async function snapshot(file, { readOnlySource = false } = {}) {
   let named;
   try { named = await fs.lstat(file, { bigint: true }); }
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
-  if (!named.isFile() || named.nlink !== 1n || (named.mode & 0o7000n) !== 0n) {
+  if (!named.isFile() || named.nlink < 1n || !readOnlySource && (named.nlink !== 1n || (named.mode & 0o7000n) !== 0n)) {
     throw new Error("Workspace replacement requires a regular, singly linked file without special permission bits.");
   }
-  if (typeof process.geteuid === "function" && named.uid !== BigInt(process.geteuid())) {
+  if (!readOnlySource && typeof process.geteuid === "function" && named.uid !== BigInt(process.geteuid())) {
     throw new Error("Workspace replacement cannot change another owner's file identity.");
   }
   const handle = await fs.open(file, constants.O_RDONLY | nofollow);
@@ -106,7 +106,7 @@ async function requireAbsent(file) {
   throw Object.assign(new Error("File already exists; create-only publication refused."), { code: "EEXIST" });
 }
 
-async function parentBinding(target, signal) {
+async function parentBinding(target, signal, createParents = true) {
   throwIfWorkspaceAborted(signal);
   const raw = path.dirname(target.absolutePath);
   // Inspect each existing component before creating descendants: recursive mkdir
@@ -119,7 +119,7 @@ async function parentBinding(target, signal) {
     let entry;
     try { entry = await fs.lstat(directory); }
     catch (error) {
-      if (error.code !== "ENOENT") throw error;
+      if (error.code !== "ENOENT" || !createParents) throw error;
       throwIfWorkspaceAborted(signal);
       try { await fs.mkdir(directory); } catch (mkdirError) { if (mkdirError.code !== "EEXIST") throw mkdirError; }
       entry = await fs.lstat(directory);
@@ -160,20 +160,46 @@ async function removeStage(stage, expected) {
   }
 }
 
-export async function publishWorkspaceTextFile(target, bytes, { createOnly = false, expectedBeforeHash, signal } = {}) {
+export async function publishWorkspaceTextFile(target, bytes, {
+  createOnly = false, expectedBeforeHash, signal, metadataSource, expectedSourceHash, preserveSourceMode = false,
+} = {}) {
   throwIfWorkspaceAborted(signal);
   if (!Buffer.isBuffer(bytes) || bytes.length > MAX_BYTES) throw new Error("Workspace write exceeds the bounded text limit.");
+  if (typeof preserveSourceMode !== "boolean" || preserveSourceMode && !metadataSource) throw new Error("Preserving source mode requires a metadata source.");
+  const sourceUmask = process.umask();
+  // Only the guarded native source-copy/move path supplies this target. Model
+  // arguments never choose a mode/uid/gid. Moves retain the strict owned-file
+  // checks; copies may read permitted sources but never inherit ownership or
+  // special bits. Bind metadata to the same source bytes as the operation.
+  let source = null;
+  if (metadataSource !== undefined || expectedSourceHash !== undefined) {
+    if (!createOnly || !metadataSource || typeof expectedSourceHash !== "string" || !/^[a-f0-9]{64}$/.test(expectedSourceHash)) {
+      throw new Error("Source metadata requires create-only publication and an exact source hash.");
+    }
+    const parent = await parentBinding(metadataSource, signal, false);
+    const file = path.join(parent.canonical, path.basename(metadataSource.absolutePath));
+    const current = await snapshot(file, { readOnlySource: !preserveSourceMode });
+    if (!current || current.hash !== expectedSourceHash) throw conflict("Workspace source changed before metadata capture.");
+    source = { parent, file, snapshot: current };
+  }
   const parent = await parentBinding(target, signal);
   const destination = path.join(parent.canonical, path.basename(target.absolutePath));
   return serialized(destination, async () => {
     await assertParent(parent);
+    if (source) {
+      await assertParent(source.parent);
+      const current = await snapshot(source.file, { readOnlySource: !preserveSourceMode });
+      if (!current || !sameFile(source.snapshot.stat, current.stat) || current.hash !== expectedSourceHash) {
+        throw conflict("Workspace source changed before publication.");
+      }
+    }
     const before = createOnly ? await requireAbsent(destination) : await snapshot(destination);
     if (expectedBeforeHash !== undefined && expectedBeforeHash !== before?.hash) {
       throw conflict(`Base hash mismatch for ${target.relativePath}; read the file again before patching.`);
     }
     throwIfWorkspaceAborted(signal);
     const stage = path.join(parent.canonical, `.aginti-write-${process.pid}-${crypto.randomUUID()}.tmp`);
-    let handle, staged, published = false, failure;
+    let handle, staged, published = false, failure, appliedMetadata;
     try {
       handle = await fs.open(stage, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | nofollow, 0o600);
       // Remember the exclusive staging pathname's identity as well as fstat;
@@ -184,13 +210,23 @@ export async function publishWorkspaceTextFile(target, bytes, { createOnly = fal
       await handle.writeFile(bytes);
       const written = await handle.stat({ bigint: true });
       if (!(await boundedBytes(handle, written)).equals(bytes)) throw new Error("Workspace staged bytes failed verification.");
-      if (before && typeof process.geteuid === "function" && (written.uid !== before.stat.uid || written.gid !== before.stat.gid)) {
-        await handle.chown(Number(before.stat.uid), Number(before.stat.gid));
+      const metadata = before?.stat || source?.snapshot.stat;
+      const ownership = before?.stat || (preserveSourceMode ? source?.snapshot.stat : null);
+      const intendedMode = metadata
+        ? Number(metadata.mode & 0o777n) & (source && !preserveSourceMode ? ~sourceUmask : 0o777)
+        : 0o666 & ~process.umask();
+      if (ownership && typeof process.geteuid === "function" && (written.uid !== ownership.uid || written.gid !== ownership.gid)) {
+        await handle.chown(Number(ownership.uid), Number(ownership.gid));
       }
-      await handle.chmod(before ? Number(before.stat.mode & 0o777n) : 0o666 & ~process.umask());
+      await handle.chmod(intendedMode);
       await handle.sync();
       throwIfWorkspaceAborted(signal);
       const sealed = await handle.stat({ bigint: true });
+      if (source && (sealed.uid !== (ownership || written).uid || sealed.gid !== (ownership || written).gid ||
+          (sealed.mode & 0o7777n) !== BigInt(intendedMode))) {
+        throw conflict("Workspace source metadata was not preserved on the staged file.");
+      }
+      if (source) appliedMetadata = { mode: intendedMode, uid: Number(sealed.uid), gid: Number(sealed.gid) };
       const closing = handle; handle = null;
       await closing.close();
       await assertParent(parent);
@@ -199,6 +235,13 @@ export async function publishWorkspaceTextFile(target, bytes, { createOnly = fal
         throw conflict(`Workspace target changed before publication: ${target.relativePath}`);
       }
       if (!sameFile(sealed, await fs.lstat(stage, { bigint: true }))) throw conflict("Workspace staging file changed before publication.");
+      if (source) {
+        await assertParent(source.parent);
+        const currentSource = await snapshot(source.file, { readOnlySource: !preserveSourceMode });
+        if (!currentSource || !sameFile(source.snapshot.stat, currentSource.stat) || currentSource.hash !== expectedSourceHash) {
+          throw conflict("Workspace source changed while staging its destination.");
+        }
+      }
       throwIfWorkspaceAborted(signal);
       if (!before) await fs.link(stage, destination); // Kernel no-clobber, even after the last check.
       else await fs.rename(stage, destination);
@@ -221,6 +264,7 @@ export async function publishWorkspaceTextFile(target, bytes, { createOnly = fal
     // successful receipt and explicitly report residual staging for the caller.
     return { beforeBytes: before?.bytes || Buffer.alloc(0), created: !before,
       publication: { method: before ? "rename" : "exclusive-link", fileSynced: true,
+        ...(source ? { sourceMetadata: appliedMetadata } : {}),
         ...(cleanup ? { stagingCleanupPending: true, stagingPath: path.join(path.dirname(target.relativePath), path.basename(stage)).replace(/\\/g, "/") } : {}) } };
   }, signal);
 }
