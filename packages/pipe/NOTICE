@@ -1,0 +1,7 @@
+AgInTiLite private application pipe
+Copyright 2026 LazyingArt
+Licensed under the Apache License, Version 2.0.
+
+The local build copies the exact AgInTiLite preview.21 JSON contract and
+redaction helpers into the package. The bounded agent loop is imported from
+the separately installed, exact-version AgInTiLite peer, not duplicated here.

@@ -1,0 +1,17 @@
+{
+  "name": "@lazyingart/agintilite-pipe",
+  "version": "0.1.0-preview.1",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Account-bound private JSONL transport for the existing AgInTiLite proposal loop.",
+  "engines": { "node": ">=22" },
+  "peerDependencies": { "@lazyingart/agintilite": "0.1.0-preview.21" },
+  "exports": { ".": "./src/channel.js", "./streams": "./src/streams.js", "./package.json": "./package.json" },
+  "files": ["src/", "README.md", "NOTICE", "LICENSE"],
+  "scripts": {
+    "check": "node --check src/channel.js && node --check src/streams.js && node --check scripts/build-package.js && node --check test/harness.js && node --check test/channel.test.js && node --check test/streams.test.js && node --check test/adversarial.test.js && node --check test/distribution.test.js && node --check test/fixtures/worker.js",
+    "pack:local": "node scripts/build-package.js",
+    "test": "node --test --test-timeout=15000 test/*.test.js"
+  }
+}
