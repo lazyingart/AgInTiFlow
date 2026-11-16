@@ -525,7 +525,7 @@ function outputIntentClauseAt(text, index) {
 // Preservation is not an artifact-format catalog. A literal file may be source
 // code, a dotfile or an extensionless name. Parse only bounded explicit lists;
 // prose, URLs, globs and command strings do not become file authority.
-const PRESERVATION_FILE_TOKEN = "(?:[\"'\\x60][^\"'\\x60\\r\\n]{1,220}[\"'\\x60]|[\\w./~\\-\\u4e00-\\u9fff]{0,219}[\\w~\\-\\u4e00-\\u9fff](?![\\w/~\\-\\u4e00-\\u9fff]|\\.(?!\\s|$)))";
+const PRESERVATION_FILE_TOKEN = "(?:「[^「」\\r\\n]{1,220}」|『[^『』\\r\\n]{1,220}』|[\"'\\x60][^\"'\\x60\\r\\n]{1,220}[\"'\\x60]|[\\w./~\\-\\u4e00-\\u9fff]{0,219}[\\w~\\-\\u4e00-\\u9fff](?![\\w/~\\-\\u4e00-\\u9fff]|\\.(?!\\s|$)))";
 const PRESERVATION_FILE_MEMBER = "(?:(?:the|my|our)\\s+)?(?:files?\\s+)?" + PRESERVATION_FILE_TOKEN;
 const PRESERVATION_FILE_LIST = PRESERVATION_FILE_MEMBER + "(?:\\s*(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+|[、，]|和|及び|および|と|及|与|與|或)\\s*" + PRESERVATION_FILE_MEMBER + "){0,15}";
 const EXPLICIT_OUTPUT_FILE_LIST_HEADER =
@@ -537,8 +537,8 @@ function preservationFileReferences(body = "") {
   const references = [];
   for (const match of source.matchAll(new RegExp(PRESERVATION_FILE_TOKEN, "g"))) {
     const literal = match[0];
-    const quoted = /^["'\x60]/.test(literal);
-    if (quoted && literal.at(-1) !== literal[0]) continue;
+    const quoted = /^["'\x60「『]/.test(literal);
+    if (quoted && literal.at(-1) !== ({ "「": "」", "『": "』" }[literal[0]] || literal[0])) continue;
     const candidate = quoted ? literal.slice(1, -1) : literal.replace(/\.+$/, "");
     if (!candidate || !candidate.isWellFormed() || candidate.length > 220 ||
         /[\x00-\x1f\x7f<>|;&$*?{}\[\]]/.test(candidate) ||
@@ -560,7 +560,7 @@ function literalFileReferencePattern(candidate = "") {
   const bare = !/\s/.test(candidate) && (/[./]/.test(candidate) || /^[A-Z]/.test(candidate))
     ? "|(?<![\\w./~\\-\\u4e00-\\u9fff])" + escaped + "(?![\\w/~\\-\\u4e00-\\u9fff]|\\.(?!\\s|$))"
     : "";
-  return new RegExp("([\"'\\x60])" + escaped + "\\1" + bare, "g");
+  return new RegExp("([\"'\\x60])" + escaped + "\\1|「" + escaped + "」|『" + escaped + "』" + bare, "g");
 }
 
 function withoutLiteralFileReferences(text = "", candidates = []) {
@@ -3729,13 +3729,65 @@ export function inferAuthoritativeReadOnlyRoutine(goal = "") {
   return null;
 }
 
+function mandatoryInputReadPaths(goal, candidates) {
+  const source = stripForbiddenLanguage(goal), syntax = outputIntentSyntax(source);
+  let unquoted = source;
+  for (const quote of [...syntax.quotes].reverse()) unquoted = unquoted.slice(0, quote.start) + " ".repeat(quote.end - quote.start) + unquoted.slice(quote.end);
+  const japanese = new Set(japaneseFileIntentClauses(source).filter(clause => clause.kind === "read")
+    .flatMap(clause => preservationFileReferences(clause.body).map(item => normalizedContractPath(item.path))));
+  const actions = /\b(?:read|inspect|review|consult|examine|create|write|produce|generate|save|copy|fix|edit|update|repair|add|build|implement|delete|remove|rename|move|append|insert|replace)\b|读取|讀取|阅读|閱讀|查看|检查|檢查|创建|創建|写入|寫入|生成|保存|复制|複製|修改|更新|修复|修復|添加|新增|删除|刪除|移除|重命名|移动|移動|追加|插入|替换|替換/giu;
+  const reader = /^(?:read|inspect|review|consult|examine|读取|讀取|阅读|閱讀|查看|检查|檢查)$/iu;
+  return candidates.filter(value => {
+    if (japanese.has(normalizedContractPath(value))) return true;
+    for (let at = source.indexOf(value); at >= 0; at = source.indexOf(value, at + value.length)) {
+      const quote = syntax.quotes.find(range => range.start < at && at < range.end);
+      if (quote && source.slice(quote.start + 1, quote.end - 1).trim() !== value) continue;
+      const start = (syntax.boundaries.findLast(index => index < at) ?? -1) + 1;
+      const prefix = withoutFilePathMentions(unquoted.slice(start, at));
+      if (prefix.length > 512) continue;
+      const action = [...prefix.matchAll(actions)].at(-1);
+      if (!action || !reader.test(action[0])) continue;
+      const head = prefix.slice(0, action.index).split(/[,，]|\b(?:and|then|also)\b/iu).at(-1).trim();
+      if (/^(?:(?:please|kindly|first|next|finally)\s+|(?:can|could|would|will)\s+you\s+|(?:请|請|先|再|然后|然後|帮我|幫我)\s*)*$/iu.test(head ? head + " " : "")) return true;
+    }
+    return false;
+  });
+}
+
+function inlineTextDeliveryEvidenceGoal(goal = "") {
+  const source = String(goal || ""), syntax = outputIntentSyntax(source);
+  let unquoted = source;
+  for (const quote of [...syntax.quotes].reverse()) unquoted = unquoted.slice(0, quote.start) + " ".repeat(quote.end - quote.start) + unquoted.slice(quote.end);
+  const destination = /\b(?:here|inline|in\s+(?:this|the)\s+chat)\b|(?:这里|這裡|聊天(?:里|裏|中)|このチャット|ここ[にで])/iu;
+  const directive = /(?:^|[.!?。！？;；,，\n]|\b(?:and|then|also)\b)\s*(?:(?:please|kindly|just|only)\s+)*(?:(?:reply|answer|respond)\s+(?:(?:only|just)\s+)?(?:here|inline|in\s+(?:this|the)\s+chat)|(?:put|give|return|provide|show)\s+(?:(?:me|us)\s+)?(?:(?:the|a)\s+)?(?:reply|answer|response|text|draft)\s+(?:here|inline)|(?:请|請)?(?:直接|只)(?:在(?:这个|這個)?聊天(?:里|裏|中)|在这里|在這裡)?(?:回复|回覆|回答)|(?:このチャット|ここ)[にで])/iu;
+  const globalInline = directive.test(unquoted);
+  const preamble = /^(?:(?:please|kindly|now|just|only)\s+|(?:can|could|would|will)\s+you\s+|(?:i|we)\s+(?:want|need|would\s+like)\s+(?:you\s+)?to\s+|(?:请|請|帮我|幫我|麻烦|麻煩|直接)\s*|(?:在(?:这个|這個)?聊天(?:里|裏|中)|在这里|在這裡|このチャットに|このチャットで|ここに|ここで))/iu;
+  const textCreation = /\b(?:draft|compose|generate|create|prepare|produce|write|rewrite|revise)\s+(?:(?:a|an|the|one|my|our|your|new|short|brief|quick|concise|friendly|polite|warm|rough|revised|final|simple|plain|text-only|thank-you|two-sentence|three-sentence)\s+){0,8}(?:reply|answer|response|message|letter|e-?mail|poem|paragraph|text|summary|outline|checklist|memo|note|plan|story|draft)\b(?!\.[a-z0-9]{1,8}\b|[/\\])|(?:起草|撰写|撰寫|生成|准备|準備)(?:(?:一段|一封|一份|一个|一個|简短|簡短|简洁|簡潔|友好|礼貌|禮貌)\s*){0,6}(?:回复|回覆|回答|消息|短文|摘要|清单|清單|信件)|(?:短い|簡潔な)?(?:返信|回答|文章|要約|箇条書き)を(?:生成|作成|書いて)/giu;
+  return source.replace(textCreation, (match, index) => {
+    if (syntax.quotes.some(quote => quote.start < index && index < quote.end)) return match;
+    let start = 0, end = source.length;
+    for (const boundary of syntax.boundaries) { if (boundary < index) start = boundary + 1; else { end = boundary; break; } }
+    if (index - start > 512) return match;
+    let lead = unquoted.slice(start, index).split(/[,，]|\b(?:and|then|also)\b/iu).at(-1).trimStart();
+    while (preamble.test(lead)) lead = lead.replace(preamble, "").trimStart();
+    if (lead.trim()) return match;
+    const tail = source.slice(index + match.length, end).split(/[,，]|\b(?:and|then|also)\b/iu)[0];
+    if (!globalInline && !destination.test(unquoted.slice(start, end))) return match;
+    // Remove only the text-generation predicate, never its source, later
+    // command, delivery action or declared file. A filename beside this
+    // predicate is conservatively left to the normal artifact contract.
+    if (/[\w.-]+\.[a-z0-9]{1,8}\b|[/\\]/iu.test(tail)) return match;
+    return " ".repeat(match.length);
+  });
+}
+
 export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceCriteria = [] } = {}) {
   const originalEvidenceGoal = scopedChatopsEvidenceGoal(goal, taskProfile);
   // A bounded question about an already observed result is an answer request,
   // not permission to execute the old task again. Keep prohibitions/outcome,
   // but do not turn historical nouns into fresh file/command obligations.
   const evidenceGoal = isHistoricalDiagnosticQuestion(originalEvidenceGoal) && isReadOnlyDiagnosticGoal(originalEvidenceGoal, taskProfile)
-    ? "" : originalEvidenceGoal;
+    ? "" : inlineTextDeliveryEvidenceGoal(originalEvidenceGoal);
   const copies = namedCopyIntent(evidenceGoal);
   const positiveEvidenceGoal = stripForbiddenLanguage(normalizeFileCreationIntent(evidenceGoal));
   const authoritativeRoutine = inferAuthoritativeReadOnlyRoutine(goal);
@@ -3780,6 +3832,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     .filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const explicitInputReadPaths = inferExactInputPaths(positiveEvidenceGoal, preservedInputPaths, { preservationReads: false })
     .filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
+  const requiredInputReadPaths = mandatoryInputReadPaths(evidenceGoal, explicitInputReadPaths);
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
   let artifactGoal = evidenceGoal;
   for (const span of [...copies.spans].sort((a, b) => b.start - a.start)) artifactGoal = artifactGoal.slice(0, span.start) + " ".repeat(span.end - span.start) + artifactGoal.slice(span.end);
@@ -3817,7 +3870,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     version: 1,
     outcome: compact(originalEvidenceGoal || "Complete the requested task.", 500),
     taskProfile: String(taskProfile || "auto"),
-    requiresExternalEvidence,
+    requiresExternalEvidence: requiresExternalEvidence || requiredInputReadPaths.length > 0,
     requiredEvidence,
     forbiddenActions: inferForbiddenActions(originalEvidenceGoal),
     exactOutputPaths,
@@ -3834,6 +3887,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     artifactRoot,
     exactInputPaths,
     explicitInputReadPaths,
+    requiredInputReadPaths,
     preservedInputPaths,
     advisoryInvocation,
     declaredSourceRoots,
@@ -5857,10 +5911,41 @@ export function exactCopyPatchChangesRequiredBytes(contract, { commandCwd, readO
   return destination.isCurrent() && sources.every(source => source.isCurrent());
 }
 
+function evaluateExplicitInputReads(contract, { events = [], state = {}, commandCwd = process.cwd() }) {
+  const required = unique(contract.requiredInputReadPaths || []), observed = new Set();
+  const remember = value => { for (const key of pathComparisonKeys(value, commandCwd)) observed.add(key); };
+  const consume = payload => {
+    if (!payload || payload.ok !== true || payload.blocked) return;
+    const tool = payload.toolName || payload.name;
+    if (tool === "read_file" && /^[a-f0-9]{64}$/u.test(payload.sha256 || "") &&
+        Number.isSafeInteger(payload.bytes) && payload.bytes >= 0 && typeof payload.content === "string") {
+      remember(payload.path || payload.args?.path || "");
+    } else if (tool === "run_command" && payload.exitCode === 0 && typeof payload.stdout === "string" && payload.stdout.trim()) {
+      const command = String(payload.args?.command || ""), sequence = parseTopLevelShellSequence(command);
+      if (hasActiveShellExpansion(command) || sequence.openQuote || sequence.trailingEscape || sequence.trailingSeparator ||
+          !sequence.separators.every(separator => separator === "&&") || !isPureReadOnlySourceDisplayCommand(command)) return;
+      // sed can execute programs/write files through its expression language.
+      // Only literal cat/head/tail displays qualify here; other readers keep
+      // their ordinary tool support but need an explicit read_file receipt.
+      if (sequence.commands.some(segment => !["cd", "cat", "head", "tail"].includes(unquoteShellToken(tokenizeShellWords(segment)[0] || "")))) return;
+      for (const value of readOnlyCommandSourcePaths(command, commandCwd)) remember(value);
+    }
+  };
+  for (const event of events) if (event?.type === "tool.completed") consume(event.data);
+  for (const message of state.messages || []) {
+    if (message?.role !== "tool") continue;
+    try { consume(JSON.parse(message.content || "{}")); } catch { /* Malformed history is not read evidence. */ }
+  }
+  const missing = required.filter(value => !pathComparisonKeys(value, commandCwd).some(key => observed.has(key)));
+  return { checked: required.length > 0, ok: missing.length === 0, missingInputReads: missing };
+}
+
 export function evaluateScsSemanticContract(
   contract = {},
   { commandCwd = process.cwd(), events = [], state = {}, readOnlyRoots = [] } = {}
 ) {
+  const inputReads = evaluateExplicitInputReads(contract, { commandCwd, events, state });
+  if (!inputReads.ok) return { ok: false, checked: true, inputReads, reason: `Requested input reads are missing: ${inputReads.missingInputReads.join(", ")}` };
   const exactOutputPaths = Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : [];
   const requiredTextTerms = Array.isArray(contract.requiredTextTerms) ? contract.requiredTextTerms : [];
   const requiredExecutableTerms = Array.isArray(contract.requiredExecutableTerms)
@@ -5888,7 +5973,7 @@ export function evaluateScsSemanticContract(
           projectTestVerification,
           reason: projectTestVerification.reason,
         }
-      : { ok: true, checked: false, projectTestVerification, reason: "No semantic file contract was inferred." };
+      : { ok: true, checked: inputReads.checked, inputReads, projectTestVerification, reason: inputReads.checked ? "Requested input reads were observed; no output file contract was inferred." : "No semantic file contract was inferred." };
   }
   if (!exactOutputPaths.length) {
     const ok = executable.ok && projectTestVerification.ok && requestedArtifacts.ok && exactCopies.ok;

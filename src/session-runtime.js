@@ -4,7 +4,7 @@ import { permissionModeDefaults } from "./permission-modes.js";
 import { TASK_PROFILES } from "./task-profiles.js";
 import { WRAPPER_NAMES } from "./tool-wrappers.js";
 
-export const SESSION_RUNTIME_SCHEMA_VERSION = 1;
+export const SESSION_RUNTIME_SCHEMA_VERSION = 2;
 export const SESSION_RUNTIME_CONFLICT = "SESSION_RUNTIME_CONFLICT";
 
 const EXECUTION_TIERS = new Set(["focused", "thorough"]);
@@ -19,6 +19,13 @@ const CONTEXT_BUDGET_MODES = new Set(["off", "on", "auto"]);
 const LANGUAGES = new Set(["", "en", "ja", "zh-Hans", "zh-Hant", "ko", "fr", "es", "ar", "vi", "de", "ru"]);
 const WRAPPERS = new Set(WRAPPER_NAMES);
 const AUXILIARY_PROVIDERS = new Set(["grsai", "venice", "venice-image"]);
+
+export const SESSION_TOOL_FAMILY_FIELDS = Object.freeze([
+  "allowBrowserTools", "allowCanvasTools", "allowAgentLinkTools", "allowCoordinationTools",
+  "allowSpecialistTools", "allowJsonTools", "allowJsonSpecialist", "allowWritingTools", "allowWritingSpecialist",
+  "allowLongJobTools", "allowBackgroundJobs", "allowTmuxTools", "allowImageTools", "allowVisionTools",
+  "allowImagePerception", "allowImageGeneration",
+]);
 
 const BOOLEAN_FIELDS = Object.freeze([
   "headless",
@@ -38,6 +45,7 @@ const BOOLEAN_FIELDS = Object.freeze([
   "allowOutsideWorkspaceFileTools",
   "useDockerSandbox",
   "maxOutputTokensExplicit",
+  ...SESSION_TOOL_FAMILY_FIELDS,
 ]);
 
 const NUMBER_FIELDS = Object.freeze({
@@ -55,6 +63,7 @@ const NUMBER_FIELDS = Object.freeze({
 });
 
 const DEFAULTS = Object.freeze({
+  ...Object.fromEntries(SESSION_TOOL_FAMILY_FIELDS.map(field => [field, true])),
   routingMode: "smart",
   reasoning: "",
   routeReasoning: "",
@@ -385,6 +394,7 @@ function canonicalSnapshot(config = {}, revision = 1) {
     DEFAULTS.workspaceWritePolicy
   );
   for (const field of BOOLEAN_FIELDS.slice(8)) {
+    if (SESSION_TOOL_FAMILY_FIELDS.includes(field) && config[field] !== undefined && typeof config[field] !== "boolean") invalid(field, "expected a boolean");
     snapshot[field] = safeBoolean(config[field], field, DEFAULTS[field]);
   }
   snapshot.contextBudgetMode = safeEnum(
@@ -466,14 +476,24 @@ function normalizeStoredSnapshot(snapshot) {
   if (!isPlainObject(snapshot)) {
     throw new SessionRuntimeError("SESSION_RUNTIME_INVALID_FIELD", "Saved session runtime must be a plain object.");
   }
-  if (snapshot.schemaVersion !== SESSION_RUNTIME_SCHEMA_VERSION) {
+  if (snapshot.schemaVersion !== 1 && snapshot.schemaVersion !== SESSION_RUNTIME_SCHEMA_VERSION) {
     throw new SessionRuntimeError(
       "SESSION_RUNTIME_UNSUPPORTED_SCHEMA",
       `Unsupported session runtime schema version ${String(snapshot.schemaVersion)}.`,
       { schemaVersion: snapshot.schemaVersion }
     );
   }
-  return canonicalSnapshot(snapshot, positiveRevision(snapshot.revision));
+  if (snapshot.schemaVersion === SESSION_RUNTIME_SCHEMA_VERSION) {
+    for (const field of SESSION_TOOL_FAMILY_FIELDS) {
+      if (!Object.hasOwn(snapshot, field) || typeof snapshot[field] !== "boolean") invalid(field, "stored policy must be an explicit boolean");
+    }
+    return canonicalSnapshot(snapshot, positiveRevision(snapshot.revision));
+  }
+  // v1 never defined these fields. Its extras cannot prove policy that an old
+  // binary would ignore. Preserve the established effective defaults until a
+  // trusted revision-checked patch establishes restrictions in v2.
+  const legacy = Object.fromEntries(Object.entries(snapshot).filter(([field]) => !SESSION_TOOL_FAMILY_FIELDS.includes(field)));
+  return canonicalSnapshot(legacy, positiveRevision(snapshot.revision));
 }
 
 export function sessionRuntimeFromState(state = {}) {
@@ -512,6 +532,7 @@ function validatePatchField(field, value, current) {
   if (field === "commandCwd") return safeString(value, field, { maxLength: 4096 });
   if (field === "allowedDomains") return safeStringArray(value, field);
   if (field === "readOnlyRoots") return safeStringArray(value, field, { maxItems: 32, maxLength: 4096 });
+  if (SESSION_TOOL_FAMILY_FIELDS.includes(field) && typeof value !== "boolean") invalid(field, "expected a boolean");
   if (BOOLEAN_FIELDS.includes(field)) return safeBoolean(value, field, current[field]);
   if (NUMBER_FIELDS[field]) return safeNumber(value, field, current[field]);
   return current[field];
@@ -637,6 +658,21 @@ export function resolveSessionRuntime({
       throw new SessionRuntimeConflictError(expectedRevision, snapshot.revision);
     }
     if (expected !== snapshot.revision) throw new SessionRuntimeConflictError(expected, snapshot.revision);
+  }
+
+  // Older snapshots cannot prove an omitted tool-family restriction. Never
+  // infer it from the tools shown last turn or silently restore wider defaults
+  // when the current trusted caller asks for a restriction. An explicit CAS
+  // patch can establish that policy without inventing past authority.
+  const prior = savedRuntime || durableState?.meta?.runtimeConfig;
+  if (savedRuntime || durableState) {
+    const missingRestrictions = SESSION_TOOL_FAMILY_FIELDS.filter(field =>
+      (prior?.schemaVersion !== SESSION_RUNTIME_SCHEMA_VERSION || !Object.hasOwn(prior || {}, field)) && incomingConfig[field] === false && snapshot[field] !== false);
+    if (missingRestrictions.length) throw new SessionRuntimeError(
+      "SESSION_RUNTIME_POLICY_MIGRATION_REQUIRED",
+      "The saved runtime does not establish these requested tool restrictions. Apply a revision-checked runtime patch before resuming.",
+      { fields: missingRestrictions }
+    );
   }
 
   return {

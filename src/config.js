@@ -26,6 +26,7 @@ import { maxStepsForExecutionPolicy, selectExecutionPolicy } from "./execution-p
 import { normalizeContextBudgetMode } from "./context-budget-controller.js";
 import { BASELINE_PROVIDER, normalizeProviderBaseURL, normalizeProviderId } from "./provider-contract.js";
 import { isResponseOnlyEvidenceScope, scopedChatopsEvidenceGoal } from "./scs-evidence.js";
+import { SESSION_TOOL_FAMILY_FIELDS } from "./session-runtime.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -451,6 +452,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
       overrides.allowFileTools ?? args.allowFileTools ?? process.env.ALLOW_FILE_TOOLS,
       permissionDefaults.allowFileTools ?? true
     ),
+    ...Object.fromEntries(SESSION_TOOL_FAMILY_FIELDS.map(field => [field, parseBoolean(overrides[field] ?? args[field], true)])),
     allowWrapperTools: parseBoolean(
       overrides.allowWrapperTools ?? args.allowWrapperTools ?? process.env.ALLOW_WRAPPER_TOOLS,
       false

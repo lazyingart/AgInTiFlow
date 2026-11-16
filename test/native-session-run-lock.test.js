@@ -48,7 +48,7 @@ async function handoffFixture(t, options = {}) {
   const workspace = path.join(root, "workspace"), sessionsDir = path.join(root, "sessions");
   await fs.mkdir(workspace);
   const requestedId = options.generated ? "" : "handoff-owner-fixture";
-  const publications = [], removals = [], requests = [], factoryOwners = [];
+  const publications = [], removals = [], requests = [], factoryOwners = [], wireTools = [];
   const controller = new AbortController();
   const nativeLink = fs.link, nativeUnlink = fs.unlink;
   let primaryId = requestedId, pendingUnlink = false, contenderResult = null, contenderError = null;
@@ -71,6 +71,7 @@ async function handoffFixture(t, options = {}) {
     }
     return { chat: { completions: { create: async payload => {
       requests.push(config.provider);
+      wireTools.push((payload.tools || []).map(tool => tool.function.name));
       if (config.provider === "deepseek") {
         throw Object.assign(new Error("Synthetic provider refusal"), { status: options.sourceStatus || 402 });
       }
@@ -96,6 +97,7 @@ async function handoffFixture(t, options = {}) {
     allowProviderHandoff: true, providerHandoffProvider: "localllm", abortSignal: controller.signal,
     onEvent(type) { if (options.cancelOnHandoff && type === "provider.handoff_requested") controller.abort(); },
   });
+  if (options.family) Object.assign(config, { allowBrowserTools: false, allowCanvasTools: false, allowAgentLinkTools: false, allowCoordinationTools: false, allowSpecialistTools: false, allowJsonTools: false, allowJsonSpecialist: false, allowWritingTools: false, allowWritingSpecialist: false, allowLongJobTools: false, allowBackgroundJobs: false, allowTmuxTools: false, allowImageTools: false, allowVisionTools: false, allowImagePerception: false, allowImageGeneration: false });
   t.mock.method(fs, "unlink", async name => {
     const result = await Reflect.apply(nativeUnlink, fs, [name]);
     if (!isPrimaryLock(name)) return result;
@@ -117,10 +119,18 @@ async function handoffFixture(t, options = {}) {
   await assert.rejects(fs.stat(path.join(sessionsDir, primaryId, ".agent-run.lock")), { code: "ENOENT" });
   // Snapshot the receipt before a separate successful post-settlement claim.
   const receipt = { outcome, state, events, primaryId, publications: [...publications], removals: [...removals], requests: [...requests],
-    factoryOwners: [...factoryOwners], pendingUnlink, contenderResult, contenderError };
+    factoryOwners: [...factoryOwners], wireTools, pendingUnlink, contenderResult, contenderError };
   const release = await acquireSessionRunLock({ sessionsDir }, primaryId); await release();
   return receipt;
 }
+
+test("native tool-family policy stays narrow across a provider handoff", async t => {
+  const result = await handoffFixture(t, { family: true });
+  assert.equal(result.outcome.error, undefined);assert.equal(result.outcome.value.result, "LEASE_CONTINUATION_OK");
+  assert.deepEqual(result.requests, ["deepseek", "localllm"]);assert.deepEqual(result.wireTools, [["finish"], ["finish"]]);
+  assert.equal(result.state.meta.runtimeConfig.allowBrowserTools, false);assert.equal(result.state.meta.runtimeConfig.allowAgentLinkTools, false);
+  assert.equal(result.publications.length, 1);
+});
 
 test("native quota handoff retains the identical lease owner through both provider attempts", async t => {
   const result = await handoffFixture(t);
