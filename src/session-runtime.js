@@ -3,8 +3,9 @@ import { ROUTING_MODES, REASONING_EFFORTS, defaultAuxiliaryModel, CODEX_CLI_DEFA
 import { permissionModeDefaults } from "./permission-modes.js";
 import { TASK_PROFILES } from "./task-profiles.js";
 import { WRAPPER_NAMES } from "./tool-wrappers.js";
+import { WORKSPACE_SCOPE_FIELDS, normalizeWorkspaceScopeRoots } from "./workspace-path-policy.js";
 
-export const SESSION_RUNTIME_SCHEMA_VERSION = 2;
+export const SESSION_RUNTIME_SCHEMA_VERSION = 3;
 export const SESSION_RUNTIME_CONFLICT = "SESSION_RUNTIME_CONFLICT";
 
 const EXECUTION_TIERS = new Set(["focused", "thorough"]);
@@ -115,6 +116,7 @@ const DEFAULTS = Object.freeze({
   commandCwd: "",
   allowedDomains: Object.freeze([]),
   readOnlyRoots: Object.freeze([]),
+  ...Object.fromEntries(WORKSPACE_SCOPE_FIELDS.map(field => [field, Object.freeze([])])),
 });
 
 export const SESSION_RUNTIME_FIELDS = Object.freeze([
@@ -163,6 +165,7 @@ export const SESSION_RUNTIME_FIELDS = Object.freeze([
   "commandCwd",
   "allowedDomains",
   "readOnlyRoots",
+  ...WORKSPACE_SCOPE_FIELDS,
 ]);
 
 const RUNTIME_FIELD_SET = new Set(SESSION_RUNTIME_FIELDS);
@@ -425,6 +428,10 @@ function canonicalSnapshot(config = {}, revision = 1) {
     maxItems: 32,
     maxLength: 4096,
   });
+  for (const field of WORKSPACE_SCOPE_FIELDS) {
+    try { snapshot[field] = normalizeWorkspaceScopeRoots(config[field], snapshot.commandCwd, field); }
+    catch { invalid(field, "expected an explicit workspace-contained directory list"); }
+  }
   return snapshot;
 }
 
@@ -476,23 +483,31 @@ function normalizeStoredSnapshot(snapshot) {
   if (!isPlainObject(snapshot)) {
     throw new SessionRuntimeError("SESSION_RUNTIME_INVALID_FIELD", "Saved session runtime must be a plain object.");
   }
-  if (snapshot.schemaVersion !== 1 && snapshot.schemaVersion !== SESSION_RUNTIME_SCHEMA_VERSION) {
+  if (![1, 2, SESSION_RUNTIME_SCHEMA_VERSION].includes(snapshot.schemaVersion)) {
     throw new SessionRuntimeError(
       "SESSION_RUNTIME_UNSUPPORTED_SCHEMA",
       `Unsupported session runtime schema version ${String(snapshot.schemaVersion)}.`,
       { schemaVersion: snapshot.schemaVersion }
     );
   }
-  if (snapshot.schemaVersion === SESSION_RUNTIME_SCHEMA_VERSION) {
+  if (snapshot.schemaVersion >= 2) {
     for (const field of SESSION_TOOL_FAMILY_FIELDS) {
       if (!Object.hasOwn(snapshot, field) || typeof snapshot[field] !== "boolean") invalid(field, "stored policy must be an explicit boolean");
+    }
+  }
+  if (snapshot.schemaVersion === SESSION_RUNTIME_SCHEMA_VERSION) {
+    for (const field of WORKSPACE_SCOPE_FIELDS) {
+      if (!Object.hasOwn(snapshot, field)) invalid(field, "stored workspace scope must be explicit");
+      try { normalizeWorkspaceScopeRoots(snapshot[field], snapshot.commandCwd, field, { stored: true }); }
+      catch { invalid(field, "stored workspace scope must be canonical"); }
     }
     return canonicalSnapshot(snapshot, positiveRevision(snapshot.revision));
   }
   // v1 never defined these fields. Its extras cannot prove policy that an old
   // binary would ignore. Preserve the established effective defaults until a
   // trusted revision-checked patch establishes restrictions in v2.
-  const legacy = Object.fromEntries(Object.entries(snapshot).filter(([field]) => !SESSION_TOOL_FAMILY_FIELDS.includes(field)));
+  const legacy = Object.fromEntries(Object.entries(snapshot).filter(([field]) =>
+    !WORKSPACE_SCOPE_FIELDS.includes(field) && (snapshot.schemaVersion >= 2 || !SESSION_TOOL_FAMILY_FIELDS.includes(field))));
   return canonicalSnapshot(legacy, positiveRevision(snapshot.revision));
 }
 
@@ -532,6 +547,10 @@ function validatePatchField(field, value, current) {
   if (field === "commandCwd") return safeString(value, field, { maxLength: 4096 });
   if (field === "allowedDomains") return safeStringArray(value, field);
   if (field === "readOnlyRoots") return safeStringArray(value, field, { maxItems: 32, maxLength: 4096 });
+  if (WORKSPACE_SCOPE_FIELDS.includes(field)) {
+    try { return normalizeWorkspaceScopeRoots(value, current.commandCwd, field, { stored: true }); }
+    catch { invalid(field, "expected a canonical workspace-contained directory list"); }
+  }
   if (SESSION_TOOL_FAMILY_FIELDS.includes(field) && typeof value !== "boolean") invalid(field, "expected a boolean");
   if (BOOLEAN_FIELDS.includes(field)) return safeBoolean(value, field, current[field]);
   if (NUMBER_FIELDS[field]) return safeNumber(value, field, current[field]);
@@ -667,11 +686,25 @@ export function resolveSessionRuntime({
   const prior = savedRuntime || durableState?.meta?.runtimeConfig;
   if (savedRuntime || durableState) {
     const missingRestrictions = SESSION_TOOL_FAMILY_FIELDS.filter(field =>
-      (prior?.schemaVersion !== SESSION_RUNTIME_SCHEMA_VERSION || !Object.hasOwn(prior || {}, field)) && incomingConfig[field] === false && snapshot[field] !== false);
+      (![2, SESSION_RUNTIME_SCHEMA_VERSION].includes(prior?.schemaVersion) || !Object.hasOwn(prior || {}, field)) && incomingConfig[field] === false && snapshot[field] !== false);
     if (missingRestrictions.length) throw new SessionRuntimeError(
       "SESSION_RUNTIME_POLICY_MIGRATION_REQUIRED",
       "The saved runtime does not establish these requested tool restrictions. Apply a revision-checked runtime patch before resuming.",
       { fields: missingRestrictions }
+    );
+  }
+  if (savedRuntime || durableState) {
+    const missingScopes = WORKSPACE_SCOPE_FIELDS.filter(field => {
+      let requested;
+      try { requested = normalizeWorkspaceScopeRoots(incomingConfig[field], snapshot.commandCwd, field); }
+      catch { invalid(field, "expected an explicit workspace-contained directory list"); }
+      return prior?.schemaVersion !== SESSION_RUNTIME_SCHEMA_VERSION && requested.length > 0 &&
+        !(patched && Object.hasOwn(runtimePatch, field));
+    });
+    if (missingScopes.length) throw new SessionRuntimeError(
+      "SESSION_RUNTIME_POLICY_MIGRATION_REQUIRED",
+      "The saved runtime does not establish the requested workspace restrictions. Apply an explicit revision-checked workspace scope patch before resuming.",
+      { fields: missingScopes }
     );
   }
 

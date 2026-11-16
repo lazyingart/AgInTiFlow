@@ -42,6 +42,8 @@ import {
   toolContractRepairMessage,
 } from "../src/agent-runner.js";
 import { resolveRuntimeConfig } from "../src/config.js";
+import { workspacePathScopePlan } from "../src/workspace-path-policy.js";
+import { resolveWorkspacePath } from "../src/workspace-tools.js";
 import { SessionStore } from "../src/session-store.js";
 import {
   INTEGRATION_TEXT_WORKSPACE_PROFILE_ID,
@@ -5621,7 +5623,16 @@ const scopedRuntime = nextStepRuntimeConfig(
   }
 );
 assertStrict.equal(scopedRuntime.scopedArtifactTask, true);
-assertStrict.deepEqual(scopedRuntime.workspaceWritePathScopeRoots, ["output/wechat_worker/task"]);
+assertStrict.equal(scopedRuntime.workspaceWritePathScopeRoots, undefined, "a derived task root overwrote host write policy");
+assertStrict.deepEqual(
+  workspacePathScopePlan(scopedRuntime, "/workspace", { writeAccess: true }),
+  { roots: ["/workspace/output/wechat_worker/task"], restricted: true }
+);
+assertStrict.throws(
+  () => resolveWorkspacePath(scopedRuntime, "output/wechat_worker/other/report.md", { writeAccess: true }),
+  /outside.*scope/
+);
+assertStrict.equal(resolveWorkspacePath(scopedRuntime, "README.md").relativePath, "README.md");
 assertStrict.equal(
   scopedRuntime.workspacePathScopeRoots,
   undefined,
@@ -5794,10 +5805,11 @@ assertStrict.equal(
   "long-context compaction discarded the host-owned artifact scope"
 );
 assertStrict.deepEqual(
-  longScopedRuntime.workspaceWritePathScopeRoots,
-  ["output/wechat_worker/long-scoped-task"],
+  workspacePathScopePlan(longScopedRuntime, repoRoot, { writeAccess: true }),
+  { roots: [longScopedTaskRoot], restricted: true },
   "long-context artifact writes escaped their exact task root"
 );
+assertStrict.equal(longScopedRuntime.workspaceWritePathScopeRoots, undefined, "long-context task scope overwrote host write policy");
 assertStrict.equal(
   longScopedRuntime.completionFreshMutationRequired,
   undefined,

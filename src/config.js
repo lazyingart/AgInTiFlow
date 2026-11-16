@@ -27,6 +27,7 @@ import { normalizeContextBudgetMode } from "./context-budget-controller.js";
 import { BASELINE_PROVIDER, normalizeProviderBaseURL, normalizeProviderId } from "./provider-contract.js";
 import { isResponseOnlyEvidenceScope, scopedChatopsEvidenceGoal } from "./scs-evidence.js";
 import { SESSION_TOOL_FAMILY_FIELDS } from "./session-runtime.js";
+import { WORKSPACE_SCOPE_FIELDS, normalizeWorkspaceScopeRoots } from "./workspace-path-policy.js";
 
 function parseBoolean(value, fallback) {
   if (value === undefined) return fallback;
@@ -99,6 +100,7 @@ export function resolveRuntimeConfig(args, overrides = {}) {
   const baseDir = resolveProjectRoot(overrides.baseDir || process.cwd());
   const paths = projectPaths(baseDir);
   loadProjectEnv(baseDir);
+  const commandCwd = path.resolve(overrides.commandCwd || args.commandCwd || process.env.COMMAND_CWD || baseDir);
   const requestedProvider = resolveRequestedProvider(overrides, args);
   const routingMode = normalizeRoutingMode(overrides.routingMode || args.routingMode || process.env.AGENT_ROUTING_MODE || "smart");
   const taskProfile = normalizeTaskProfile(overrides.taskProfile || args.taskProfile || process.env.AGINTI_TASK_PROFILE || "auto");
@@ -518,7 +520,10 @@ export function resolveRuntimeConfig(args, overrides = {}) {
     ),
     useDockerSandbox: sandboxMode !== "host",
     dockerSandboxImage: overrides.dockerSandboxImage || process.env.DOCKER_SANDBOX_IMAGE || "agintiflow-sandbox:latest",
-    commandCwd: path.resolve(overrides.commandCwd || args.commandCwd || process.env.COMMAND_CWD || baseDir),
+    commandCwd,
+    ...Object.fromEntries(WORKSPACE_SCOPE_FIELDS.map(field => [field, normalizeWorkspaceScopeRoots(
+      Object.hasOwn(overrides, field) ? overrides[field] : args[field], commandCwd, field
+    )])),
     sessionsDir: paths.globalSessionsDir,
     projectSessionsDir: paths.sessionsDir,
     sessionDbPath: paths.sessionDbPath,

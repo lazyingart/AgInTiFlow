@@ -5,6 +5,7 @@ import { XMLValidator } from "fast-xml-parser";
 import { publishWorkspaceTextFile } from "./workspace-file-publication.js";
 import { createWorkspaceReadBoundary, createWorkspaceReadBoundarySync, readWorkspaceFileSnapshot, readWorkspaceFileSnapshotSync, workspaceReadBoundaryError, isSensitiveWorkspacePath as isSensitivePath } from "./workspace-read-boundary.js";
 import { hasSensitiveText, redactSensitiveText } from "./redaction.js";
+import { workspacePathScopePlan } from "./workspace-path-policy.js";
 
 export const WORKSPACE_TOOL_NAMES = ["inspect_project", "list_files", "read_file", "search_files", "write_file", "apply_patch"];
 export const WORKSPACE_WRITE_TOOL_NAMES = ["write_file", "apply_patch"];
@@ -170,19 +171,7 @@ function matchingReadOnlyRoot(config, target) {
 }
 
 function configuredWorkspaceScopeRoots(config, root, { writeAccess = false } = {}) {
-  const values = [
-    ...(Array.isArray(config.workspacePathScopeRoots)
-      ? config.workspacePathScopeRoots
-      : []),
-    ...(writeAccess && Array.isArray(config.workspaceWritePathScopeRoots)
-      ? config.workspaceWritePathScopeRoots
-      : []),
-  ];
-  return values
-    .map((item) => String(item || "").trim())
-    .filter(Boolean)
-    .map((item) => path.resolve(root, normalizeWorkspaceInputPath(item)))
-    .filter((item) => isInside(root, item));
+  return workspacePathScopePlan(config, root, { writeAccess }).roots;
 }
 
 function hashText(value) {
@@ -333,7 +322,8 @@ export function resolveWorkspacePath(
   const rawPath = sanitizePathInput(inputPath);
   const workspacePath = normalizeWorkspaceInputPath(rawPath);
   let absolutePath = path.resolve(root, workspacePath);
-  const scopedRoots = configuredWorkspaceScopeRoots(config, root, { writeAccess });
+  const scope = workspacePathScopePlan(config, root, { writeAccess });
+  const scopedRoots = scope.roots;
   const configuredArtifactRoot = String(config.scopedArtifactRoot || "").trim();
   const resolvedArtifactRoot = configuredArtifactRoot
     ? path.resolve(root, normalizeWorkspaceInputPath(configuredArtifactRoot))
@@ -351,7 +341,7 @@ export function resolveWorkspacePath(
     absolutePath = path.resolve(resolvedArtifactRoot, workspacePath);
   }
 
-  if (scopedRoots.length && !scopedRoots.some((scopeRoot) => isInside(scopeRoot, absolutePath))) {
+  if (scope.restricted && !scopedRoots.some((scopeRoot) => isInside(scopeRoot, absolutePath))) {
     throw new Error(`Path is outside the active task artifact scope: ${rawPath}`);
   }
 

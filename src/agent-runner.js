@@ -20221,7 +20221,6 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   if (scopedArtifactTask) {
     runtimeConfig.scopedArtifactTask = true;
     runtimeConfig.scopedArtifactRoot = scopedRootRelative.replace(/\\/g, "/");
-    runtimeConfig.workspaceWritePathScopeRoots = [runtimeConfig.scopedArtifactRoot];
   }
   const scopedArtifactMutationAt = Date.parse(
     String(groundingExecutionContract.scopedArtifactMutationAt || "")

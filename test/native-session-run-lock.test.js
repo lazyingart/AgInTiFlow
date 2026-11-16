@@ -12,6 +12,7 @@ import { resolveRuntimeConfig } from "../src/config.js";
 import { processIdentityForPid } from "../src/integration-durable-common.js";
 import { SessionStore } from "../src/session-store.js";
 import { closeSessionIndexConnections, globalSessionPaths, listSessionIndex } from "../src/session-index.js";
+import { resolveWorkspacePath } from "../src/workspace-tools.js";
 import { ensureProjectSessionStorage } from "../src/project.js";
 import { INTEGRATION_TEXT_WORKSPACE_PROFILE_ID } from "../src/integration-retained-text-workspace.js";
 import { INTEGRATION_VISION_WORKSPACE_PROFILE_ID } from "../src/integration-retained-vision-workspace.js";
@@ -98,6 +99,7 @@ async function handoffFixture(t, options = {}) {
     onEvent(type) { if (options.cancelOnHandoff && type === "provider.handoff_requested") controller.abort(); },
   });
   if (options.family) Object.assign(config, { allowBrowserTools: false, allowCanvasTools: false, allowAgentLinkTools: false, allowCoordinationTools: false, allowSpecialistTools: false, allowJsonTools: false, allowJsonSpecialist: false, allowWritingTools: false, allowWritingSpecialist: false, allowLongJobTools: false, allowBackgroundJobs: false, allowTmuxTools: false, allowImageTools: false, allowVisionTools: false, allowImagePerception: false, allowImageGeneration: false });
+  if (options.scopes) Object.assign(config, { workspacePathScopeRoots: ["allowed"], workspaceWritePathScopeRoots: ["allowed/out"] });
   t.mock.method(fs, "unlink", async name => {
     const result = await Reflect.apply(nativeUnlink, fs, [name]);
     if (!isPrimaryLock(name)) return result;
@@ -123,6 +125,22 @@ async function handoffFixture(t, options = {}) {
   const release = await acquireSessionRunLock({ sessionsDir }, primaryId); await release();
   return receipt;
 }
+
+test("native workspace scopes stay authoritative through an automatic provider handoff", async t => {
+  let targetChecked = false;
+  const result = await handoffFixture(t, { scopes: true, beforeTarget({ config }) {
+    assert.deepEqual(config.workspacePathScopeRoots, ["allowed"]);
+    assert.deepEqual(config.workspaceWritePathScopeRoots, ["allowed/out"]);
+    assert.throws(() => resolveWorkspacePath(config, "excluded/note.md"), /outside.*scope/);
+    assert.throws(() => resolveWorkspacePath(config, "allowed/blocked.md", { writeAccess: true }), /outside.*scope/);
+    targetChecked = true;
+  } });
+  assert.equal(result.outcome.error, undefined); assert.equal(targetChecked, true);
+  assert.equal(result.outcome.value.result, "LEASE_CONTINUATION_OK");
+  assert.deepEqual(result.state.meta.runtimeConfig.workspacePathScopeRoots, ["allowed"]);
+  assert.deepEqual(result.state.meta.runtimeConfig.workspaceWritePathScopeRoots, ["allowed/out"]);
+  assert.equal(result.state.meta.runtimeConfig.revision, 2); assert.equal(result.publications.length, 1);
+});
 
 test("native tool-family policy stays narrow across a provider handoff", async t => {
   const result = await handoffFixture(t, { family: true });

@@ -14,7 +14,7 @@ test("native tool-family policy is resolved, captured and retained through a pro
   const config = resolveRuntimeConfig({ provider: "mock", model: "mock" }, disabledFamilies);
   assertFamily(config, false);
   const before = runtimePolicy.captureSessionRuntime(config);
-  assert.equal(before.schemaVersion, 2);
+  assert.equal(before.schemaVersion, 3);
   assertFamily(before, false);
   const after = runtimePolicy.resolveSessionRuntime({ state: { meta: { runtimeConfig: before } }, runtimePatch: { provider: "deepseek", model: "deepseek-v4-pro" }, expectedRevision: 1 });
   assertFamily(after.snapshot, false);assertFamily(after.runtimeOverrides, false);assert.equal(after.snapshot.revision, 2);
@@ -52,7 +52,7 @@ test("native tool-family policy preserves unrestricted legacy defaults without i
   legacy.schemaVersion = 1;
   const result = runtimePolicy.resolveSessionRuntime({ savedRuntime: legacy });
   assertFamily(result.snapshot, true);assert.equal(result.snapshot.revision, 1);
-  assert.equal(result.snapshot.schemaVersion, 2);
+  assert.equal(result.snapshot.schemaVersion, 3);
   assert.deepEqual(runtimePolicy.SESSION_TOOL_FAMILY_FIELDS, familyFields);
 });
 

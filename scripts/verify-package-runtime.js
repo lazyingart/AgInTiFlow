@@ -70,6 +70,7 @@ try {
     "test/workspace-patch-line-endings.test.js", "test/native-patch-line-endings.test.js",
     "test/workspace-file-publication.test.js", "test/workspace-file-publication-runtime.test.js",
     "test/workspace-read-authority.test.js",
+    "test/workspace-path-policy.test.js", "test/native-workspace-scope-runtime.test.js",
     "test/artifact-validation-context.test.js", "test/artifact-validation-runtime.test.js",
     "test/prepatch-source-boundary.test.js", "test/prepatch-source-runtime.test.js",
     "test/synchronous-source-read.test.js", "test/document-producer-source.test.js", "test/document-source-cancellation-runtime.test.js",
@@ -110,8 +111,8 @@ try {
     "test/artifact-instruction-boundary.test.js",
     "test/named-transform-obligations.test.js",
     "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 2863\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 2863\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 2917\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 2917\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
