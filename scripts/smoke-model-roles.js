@@ -651,8 +651,10 @@ const cleanedMalformedSuffix = normalizeTextToolCallResponse({
   ],
 });
 assert(
-  cleanedMalformedSuffix.choices[0].message.content === "Here is a normal answer.",
-  "malformed tool suffix should be stripped from otherwise usable assistant content"
+  cleanedMalformedSuffix.choices[0].message.tool_calls?.length === 0 &&
+    cleanedMalformedSuffix.choices[0].message.aginti_text_tool_retry?.reason === "malformed-or-truncated-text-tool-call" &&
+    !cleanedMalformedSuffix.choices[0].message.content.includes("Here is a normal answer."),
+  "malformed action suffix must request correction, never authorize a salvaged answer"
 );
 assert(usesTextToolProtocol({ provider: "venice", model: "gemma-4-uncensored" }), "Venice Gemma should use text tool protocol");
 assert(usesTextToolProtocol({ provider: "venice", model: "e2ee-venice-uncensored-24b-p" }), "Venice 1.1 should use text tool protocol");

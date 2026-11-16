@@ -36,6 +36,8 @@ import { NativeToolArgumentsError, parseNativeToolArguments } from "./native-too
 import { assertNativeTurnAdmission } from "./native-turn-contract.js";
 import { scopedChatopsEvidenceGoal } from "./scs-evidence.js";
 
+import { findTextToolProtocol, parseLegacyTextToolTurn } from "./text-tool-turn.js";
+
 function isRetainedWorkspaceProfile(config = {}) {
   return config.integrationSessionProfile === INTEGRATION_TEXT_WORKSPACE_PROFILE_ID ||
     config.integrationSessionProfile === INTEGRATION_VISION_WORKSPACE_PROFILE_ID;
@@ -108,11 +110,18 @@ function latestToolPayload(messages) {
 }
 
 function prepareMessages(config, messages) {
-  if (config.provider === "deepseek") return messages;
   return messages.map((message) => {
+    const noCalls = message.role === "assistant" && Array.isArray(message.tool_calls) && message.tool_calls.length === 0;
+    if (config.provider === "deepseek" && !noCalls) return message;
     const prepared = { ...message };
-    delete prepared.reasoning_content;
-    delete prepared.reasoningContent;
+    // An internal syntax-repair frame can explicitly have no calls. OpenAI-
+    // compatible providers require omission, not an empty array, on the wire.
+    // Keep durable history, nonempty calls and DeepSeek reasoning untouched.
+    if (noCalls) delete prepared.tool_calls;
+    if (config.provider !== "deepseek") {
+      delete prepared.reasoning_content;
+      delete prepared.reasoningContent;
+    }
     return prepared;
   });
 }
@@ -479,6 +488,7 @@ function textToolProtocolPrompt(tools = []) {
     'A function/parameter form is accepted too: <function=tool_name><parameter=arg>value</parameter></function>.',
     "Return only one or more TOOL_CALLS blocks when calling tools; do not wrap them in markdown.",
     "Keep tool-call JSON valid and complete. For long write_file content, prefer a concise complete file or smaller follow-up edits over emitting huge/truncated JSON.",
+    "Use one tool-call syntax per response and unique JSON keys at every level. Every call must be complete: one malformed or ambiguous member rejects the whole turn before execution. Do not mix a final answer with an unfinished action.",
     "If no tool is needed, answer normally.",
     "Available text tools:",
     ...toolLines,
@@ -522,95 +532,26 @@ function messagesWithTextToolProtocol(config, messages, tools) {
   return [protocol, ...prepared];
 }
 
-export function parseTextToolCalls(content = "") {
-  const text = String(content || "");
-  if (!hasTextToolCallMarker(text)) return [];
-  if (hasDsmlToolCallMarker(text)) return parseDsmlToolCalls(text);
-  if (hasBareFunctionToolCallMarker(text)) return parseBareFunctionToolCalls(text);
-
-  const calls = [];
-  for (const call of parseRequestedToolCalls(text)) calls.push(call);
-  for (const call of parseXmlToolCalls(text, calls.length)) calls.push(call);
-  for (const call of parseFunctionParameterToolCalls(text, calls.length)) calls.push(call);
-  for (const call of parseStandaloneToolJsonCalls(text, calls.length)) calls.push(call);
-  const jsonBlock = text.match(/TOOL_CALLS\s*:\s*```(?:json)?\s*([\s\S]*?)```/i);
-  if (jsonBlock?.[1]) {
-    try {
-      const parsed = JSON.parse(jsonBlock[1].trim());
-      if (Array.isArray(parsed)) {
-        for (const item of parsed) {
-          const name = String(item?.name || item?.tool || "").trim();
-          if (!name) continue;
-          const args = item?.arguments && typeof item.arguments === "object" ? item.arguments : {};
-          calls.push({
-            id: String(item?.id || `text-tool-${calls.length + 1}`),
-            type: "function",
-            function: {
-              name,
-              arguments: JSON.stringify(args),
-            },
-          });
-        }
-      }
-    } catch {
-      // Fall through to bracket parser below.
-    }
+function parseTextToolTurn(content = "") {
+  const start = findTextToolProtocol(content);
+  if (!start) return { recognized: false, calls: [], prefix: "" };
+  if (start.kind === "dsml") return { recognized: true, calls: parseDsmlToolCalls(content), prefix: "" };
+  if (start.kind === "function" && /^<function=[A-Za-z0-9_-]{1,128}>/u.test(content.slice(start.index))) {
+    const calls = Buffer.byteLength(content) > MAX_BARE_FUNCTION_TOOL_BYTES ? []
+      : parseBareFunctionToolCalls(content.slice(start.index));
+    return { recognized: true, calls, prefix: content.slice(0, start.index).trim() };
   }
-
-  for (const chunk of text.split("[TOOL_CALLS]").slice(1)) {
-    const match = chunk.match(/^([A-Za-z0-9_-]+)\[ARGS\]([\s\S]*?)$/);
-    const name = match?.[1]?.trim();
-    let rawArgs = match?.[2]?.trim() || "{}";
-    let id = `text-tool-${calls.length + 1}`;
-    const strictParts = rawArgs.split("[ARGS]");
-    if (strictParts.length >= 2 && !rawArgs.startsWith("{") && !rawArgs.startsWith("[")) {
-      id = strictParts.shift()?.trim() || id;
-      rawArgs = strictParts.join("[ARGS]").trim() || "{}";
-    }
-    if (!name) continue;
-    try {
-      JSON.parse(rawArgs);
-    } catch {
-      continue;
-    }
-    calls.push({
-      id,
-      type: "function",
-      function: {
-        name,
-        arguments: rawArgs,
-      },
-    });
-  }
-  return calls;
+  return parseLegacyTextToolTurn(content, start);
 }
 
-function hasTextToolCallMarker(content = "") {
-  const text = String(content || "");
-  return (
-    text.includes("[TOOL_CALLS]") ||
-    /TOOL_CALLS\s*:/i.test(text) ||
-    /Requested tools?\s*:/i.test(text) ||
-    /<tool_calls?>/i.test(text) ||
-    hasBareFunctionToolCallMarker(text) ||
-    hasDsmlToolCallMarker(text) ||
-    /<function\s*=/i.test(text) ||
-    /^\s*\{\s*"toolName"\s*:/m.test(text)
-  );
+export function parseTextToolCalls(content = "") {
+  return parseTextToolTurn(content).calls;
 }
 
 const MAX_BARE_FUNCTION_TOOL_BYTES = 64 * 1024;
 const MAX_BARE_FUNCTION_TOOL_CALLS = 16;
 const MAX_BARE_FUNCTION_TOOL_PARAMETERS = 64;
 const MAX_BARE_FUNCTION_TOOL_PARAMETER_BYTES = 16 * 1024;
-
-function hasBareFunctionToolCallMarker(content = "") {
-  const text = String(content || "");
-  const scan = text.length > MAX_BARE_FUNCTION_TOOL_BYTES + 256
-    ? text.slice(0, MAX_BARE_FUNCTION_TOOL_BYTES + 256)
-    : text;
-  return /<function=[A-Za-z0-9_-]{1,128}>/u.test(scan);
-}
 
 function parseBareFunctionParameterValue(rawValue = "") {
   const value = decodeXmlToolArgs(rawValue);
@@ -643,7 +584,7 @@ function parseBareFunctionToolCalls(content = "", callOffset = 0) {
     const functionClose = text.indexOf("</function>", functionBodyStart);
     if (functionClose < 0) return [];
     const body = text.slice(functionBodyStart, functionClose);
-    const args = {};
+    const args = Object.create(null);
     let bodyOffset = dsmlSkipWhitespace(body, 0);
     let parameterCount = 0;
     while (bodyOffset < body.length) {
@@ -681,16 +622,6 @@ function parseBareFunctionToolCalls(content = "", callOffset = 0) {
   return calls;
 }
 
-function hasDsmlToolCallMarker(content = "") {
-  const text = String(content || "");
-  const scan = text.length > MAX_DSML_TEXT_TOOL_MARKER_SCAN_CHARACTERS
-    ? text.slice(0, MAX_DSML_TEXT_TOOL_MARKER_SCAN_CHARACTERS)
-    : text;
-  // Recognize the protocol before validating its exact grammar. Unknown or
-  // malformed DSML tags must request correction, not become a final answer.
-  return /<\/?[|｜]{2}DSML[|｜]{2}/iu.test(scan);
-}
-
 function decodeXmlToolArgs(value = "") {
   return String(value || "")
     .trim()
@@ -699,35 +630,6 @@ function decodeXmlToolArgs(value = "") {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&");
-}
-
-function parseXmlToolCalls(content = "", offset = 0) {
-  const text = String(content || "");
-  const calls = [];
-  const pattern = /<tool_call\b([^>]*)>([\s\S]*?)<\/tool_call>/gi;
-  let match;
-  while ((match = pattern.exec(text))) {
-    const attrs = match[1] || "";
-    const name =
-      attrs.match(/\bname\s*=\s*"([^"]+)"/i)?.[1]?.trim() ||
-      attrs.match(/\bname\s*=\s*'([^']+)'/i)?.[1]?.trim();
-    if (!name) continue;
-    const rawArgs = decodeXmlToolArgs(match[2]);
-    try {
-      JSON.parse(rawArgs || "{}");
-    } catch {
-      continue;
-    }
-    calls.push({
-      id: `text-tool-${offset + calls.length + 1}`,
-      type: "function",
-      function: {
-        name,
-        arguments: rawArgs || "{}",
-      },
-    });
-  }
-  return calls;
 }
 
 function decodeDsmlToolText(value = "") {
@@ -756,7 +658,6 @@ function normalizeTextToolArguments(name, args = {}) {
 
 const DSML_TEXT_TOOL_MARKER = "[|｜]{2}DSML[|｜]{2}";
 const MAX_DSML_TEXT_TOOL_BYTES = 64 * 1024;
-const MAX_DSML_TEXT_TOOL_MARKER_SCAN_CHARACTERS = MAX_DSML_TEXT_TOOL_BYTES + 256;
 const MAX_DSML_TEXT_TOOL_CALLS = 16;
 const MAX_DSML_TEXT_TOOL_PARAMETERS = 64;
 const MAX_DSML_TEXT_TOOL_PARAMETER_BYTES = 16 * 1024;
@@ -841,16 +742,17 @@ function parseDsmlParameterValue(type = "", rawValue = "") {
     if (!Number.isFinite(numeric)) throw new Error("Invalid DSML number parameter");
     return numeric;
   }
-  if (type === "json") return JSON.parse(value || "null");
+  if (type === "json") return parseNativeToolArguments(value || "null");
   try {
-    return JSON.parse(value);
-  } catch {
+    return parseNativeToolArguments(value);
+  } catch (error) {
+    if (error.kind !== "syntax") throw error;
     return value;
   }
 }
 
 function parseDsmlParameters(body = "") {
-  const args = {};
+  const args = Object.create(null);
   let offset = 0;
   let count = 0;
   while (offset < body.length) {
@@ -926,201 +828,6 @@ function parseDsmlToolCalls(content = "", offset = 0) {
   return calls;
 }
 
-function parseFunctionParameterValue(value = "") {
-  const decoded = decodeXmlToolArgs(value);
-  if (!decoded) return "";
-  if (
-    /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)$/.test(decoded) ||
-    /^[\[{]/.test(decoded)
-  ) {
-    try {
-      return JSON.parse(decoded);
-    } catch {
-      return decoded;
-    }
-  }
-  return decoded;
-}
-
-function parseFunctionParameterToolCalls(content = "", offset = 0) {
-  const text = String(content || "");
-  const calls = [];
-  const functionPattern = /<function\s*=\s*(?:"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)'|([A-Za-z0-9_-]+))\s*>([\s\S]*?)<\/function\s*>/gi;
-  let functionMatch;
-  while ((functionMatch = functionPattern.exec(text))) {
-    const name = String(
-      functionMatch[1] || functionMatch[2] || functionMatch[3] || ""
-    ).trim();
-    const body = String(functionMatch[4] || "");
-    if (!name) continue;
-
-    const args = {};
-    const seen = new Set();
-    let malformed = false;
-    let parameterCount = 0;
-    const parameterPattern = /<parameter\s*=\s*(?:"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)'|([A-Za-z0-9_-]+))\s*>([\s\S]*?)<\/parameter\s*>/gi;
-    let parameterMatch;
-    while ((parameterMatch = parameterPattern.exec(body))) {
-      const parameterName = String(
-        parameterMatch[1] || parameterMatch[2] || parameterMatch[3] || ""
-      ).trim();
-      if (!parameterName || seen.has(parameterName)) {
-        malformed = true;
-        break;
-      }
-      seen.add(parameterName);
-      parameterCount += 1;
-      args[parameterName] = parseFunctionParameterValue(parameterMatch[4]);
-    }
-    const residue = body.replace(
-      /<parameter\s*=\s*(?:"[A-Za-z0-9_-]+"|'[A-Za-z0-9_-]+'|[A-Za-z0-9_-]+)\s*>[\s\S]*?<\/parameter\s*>/gi,
-      ""
-    ).trim();
-    if (
-      malformed ||
-      residue ||
-      (/<parameter\s*=/i.test(body) && parameterCount === 0)
-    ) {
-      continue;
-    }
-    calls.push({
-      id: `text-tool-${offset + calls.length + 1}`,
-      type: "function",
-      function: {
-        name,
-        arguments: JSON.stringify(args),
-      },
-    });
-  }
-  return calls;
-}
-
-function parseStandaloneToolJsonCalls(content = "", offset = 0) {
-  const lines = String(content || "").split(/\r?\n/);
-  const firstToolLine = lines.findIndex((line) =>
-    /^\s*\{\s*"toolName"\s*:/.test(line)
-  );
-  if (firstToolLine < 0) return [];
-  const proseBefore = lines.slice(0, firstToolLine).join("\n");
-  if ((proseBefore.match(/```/g) || []).length % 2 === 1) return [];
-
-  const calls = [];
-  const seen = new Set();
-  for (const rawLine of lines.slice(firstToolLine)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    if (!/^\{\s*"toolName"\s*:/.test(line) || !line.endsWith("}")) return [];
-    let parsed;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      return [];
-    }
-    if (
-      !parsed ||
-      typeof parsed !== "object" ||
-      Array.isArray(parsed) ||
-      typeof parsed.toolName !== "string" ||
-      !/^[A-Za-z0-9_-]+$/.test(parsed.toolName) ||
-      !parsed.args ||
-      typeof parsed.args !== "object" ||
-      Array.isArray(parsed.args) ||
-      Object.keys(parsed).some((key) => !["toolName", "args", "id"].includes(key))
-    ) {
-      return [];
-    }
-    const signature = JSON.stringify([parsed.toolName, parsed.args]);
-    if (seen.has(signature)) continue;
-    seen.add(signature);
-    calls.push({
-      id: String(parsed.id || `text-tool-${offset + calls.length + 1}`),
-      type: "function",
-      function: {
-        name: parsed.toolName,
-        arguments: JSON.stringify(parsed.args),
-      },
-    });
-  }
-  return calls;
-}
-
-function findMatchingParen(text = "", openIndex = 0) {
-  let depth = 0;
-  let quote = "";
-  let escaped = false;
-  for (let index = openIndex; index < text.length; index += 1) {
-    const char = text[index];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (quote) {
-      if (char === "\\") escaped = true;
-      else if (char === quote) quote = "";
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (char === "(") depth += 1;
-    if (char === ")") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return -1;
-}
-
-function parseRequestedToolCalls(content = "") {
-  const marker = String(content || "").match(/Requested tools?\s*:/i);
-  if (!marker) return [];
-
-  const text = String(content).slice(marker.index + marker[0].length);
-  const calls = [];
-  let offset = 0;
-  while (offset < text.length) {
-    const match = text.slice(offset).match(/([A-Za-z0-9_-]+)\s*\(/);
-    if (!match) break;
-
-    const name = match[1]?.trim();
-    const openIndex = offset + match.index + match[0].lastIndexOf("(");
-    const closeIndex = findMatchingParen(text, openIndex);
-    if (!name || closeIndex < 0) break;
-
-    const rawArgs = text.slice(openIndex + 1, closeIndex).trim() || "{}";
-    try {
-      JSON.parse(rawArgs);
-    } catch {
-      offset = closeIndex + 1;
-      continue;
-    }
-    calls.push({
-      id: `text-tool-${calls.length + 1}`,
-      type: "function",
-      function: {
-        name,
-        arguments: rawArgs,
-      },
-    });
-    offset = closeIndex + 1;
-  }
-  return calls;
-}
-
-function textBeforeToolCallMarker(content = "") {
-  return String(content || "")
-    .split("[TOOL_CALLS]")[0]
-    .split("TOOL_CALLS:")[0]
-    .split(/Requested tools?\s*:/i)[0]
-    .split(/<tool_calls?>/i)[0]
-    .split(/<function\s*=/i)[0]
-    .split(/<[|｜]{2}DSML[|｜]{2}tool_calls>/iu)[0]
-    .split(/^\s*\{\s*"toolName"\s*:/m)[0]
-    .split("<|tool_call>")[0]
-    .trim();
-}
-
 export function normalizeTextToolCallResponse(response) {
   const message = response?.choices?.[0]?.message;
   if (!message) return response;
@@ -1153,26 +860,10 @@ export function normalizeTextToolCallResponse(response) {
     return response;
   }
 
-  const calls = parseTextToolCalls(message.content || "");
+  const turn = parseTextToolTurn(message.content || "");
+  if (!turn.recognized) return response;
+  const calls = turn.calls;
   if (calls.length === 0) {
-    const cleanedContent = textBeforeToolCallMarker(message.content || "");
-    if (!hasTextToolCallMarker(message.content || "")) return response;
-    if (cleanedContent && !hasDsmlToolCallMarker(message.content || "")) {
-      return {
-        ...response,
-        choices: response.choices.map((choice, index) =>
-          index === 0
-            ? {
-                ...choice,
-                message: {
-                  ...message,
-                  content: cleanedContent,
-                },
-              }
-            : choice
-        ),
-      };
-    }
     return {
       ...response,
       choices: response.choices.map((choice, index) =>
@@ -1194,7 +885,7 @@ export function normalizeTextToolCallResponse(response) {
     };
   }
 
-  const content = textBeforeToolCallMarker(message.content || "");
+  const content = turn.prefix;
   return {
     ...response,
     choices: response.choices.map((choice, index) =>
