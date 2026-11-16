@@ -17,16 +17,48 @@ function conflict(message) {
   return Object.assign(new Error(message), { code: "WORKSPACE_WRITE_CONFLICT" });
 }
 
-async function serialized(key, operation) {
+export function throwIfWorkspaceAborted(signal) {
+  if (signal?.aborted) throw Object.assign(new Error("Workspace operation interrupted."), {
+    name: "AbortError", code: "ABORT_ERR",
+  });
+}
+
+function waitForTurn(previous, signal) {
+  throwIfWorkspaceAborted(signal);
+  if (!signal) return previous;
+  return new Promise((resolve, reject) => {
+    const clear = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      clear();
+      try { throwIfWorkspaceAborted(signal); } catch (error) { reject(error); }
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    previous.then(() => { clear(); resolve(); }, error => { clear(); reject(error); });
+    if (signal.aborted) onAbort();
+  });
+}
+
+async function serialized(key, operation, signal) {
+  throwIfWorkspaceAborted(signal);
   const previous = queues.get(key) || Promise.resolve();
   let release;
   const done = new Promise(resolve => { release = resolve; });
   queues.set(key, done);
-  await previous;
-  try { return await operation(); }
-  finally {
+  let entered = false;
+  const finish = () => {
     release();
     if (queues.get(key) === done) queues.delete(key);
+  };
+  try {
+    await waitForTurn(previous, signal);
+    entered = true;
+    throwIfWorkspaceAborted(signal);
+    return await operation();
+  } finally {
+    // A cancelled waiter returns promptly but its placeholder cannot release
+    // successors ahead of the still-running predecessor. It never runs later.
+    if (entered) finish();
+    else previous.then(finish, finish);
   }
 }
 
@@ -74,7 +106,8 @@ async function requireAbsent(file) {
   throw Object.assign(new Error("File already exists; create-only publication refused."), { code: "EEXIST" });
 }
 
-async function parentBinding(target) {
+async function parentBinding(target, signal) {
+  throwIfWorkspaceAborted(signal);
   const raw = path.dirname(target.absolutePath);
   // Inspect each existing component before creating descendants: recursive mkdir
   // would otherwise create directories through an already-present symlink.
@@ -87,6 +120,7 @@ async function parentBinding(target) {
     try { entry = await fs.lstat(directory); }
     catch (error) {
       if (error.code !== "ENOENT") throw error;
+      throwIfWorkspaceAborted(signal);
       try { await fs.mkdir(directory); } catch (mkdirError) { if (mkdirError.code !== "EEXIST") throw mkdirError; }
       entry = await fs.lstat(directory);
     }
@@ -100,6 +134,7 @@ async function parentBinding(target) {
   }
   const stat = await fs.stat(canonical, { bigint: true });
   if (!stat.isDirectory()) throw new Error("Workspace parent is not a directory.");
+  throwIfWorkspaceAborted(signal);
   return { raw, canonical, stat };
 }
 
@@ -125,9 +160,10 @@ async function removeStage(stage, expected) {
   }
 }
 
-export async function publishWorkspaceTextFile(target, bytes, { createOnly = false, expectedBeforeHash } = {}) {
+export async function publishWorkspaceTextFile(target, bytes, { createOnly = false, expectedBeforeHash, signal } = {}) {
+  throwIfWorkspaceAborted(signal);
   if (!Buffer.isBuffer(bytes) || bytes.length > MAX_BYTES) throw new Error("Workspace write exceeds the bounded text limit.");
-  const parent = await parentBinding(target);
+  const parent = await parentBinding(target, signal);
   const destination = path.join(parent.canonical, path.basename(target.absolutePath));
   return serialized(destination, async () => {
     await assertParent(parent);
@@ -135,6 +171,7 @@ export async function publishWorkspaceTextFile(target, bytes, { createOnly = fal
     if (expectedBeforeHash !== undefined && expectedBeforeHash !== before?.hash) {
       throw conflict(`Base hash mismatch for ${target.relativePath}; read the file again before patching.`);
     }
+    throwIfWorkspaceAborted(signal);
     const stage = path.join(parent.canonical, `.aginti-write-${process.pid}-${crypto.randomUUID()}.tmp`);
     let handle, staged, published = false, failure;
     try {
@@ -152,6 +189,7 @@ export async function publishWorkspaceTextFile(target, bytes, { createOnly = fal
       }
       await handle.chmod(before ? Number(before.stat.mode & 0o777n) : 0o666 & ~process.umask());
       await handle.sync();
+      throwIfWorkspaceAborted(signal);
       const sealed = await handle.stat({ bigint: true });
       const closing = handle; handle = null;
       await closing.close();
@@ -161,8 +199,11 @@ export async function publishWorkspaceTextFile(target, bytes, { createOnly = fal
         throw conflict(`Workspace target changed before publication: ${target.relativePath}`);
       }
       if (!sameFile(sealed, await fs.lstat(stage, { bigint: true }))) throw conflict("Workspace staging file changed before publication.");
+      throwIfWorkspaceAborted(signal);
       if (!before) await fs.link(stage, destination); // Kernel no-clobber, even after the last check.
       else await fs.rename(stage, destination);
+      // Once admitted to the OS, publication can win a cancellation race. Do
+      // not throw away a committed receipt or pretend the bytes were undone.
       published = true;
     } catch (error) { failure = error; }
     // Release a handle at most once, even if close rejects. Never retry a possibly
@@ -181,5 +222,5 @@ export async function publishWorkspaceTextFile(target, bytes, { createOnly = fal
     return { beforeBytes: before?.bytes || Buffer.alloc(0), created: !before,
       publication: { method: before ? "rename" : "exclusive-link", fileSynced: true,
         ...(cleanup ? { stagingCleanupPending: true, stagingPath: path.join(path.dirname(target.relativePath), path.basename(stage)).replace(/\\/g, "/") } : {}) } };
-  });
+  }, signal);
 }

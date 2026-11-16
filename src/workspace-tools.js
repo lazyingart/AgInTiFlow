@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { XMLValidator } from "fast-xml-parser";
-import { publishWorkspaceTextFile } from "./workspace-file-publication.js";
+import { publishWorkspaceTextFile, throwIfWorkspaceAborted } from "./workspace-file-publication.js";
 import { createWorkspaceReadBoundary, createWorkspaceReadBoundarySync, readWorkspaceFileSnapshot, readWorkspaceFileSnapshotSync, workspaceReadBoundaryError, isSensitiveWorkspacePath as isSensitivePath } from "./workspace-read-boundary.js";
 import { hasSensitiveText, redactSensitiveText } from "./redaction.js";
 import { workspacePathScopePlan } from "./workspace-path-policy.js";
@@ -1166,8 +1166,10 @@ async function writeChange(target, nextContent, action, details = {}, preconditi
 }
 
 async function deleteChange(target, config, action = "delete_file", details = {}) {
+  throwIfWorkspaceAborted(config.abortSignal);
   const { buffer: before, content: beforeText } = await readTextFile(target, config, { writeAccess: true });
   const beforeHash = hashBuffer(before);
+  throwIfWorkspaceAborted(config.abortSignal);
   await fs.unlink(target.absolutePath);
   return {
     ok: true,
@@ -1209,7 +1211,7 @@ async function writeFile(config, args) {
   }
   const change = await writeChange(target, content, mode === "overwrite" ? "overwrite_file" : "create_file", {
     mode,
-  }, { createOnly: mode === "create" });
+  }, { createOnly: mode === "create", signal: config.abortSignal });
   return {
     ok: change.artifactValidation ? change.artifactValidation.ok : true,
     toolName: "write_file",
@@ -1266,7 +1268,7 @@ async function applyPatch(config, args) {
     replacements: matches,
     searchPreview: compactPreview(search),
     replacePreview: compactPreview(replace),
-  }, { expectedBeforeHash: hash });
+  }, { expectedBeforeHash: hash, signal: config.abortSignal });
 
   return {
     ok: true,
@@ -1440,6 +1442,7 @@ async function applyPatchDocument(config, args) {
   const seenPaths = new Set();
 
   for (const operation of operations) {
+    throwIfWorkspaceAborted(config.abortSignal);
     if (!operation.path) throw new Error("Patch operation is missing a file path.");
     if (seenPaths.has(operation.path)) throw new Error(`Patch contains duplicate file operations for ${operation.path}.`);
     seenPaths.add(operation.path);
@@ -1511,6 +1514,7 @@ async function applyPatchDocument(config, args) {
   for (const [index, item] of planned.entries()) {
     const { operation, target } = item;
     try {
+      throwIfWorkspaceAborted(config.abortSignal);
       if (item.delete) {
         changes.push(await deleteChange(target, config, "apply_patch_delete", { patchFormat: "multi-file" }));
         continue;
@@ -1521,10 +1525,12 @@ async function applyPatchDocument(config, args) {
         if (!policy.allowed) throw new Error(policy.reason);
         const destination = await writeChange(newTarget, item.afterText, "apply_patch_move_destination", {
           sourcePath: target.relativePath, movePending: true, patchFormat: "multi-file",
-        }, { createOnly: true });
+        }, { createOnly: true, signal: config.abortSignal });
         changes.push(destination);
+        throwIfWorkspaceAborted(config.abortSignal);
         const source = await readTextFile(target, config, { writeAccess: true });
         if (source.hash !== item.beforeHash) throw new Error("Workspace move source changed; keep the pending destination and reread before continuing.");
+        throwIfWorkspaceAborted(config.abortSignal);
         await fs.unlink(target.absolutePath);
         const { sourcePath, movePending, ...completed } = destination;
         changes[changes.length - 1] = { ...completed, action: "apply_patch_move", fromPath: sourcePath };
@@ -1536,6 +1542,7 @@ async function applyPatchDocument(config, args) {
           ? "apply_patch_add"
           : "apply_patch_update";
       changes.push(await writeChange(target, item.afterText, action, { patchFormat: "multi-file" }, {
+        signal: config.abortSignal,
         createOnly: operation.type === "add" && !item.replaceExisting,
         ...(item.beforeHash ? { expectedBeforeHash: item.beforeHash } : {}),
       }));
@@ -1577,6 +1584,7 @@ async function applyPatchDocument(config, args) {
 }
 
 export async function executeWorkspaceTool(toolName, args, config) {
+  throwIfWorkspaceAborted(config.abortSignal);
   const guard = checkWorkspaceToolUse(toolName, args, config);
   if (!guard.allowed) {
     return {

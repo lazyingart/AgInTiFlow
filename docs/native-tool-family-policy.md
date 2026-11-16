@@ -66,6 +66,27 @@ These scopes govern file tools. They do not confine shell commands, browser or
 wrapper processes and do not replace application authentication, a sandbox or
 retained-descriptor storage. Existing canonical file-reader checks still apply.
 
+## Cancellation during workspace file operations
+
+Native workspace tools observe the current invocation's `abortSignal` before
+work starts, before publishing a staged text file, and between patch operations.
+A cancelled queued writer returns without running later; it cannot let another
+writer overtake the still-active predecessor. Queue abort listeners are removed
+when the wait settles.
+
+Cancellation preserves files already published and their exact hash receipts.
+A partly applied patch remains incomplete, with its confirmed changes retained
+for the next invocation. Later operations are not attempted. A move cancelled
+after its destination copy is published leaves the source and a clearly marked
+pending copy; it does not claim the source was removed. Resume uses a new signal
+and the existing session evidence, so already accepted edits need not repeat.
+
+This is cooperative cancellation, not rollback or a multi-file transaction.
+An OS publication already admitted can complete while cancellation arrives;
+its successful receipt must remain truthful. Parent directories created before
+cancellation can remain. Existing path, source-hash and sensitive-content
+guards still apply. This adds no public API routes or application authority.
+
 These are native configuration fields, not a public application RPC or an OS
 sandbox. Application callers should use the restricted application runner with
 host-owned tools, account scope and commit authority. Retained integration,
