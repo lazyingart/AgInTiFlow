@@ -127,6 +127,7 @@ import { executeMcpBridgeTool } from "./mcp/tool-bridge.js";
 import { longJobStatus, startLongJob } from "./long-job-tools.js";
 import { executeAgentLinkTool, isAgentLinkTool } from "./agentlink.js";
 import { classifyGoalIntent, isDirectAnswerIntent, currentGoalRevisionBelongsToActiveTask } from "./goal-intent.js";
+import { workspacePathScopePlan } from "./workspace-path-policy.js";
 import { normalizeProviderBaseURL, normalizeProviderId, providerRequiresApiKey } from "./provider-contract.js";
 import {
   resolveProviderHandoff,
@@ -4820,7 +4821,7 @@ export function isBareTaskContinuationText(value = "") {
 function hasLeadingTaskContinuationClause(value = "") {
   const normalized = String(value || "").replace(/\s+/g, " ").trim();
   if (!normalized) return false;
-  const boundary = normalized.search(/[.!?。！？:：]/u);
+  const boundary = normalized.search(/[.!?。！？:：,，、]/u);
   if (boundary < 0 || boundary >= normalized.length - 1) return false;
   return isBareTaskContinuationText(normalized.slice(0, boundary).trim());
 }
@@ -4833,6 +4834,26 @@ function isGenericTaskContinuationText(value = "") {
   const explicitSameTaskContinuation =
     /(?:^|[.!?]\s+)(?:(?:please|kindly)\s+)?(?:continue|resume|recover|keep\s+working|finish|complete)\b.{0,180}\b(?:same|current|previous|existing|retained|saved|unfinished)\b.{0,80}\b(?:task|work|run|session|job|state|repair|implementation|project|issue|fix)\b/i.test(normalized);
   return explicitSameTaskContinuation || isBareTaskContinuationText(normalized);
+}
+
+function continuationEditClauses(value = "") {
+  const normalized = String(value || "").replace(/\s+/g, " ").trim();
+  const editClauses = [];
+  for (const sentence of normalized.split(/[!?。！？;；:：]|\.(?=\s|$)/u)) {
+    let prohibited = false;
+    const parts = sentence.split(/([，,、]|\b(?:and|then|also|but)\b|但是|但し)/iu);
+    for (let index = 0; index < parts.length; index += 2) {
+      if (/^(?:but|但是|但し)$/iu.test(parts[index - 1] || "")) prohibited = false;
+      const part = parts[index].trim();
+      if (/\b(?:do\s+not|don't|never)\b|(?:不要|不用|无需|無需|不必|别)|(?:しないで|しないでください|しなくて)/iu.test(part)) prohibited = true;
+      if (!prohibited) editClauses.push(part);
+    }
+  }
+  return editClauses.filter(part => (
+    /^(?:(?:please|kindly)\s+)?(?:make|write|rewrite|reword|translate|add|append|insert|remove|delete|change|replace|convert|format|reformat|shorten|expand|sort|reorder|correct|update|rename|save|create|generate|edit)\s+(?!(?:sure|certain|no|nothing|none|is|are|was|were|already)\b)\S/iu.test(part) ||
+    /^(?:请|請|麻烦|麻煩)?(?:并|並|然后|然後|再)?(?:(?:把|将|將).{1,160}(?:改成|改为|改為|改写为|改寫為|调整为|調整為)|(?:添加|新增|补充|補充|删除|刪除|替换|替換|修改|改写|改寫|重写|重寫|翻译|翻譯|缩短|縮短|扩展|擴展|调整|調整|排序|重排|改成|改为|改為))(?!已(?:经|經|完成))\S/u.test(part) ||
+    /(?:を|に)(?:翻訳|変更|書き換え|追加|削除|並べ替え|短く|長く)(?:して|してください)(?:ください)?$/u.test(part)
+  ));
 }
 
 export function continuationAddsConcreteRequirement(value = "") {
@@ -4851,6 +4872,11 @@ export function continuationAddsConcreteRequirement(value = "") {
     /^(?:もう一度)?(?:確認して|教えて|説明して|報告して|見せて)(?:ください)?$/u.test(part)
   ));
   if (explicitReadRequest) return true;
+  // A short edit can add real work without naming a new path, command or
+  // literal. Recognize it before the broad same-task/bare grammar, otherwise
+  // a completed session silently returns its old result. This is intent only;
+  // existing tool permissions, source scope and completion evidence still apply.
+  if (continuationEditClauses(normalized).length) return true;
   if (isBareTaskContinuationText(normalized)) return false;
   if (!isGenericTaskContinuationText(normalized)) return true;
   const contract = deriveScsTaskContract({ goal: normalized, taskProfile: "auto" });
@@ -4873,6 +4899,56 @@ export function continuationAddsConcreteRequirement(value = "") {
   // charge through every later compaction. Short conversational continuations
   // still retain the existing active contract.
   return normalized.length >= 240;
+}
+
+// Resolves only task-produced, declared outputs. A model mention, a preexisting
+// file, another task's receipt or an ambiguous pronoun grants no file authority.
+// This is native intent/evidence bookkeeping, not a filesystem sandbox.
+export function retainedArtifactEditPaths(state = {}, request = "") {
+  const goal = state.meta?.goalContract || {};
+  if (goal.taskRelation !== "same-task" || request !== goal.currentRequest ||
+      !Number.isSafeInteger(goal.activeGoalRevision) || !Number.isSafeInteger(goal.taskBoundaryRevision) ||
+      goal.activeGoalRevision <= goal.taskBoundaryRevision) return [];
+  if (!continuationAddsConcreteRequirement(request) && goal.activeGoal !== goal.taskGoal) request = String(goal.activeGoal || "");
+  if (!continuationEditClauses(request).length) return [];
+  if (isResponseOnlyEvidenceScope(request) || /\b(?:response[- ]only|reply\s+(?:only\s+)?here|answer\s+(?:only\s+)?here|inline|no\s+(?:file|workspace)\s+(?:changes|writes|edits)|do\s+not\s+(?:change|modify|write|edit)\s+(?:any\s+)?files)\b|只(?:在|用).{0,12}(?:聊天|回复|回答)|(?:不要|请勿).{0,8}(?:修改任何文件|修改文件)|このチャット|読み取り専用/iu.test(request)) return [];
+  const task = String(goal.taskGoal || "").trim(), taskHash = hashForLog(task), revision = Number(goal.revision);
+  if (!task || !Number.isSafeInteger(revision) || revision < 2) return [];
+  const declared = deriveScsTaskContract({ goal: task, taskProfile: state.meta?.taskProfile || "auto" }).exactOutputPaths
+    .map(safeTaskOwnedCommitPath).filter(Boolean);
+  const verification = state.meta?.projectVerification || {};
+  const mutations = Array.isArray(verification.mutationHistory) ? verification.mutationHistory : [];
+  const history = Array.isArray(goal.history) ? goal.history : [];
+  const completeLineage = m => {
+    const entries = history.filter(e => Number(e?.revision) >= m.goalRevision && Number(e?.revision) <= revision);
+    return revision - m.goalRevision < 64 && entries.length === revision - m.goalRevision + 1 && entries.every((e, index) =>
+      e.revision === m.goalRevision + index &&
+      (e.kind === "initial" && e.revision === 1 ? (e.taskHash || e.hash) === taskHash
+        : e.taskHash === taskHash && (e.relation === "same-task" || e.kind === "same-task-continuation"))
+    );
+  };
+  // An actual producer receipt can name an output even when the original
+  // request used an anaphor ("read A and turn it into B"). Do not require the
+  // text parser to have guessed B's role before the real write occurred.
+  const taskPaths = mutations.filter(m =>
+    m?.taskHash === taskHash && Number.isSafeInteger(m.goalRevision) && m.goalRevision > 0 && m.goalRevision < goal.activeGoalRevision &&
+    Number.isSafeInteger(m.revision) && m.revision > 0 && m.revision <= verification.mutationRevision && completeLineage(m) &&
+    ["write_file", "apply_patch", "run_command"].includes(m.toolName) && currentGoalRevisionBelongsToActiveTask(state, m)
+  ).flatMap(m => Array.isArray(m.paths) ? m.paths : []).map(safeTaskOwnedCommitPath).filter(Boolean);
+  const candidates = [...new Set(taskPaths)].filter(file => !isOpaqueBinaryPath(file) && (declared.includes(file) || task.includes(file)));
+  const clauses = continuationEditClauses(request);
+  const matches = (file, names) => names.some(name => {
+    if ([...name].length < 3) return false;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return clauses.some(part => new RegExp(`(?<![\\p{L}\\p{N}_/\\\\.\\-])${escaped}(?![\\p{L}\\p{N}_/\\\\\\-]|\\.[\\p{L}\\p{N}_])`, "iu").test(part));
+  });
+  const exact = candidates.filter(file => matches(file, [file]));
+  if (exact.length) return exact;
+  const named = candidates.filter(file => matches(file, [path.posix.basename(file), path.posix.parse(file).name]));
+  if (named.length === 1) return named;
+  if (named.length > 1) return [];
+  const unambiguous = candidates.filter(file => declared.includes(file));
+  return unambiguous.length === 1 && clauses.some(part => /\b(?:it|this|that|the\s+(?:file|artifact|document))\b|(?:把|将|將)(?:它|这个|這個)|(?:これ|それ)を/u.test(part)) ? unambiguous : [];
 }
 
 function retainedTaskGoal(prior = {}, previousGoal = "") {
@@ -7009,12 +7085,16 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
     0,
     Number(state.meta?.projectVerification?.mutationRevision || 0)
   );
+  const artifactRevisionPaths = currentTurnContract.requiresFileMutation === true ? [] : retainedArtifactEditPaths(state, currentRequest);
   state.meta.activeExecutionContract = {
     revision: activeRevision,
     refreshedAt: new Date().toISOString(),
     startedMutationRevision,
-    requiresWorkspaceMutation: currentTurnContract.requiresWorkspaceMutation === true,
-    requiresFileMutation: currentTurnContract.requiresFileMutation === true,
+    requiresWorkspaceMutation: currentTurnContract.requiresWorkspaceMutation === true || artifactRevisionPaths.length > 0,
+    requiresFileMutation: currentTurnContract.requiresFileMutation === true || artifactRevisionPaths.length > 0,
+    artifactRevisionPaths,
+    artifactRevisionTaskHash: artifactRevisionPaths.length ? hashForLog(state.meta.goalContract.taskGoal) : "",
+    artifactRevisionRequestHash: artifactRevisionPaths.length ? hashForLog(currentRequest) : "",
     scopedArtifactDeliverable:
       currentTurnContract.scopedArtifactDeliverable === true,
     requiresSourceGrounding: Boolean(
@@ -20093,6 +20173,9 @@ function retainedActiveTaskMutationSatisfiesGrounding(config = {}, state = {}) {
 }
 
 export function nextStepRuntimeConfig(config = {}, state = {}) {
+  const activeEdit = state.meta?.activeExecutionContract;
+  const artifactEditPaths = Number(activeEdit?.revision) === Number(state.meta?.goalContract?.activeGoalRevision) && activeEdit?.artifactRevisionPaths?.length
+    ? retainedArtifactEditPaths(state, state.meta?.goalContract?.currentRequest || "") : [];
   const staticOrder = Array.isArray(state.meta?.toolLoop?.staticOrder)
     ? state.meta.toolLoop.staticOrder
     : [];
@@ -20104,7 +20187,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const runtimeConfig = applyLocalContextOutputAdaptation(
     {
       ...applyLocalFailureRecovery(config, state),
-      readOnlyDiagnosticIntent: hasReadOnlyDiagnosticIntent(
+      readOnlyDiagnosticIntent: artifactEditPaths.length === 0 && hasReadOnlyDiagnosticIntent(
         state.meta?.goalContract?.activeGoal || state.goal || config.goal || "",
         config.taskProfile || state.meta?.taskProfile || "auto"
       ),
@@ -20118,6 +20201,18 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     },
     state
   );
+  if (artifactEditPaths.length) {
+    const root = path.resolve(runtimeConfig.commandCwd || state.commandCwd || process.cwd());
+    const configured = workspacePathScopePlan(runtimeConfig, root, { writeAccess: true });
+    const targets = artifactEditPaths.filter(file => !configured.restricted || configured.roots.some(scope => {
+      const relative = path.relative(scope, path.resolve(root, file));
+      return relative === "" || !relative.startsWith("..") && !path.isAbsolute(relative);
+    }));
+    // An inferred edit can only narrow the trusted host scopes. It cannot
+    // authorize another output, widen a stored root or grant blocked writes.
+    if (targets.length) runtimeConfig.workspaceWritePathScopeRoots = targets;
+    else runtimeConfig.workspaceWritePolicy = "block";
+  }
   delete runtimeConfig.completionFreshMutationInputReadPaths;
   delete runtimeConfig.requiredProjectCommandCreationPaths;
   delete runtimeConfig.completionExactCopySourcePaths;
@@ -26854,6 +26949,32 @@ async function evaluateCompletionEvidence({ config, state, store }) {
       evaluation: { ok: false, reason, missingToolCalls: ["delegate_agent"] },
       semantic: { ok: false, checked: true, reason }, progressCount: 0,
     };
+  }
+  const editPaths = retainedArtifactEditPaths(state, state.meta?.goalContract?.currentRequest || "");
+  const execution = state.meta?.activeExecutionContract || {}, goalRevision = Number(state.meta?.goalContract?.revision);
+  const boundEditPaths = Array.isArray(execution.artifactRevisionPaths) ? execution.artifactRevisionPaths : [];
+  if (boundEditPaths.length && Number(execution.revision) === Number(state.meta?.goalContract?.activeGoalRevision)) {
+    if (boundEditPaths.length > 16 || boundEditPaths.some(p => typeof p !== "string" || safeTaskOwnedCommitPath(p) !== p) ||
+        new Set(boundEditPaths).size !== boundEditPaths.length ||
+        execution.artifactRevisionTaskHash !== hashForLog(state.meta.goalContract.taskGoal) ||
+        execution.artifactRevisionRequestHash !== hashForLog(state.meta.goalContract.activeGoal) ||
+        boundEditPaths.length !== editPaths.length || boundEditPaths.some(p => !editPaths.includes(p))) {
+      const reason = "The pending artifact edit no longer has a valid task, request and target binding. Preserve the existing files and restore the exact task evidence before completion.";
+      return { ok: false, contract, ledger: { itemCount: 0, categories: [], toolNames: [] },
+        evaluation: { ok: false, reason }, semantic: { ok: false, checked: true, reason }, progressCount: 0 };
+    }
+    const mutations = state.meta?.projectVerification?.mutationHistory || [];
+    const missing = editPaths.filter(file => !mutations.some(m =>
+      m?.goalRevision >= Number(execution.revision) && m.goalRevision <= goalRevision && Number(m.revision) > Number(execution.startedMutationRevision) &&
+      m.taskHash === hashForLog(state.meta.goalContract.taskGoal) && ["write_file", "apply_patch", "run_command"].includes(m.toolName) &&
+      Array.isArray(m.paths) && m.paths.some(p => safeTaskOwnedCommitPath(p) === file)
+    ));
+    if (missing.length) {
+      const reason = `The requested retained artifact edit has no fresh task-owned change: ${missing.join(", ")}. Read the current target and perform the requested edit before claiming completion; another file or an old artifact cannot satisfy it.`;
+      return { ok: false, contract, ledger: { itemCount: 0, categories: [], toolNames: [] },
+        evaluation: { ok: false, reason, missing: [{ category: "file", minimumGoalRevision: goalRevision, minimumMutationRevision: Number(execution.startedMutationRevision) + 1 }] },
+        semantic: { ok: false, checked: true, reason }, progressCount: 0 };
+    }
   }
   if (!contract.requiresExternalEvidence) {
     return {

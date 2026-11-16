@@ -6,12 +6,12 @@ import { mock } from "node:test";
 
 // Import-only test boundary: no real npm, network, model or consumer process.
 const scenario=process.argv[2], outer=process.argv[3];
-assert.ok(["normal","slow","timeout","failed","cancelled","skipped","wrong-count"].includes(scenario));
+assert.ok(["normal","slow","timeout","failed","cancelled","skipped","wrong-count","missing-required"].includes(scenario));
 const root=fileURLToPath(new URL("../../",import.meta.url));
 const manifest=JSON.parse(fs.readFileSync(path.join(root,"package.json"),"utf8"));
 process.env.npm_execpath="/offline/fixture-npm-cli.js";
 process.env.OPENAI_API_KEY="synthetic-host-credential-must-not-propagate";
-let temporary, consumerOptions;
+let temporary, consumerOptions=null;
 const response=stdout=>({status:0,signal:null,stdout,stderr:""});
 const boundary=mock.module("node:child_process",{namedExports:{spawnSync(command,args,options){
   assert.equal(command,process.execPath);assert.equal(options.maxBuffer,16*1024*1024);
@@ -25,12 +25,16 @@ const boundary=mock.module("node:child_process",{namedExports:{spawnSync(command
     for(const flag of ["--global","--ignore-scripts","--prefer-online","--no-audit","--no-fund"])assert.ok(args.includes(flag));
     const installed=path.join(args[args.indexOf("--prefix")+1],"lib/node_modules",manifest.name);
     fs.mkdirSync(installed,{recursive:true});fs.writeFileSync(path.join(installed,"package.json"),JSON.stringify({name:manifest.name,version:manifest.version,bin:{aginti:"bin/fixture.js","aginti-cli":"bin/fixture.js"}}));
+    for(const name of manifest.files.filter(name=>name.startsWith("test/")&&name.endsWith(".js"))){
+      if(scenario==="missing-required"&&name==="test/project-instruction-boundary.test.js")continue;
+      const file=path.join(installed,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,"// Offline presence fixture.\n");
+    }
     return response("fixture install\n");
   }
   if(args.at(-1)==="--version")return response(manifest.version+"\n");
   assert.ok(args.includes("--test"));assert.ok(args.includes("--test-concurrency=2"));
   consumerOptions={timeout:options.timeout,concurrency:2};
-  const total=scenario==="wrong-count"?3184:3185;
+  const total=scenario==="wrong-count"?3268:3269;
   const incomplete=["failed","cancelled","skipped"].includes(scenario);
   const counts=`# tests ${total}\n# pass ${total-(incomplete?1:0)}\n# fail ${scenario==="failed"?1:0}\n# cancelled ${scenario==="cancelled"?1:0}\n# skipped ${scenario==="skipped"?1:0}\n`;
   if(scenario==="timeout"||(scenario==="slow"&&options.timeout<240000)){

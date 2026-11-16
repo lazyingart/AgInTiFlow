@@ -9,6 +9,7 @@ import { platformInfo, platformLabel, platformSetupHints } from "./platform.js";
 import { nodeSqliteRecoveryLines, nodeSqliteStatus } from "./sqlite.js";
 import { buildAgintiInstructions, normalizeInstructionTemplate } from "./behavior-contract.js";
 import { normalizeProviderId, providerRequiresApiKey } from "./provider-contract.js";
+import { createWorkspaceReadBoundary, readWorkspaceFilePrefixSnapshot } from "./workspace-read-boundary.js";
 import {
   LEGACY_PROJECT_SESSIONS_DIR_NAME,
   PROJECT_SESSIONS_DIR_NAME,
@@ -230,21 +231,17 @@ export function defaultAgintiInstructions(template = "disciplined") {
 export async function readProjectInstructions(projectRoot = process.cwd(), { maxBytes = 24_000 } = {}) {
   const paths = projectPaths(projectRoot);
   try {
-    const stat = await fsp.stat(paths.agintiInstructionsPath);
-    if (!stat.isFile()) return { exists: false, path: paths.agintiInstructionsPath, content: "", truncated: false };
-    const handle = await fsp.open(paths.agintiInstructionsPath, "r");
-    try {
-      const buffer = Buffer.alloc(Math.min(stat.size, maxBytes));
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      return {
-        exists: true,
-        path: paths.agintiInstructionsPath,
-        content: buffer.subarray(0, bytesRead).toString("utf8"),
-        truncated: stat.size > maxBytes,
-      };
-    } finally {
-      await handle.close();
-    }
+    // Project instructions are optional system context, not authority to read
+    // a symlink's unrelated target. The selected project root may itself be an
+    // intentional alias; child targets must remain nonsensitive project data.
+    const boundary = await createWorkspaceReadBoundary({ root: paths.root });
+    const snapshot = await readWorkspaceFilePrefixSnapshot(paths.agintiInstructionsPath, boundary, { maxBytes, text: true });
+    return {
+      exists: true,
+      path: paths.agintiInstructionsPath,
+      content: snapshot.content,
+      truncated: snapshot.truncated,
+    };
   } catch {
     return { exists: false, path: paths.agintiInstructionsPath, content: "", truncated: false };
   }

@@ -144,15 +144,18 @@ export function createWorkspaceReadBoundarySync(options) {
 function validateReadLimit(maxBytes) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > 64 * 1024 * 1024) throw new Error("Invalid bounded workspace read limit.");
 }
-function validateRegularSnapshot(stat, maxBytes) {
+function validateRegularSnapshot(stat, maxBytes, prefix = false) {
   if (!stat.isFile()) throw new Error("Workspace read requires a regular file.");
-  if (stat.size > BigInt(maxBytes)) throw Object.assign(new Error("File is too large to read safely."), { code: "WORKSPACE_READ_TOO_LARGE" });
+  if (!prefix && stat.size > BigInt(maxBytes)) throw Object.assign(new Error("File is too large to read safely."), { code: "WORKSPACE_READ_TOO_LARGE" });
 }
-function snapshotResult(buffer, text) {
+function snapshotResult(buffer, text, truncated = false) {
   let content;
   if (text) {
     if (buffer.includes(0)) throw new Error("Binary files are not readable through this text tool.");
-    try { content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer); }
+    // A bounded prefix may end within a valid UTF-8 code point. Keep only its
+    // complete code points, never a replacement character. Invalid bytes in
+    // the observed prefix still reject; bytes beyond it are not inspected.
+    try { content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer, { stream: truncated }); }
     catch { throw new Error("Workspace text is not valid UTF-8; use an explicit converter without overwriting the source."); }
   }
   return { stat: { size: buffer.length }, buffer, ...(text ? { content } : {}) };
@@ -160,7 +163,7 @@ function snapshotResult(buffer, text) {
 
 // One bounded live-handle snapshot. No stat-then-unbounded-readFile race, lossy
 // text decoding, body return after a changed binding, or repeated close attempt.
-export async function readWorkspaceFileSnapshot(file, boundary, { maxBytes, text = false }) {
+async function readWorkspaceSnapshot(file, boundary, { maxBytes, text = false }, prefix) {
   validateReadLimit(maxBytes);
   const canonical = await boundary.resolve(file);
   // Reject FIFOs/devices by fstat without first blocking in open waiting for a
@@ -168,21 +171,34 @@ export async function readWorkspaceFileSnapshot(file, boundary, { maxBytes, text
   const handle = await fs.open(canonical, readFlags);
   try {
     const stat = await handle.stat({ bigint: true });
-    validateRegularSnapshot(stat, maxBytes);
-    const buffer = Buffer.alloc(Number(stat.size)); let offset = 0;
+    validateRegularSnapshot(stat, maxBytes, prefix);
+    const truncated = prefix && stat.size > BigInt(maxBytes);
+    const buffer = Buffer.alloc(truncated ? maxBytes : Number(stat.size)); let offset = 0;
     while (offset < buffer.length) {
       const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
       if (!bytesRead) throw workspaceReadBoundaryError(true);
       offset += bytesRead;
     }
-    const tail = await handle.read(Buffer.alloc(1), 0, 1, offset);
+    const tail = truncated ? { bytesRead: 0 } : await handle.read(Buffer.alloc(1), 0, 1, offset);
     const same = other => identityKeys.every(key => stat[key] === other[key]);
     if (tail.bytesRead || !same(await handle.stat({ bigint: true })) ||
         !same(await fs.lstat(canonical, { bigint: true }))) throw workspaceReadBoundaryError(true);
-    const result = snapshotResult(buffer, text);
+    const result = snapshotResult(buffer, text, truncated);
     await boundary.revalidate(file, canonical);
-    return result;
+    return prefix ? { ...result, truncated } : result;
   } finally { await handle.close(); }
+}
+
+export function readWorkspaceFileSnapshot(file, boundary, options) {
+  return readWorkspaceSnapshot(file, boundary, options, false);
+}
+
+// Optional project/context previews need a prefix, unlike authoritative file
+// reads which must retain their existing complete-snapshot size requirement.
+// This uses the same live-handle, canonical-scope and change checks. It is not
+// retained-descriptor storage, an I/O deadline or a same-UID mutation sandbox.
+export function readWorkspaceFilePrefixSnapshot(file, boundary, options) {
+  return readWorkspaceSnapshot(file, boundary, options, true);
 }
 
 // For existing synchronous decision APIs only. O_NONBLOCK prevents FIFO writer

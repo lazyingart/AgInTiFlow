@@ -15,14 +15,15 @@ function run(scenario){
     assert.ifError(result.error);assert.equal(result.signal,null);
     const receipt=JSON.parse(fs.readFileSync(path.join(root,"fixture-result.json"),"utf8"));
     assert.equal(receipt.temporaryRemoved,true);assert.equal(receipt.realNpmCalls,0);assert.equal(receipt.modelCalls,0);
-    assert.equal(receipt.consumerOptions.concurrency,2);assert.ok(receipt.consumerOptions.timeout<=600000);
+    if(scenario==="missing-required")assert.equal(receipt.consumerOptions,null);
+    else{assert.equal(receipt.consumerOptions.concurrency,2);assert.ok(receipt.consumerOptions.timeout<=600000);}
     return {...result,receipt};
   }finally{fs.rmSync(root,{recursive:true,force:true});assert.equal(fs.existsSync(root),false);}
 }
 
 for(const scenario of ["normal","slow"])test(`complete consumer cohort succeeds on ${scenario} host without dropping cases`,()=>{
-  const result=run(scenario);assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/"consumerTests":3185/);
-  assert.match(result.stdout,/"passedTests":3185/);assert.match(result.stdout,/"cancelledTests":0/);assert.match(result.stdout,/"skippedTests":0/);
+  const result=run(scenario);assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/"consumerTests":3269/);
+  assert.match(result.stdout,/"passedTests":3269/);assert.match(result.stdout,/"cancelledTests":0/);assert.match(result.stdout,/"skippedTests":0/);
   if(scenario==="slow")assert.ok(result.receipt.consumerOptions.timeout>=240000,"Full cohort needs a finite budget beyond the old180-second cutoff");
 });
 test("outer watchdog failure preserves child progress and stderr and still fails",()=>{
@@ -33,4 +34,7 @@ test("nonzero consumer exit preserves both diagnostics and cannot become success
 });
 for(const scenario of ["cancelled","skipped","wrong-count"])test(`${scenario} cohort cannot qualify through a zero exit`,()=>{
   const result=run(scenario);assert.notEqual(result.status,0,"Every required case must finish and pass");
+});
+test("a missing required packaged test fails before the consumer can silently omit it",()=>{
+  const result=run("missing-required");assert.notEqual(result.status,0);assert.match(result.stderr,/project-instruction-boundary\.test\.js/);
 });

@@ -56,7 +56,7 @@ try {
     assert.equal(version, manifest.version);
   }
   const consumerStarted = performance.now();
-  const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, "test/package-runtime-dependencies.test.js", "test/model-http-boundary.test.js", "test/model-response-budget.test.js", "test/model-response-runtime.test.js", "test/text-tool-turn.test.js", "test/native-text-tool-turn.test.js", "test/native-tool-json.test.js", "test/native-tool-json-runtime.test.js", "test/publish-status-intent.test.js", "test/remote-image-input.test.js", "test/native-session-run-lock.test.js",
+  const consumerFiles = ["test/package-runtime-dependencies.test.js", "test/package-runtime-verifier.test.js", "test/model-http-boundary.test.js", "test/model-response-budget.test.js", "test/model-response-runtime.test.js", "test/text-tool-turn.test.js", "test/native-text-tool-turn.test.js", "test/native-tool-json.test.js", "test/native-tool-json-runtime.test.js", "test/publish-status-intent.test.js", "test/remote-image-input.test.js", "test/native-session-run-lock.test.js",
     "test/native-turn-boundary.test.js", "test/native-turn-runtime.test.js", "test/inbox-dispatch-fence.test.js", "test/inbox-lock-liveness.test.js", "test/inbox-lock-queue-continuity.test.js", "test/native-tool-checkpoint-runtime.test.js", "test/native-completion-delivery-runtime.test.js", "test/native-precompletion-cancellation.test.js", "test/native-interruption-durability.test.js", "test/file-creation-intent.test.js", "test/cli-startup-input.test.js", "test/file-checksum.test.js", "test/file-checksum-runtime.test.js", "test/preserved-input-intent.test.js", "test/preserved-mutation-target.test.js",
     "test/japanese-file-preservation.test.js",
     "test/cli-run-resume-runtime.test.js",
@@ -70,6 +70,7 @@ try {
     "test/workspace-patch-line-endings.test.js", "test/native-patch-line-endings.test.js",
     "test/workspace-file-publication.test.js", "test/workspace-file-publication-runtime.test.js",
     "test/workspace-read-authority.test.js",
+    "test/project-instruction-boundary.test.js", "test/native-project-instructions-runtime.test.js",
     "test/workspace-path-policy.test.js", "test/native-workspace-scope-runtime.test.js",
     "test/workspace-cancellation.test.js", "test/native-workspace-cancellation.test.js",
     "test/native-tool-context.test.js", "test/native-tool-context-runtime.test.js",
@@ -112,11 +113,18 @@ try {
     "test/scs-proof-budget.test.js", "test/output-clause-boundary.test.js",
     "test/model-terminal-quota.test.js",
     "test/native-checkpoint-continuation.test.js",
+    "test/continuation-edit-intent.test.js",
     "test/artifact-instruction-boundary.test.js",
     "test/named-transform-obligations.test.js",
-    "test/dependency-security-boundaries.test.js"], installed, consumerTimeoutMs);
-  assert.match(log, /# tests 3185\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 3185\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+    "test/dependency-security-boundaries.test.js"];
+  // Node can omit a missing explicit test path when other paths match. Prove
+  // the required cohort is actually present before spawning its test runner.
+  for (const name of consumerFiles) assert.ok((await fs.lstat(path.join(installed, name))).isFile(), `Required packaged test is absent: ${name}`);
+  const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, ...consumerFiles], installed, consumerTimeoutMs);
+  // Baseline3185 +31 instruction +8 verifier +45 continuation cases. Keep the verifier's
+  // own fixture count in sync; a zero test-runner exit is insufficient.
+  assert.match(log, /# tests 3269\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 3269\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
