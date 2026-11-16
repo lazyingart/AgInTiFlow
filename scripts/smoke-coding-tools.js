@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -2179,6 +2180,7 @@ try {
       /should not be retried/i.test(alreadyCommittedAdvice.summary),
     "a clean no-op commit with current durable evidence did not converge"
   );
+  const continuedRepairHash = crypto.createHash("sha256").update("Complete the focused repository repair.").digest("hex");
   const sameTaskContinuationAdvice = buildFailedCommandAdvice({
     args: { command: "git commit -m 'Focused repair'" },
     commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
@@ -2193,8 +2195,8 @@ try {
         goalContract: {
           revision: 10,
           history: [
-            { revision: 9, taskHash: "task-a" },
-            { revision: 10, taskHash: "task-a" },
+            { revision: 9, kind: "continuation", relation: "new-request", taskHash: continuedRepairHash, refreshExecutionContract: true },
+            { revision: 10, kind: "same-task-continuation", relation: "same-task", taskHash: continuedRepairHash, refreshExecutionContract: false },
           ],
         },
         projectVerification: { mutationRevision: 4 },
@@ -2206,6 +2208,18 @@ try {
     sameTaskContinuationAdvice?.failureKind === "repository-already-committed",
     "a same-task continuation invalidated a clean commit at the current mutation revision"
   );
+  const coarseTaskContinuationAdvice = buildFailedCommandAdvice({
+    args: { command: "git commit -m 'Focused repair'" },
+    commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
+    commandResult: { ok: false, exitCode: 1, stdout: "On branch main\nnothing to commit, working tree clean\n" },
+    config: dockerWorkspacePolicy,
+    state: { meta: {
+      goalContract: { revision: 10, history: [{ revision: 9, taskHash: "task-a" }, { revision: 10, taskHash: "task-a" }] },
+      projectVerification: { mutationRevision: 4 },
+      durableGitEvidence: [{ action: "commit", goalRevision: 9, mutationRevision: 4 }],
+    } },
+  });
+  assert(coarseTaskContinuationAdvice === null, "coarse labels without native lineage authorized a retained commit");
   const newTaskAdvice = buildFailedCommandAdvice({
     args: { command: "git commit -m 'Focused repair'" },
     commandPolicy: evaluateCommandPolicy("git commit -m 'Focused repair'", dockerWorkspacePolicy),
@@ -2220,8 +2234,8 @@ try {
         goalContract: {
           revision: 10,
           history: [
-            { revision: 9, taskHash: "task-a" },
-            { revision: 10, taskHash: "task-b" },
+            { revision: 9, kind: "continuation", relation: "new-request", taskHash: continuedRepairHash, refreshExecutionContract: true },
+            { revision: 10, kind: "continuation", relation: "new-request", taskHash: crypto.createHash("sha256").update("A different repository request.").digest("hex"), refreshExecutionContract: true },
           ],
         },
         projectVerification: { mutationRevision: 4 },

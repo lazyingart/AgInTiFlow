@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -276,6 +277,16 @@ alreadyCommittedState.meta.goalContract.history = [
   { revision: 3, taskHash: "same-repair" },
   { revision: 4, taskHash: "same-repair" },
 ];
+assert.notEqual(
+  nextStepRuntimeConfig({}, alreadyCommittedState).repositoryStateRepairSatisfied,
+  true,
+  "coarse labels without native continuation lineage authorized clean-commit evidence"
+);
+const sameRepairHash = crypto.createHash("sha256").update("Repair the verified repository worktree.").digest("hex");
+alreadyCommittedState.meta.goalContract.history = [
+  { revision: 3, kind: "continuation", relation: "new-request", hash: sameRepairHash, taskHash: sameRepairHash, refreshExecutionContract: true },
+  { revision: 4, kind: "same-task-continuation", relation: "same-task", taskHash: sameRepairHash, refreshExecutionContract: false },
+];
 const sameTaskGoalRuntime = nextStepRuntimeConfig({}, alreadyCommittedState);
 assert.equal(
   sameTaskGoalRuntime.repositoryStateRepairSatisfied,
@@ -283,8 +294,8 @@ assert.equal(
   "same-task continuation discarded clean-commit repair evidence"
 );
 alreadyCommittedState.meta.goalContract.history = [
-  { revision: 3, taskHash: "prior-repair" },
-  { revision: 4, taskHash: "new-repair" },
+  { revision: 3, kind: "continuation", relation: "new-request", hash: sameRepairHash, taskHash: sameRepairHash, refreshExecutionContract: true },
+  { revision: 4, kind: "continuation", relation: "new-request", taskHash: crypto.createHash("sha256").update("Different repository task.").digest("hex"), refreshExecutionContract: true },
 ];
 const newTaskGoalRuntime = nextStepRuntimeConfig({}, alreadyCommittedState);
 assert.notEqual(

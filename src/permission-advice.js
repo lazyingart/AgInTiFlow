@@ -795,7 +795,8 @@ export function goalRevisionCoversActiveTask(state = {}, evidenceRevision = 0) {
   const currentRevision = Math.max(0, Number(goalContract.revision || 0));
   const candidateRevision = Math.max(0, Number(evidenceRevision || 0));
   if (currentRevision <= 0 || candidateRevision <= 0) return false;
-  if (candidateRevision >= currentRevision) return true;
+  if (candidateRevision > currentRevision) return false;
+  if (candidateRevision === currentRevision) return true;
 
   const history = Array.isArray(goalContract.history) ? goalContract.history : [];
   const activeEntry = [...history]
@@ -806,13 +807,21 @@ export function goalRevisionCoversActiveTask(state = {}, evidenceRevision = 0) {
         String(item?.taskHash || "").trim()
     );
   const activeTaskHash = String(activeEntry?.taskHash || "").trim();
-  if (!activeTaskHash) return false;
-  const activeTaskStartRevision = history
-    .filter((item) => String(item?.taskHash || "").trim() === activeTaskHash)
-    .map((item) => Math.max(0, Number(item?.revision || 0)))
-    .filter(Boolean)
-    .reduce((lowest, revision) => Math.min(lowest, revision), currentRevision);
-  return candidateRevision >= activeTaskStartRevision;
+  if (!/^[a-f0-9]{64}$/.test(activeTaskHash)) return false;
+  const chain = history.filter(item => item?.revision >= candidateRevision && item?.revision <= currentRevision)
+    .sort((left, right) => left.revision - right.revision);
+  if (chain.length !== currentRevision - candidateRevision + 1 ||
+      chain.some((entry, index) => entry.revision !== candidateRevision + index)) return false;
+  const first = chain[0];
+  // Older native initial entries carried the exact task digest as hash, before
+  // taskHash was also written. This is an identity binding, not permission to
+  // infer a missing hash on an arbitrary continuation or different task.
+  const firstHash = Object.hasOwn(first, "taskHash")
+    ? first.taskHash
+    : first.kind === "initial" ? first.hash : "";
+  return firstHash === activeTaskHash && chain.slice(1).every(entry =>
+    entry.kind === "same-task-continuation" && entry.relation === "same-task" &&
+    entry.taskHash === activeTaskHash && entry.refreshExecutionContract === false);
 }
 
 function hasDurableCommitEvidence(state = {}, { requireCurrentMutation = true } = {}) {

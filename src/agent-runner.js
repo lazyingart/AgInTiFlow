@@ -4787,7 +4787,7 @@ function initialGoalContract(goal = "", at = new Date().toISOString()) {
     taskRelation: "initial",
     updatedAt: at,
     history: normalized
-      ? [{ revision: 1, kind: "initial", at, hash: hashForLog(normalized), preview: goalPreview(normalized) }]
+      ? [{ revision: 1, kind: "initial", at, hash: hashForLog(normalized), taskHash: hashForLog(normalized), activeHash: hashForLog(normalized), preview: goalPreview(normalized) }]
       : [],
     lifecycle: [{ revision, status: "active", reason: "initial", at }],
   };
@@ -23362,8 +23362,18 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
       /patch made no changes/i.test(String(toolResult.error || toolResult.reason || ""))
   );
   const missingSearch = patchSearchTextWasNotFound(toolResult);
+  // A rejected snapshot is not reusable patch authority. Reuse the existing
+  // path/revision-bound refresh transition; never drop the supplied hash or
+  // widen to overwrite just to make the stale call succeed.
+  const staleSnapshot = Boolean(
+    String(toolResult.toolName || "") === "apply_patch" &&
+      toolResult.ok === false &&
+      (toolResult.code === "WORKSPACE_WRITE_CONFLICT" ||
+        /^Base hash mismatch for /i.test(String(toolResult.error || "")))
+  );
   if (
     !missingSearch &&
+    !staleSnapshot &&
     !idempotencyBlock &&
     !topologyBlock &&
     !scopeMismatch &&
@@ -23394,7 +23404,7 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
       entry?.blocked === true &&
       entry?.category === "repeated-successful-mutation"
   );
-  const stalePatchFailureCount = priorMissingSearches + (missingSearch ? 1 : 0);
+  const stalePatchFailureCount = priorMissingSearches + (missingSearch || staleSnapshot ? 1 : 0);
   if (
     !idempotencyBlock &&
     !topologyBlock &&
@@ -23437,6 +23447,8 @@ export function patchContextRefreshDecision(state = {}, toolResult = {}) {
     followedIdempotencyBlock: followedIdempotencyBlock || idempotencyBlock,
     triggerCategory: idempotencyBlock
       ? "repeated-successful-mutation"
+      : staleSnapshot
+        ? "stale-file-snapshot"
       : topologyBlock
         ? "required-symbol-topology"
         : scopeMismatch
@@ -26162,13 +26174,16 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       : "";
     const recoverablePatchFailure =
       toolName === "apply_patch" &&
-      /patch hunk|patch search|base hash|supported file operations|patch made no changes/i.test(errorText);
+      (error?.code === "WORKSPACE_WRITE_CONFLICT" ||
+        /patch hunk|patch search|base hash|supported file operations|patch made no changes/i.test(errorText));
+    const staleSnapshot = toolName === "apply_patch" && error?.code === "WORKSPACE_WRITE_CONFLICT";
     const result = {
       ok: false,
       toolName,
       args: safeArgs,
       ...(autoCorrection ? { requestedToolName } : {}),
       error: errorText,
+      ...(staleSnapshot ? { code: "WORKSPACE_WRITE_CONFLICT" } : {}),
       ...(recoverablePatchFailure
         ? {
             category: "workspace-patch",
@@ -26179,7 +26194,9 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
               summary: noChangePatchFailure
                 ? "The replacement was byte-identical to the current file; this is not progress."
                 : "The patch context did not match; this is not a permission blocker.",
-              instruction: noChangePatchFailure
+              instruction: staleSnapshot
+                ? "The file changed after its recorded snapshot. Read this exact current file before retrying the patch; preserve concurrent edits. Do not reuse or remove the old baseHash, guess a new hash, overwrite the whole file, or create a sidecar."
+                : noChangePatchFailure
                 ? [
                     "Do not repeat the identical patch. Evaluate the retained validator expression literally against the complete current artifact.",
                     failedTestLiteralGuidance,

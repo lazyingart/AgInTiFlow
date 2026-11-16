@@ -1241,7 +1241,9 @@ async function applyPatch(config, args) {
   const target = resolveWorkspacePath(config, args.path, { writeAccess: true });
   const { content: beforeText, hash } = await readTextFile(target, config, { writeAccess: true });
   if (args.baseHash && args.baseHash !== hash) {
-    throw new Error(`Base hash mismatch for ${target.relativePath}; read the file again before patching.`);
+    throw Object.assign(new Error(`Base hash mismatch for ${target.relativePath}; read the file again before patching.`), {
+      code: "WORKSPACE_WRITE_CONFLICT",
+    });
   }
   const rawSearch = String(args.search || "");
   // Literal CR input is already byte-aware, including an intentional CRLF-to-LF
