@@ -463,6 +463,12 @@ function toolIsDisabled(name, config) {
   return false;
 }
 
+// Policy eligibility only: this is not registration, provider readiness, an
+// authorization grant, or proof that a tool is offered in the current turn.
+export function nativeToolPolicyAllows(name, config = {}) {
+  return typeof name === "string" && FUNCTION_NAME_PATTERN.test(name) && !toolIsDisabled(name, config);
+}
+
 function toolIsConvergenceSuppressed(name, config) {
   if (name === "finish") return false;
   const suppressed = Array.isArray(config.convergenceSuppressedToolNames)
@@ -2307,7 +2313,7 @@ export function selectProgressiveTools(
   { config = {}, goal = "", profile = "", messages = [] } = {}
 ) {
   const validated = validatedUniqueTools(tools);
-  const baselineEnabled = validated.filter(({ name }) => !toolIsDisabled(name, config) &&
+  const baselineEnabled = validated.filter(({ name }) => nativeToolPolicyAllows(name, config) &&
     !(config.readOnlyDiagnosticIntent === true && ["write_file", "apply_patch"].includes(name)));
   const enabled = baselineEnabled.filter(
     ({ name }) => !toolIsConvergenceSuppressed(name, config)

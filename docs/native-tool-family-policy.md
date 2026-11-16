@@ -21,6 +21,25 @@ A disabled family continues to hide its tools across saved-session resume and
 provider handoff. Existing file, shell, web, MCP, wrapper and auxiliary controls
 remain independent. Unrestricted defaults retain their previous behavior.
 
+Image perception follows this same revisioned policy. An incoming operational
+hint cannot override its saved boolean in either direction. To change it, use
+an explicit `runtimePatch.allowImagePerception` at the expected revision. The
+fixed retained-vision executor already supplies an exhaustive revisioned patch.
+
+Planning, continuation and synthetic-page guidance follow the same tool-policy
+predicate as progressive tool selection. Disabling a specialist, canvas,
+image, job or coordination family must not leave a built-in instruction claiming
+that capability is available. Workspace preview is separate from remote browser
+navigation; background jobs and interactive tmux controls are also independent.
+
+Each model execution request carries its current exact offered function names
+and policy limitations. This request-local context supersedes older capability
+claims, plans and profile habits without rewriting durable conversation or tool
+receipts. Policy eligibility is not provider or worker readiness, and an enabled
+family need not be offered in every progressively disclosed turn. These words
+add no permissions: dispatch still requires the existing exact tool contract,
+path checks and execution guards.
+
 Schema v1 snapshots omitted these fields and cannot establish an earlier restriction.
 If the current trusted caller asks to disable a family whose policy is missing,
 resume returns `SESSION_RUNTIME_POLICY_MIGRATION_REQUIRED` before model dispatch.
