@@ -1165,11 +1165,19 @@ async function writeChange(target, nextContent, action, details = {}, preconditi
   };
 }
 
-async function deleteChange(target, config, action = "delete_file", details = {}) {
+async function deleteChange(target, config, expectedBeforeHash, action = "delete_file", details = {}) {
   throwIfWorkspaceAborted(config.abortSignal);
   const { buffer: before, content: beforeText } = await readTextFile(target, config, { writeAccess: true });
   const beforeHash = hashBuffer(before);
   throwIfWorkspaceAborted(config.abortSignal);
+  // Earlier patch operations may have yielded to a concurrent editor. Bind
+  // removal to the original plan, just like an update's expectedBeforeHash.
+  // This is a preimage guard, not retained-descriptor/atomic unlink isolation.
+  if (beforeHash !== expectedBeforeHash) {
+    throw Object.assign(new Error(`Workspace delete target changed after planning: ${target.relativePath}; read it again before a new patch.`), {
+      code: "WORKSPACE_WRITE_CONFLICT",
+    });
+  }
   await fs.unlink(target.absolutePath);
   return {
     ok: true,
@@ -1496,8 +1504,8 @@ async function applyPatchDocument(config, args) {
     }
 
     if (operation.type === "delete") {
-      await readTextFile(target, config, { writeAccess: true });
-      planned.push({ operation, target, delete: true });
+      const { hash: beforeHash } = await readTextFile(target, config, { writeAccess: true });
+      planned.push({ operation, target, delete: true, beforeHash });
       continue;
     }
 
@@ -1524,7 +1532,7 @@ async function applyPatchDocument(config, args) {
     try {
       throwIfWorkspaceAborted(config.abortSignal);
       if (item.delete) {
-        changes.push(await deleteChange(target, config, "apply_patch_delete", { patchFormat: "multi-file" }));
+        changes.push(await deleteChange(target, config, item.beforeHash, "apply_patch_delete", { patchFormat: "multi-file" }));
         continue;
       }
       if (operation.newPath) {

@@ -91,6 +91,7 @@ try {
     "test/readonly-sed-inspection.test.js", "test/source-alias-preservation.test.js",
     "test/readonly-awk-validation.test.js", "test/readonly-awk-runtime.test.js",
     "test/partial-patch-recovery.test.js", "test/partial-patch-runtime.test.js",
+    "test/workspace-delete-preimage.test.js", "test/native-delete-preimage-runtime.test.js",
     "test/retained-execution-context.test.js",
     "test/verification-input-freshness.test.js",
     "test/quoted-credential-boundary.test.js", "test/native-quoted-credential-runtime.test.js",
@@ -121,10 +122,10 @@ try {
   // the required cohort is actually present before spawning its test runner.
   for (const name of consumerFiles) assert.ok((await fs.lstat(path.join(installed, name))).isFile(), `Required packaged test is absent: ${name}`);
   const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, ...consumerFiles], installed, consumerTimeoutMs);
-  // Baseline3185 +31 instruction +8 verifier +45 continuation cases. Keep the verifier's
+  // Baseline3269 +9 delete-preimage +3 native durability cases. Keep the verifier's
   // own fixture count in sync; a zero test-runner exit is insufficient.
-  assert.match(log, /# tests 3269\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 3269\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 3281\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 3281\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
