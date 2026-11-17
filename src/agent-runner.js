@@ -5169,6 +5169,74 @@ async function finishCompletedContinuationNoop({ config, state, store, observers
   });
 }
 
+async function completedCommandIntentUpgradeReview(state, config, store, completedNoop) {
+  const taskHash = hashForLog(String(state.meta?.goalContract?.taskGoal || state.goal || "").trim());
+  const retained = state.meta?.commandCompletionReview;
+  const request = String(state.meta?.goalContract?.currentRequest || "");
+  if (retained?.taskHash === taskHash && isGenericTaskContinuationText(request)) return retained;
+  const active = state.meta?.activeExecutionContract;
+  if (!completedNoop || active?.commandIntentInferenceVersion === 1) return null;
+  const current = deriveScsTaskContract({ goal: completionContractGoal(config, state), taskProfile: config.taskProfile });
+  const prior = normalizedRequiredProjectCommands(active?.requiredProjectCommands);
+  const added = current.requiredProjectCommands.filter(command => !prior.includes(command));
+  if (!added.length) return null;
+  const scoped = currentContinuationEvidence(state, await store.loadEvents());
+  const contract = { ...completionTaskContract(config, state), requiredProjectCommands: added };
+  const ledger = buildScsEvidenceLedger({ state: scoped.state, contract,
+    context: { events: scoped.events, taskProfile: config.taskProfile, goal: config.goal, readOnlyDiagnostic: currentWorkIsReadOnlyDiagnostic(state) } });
+  const missing = evaluateScsEvidence(contract, ledger).missingProjectCommands;
+  if (!missing.length) return null;
+  return { schemaVersion: 1, taskHash, missingCommandCount: missing.length };
+}
+
+async function stopForCompletedCommandIntentReview({ config, state, store, observers, sessionId, review }) {
+  const reason = "completion_contract_review_required";
+  const result = `The saved task was marked complete, but current validation cannot verify ${review.missingCommandCount} additional originally requested command(s). I preserved its existing result and did not repeat any tool or external side effect. Review the original request and explicitly state which command to execute or verify; a generic continuation will not replay it.`;
+  state.meta.commandCompletionReview = review;
+  state.updatedAt = new Date().toISOString();
+  state.messages.push({ role: "assistant", content: result });
+  appendChatEntry(state, "assistant", result);
+  updateGoalStatus(state, "paused", reason, state.updatedAt);
+  await store.saveState(state);
+  await store.appendEvent("completion.command_contract_review_required", { missingCommandCount: review.missingCommandCount });
+  await store.appendEvent("session.stopped", { reason });
+  observers.event("session.stopped", { reason, sessionId });
+  emitConsole(config, result, { kind: "meta" });
+  return { sessionId, result, stopped: true, reason, ...goalRunMetadata(state) };
+}
+
+function refreshActiveCommandIntentContract(state = {}, config = {}) {
+  const active = state.meta?.activeExecutionContract;
+  if (!active || active.commandIntentInferenceVersion === 1) return false;
+  const current = deriveScsTaskContract({ goal: completionContractGoal(config, state), taskProfile: config.taskProfile });
+  const prior = normalizedRequiredProjectCommands(active.requiredProjectCommands);
+  const goal = state.meta.goalContract || {};
+  const bound = Number.isSafeInteger(goal.activeGoalRevision) && active.revision === goal.activeGoalRevision &&
+    Number.isSafeInteger(goal.taskBoundaryRevision) && active.revision >= goal.taskBoundaryRevision &&
+    typeof goal.activeGoal === "string" && Boolean(goal.activeGoal.trim());
+  // Only a lineage-bound user-inferred contract may lose an obsolete optional
+  // obligation. Unknown legacy authority stays conservative. No receipt,
+  // mutation boundary, batch ID or execution epoch is replaced.
+  const commands = normalizedRequiredProjectCommands(bound ? current.requiredProjectCommands : [...prior, ...current.requiredProjectCommands]);
+  const removed = new Set(prior.filter(command => !commands.includes(command)));
+  const verification = state.meta.projectVerification;
+  const sources = verification?.acceptanceBySource;
+  const independentlyRequired = new Set(normalizedRequiredProjectCommands([
+    ...(Array.isArray(verification?.requiredCommands) ? verification.requiredCommands : []),
+    ...Object.values(sources && typeof sources === "object" && !Array.isArray(sources) ? sources : {})
+      .flatMap(source => Array.isArray(source?.requiredCommands) ? source.requiredCommands : []),
+  ]));
+  if (removed.size) {
+    for (const [owner, key] of [[verification, "contractRequiredCommands"], [state.meta.scs?.taskContract, "requiredProjectCommands"]]) {
+      if (Array.isArray(owner?.[key])) owner[key] = normalizedRequiredProjectCommands(owner[key])
+        .filter(command => !removed.has(command) || independentlyRequired.has(command));
+    }
+  }
+  active.requiredProjectCommands = commands;
+  active.commandIntentInferenceVersion = current.commandIntentInferenceVersion;
+  return true;
+}
+
 async function finishWithDirectAnswer({ config, state, store, observers, sessionId, intent }) {
   const result = redactSensitiveText(intent.directAnswer || "I'm here. How can I help?");
   state.meta = state.meta || {};
@@ -6939,6 +7007,7 @@ export function resetGoalScopedRuntimeState(state = {}) {
     "projectVerification",
     "scs",
     "verifiedCompletionCandidate",
+    "commandCompletionReview",
   ];
   const removed = [];
   for (const key of keys) {
@@ -7039,6 +7108,7 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
     "scs",
     "stepBudget",
     "verifiedCompletionCandidate",
+    "commandCompletionReview",
   ];
   const removed = [];
   for (const key of keys) {
@@ -7107,6 +7177,7 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
         )
     ),
     requiredProjectCommands: currentTurnCommands,
+    commandIntentInferenceVersion: currentTurnContract.commandIntentInferenceVersion,
     authoritativeRoutine: currentTurnRoutine,
   };
   const verification = state.meta.projectVerification;
@@ -10529,9 +10600,13 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     }
     let requiredBatch = currentRequiredCommandBatch(verification, requiredCommands);
     const activeExecutionContract = state.meta?.activeExecutionContract;
+    // A generic continuation advances the goal revision, not the execution
+    // epoch. Admit its closed read-only outcomes under the existing strict
+    // lineage/mutation proof; unrelated or unproven epochs stay excluded.
     const activeTurnCommands =
-      Number(activeExecutionContract?.revision || 0) ===
-      Number(state.meta?.goalContract?.revision || 0)
+      (Number(activeExecutionContract?.revision || 0) ===
+      Number(state.meta?.goalContract?.revision || 0) ||
+      isCurrentReadOnlyDiagnosticExecution(state, verification))
         ? normalizedRequiredProjectCommands(activeExecutionContract?.requiredProjectCommands)
         : [];
     if (
@@ -31524,6 +31599,10 @@ async function runAgentOnceUnlocked(config) {
     updateGoalStatus(state, "active", "workspace_verification_stale");
     await store.saveState(state);
   }
+  const commandCompletionReview = await completedCommandIntentUpgradeReview(state, config, store, completedContinuationNoop);
+  if (commandCompletionReview) {
+    return stopForCompletedCommandIntentReview({ config, state, store, observers, sessionId, review: commandCompletionReview });
+  }
   if (completedContinuationNoop) {
     return finishCompletedContinuationNoop({ config, state, store, observers, sessionId });
   }
@@ -31674,6 +31753,10 @@ async function runAgentOnceUnlocked(config) {
 
     state.meta = state.meta || {};
     state.meta.goalIntent = goalIntent;
+    if (refreshActiveCommandIntentContract(state, config)) {
+      await store.appendEvent("execution.command_intent_contract_refreshed", { version: 1 });
+      await store.saveState(state);
+    }
     const roleContext = { goal: completionContractGoal(config, state), commandCwd: config.commandCwd || state.commandCwd || "" };
     const roleVerification = filterReferenceDocumentAcceptance(state.meta.projectVerification, roleContext);
     const referenceCache = state.meta.groundedProjectTaskInstruction;
@@ -31694,17 +31777,19 @@ async function runAgentOnceUnlocked(config) {
         state.meta.scs.taskContract.outputRoleInferenceVersion !== currentContract.outputRoleInferenceVersion);
       const staleInputRoles = Boolean(state.meta.scs.taskContract &&
         state.meta.scs.taskContract.inputInstructionRoleVersion !== currentContract.inputInstructionRoleVersion);
+      const staleCommandIntent = Boolean(state.meta.scs.taskContract &&
+        state.meta.scs.taskContract.commandIntentInferenceVersion !== currentContract.commandIntentInferenceVersion);
       const priorContractRefresh = staleOutputRoles || ((previousEmpty.length || currentEmpty.length) && JSON.stringify(previousEmpty) !== JSON.stringify(currentEmpty)) ||
           ((previousCopies.length || currentCopies.length) && (JSON.stringify(previousCopies) !== JSON.stringify(currentCopies) ||
             JSON.stringify(state.meta.scs.taskContract?.exactInputPaths || []) !== JSON.stringify(currentContract.exactInputPaths || [])));
-      if (staleInputRoles || priorContractRefresh) {
+      if (staleInputRoles || staleCommandIntent || priorContractRefresh) {
         // Rebase the presentation of this content constraint once. An older
         // cached document-format/output-role plan must not demand filler,
         // preservation inputs or a side artifact. Derive from the saved user
         // task and grounded project instructions, never the model's old plan.
         state.meta.scs.taskContract = currentContract;
         state.meta.scs.supervisorInstructionInjected = false;
-        const refreshEvent = priorContractRefresh ? staleOutputRoles ? "scs.output_role_contract_refreshed" : currentCopies.length || previousCopies.length ? "scs.copy_contract_refreshed" : "scs.empty_output_contract_refreshed" : "scs.input_instruction_role_contract_refreshed";
+        const refreshEvent = priorContractRefresh ? staleOutputRoles ? "scs.output_role_contract_refreshed" : currentCopies.length || previousCopies.length ? "scs.copy_contract_refreshed" : "scs.empty_output_contract_refreshed" : staleInputRoles ? "scs.input_instruction_role_contract_refreshed" : "scs.command_intent_contract_refreshed";
         await store.appendEvent(refreshEvent, { paths: currentEmpty, copies: currentCopies });
         await store.saveState(state);
       }

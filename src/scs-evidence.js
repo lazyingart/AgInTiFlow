@@ -2326,6 +2326,16 @@ export function isCurrentReadOnlyDiagnosticExecution(state = {}, verification = 
   return true;
 }
 
+function diagnosticMutationBelongsToCurrentExecution(state, revision) {
+  // Requested diagnostics share an execution epoch even when a later command
+  // conservatively advances the command revision. The full continuity proof
+  // excludes actual path edits, private mutations and unknown command history.
+  return Number.isSafeInteger(revision) &&
+    revision >= state.meta?.activeExecutionContract?.startedMutationRevision &&
+    revision <= state.meta?.projectVerification?.mutationRevision &&
+    isCurrentReadOnlyDiagnosticExecution(state);
+}
+
 function goalRequestsScopedArtifactDeliverable(goal = "") {
   const text = normalizedText(stripCompletedWorkNarration(stripForbiddenLanguage(goal)));
   const deliverable =
@@ -3486,7 +3496,20 @@ function applyScopedArtifactRoot(items = [], artifactRoot = "") {
   });
 }
 
+function conditionalCommandPrefix(prefix = "") {
+  let source = String(prefix || "");
+  // Conditions inside quoted examples or earlier command arguments are data.
+  // A semicolon starts an independent action; a comma alone does not end an
+  // if/optional clause. Keep offsets stable while hiding quoted content.
+  for (const quote of [...outputIntentSyntax(source).quotes].reverse()) {
+    source = source.slice(0, quote.start) + " ".repeat(quote.end - quote.start) + source.slice(quote.end);
+  }
+  const block = source.split(/[;；]/u).at(-1) || "";
+  return /(?:^|[,，]|\b(?:and|then)\b)\s*(?:(?:please|kindly|now)\s+|(?:can|could|would|will)\s+you\s+)*(?:(?:only\s+)?if\b|unless\b|only\s+when\b|when\s+(?:needed|necessary|available)\b|optionally\b|如果|若|如有需要|如有必要|必要时|必要時|可选|可選)/iu.test(block);
+}
+
 function prefixRequestsInlineCommandExecution(prefix = "") {
+  if (conditionalCommandPrefix(prefix)) return false;
   const clauses = String(prefix || "")
     .split(
       /(?:[,;，；]+|\b(?:and\s+then|and|then|after\s+that|afterwards|finally|next)\b|(?:然后|然後|接着|接著|随后|隨後|最后|最後|并且|並且|以及|再))/i
@@ -3494,7 +3517,7 @@ function prefixRequestsInlineCommandExecution(prefix = "") {
     .map((item) => item.trim())
     .filter(Boolean);
   let clause = clauses.at(-1) || String(prefix || "").trim();
-  const preamble = /^(?:(?:please|kindly|now)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:want|need|would\s+like)\s+you\s+to\s+|you\s+(?:must|should|need\s+to|have\s+to)\s+|(?:help|assist)\s+me(?:\s+to)?\s+|(?:请你|請你|麻烦|麻煩|帮我|幫我|需要|必须|必須|请|請)\s*)/i;
+  const preamble = /^(?:(?:please|kindly|now|also|separately|independently|additionally)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:want|need|would\s+like)\s+you\s+to\s+|you\s+(?:must|should|need\s+to|have\s+to)\s+|(?:help|assist)\s+me(?:\s+to)?\s+|(?:另外|此外|单独|單獨|另行|请你|請你|麻烦|麻煩|帮我|幫我|需要|必须|必須|请|請)\s*)/i;
   while (preamble.test(clause)) clause = clause.replace(preamble, "").trim();
   clause = clause.replace(/(?:[:：]|--?)\s*$/, "").trim();
   clause = clause
@@ -3597,7 +3620,7 @@ function canonicalBareVerifierCommand(rawPath = "") {
 function inferBareRequestedVerifierCommands(goal = "") {
   const commands = [];
   const source = stripForbiddenLanguage(goal);
-  const sentencePattern = /(?:^|[!?。！？\n]|\.(?=\s))\s*(?:please\s+|kindly\s+|now\s+)?(?:run|execute|invoke|launch)\b([^!?。！？\n]{0,1200})/gi;
+  const sentencePattern = /(?:^|[!?。！？\n]|\.(?=\s))\s*(?:(?:please|kindly|now|also|separately|independently|additionally)\s+)*(?:run|execute|invoke|launch)\b([^!?。！？\n]{0,1200})/gi;
   const pathPattern = /(?:^|[\s,:，：])((?:(?:~|\.{1,2})?\/|[A-Za-z0-9_-]+\/)[A-Za-z0-9_./~-]*\.(?:py|sh|cjs|mjs|js))(?=$|[.\s,;，；])/gi;
   for (const sentence of source.matchAll(sentencePattern)) {
     const sentenceSource = String(sentence[0] || "");
@@ -3627,17 +3650,11 @@ function inferExplicitRequestedCommands(goal = "") {
   const inferredBareCommands = inferBareRequestedVerifierCommands(source);
   const explicitCommands = [];
   const inlineCode = /(?<!`)`([^`\r\n]+)`(?!`)/g;
+  const boundaries = outputIntentSyntax(source).boundaries;
+  let boundaryIndex = 0, sentenceStart = -1;
   for (const match of source.matchAll(inlineCode)) {
     const index = Number(match.index || 0);
-    const sentenceStart = Math.max(
-      source.lastIndexOf("\n", index - 1),
-      source.lastIndexOf(".", index - 1),
-      source.lastIndexOf("!", index - 1),
-      source.lastIndexOf("?", index - 1),
-      source.lastIndexOf("。", index - 1),
-      source.lastIndexOf("！", index - 1),
-      source.lastIndexOf("？", index - 1)
-    );
+    while (boundaryIndex < boundaries.length && boundaries[boundaryIndex] < index) sentenceStart = boundaries[boundaryIndex++];
     const prefix = source.slice(sentenceStart + 1, index).trimEnd();
     if (
       !prefixRequestsInlineCommandExecution(prefix) &&
@@ -3949,6 +3966,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     version: 1,
     outputRoleInferenceVersion: 1,
     inputInstructionRoleVersion: 1,
+    commandIntentInferenceVersion: 1,
     outcome: compact(originalEvidenceGoal || "Complete the requested task.", 500),
     taskProfile: String(taskProfile || "auto"),
     requiresExternalEvidence: requiresExternalEvidence || requiredInputReadPaths.length > 0,
@@ -6676,7 +6694,7 @@ function checkpointedCommandEvidence(state, existing, context = {}) {
     const active = state.meta?.activeExecutionContract || {};
     const diagnosticObserved = context.readOnlyDiagnostic === true && isCurrentReadOnlyDiagnosticExecution(state) && payload.diagnosticCommandObserved === true &&
       run.diagnosticCommandObserved === true && run.diagnosticGoalRevision === active.revision &&
-      payload.goalRevision >= active.revision && payload.goalRevision <= goal.revision && run.mutationRevision === state.meta.projectVerification.mutationRevision &&
+      payload.goalRevision >= active.revision && payload.goalRevision <= goal.revision && diagnosticMutationBelongsToCurrentExecution(state, run.mutationRevision) &&
       run.privateMutationRevision === 0 && Number.isSafeInteger(payload.diagnosticExitCode) &&
       payload.diagnosticExitCode > 0 && payload.diagnosticExitCode <= 255 &&
       ![126, 127].includes(payload.diagnosticExitCode) &&
@@ -6756,7 +6774,9 @@ export function buildScsEvidenceLedger({ state = {}, context = {}, contract = {}
       if (event.type !== "tool.completed" || data.toolName !== "run_command" || data.blocked ||
           data.projectTest?.passed !== false || data.projectTest.invalidInvocation === true || !Number.isInteger(data.exitCode) ||
           data.goalRevision < active.revision || data.goalRevision > state.meta?.goalContract?.revision ||
-          data.projectMutationRevision !== (data.diagnosticCommandObserved === true ? state.meta?.projectVerification?.mutationRevision : active.startedMutationRevision) ||
+          !(data.diagnosticCommandObserved === true
+            ? diagnosticMutationBelongsToCurrentExecution(state, data.projectMutationRevision)
+            : data.projectMutationRevision === active.startedMutationRevision) ||
           !(Date.parse(String(event.timestamp || "")) >= Date.parse(String(active.refreshedAt || ""))) ||
           typeof data.args?.command !== "string") continue;
       for (const category of ["command", "test"]) eventEvidence.push({
