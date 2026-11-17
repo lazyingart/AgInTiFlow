@@ -165,6 +165,8 @@ import {
   boundedNativeCommandCheckpointResult,
   nativeCommandVerificationDigest,
   deriveScsTaskContract,
+  isReferenceOnlyDocumentRequest,
+  filterReferenceDocumentAcceptance,
   deterministicFinishBlocker,
   evaluateScsEvidence,
   evaluateScsSemanticContract,
@@ -10173,9 +10175,10 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       taskProfile: config.taskProfile || state.meta?.taskProfile || "auto",
     });
     const sourcePath = String(toolResult.path || toolResult.args?.path || "");
+    const referenceOnly = isReferenceOnlyDocumentRequest(completionContractGoal(config, state), normalizedProjectAcceptancePath(sourcePath, config.commandCwd || state.commandCwd));
     const generatedInstructionArtifact = isGeneratedTaskInstructionArtifact(state, config, sourcePath, currentTaskContract);
     if (
-      !generatedInstructionArtifact &&
+      !generatedInstructionArtifact && !referenceOnly &&
       /^(?:TASK|BRIEF|INSTRUCTIONS?)(?:\.[^/]*)?$/iu.test(
         path.posix.basename(sourcePath.replace(/\\/gu, "/"))
       ) &&
@@ -10193,7 +10196,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         ),
         readAt: now,
       };
-    } else if (generatedInstructionArtifact && state.meta.groundedProjectTaskInstruction?.path === sourcePath) {
+    } else if ((generatedInstructionArtifact || referenceOnly) && state.meta.groundedProjectTaskInstruction?.path === sourcePath) {
       delete state.meta.groundedProjectTaskInstruction;
     }
     const acceptanceOptions = {
@@ -10212,7 +10215,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       sourcePath,
       acceptanceOptions
     );
-    if (!generatedInstructionArtifact && projectAcceptanceSourceIsAuthoritative(sourcePath, acceptanceOptions)) {
+    if (!generatedInstructionArtifact && !referenceOnly && projectAcceptanceSourceIsAuthoritative(sourcePath, acceptanceOptions)) {
       const sourceKey = normalizedProjectAcceptancePath(
         sourcePath,
         acceptanceOptions.commandCwd
@@ -19705,6 +19708,7 @@ function groundedProjectTaskInstructionText(state = {}, config = {}, directContr
     .find(
       (item) =>
         item.complete === true &&
+        !isReferenceOnlyDocumentRequest(completionContractGoal(config, state), normalizedProjectAcceptancePath(item.path, config.commandCwd || state.commandCwd)) &&
         /^[a-f0-9]{64}$/.test(item.sha256) && withinScope(item.goalRevision) &&
         !isGeneratedTaskInstructionArtifact(state, config, item.path, directContract) &&
         /^(?:TASK|BRIEF|INSTRUCTIONS?)(?:\.[^/]*)?$/iu.test(
@@ -19718,7 +19722,8 @@ function groundedProjectTaskInstructionText(state = {}, config = {}, directContr
       ? String(persisted.path || "")
       : ""
   );
-  if (!sourcePath || isGeneratedTaskInstructionArtifact(state, config, sourcePath, directContract)) return "";
+  if (!sourcePath || isGeneratedTaskInstructionArtifact(state, config, sourcePath, directContract) ||
+      isReferenceOnlyDocumentRequest(completionContractGoal(config, state), normalizedProjectAcceptancePath(sourcePath, config.commandCwd || state.commandCwd))) return "";
   try {
     const target = resolveWorkspacePath(config, sourcePath, {
       allowReadOnlyRoots: true,
@@ -31669,6 +31674,16 @@ async function runAgentOnceUnlocked(config) {
 
     state.meta = state.meta || {};
     state.meta.goalIntent = goalIntent;
+    const roleContext = { goal: completionContractGoal(config, state), commandCwd: config.commandCwd || state.commandCwd || "" };
+    const roleVerification = filterReferenceDocumentAcceptance(state.meta.projectVerification, roleContext);
+    const referenceCache = state.meta.groundedProjectTaskInstruction;
+    const discardReferenceCache = referenceCache && isReferenceOnlyDocumentRequest(roleContext.goal, normalizedProjectAcceptancePath(referenceCache.path, roleContext.commandCwd));
+    if (roleVerification !== state.meta.projectVerification || discardReferenceCache) {
+      if (roleVerification) state.meta.projectVerification = roleVerification;
+      if (discardReferenceCache) delete state.meta.groundedProjectTaskInstruction;
+      await store.appendEvent("project.reference_document_role_reconciled", { instructionCacheRemoved: Boolean(discardReferenceCache) });
+      await store.saveState(state);
+    }
     if (config.scsActive && state.meta.scs) {
       const currentContract = completionTaskContract(config, state);
       const previousEmpty = state.meta.scs.taskContract?.exactEmptyOutputPaths || [];
@@ -31677,16 +31692,20 @@ async function runAgentOnceUnlocked(config) {
       const currentCopies = currentContract.exactCopyRequirements || [];
       const staleOutputRoles = Boolean(state.meta.scs.taskContract &&
         state.meta.scs.taskContract.outputRoleInferenceVersion !== currentContract.outputRoleInferenceVersion);
-      if (staleOutputRoles || ((previousEmpty.length || currentEmpty.length) && JSON.stringify(previousEmpty) !== JSON.stringify(currentEmpty)) ||
+      const staleInputRoles = Boolean(state.meta.scs.taskContract &&
+        state.meta.scs.taskContract.inputInstructionRoleVersion !== currentContract.inputInstructionRoleVersion);
+      const priorContractRefresh = staleOutputRoles || ((previousEmpty.length || currentEmpty.length) && JSON.stringify(previousEmpty) !== JSON.stringify(currentEmpty)) ||
           ((previousCopies.length || currentCopies.length) && (JSON.stringify(previousCopies) !== JSON.stringify(currentCopies) ||
-            JSON.stringify(state.meta.scs.taskContract?.exactInputPaths || []) !== JSON.stringify(currentContract.exactInputPaths || [])))) {
+            JSON.stringify(state.meta.scs.taskContract?.exactInputPaths || []) !== JSON.stringify(currentContract.exactInputPaths || [])));
+      if (staleInputRoles || priorContractRefresh) {
         // Rebase the presentation of this content constraint once. An older
         // cached document-format/output-role plan must not demand filler,
         // preservation inputs or a side artifact. Derive from the saved user
         // task and grounded project instructions, never the model's old plan.
         state.meta.scs.taskContract = currentContract;
         state.meta.scs.supervisorInstructionInjected = false;
-        await store.appendEvent(staleOutputRoles ? "scs.output_role_contract_refreshed" : currentCopies.length || previousCopies.length ? "scs.copy_contract_refreshed" : "scs.empty_output_contract_refreshed", { paths: currentEmpty, copies: currentCopies });
+        const refreshEvent = priorContractRefresh ? staleOutputRoles ? "scs.output_role_contract_refreshed" : currentCopies.length || previousCopies.length ? "scs.copy_contract_refreshed" : "scs.empty_output_contract_refreshed" : "scs.input_instruction_role_contract_refreshed";
+        await store.appendEvent(refreshEvent, { paths: currentEmpty, copies: currentCopies });
         await store.saveState(state);
       }
     }

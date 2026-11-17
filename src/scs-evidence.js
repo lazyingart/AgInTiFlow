@@ -862,6 +862,54 @@ function outputIntentLines(source = "") {
   });
 }
 
+// A document's name does not delegate its contents. Bind informational reads
+// to the actual user clause, not instructions encountered inside the document.
+export function isReferenceOnlyDocumentRequest(goal = "", sourcePath = "") {
+  const name = String(sourcePath || "").replace(/\\/gu, "/").replace(/^\.\//u, "");
+  if (!name) return false;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const mention = new RegExp("(?<![A-Za-z0-9_./~-])(?:\\./)?" + escaped + "(?![A-Za-z0-9_/-]|\\.[A-Za-z0-9_])", "giu");
+  const source = stripForbiddenLanguage(String(goal || ""));
+  const syntax = outputIntentSyntax(source);
+  // A separate sentence may explicitly delegate the single previously named
+  // document. Ambiguous pronouns after multiple files grant no new authority.
+  const followups = source.matchAll(/(?:^|[.!?;。！？；\n])\s*(?:(?:please|then|now)\s+)*(?:carry\s+out|follow|implement|complete|finish|perform)\s+(?:(?:its|the|this|that)\s+)*(?:requirements?|instructions?|project|task|work)\b/giu);
+  let boundFollowup = false;
+  for (const action of followups) {
+    if (syntax.quotes.some(q => q.start < action.index && q.end > action.index)) continue;
+    const priorPaths = [...source.slice(0, action.index).matchAll(/[\w./~-]+\.[A-Za-z0-9]{1,8}\b/gu)].map(m => m[0].replace(/^\.\//u, ""));
+    if (priorPaths.length && priorPaths.every(p => p === name)) boundFollowup = true;
+  }
+  const question = /(?:^|[.!?;。！？；\n])\s*(?:(?:please|could\s+you|can\s+you)\s+)*(?:what(?:'s|\s+(?:is|does|are|do))|which|how|tell\s+(?:me|us)\s+(?:what|about|whether))\b/iu.test(source);
+  let reference = false, delegated = false;
+  for (const clause of outputIntentLines(source)) {
+    for (const match of clause.matchAll(mention)) {
+      const quote = outputIntentSyntax(clause).quotes.find(q => q.start < match.index && q.end > match.index);
+      if (quote && clause.slice(quote.start + 1, quote.end - 1).replace(/^\.\//u, "") !== name) { reference = true; continue; }
+      const before = withoutFilePathMentions(clause.slice(0, match.index));
+      const after = clause.slice(match.index + match[0].length);
+      const informationActions = [...before.matchAll(/\b(?:read|open|inspect|summari[sz](?:e|ing)|explain|describe|translate|quote|extract|compare|review|analy[sz]e|rewrite|revise|reformat|proofread)\b|\b(?:summary|translation|explanation|description)\s+(?:of|from)\b|(?:阅读|閱讀|读取|讀取|总结|總結|概述|解释|解釋|翻译|翻譯|提取|比较|比較)/giu)];
+      const information = informationActions.length > 0 ||
+        /(?:を|の)[^。！？;；\n]{0,40}(?:読んで|読み|読む|要約|説明|翻訳|比較|内容|概要)/u.test(after) ||
+        /^\s*(?:里|裡|中)[^。！？;；\n]{0,40}(?:说|說|写|寫|什么|什麼|哪些|意思)/u.test(after) || question;
+      const imperative = "(?:follow|implement|execute|complete|finish|carry\\s+out|perform|fix|repair|build|test|validate|run)";
+      const head = "(?:(?:please|kindly|now|just)\\s+|(?:can|could|would)\\s+you\\s+)*";
+      const prefixActions = [...before.matchAll(new RegExp("(?:^|[,;:\\n]|\\b(?:and|then)\\b)\\s*" + head + imperative + "\\b", "giu"))];
+      const suffixAction = new RegExp("^\\s*(?:[，,、]\\s*)?(?:(?:and|then)\\s+)*(?:please\\s+)?" + imperative + "\\b", "iu").exec(after);
+      const suffixObject = suffixAction ? after.slice(suffixAction[0].length).trim() : "";
+      const sameObject = new RegExp("^[`\"']?(?:\\./)?" + escaped + "(?:[`\"']|\\s|[.!?]|$)", "iu").test(suffixObject);
+      const boundSuffix = suffixAction && (sameObject || /^(?:(?:its|their|the|this|that)\s+)*(?:instructions?|requirements?|project|task|work|what\s+it\s+asks)\b/iu.test(suffixObject));
+      const chinesePrefix = [...before.matchAll(/(?:^|[，,、]|并|並|然后|然後)(?:请|請)?(?:按照|遵循|执行|執行|完成|实现|實現)/gu)];
+      const chineseSuffix = /^\s*(?:[，,、]\s*)?(?:并|並|然后|然後)(?:执行|執行|完成|实现|實現)\s*(?:其(?:指令|要求|任务|任務)|里面的|裡面的|其中的|这个任务|這個任務)/u.test(after);
+      const instruction = (prefixActions.length > 0 && (prefixActions.at(-1).index >= (informationActions.at(-1)?.index ?? -1))) || boundSuffix ||
+        (chinesePrefix.length > 0 && chinesePrefix.at(-1).index >= (informationActions.at(-1)?.index ?? -1)) || chineseSuffix || /(?:の指示|の要件)に(?:従って|沿って)/u.test(after);
+      if (instruction) delegated = true;
+      else if (information) reference = true;
+    }
+  }
+  return reference && !delegated && !boundFollowup;
+}
+
 function inferExactOutputPaths(goal = "") {
   const paths = japaneseFileIntentClauses(goal).filter(clause => ["create", "update"].includes(clause.kind))
     .flatMap(clause => preservationFileReferences(clause.body).map(reference => reference.path));
@@ -3900,6 +3948,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   return {
     version: 1,
     outputRoleInferenceVersion: 1,
+    inputInstructionRoleVersion: 1,
     outcome: compact(originalEvidenceGoal || "Complete the requested task.", 500),
     taskProfile: String(taskProfile || "auto"),
     requiresExternalEvidence: requiresExternalEvidence || requiredInputReadPaths.length > 0,
@@ -3918,6 +3967,8 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     excludedOutputPaths,
     artifactRoot,
     exactInputPaths,
+    referenceOnlyInputPaths: uniquePathList([...exactInputPaths, ...exactOutputPaths, ...preservedInputPaths], 48)
+      .filter(item => isReferenceOnlyDocumentRequest(evidenceGoal, item)),
     explicitInputReadPaths,
     requiredInputReadPaths,
     preservedInputPaths,
@@ -4223,8 +4274,34 @@ function observedProjectCommandSatisfies(requiredCommand = "", item = {}) {
   return item?.explicitExitStatus === 0;
 }
 
+export function filterReferenceDocumentAcceptance(verification, { goal = "", commandCwd = "" } = {}) {
+  if (!verification || typeof verification !== "object") return verification;
+  const entries = Object.entries(verification.acceptanceBySource || {});
+  if (!entries.length && verification.acceptanceSource) entries.push([verification.acceptanceSource, verification]);
+  const normalize = name => {
+    const raw = String(name || "").replace(/\\/gu, "/");
+    return commandCwd && path.isAbsolute(raw) ? path.relative(commandCwd, raw).replace(/\\/gu, "/") : raw.replace(/^\.\//u, "");
+  };
+  const references = entries.filter(([name]) => isReferenceOnlyDocumentRequest(goal, normalize(name)));
+  if (!references.length) return verification;
+  const rest = entries.filter(entry => !references.includes(entry));
+  const values = (rows, key) => new Set(rows.flatMap(([, value]) => Array.isArray(value?.[key]) ? value[key] : []));
+  const filter = key => {
+    const excluded = values(references, key), retained = values(rest, key);
+    return (Array.isArray(verification[key]) ? verification[key] : []).filter(item => !excluded.has(item) || retained.has(item));
+  };
+  const excludedCommands = values(references, "requiredCommands"), retainedCommands = values(rest, "requiredCommands");
+  return { ...verification, acceptanceBySource: Object.fromEntries(rest),
+    requiredOutputs: filter("requiredOutputs"), requiredCommands: filter("requiredCommands"),
+    contractRequiredCommands: (Array.isArray(verification.contractRequiredCommands) ? verification.contractRequiredCommands : []).filter(item => !excludedCommands.has(item) || retainedCommands.has(item)),
+    acceptanceSource: rest.at(-1)?.[0] || "", acceptanceReadAt: rest.at(-1)?.[1]?.readAt || "" };
+}
+
 export function augmentScsTaskContractWithProjectVerification(contract = {}, state = {}, context = {}) {
-  const verification = state?.meta?.projectVerification;
+  const verification = filterReferenceDocumentAcceptance(state?.meta?.projectVerification, {
+    goal: context.goal || state.meta?.goalContract?.activeGoal || state.goal || "",
+    commandCwd: context.commandCwd || state.commandCwd || "",
+  });
   if (!verification || typeof verification !== "object") return contract;
   const profile = String(context.taskProfile || contract.taskProfile || verification.taskProfile || "auto").toLowerCase();
   const mutationRevision = Math.max(0, Number(verification.mutationRevision || 0));
