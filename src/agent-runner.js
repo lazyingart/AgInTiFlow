@@ -21,6 +21,7 @@ import { nativeBackgroundToolGuidance, nativeWorkspaceToolGuidance } from "./nat
 import { assessFileChecksumClaims, nativeFileChecksumReceipts } from "./completion-file-checksums.js";
 import { acquireNativeSessionRunLock } from "./session-run-lock.js";
 import { runNativeHostCommand } from "./native-host-command.js";
+import { createCommandMutationEvidence, commandMutationEvidenceForPresentation, testCommandSequenceIsCurrent, commandVerificationSequenceState } from "./command-mutation-evidence.js";
 import { budgetStopWithDeferredReceipts, deferredJobLaunchSummary, launchOnlyHandoffReceipt, recordDeferredJobReceipt, retainedLongJobResult } from "./deferred-job-handoff.js";
 import {
   assertIntegrationRunAgentInvocation,
@@ -1237,6 +1238,8 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
     result.results = compactPathItems(payload.results, 24, ["path", "file", "line", "match"]);
   } else if (toolName === "run_command") {
     result.args = { command: compactMultiline(args.command || payload.args?.command || "", 1200) };
+    if (Number.isSafeInteger(result.projectMutationRevision)) result.commandMutationEvidence = commandMutationEvidenceForPresentation(payload.commandMutationEvidence);
+    if (Number.isSafeInteger(payload.commandSequence)) result.commandSequence = payload.commandSequence;
     if (payload.changed !== undefined) result.changed = Boolean(payload.changed);
     if (Number.isFinite(Number(payload.exitCode))) result.exitCode = Number(payload.exitCode);
     if (payload.stdout) result.stdout = compactMultiline(payload.stdout, 1800);
@@ -5205,6 +5208,54 @@ async function stopForCompletedCommandIntentReview({ config, state, store, obser
   return { sessionId, result, stopped: true, reason, ...goalRunMetadata(state) };
 }
 
+export function reconcileLegacyCommandMutationEvidence(state = {}, config = {}) {
+  const verification = state.meta?.projectVerification;
+  if (!verification) return null;
+  commandVerificationSequenceState(verification);
+  const taskHash = hashForLog(String(state.meta?.goalContract?.taskGoal || state.goal || "").trim());
+  const retained = state.meta.commandMutationObservationReview;
+  const passing = [...(verification.testRuns || [])].reverse().find(run => run?.passed === true && testRunMatchesVerificationRevision(run, verification));
+  if (retained?.taskHash === taskHash && !passing) return retained;
+  if (!passing || Object.hasOwn(passing, "commandSequence")) return null;
+  const runs = Array.isArray(verification.commandRuns) ? verification.commandRuns : [];
+  const index = runs.findIndex(run => run?.command === passing.command && run.at === passing.at && run.ok === true &&
+    run.mutationRevision === passing.mutationRevision && run.privateMutationRevision === passing.privateMutationRevision);
+  const uncertain = index < 0 ? [null] : runs.slice(index + 1).filter(run => {
+    if (run && Object.hasOwn(run, "commandSequence")) return false;
+    if (!run || typeof run.command !== "string" || !run.command.trim()) return true;
+    const command = normalizeProjectCommand(normalizeCommandForPolicy(run.command, config));
+    return commandCanMutateProjectContent(command, classifyCommand(command)) &&
+      projectTestCommandWrapper(command)?.semanticallyReadOnly !== true &&
+      !isRetainedExactVerificationCommand(command, config) &&
+      !commandIsBoundedReadOnlyArtifactValidation(command) && !commandIsNonMutatingTestOutputPipeline(command);
+  });
+  if (!uncertain.length) return null;
+  const sequence = commandVerificationSequenceState(verification).current;
+  if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence === Number.MAX_SAFE_INTEGER) {
+    throw Object.assign(new Error("Command verification sequence is invalid."), { code: "COMMAND_VERIFICATION_SEQUENCE_INVALID" });
+  }
+  // This new invalidation fence deliberately assigns no execution identity or
+  // new receipt to historical commands. Unknown coverage cannot become proof.
+  verification.commandSequence = Math.max(sequence, runs.length, 1);
+  verification.latestPotentialCommandMutationSequence = verification.commandSequence;
+  const review = { schemaVersion: 1, taskHash, reason: "legacy-command-mutation-coverage", unverifiedCommandCount: uncertain.length };
+  state.meta.commandMutationObservationReview = review;
+  return review;
+}
+
+async function stopForLegacyCommandMutationReview({ config, state, store, observers, sessionId, review }) {
+  const reason = "verification_observation_review_required";
+  const result = "The saved verification predates a command with partial or unknown workspace-change coverage. I preserved its outputs and did not repeat any command. A revision counter or old complete-observation flag cannot prove the workspace was unchanged. Explicitly request the exact verification to run again, or review the retained result as historical evidence.";
+  state.updatedAt = new Date().toISOString();
+  state.messages.push({ role: "assistant", content: result }); appendChatEntry(state, "assistant", result);
+  updateGoalStatus(state, "paused", reason, state.updatedAt);
+  await store.saveState(state);
+  await store.appendEvent("verification.command_observation_review_required", { reason: review.reason, unverifiedCommandCount: review.unverifiedCommandCount });
+  await store.appendEvent("session.stopped", { reason }); observers.event("session.stopped", { reason, sessionId });
+  emitConsole(config, result, { kind: "meta" });
+  return { sessionId, result, stopped: true, reason, ...goalRunMetadata(state) };
+}
+
 function refreshActiveCommandIntentContract(state = {}, config = {}) {
   const active = state.meta?.activeExecutionContract;
   if (!active || active.commandIntentInferenceVersion === 1) return false;
@@ -7008,6 +7059,7 @@ export function resetGoalScopedRuntimeState(state = {}) {
     "scs",
     "verifiedCompletionCandidate",
     "commandCompletionReview",
+    "commandMutationObservationReview",
   ];
   const removed = [];
   for (const key of keys) {
@@ -7109,6 +7161,7 @@ export function resetSameTaskExecutionContract(state = {}, revision = 0) {
     "stepBudget",
     "verifiedCompletionCandidate",
     "commandCompletionReview",
+    "commandMutationObservationReview",
   ];
   const removed = [];
   for (const key of keys) {
@@ -10004,6 +10057,9 @@ const freshlyObservedTestRuns = new WeakSet();
 
 function testRunMatchesVerificationRevision(run = {}, verification = {}) {
   return Boolean(
+    // Unknown later mutation invalidates positive verification. It must not
+    // erase a retained failure needed to inspect/repair the current source.
+    (run?.passed !== true || testCommandSequenceIsCurrent(run, verification)) &&
     Number(run?.mutationRevision || 0) ===
       Math.max(0, Number(verification.mutationRevision || 0)) &&
       Number(run?.privateMutationRevision || 0) ===
@@ -10433,6 +10489,14 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
   }
 
   if (toolName === "run_command") {
+    const sequence = commandVerificationSequenceState(verification).current;
+    if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence === Number.MAX_SAFE_INTEGER ||
+        !Number.isSafeInteger(verification.latestPotentialCommandMutationSequence ?? 0) ||
+        (verification.latestPotentialCommandMutationSequence ?? 0) < 0 || (verification.latestPotentialCommandMutationSequence ?? 0) > sequence) {
+      throw Object.assign(new Error("Command verification sequence is invalid."), { code: "COMMAND_VERIFICATION_SEQUENCE_INVALID" });
+    }
+    verification.commandSequence = sequence + 1;
+    const commandStartingMutationRevision = verification.mutationRevision;
     const command = normalizeProjectCommand(toolResult.args?.command || "");
     const testCommandWrapper = projectTestCommandWrapper(command);
     const retainedExactVerification = isRetainedExactVerificationCommand(
@@ -10522,7 +10586,8 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       ...new Set([...commandMutationPaths, ...generatedOutputMutationPaths]),
     ].slice(0, 64);
     const mutationObservationComplete =
-      toolResult.mutationObservationComplete === true;
+      toolResult.mutationObservationComplete === true &&
+      toolResult.mutationObservationScope === undefined;
     const exactHeadRestoreCommand = Boolean(
       config.completionFreshMutationRestorePending === true &&
         projectCommandsEquivalent(
@@ -10560,7 +10625,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
       commandMutationPaths.length === 0 &&
         commandIsNonMutatingTestOutputPipeline(mutationCommand)
     );
-    const projectContentMutation = Boolean(
+    const potentiallyMutatingCommand = Boolean(
       command &&
         toolResult.blocked !== true &&
         !retainedExactVerification &&
@@ -10570,7 +10635,6 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         !scopedTaskArtifactWrite &&
         !readOnlyArtifactValidation &&
         !nonMutatingTestOutputPipeline &&
-        (commandSucceeded || observedCommandMutationPaths.length > 0) &&
         (
           observedCommandMutationPaths.length > 0 ||
           (!mutationObservationComplete &&
@@ -10578,6 +10642,13 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
               generatedArtifactProducer))
         )
     );
+    const projectContentMutation = potentiallyMutatingCommand && (commandSucceeded || observedCommandMutationPaths.length > 0);
+    // An interrupted command can write before failing. Invalidate prior pass
+    // evidence without treating that uncertainty as a source edit or retrying
+    // an explicitly run-once diagnostic. Sequence survives restart/clock ties.
+    if (potentiallyMutatingCommand && !mutationObservationComplete) {
+      verification.latestPotentialCommandMutationSequence = verification.commandSequence;
+    }
     if (disposableGeneratedCleanup) {
       toolResult.disposableGeneratedCleanup = true;
       toolResult.disposableGeneratedCleanupPaths = commandMutationPaths;
@@ -10774,6 +10845,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     );
     const run = {
       command,
+      commandSequence: verification.commandSequence,
       at: now,
       ok: commandSucceeded,
       mutationRevision: verification.mutationRevision,
@@ -10882,6 +10954,13 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
     }
     verification.commandRuns = [...verification.commandRuns, run].slice(-40);
     toolResult.projectMutationRevision = verification.mutationRevision;
+    toolResult.commandSequence = verification.commandSequence;
+    toolResult.commandMutationEvidence = createCommandMutationEvidence({
+      scope: ["git-status", "declared-outputs", "git-status-and-declared-outputs", "unavailable", "not-requested"].includes(toolResult.mutationObservationScope) ? toolResult.mutationObservationScope : "unavailable",
+      revisionAdvanced: verification.mutationRevision > commandStartingMutationRevision,
+      observedPathCount: observedCommandMutationPaths.length,
+      verificationInvalidated: verification.latestPotentialCommandMutationSequence === verification.commandSequence,
+    });
     if (diagnosticCommandObserved) {
       toolResult.diagnosticCommandObserved = true;
       toolResult.diagnosticExitCode = diagnosticExitCode;
@@ -10975,6 +11054,7 @@ export function recordProjectVerificationOutcome(state = {}, toolResult = {}, co
         };
       }
       if (testRun.passed) {
+        delete state.meta.commandMutationObservationReview;
         verification.lastPassingTestRevision = verification.mutationRevision;
         verification.lastPassingTestPrivateRevision =
           verification.privateMutationRevision;
@@ -14015,6 +14095,10 @@ export function toolResultForModel(result) {
     listLimit: MODEL_TOOL_RESULT_LIST_ENTRIES,
     searchLimit: MODEL_TOOL_RESULT_SEARCH_RESULTS,
   });
+  if (safeResult.toolName === "run_command" && Number.isSafeInteger(safeResult.projectMutationRevision)) {
+    safeResult.commandMutationEvidence = commandMutationEvidenceForPresentation(safeResult.commandMutationEvidence);
+    safeResult.mutationObservationComplete = false;
+  }
   if (Array.isArray(safeResult.commandEvidence) && safeResult.commandEvidence.length > MODEL_TOOL_RESULT_COMMAND_EVIDENCE) {
     safeResult.commandEvidenceCount = safeResult.commandEvidence.length;
     safeResult.commandEvidence = safeResult.commandEvidence.slice(0, MODEL_TOOL_RESULT_COMMAND_EVIDENCE);
@@ -25908,11 +25992,11 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           gitWorktreeBefore,
           gitWorktreeAfter
         );
-        const mutationObservationComplete = Boolean(
-          gitWorktreeBefore &&
-            gitWorktreeAfter &&
-            !["git-workflow", "git-remote"].includes(String(policy.category || ""))
-        );
+        // Git omits ignored files and transient/outside-workspace effects.
+        // Its positive deltas are useful; absence is not complete observation.
+        const mutationObservationScope = gitWorktreeBefore && gitWorktreeAfter
+          ? exactOutputSnapshotsBefore.length ? "git-status-and-declared-outputs" : "git-status"
+          : exactOutputSnapshotsBefore.length ? "declared-outputs" : captureMutationScope ? "unavailable" : "not-requested";
         const generatedOutputPaths = commandResult.ok !== false
           ? await verifiedGeneratedOutputPaths(state, exactOutputSnapshotsBefore, config)
           : [];
@@ -25950,9 +26034,8 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
           ...(projectMutationPaths.length
             ? { projectMutationPaths }
             : {}),
-          ...(mutationObservationComplete
-            ? { mutationObservationComplete: true }
-            : {}),
+          mutationObservationScope,
+          mutationObservationComplete: false,
           ...(repositoryStateInspectionSnapshot
             ? {
                 repositoryStateStatusEntries:
@@ -31475,6 +31558,9 @@ async function runAgentOnceUnlocked(config) {
   await store.ensure();
 
   let state = await store.loadState();
+  if (Object.hasOwn(state?.meta || {}, "projectVerification") && state.meta.projectVerification !== null) {
+    commandVerificationSequenceState(state.meta.projectVerification);
+  }
 
   if (config.resume && !state) {
     throw new Error(`No saved session found for "${config.resume}".`);
@@ -31594,6 +31680,14 @@ async function runAgentOnceUnlocked(config) {
     await store.appendEvent(runtimeResolutionEvent.type, runtimeResolutionEvent.data);
   }
 
+  const commandMutationReview = reconcileLegacyCommandMutationEvidence(state, config);
+  if (commandMutationReview) {
+    await store.saveState(state);
+    if (isGenericTaskContinuationText(String(state.meta?.goalContract?.currentRequest || ""))) {
+      return stopForLegacyCommandMutationReview({ config, state, store, observers, sessionId, review: commandMutationReview });
+    }
+    completedContinuationNoop = false;
+  }
   if (await revalidateProjectTestEvidence({ state, config, store, observers })) {
     completedContinuationNoop = false;
     updateGoalStatus(state, "active", "workspace_verification_stale");

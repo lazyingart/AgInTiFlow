@@ -13,6 +13,7 @@ import { firstJsonObject } from "./json-extraction.js";
 import { deriveAdvisoryInvocationContract } from "./advisory-invocation.js";
 import { isSensitiveWorkspacePath, createWorkspaceReadBoundarySync, readWorkspaceFileSnapshotSync } from "./workspace-read-boundary.js";
 import { currentGoalRevisionBelongsToActiveTask } from "./goal-intent.js";
+import { readCommandMutationEvidence, testCommandSequenceIsCurrent } from "./command-mutation-evidence.js";
 
 const CATEGORY_LABELS = {
   file: "file or workspace change",
@@ -2128,7 +2129,28 @@ function goalRequestsFileMutation(goal = "", taskProfile = "") {
   );
 }
 
+function isSavedEvidenceAnswerRequest(goal = "") {
+  // Inspect the whole request, including prohibitions: masking a broad negative
+  // clause could otherwise hide an affirmative instruction after "but".
+  const text = String(goal || "").trim().replace(/^Active task:[ \t]*\r?\n/u, "");
+  if (!text || text.length > 1200 || /[&|]/u.test(text)) return false;
+  const clauses = text.split(/[.?？!！。;；\n]+/u).map(value => value.trim()).filter(Boolean);
+  if (!clauses.length || clauses.length > 4) return false;
+  // Full-clause, source-anchored grammar, not a keyword waiver. A saved-result
+  // question requests an interpretation of history, not current verification.
+  // Unknown/mixed verbs fall back to ordinary evidence and execution gates.
+  const english = /^(?:please\s+)?(?:from|using|based\s+on)\s+(?:the\s+)?(?:saved|recorded|retained|previous|prior|earlier)\s+(?:results?|outputs?|evidence|observations?)\s*[,，:]\s*(?:what\s+(?:is|was|has\s+been)\s+(?:not\s+)?(?:verified|established|confirmed|observed|known)(?:\s+and\s+what\s+(?:is|was|has\s+been)\s+(?:not\s+)?(?:verified|established|confirmed|observed|known))*(?:\s+about\s+(?:file\s+changes|the\s+outcomes|workspace\s+changes))?|summari[sz]e\s+(?:the\s+)?(?:results?|outcomes?|observations?|evidence|limitations?|uncertainties)(?:\s+and\s+(?:the\s+)?(?:results?|outcomes?|observations?|evidence|limitations?|uncertainties))*|explain\s+what\s+(?:we\s+know|is\s+known)\s+and\s+what\s+(?:remains\s+unknown|is\s+not\s+established))$/iu;
+  const chinese = /^(?:请|請)?(?:根据|根據|基于|基於)(?:已保存|保存|记录|記錄|保留|之前|先前)(?:的)?(?:结果|結果|输出|輸出|证据|證據|观察|觀察)[,，:：]\s*(?:哪些(?:已验证|已驗證|已确认|已確認|尚未确定|尚未確定|仍未知)(?:[,，、](?:哪些)?(?:已验证|已驗證|已确认|已確認|尚未确定|尚未確定|仍未知))*|(?:总结|總結)(?:结果|結果|输出|輸出|局限|限制|未知)(?:[与與和及](?:结果|結果|输出|輸出|局限|限制|未知))*)$/u;
+  const japanese = /^(?:(?:保存済み|記録済み|前回)の(?:結果|出力|証拠)(?:から|に基づいて))[、,]\s*(?:何が(?:検証され|確認され|不明)(?:[、,]何が(?:検証され|確認され|不明))*ですか|(?:結果|出力|限界|不明点)(?:と(?:結果|出力|限界|不明点))*を(?:要約|説明)してください)$/u;
+  if (![english, chinese, japanese].some(pattern => pattern.test(clauses[0]))) return false;
+  const forbiddenAction = "(?:rerun\\s+(?:anything|the\\s+(?:commands?|tests?))|(?:change|modify|edit)\\s+(?:any\\s+)?files?)";
+  const englishBoundary = new RegExp("^(?:please\\s+)?(?:(?:do not|don't|never)\\s+" + forbiddenAction + "(?:\\s+(?:or|and)\\s+" + forbiddenAction + ")*|answer\\s+here\\s+only|(?:read[- ]only|review\\s+only)(?:\\s+answer)?)$", "iu");
+  return clauses.slice(1).every(clause => englishBoundary.test(clause) ||
+    /^(?:只读回答|只讀回答|(?:不要|请勿|請勿)(?:重新运行|重新運行|重跑|修改文件|修改檔案)(?:[或和](?:重新运行|重新運行|重跑|修改文件|修改檔案))*|(?:再実行せず[、,]\s*)?(?:読み取り専用|読取専用)で(?:答えて|回答して|説明して)ください)$/u.test(clause));
+}
+
 export function isHistoricalDiagnosticQuestion(goal = "") {
+  if (isSavedEvidenceAnswerRequest(goal)) return true;
   const text = stripForbiddenLanguage(goal).trim().replace(/^Active task:[ \t]*\r?\n/u, "");
   if (!text || text.length > 1200 || /[&|]/u.test(text)) return false;
   const clauses = text.split(/[?？!！。;；\n]+/u).map(value => value.trim().replace(/[.]$/u, "")).filter(Boolean);
@@ -2158,7 +2180,7 @@ export function isHistoricalDiagnosticQuestion(goal = "") {
 export function hasReadOnlyDiagnosticIntent(goal = "", taskProfile = "") {
   const text = String(goal || "");
   const explicitReadOnly = /\bread[- ]only\b|\breview\s+only\b|\b(?:do not|don't|without)\b[^.!?;\n]{0,100}\b(?:chang(?:e|ing)|modif(?:y|ying)|edit(?:ing)?|writ(?:e|ing))\b[^.!?;\n]{0,50}\b(?:any\s+)?files?\b|只读|只讀|(?:不要|请勿|請勿)[^。；\n]{0,60}(?:修改|编辑|編輯)(?:文件|檔案)|読み取り専用|読取専用/i.test(text);
-  return explicitReadOnly && (isHistoricalDiagnosticQuestion(text) || !goalRequestsWorkspaceMutation(text, taskProfile));
+  return isSavedEvidenceAnswerRequest(text) || (explicitReadOnly && (isHistoricalDiagnosticQuestion(text) || !goalRequestsWorkspaceMutation(text, taskProfile)));
 }
 
 // A bounded preview of this session's immediately preceding diagnostic, NOT
@@ -6388,6 +6410,7 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
       args.command || "",
       {
         command,
+        ...(Number.isSafeInteger(payload.commandSequence) ? { commandSequence: payload.commandSequence } : {}),
         mutationRevision: Math.max(0, Number(payload.projectMutationRevision || 0)),
         ...(payload.requiredCommandBatchId
           ? { requiredCommandBatchId: String(payload.requiredCommandBatchId) }
@@ -6414,6 +6437,7 @@ function toolPayloadToEvidence(payload = {}, source = "tool") {
       {
         command: normalizeProjectCommand(payload.projectTest.command || args.command || ""),
         mutationRevision: Math.max(0, Number(payload.projectTest.mutationRevision || 0)),
+        ...(Number.isSafeInteger(payload.projectTest.commandSequence) ? { commandSequence: payload.projectTest.commandSequence } : {}),
       }
     );
   }
@@ -6626,6 +6650,8 @@ export function boundedNativeCommandCheckpointResult(result) {
   };
   if (!Number.isSafeInteger(result.exitCode) || !Number.isSafeInteger(result.goalRevision) || result.goalRevision < 1 ||
       !Number.isSafeInteger(result.projectMutationRevision) || result.projectMutationRevision < 0 ||
+      (result.commandSequence !== undefined && (!Number.isSafeInteger(result.commandSequence) || result.commandSequence < 1 ||
+        (result.projectTest && result.projectTest.commandSequence !== result.commandSequence))) ||
       (result.projectTest && (!Number.isSafeInteger(result.projectTest.mutationRevision) || result.projectTest.mutationRevision < 0))) {
     const error = new Error("Native command checkpoint revisions or outcome were invalid.");
     error.code = "NATIVE_COMMAND_CHECKPOINT_INVALID";
@@ -6635,6 +6661,8 @@ export function boundedNativeCommandCheckpointResult(result) {
     toolName: "run_command", ok: result.ok === true, exitCode: result.exitCode,
     stdout: text(result.stdout, 1800), stderr: text(result.stderr, 1200),
     goalRevision: result.goalRevision, projectMutationRevision: result.projectMutationRevision,
+    ...(Number.isSafeInteger(result.commandSequence) ? { commandSequence: result.commandSequence } : {}),
+    ...(readCommandMutationEvidence(result.commandMutationEvidence) ? { commandMutationEvidence: readCommandMutationEvidence(result.commandMutationEvidence) } : {}),
     noMatch: result.noMatch === true, semanticOutcome: result.semanticOutcome === "no-match" ? "no-match" : "",
     noMatchExitIsSuccess: result.commandPolicy?.noMatchExitIsSuccess === true,
     authoritativeReadOnlyRoutine: result.authoritativeReadOnlyRoutine === true,
@@ -6645,7 +6673,8 @@ export function boundedNativeCommandCheckpointResult(result) {
       diagnosticCommandObserved: true, diagnosticExitCode: result.diagnosticExitCode,
     } : {}),
     projectTest: result.projectTest ? { passed: result.projectTest.passed === true,
-      mutationRevision: result.projectTest.mutationRevision } : null,
+      mutationRevision: result.projectTest.mutationRevision,
+      ...(Number.isSafeInteger(result.projectTest.commandSequence) ? { commandSequence: result.projectTest.commandSequence } : {}) } : null,
   };
 }
 
@@ -6658,7 +6687,7 @@ function checkpointedCommandEvidence(state, existing, context = {}) {
   const runs = state.meta?.projectVerification?.commandRuns;
   if (!Array.isArray(runs)) return [];
   const key = item => JSON.stringify([item.category, item.toolName, item.command,
-    item.goalRevision, item.mutationRevision, item.requiredCommandBatchId || "", item.requiredProjectCommand || ""]);
+    item.goalRevision, item.mutationRevision, item.commandSequence ?? null, item.requiredCommandBatchId || "", item.requiredProjectCommand || ""]);
   const known = new Set(existing.map(key)), evidence = [];
   for (const run of runs.slice(-40)) {
     if (!run || typeof run !== "object" || types.isProxy(run)) continue;
@@ -6687,6 +6716,7 @@ function checkpointedCommandEvidence(state, existing, context = {}) {
         typeof run.ok !== "boolean" || !Number.isSafeInteger(payload.exitCode) ||
         !Number.isSafeInteger(payload.projectMutationRevision) || payload.projectMutationRevision < 0 ||
         payload.projectMutationRevision !== run.mutationRevision ||
+        payload.commandSequence !== run.commandSequence ||
         !Number.isSafeInteger(payload.goalRevision) || payload.goalRevision < goal.taskBoundaryRevision ||
         payload.goalRevision > goal.revision) continue;
     const routineObserved = payload.authoritativeReadOnlyRoutine === true && payload.authoritativeRoutineObserved === true &&
@@ -6708,7 +6738,8 @@ function checkpointedCommandEvidence(state, existing, context = {}) {
         (payload.projectTest.mutationRevision !== run.mutationRevision ||
         !(Array.isArray(state.meta?.projectVerification?.testRuns) ? state.meta.projectVerification.testRuns : []).some(test =>
           test?.passed === true && test.ok === true && test.command === run.command && test.at === run.at &&
-          test.mutationRevision === run.mutationRevision && test.privateMutationRevision === run.privateMutationRevision))) continue;
+          test.mutationRevision === run.mutationRevision && test.privateMutationRevision === run.privateMutationRevision &&
+          test.commandSequence === payload.projectTest.commandSequence))) continue;
     let continuous = true;
     for (let revision = payload.goalRevision + 1; revision <= goal.revision; revision++) {
       const entries = history.filter(entry => entry?.revision === revision);
@@ -6800,7 +6831,9 @@ export function buildScsEvidenceLedger({ state = {}, context = {}, contract = {}
   const checkpointEvidence = checkpointedCommandEvidence(state, [...eventEvidence, ...messageEvidence], context);
   const items = [...eventEvidence, ...messageEvidence, ...checkpointEvidence]
     .slice(-80)
-    .map((item) => revalidateArtifactEvidence(item, state, context, contract));
+    .map((item) => revalidateArtifactEvidence(item, state, context, contract))
+    .map(item => item.category === "test" && !item.diagnosticOnly && !testCommandSequenceIsCurrent(item, state.meta?.projectVerification || {})
+      ? { ...item, verified: false, freshnessReason: "later-potential-command-mutation" } : item);
   const verifiedItems = items.filter((item) => item?.verified !== false);
   const durableGitEvidence = (
     Array.isArray(state.meta?.durableGitEvidence) ? state.meta.durableGitEvidence : []
