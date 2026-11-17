@@ -468,7 +468,9 @@ function containsTextToolProtocol(content) {
 export function createRestrictedDeepSeekProvider(options) {
   const fields = dataFields(options, ["complete", "model"]);
   const complete = callback(fields.complete);
-  if (!["deepseek-flash", "deepseek-v4-pro"].includes(fields.model)) fail();
+  // Keep an explicitly selected supported legacy literal exact on the wire.
+  // This is not alias discovery, version pinning or permission to fall back.
+  if (!["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"].includes(fields.model)) fail();
   return createNativeStructuredProvider({
     model: fields.model, supportsImages: false,
     async complete(body, options) {

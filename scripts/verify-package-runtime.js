@@ -98,6 +98,7 @@ try {
     "test/public-page-connection.test.js", "test/make-intent-evidence.test.js", "test/research-source-address.test.js",
     "test/restricted-native-history.test.js", "test/restricted-proposal-review.test.js", "test/restricted-source-revocation.test.js",
     "test/restricted-deepseek-http.test.js",
+    "test/restricted-flash-alias.test.js",
     "test/restricted-callback-result.test.js",
     "test/restricted-json-byte-budget.test.js",
     "test/empty-file-intent.test.js",
@@ -122,10 +123,10 @@ try {
   // the required cohort is actually present before spawning its test runner.
   for (const name of consumerFiles) assert.ok((await fs.lstat(path.join(installed, name))).isFile(), `Required packaged test is absent: ${name}`);
   const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, ...consumerFiles], installed, consumerTimeoutMs);
-  // Baseline3269 +9 delete-preimage +3 native durability cases. Keep the verifier's
+  // Baseline3281 +8 explicit Flash compatibility cases. Keep the verifier's
   // own fixture count in sync; a zero test-runner exit is insufficient.
-  assert.match(log, /# tests 3281\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 3281\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 3289\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 3289\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,

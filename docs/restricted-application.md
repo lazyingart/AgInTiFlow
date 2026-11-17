@@ -473,8 +473,15 @@ joining or replacing malformed text.
 ## Explicit DeepSeek text profile
 
 Use `createRestrictedDeepSeekProvider({model,complete})` for an explicitly chosen
-`deepseek-flash` or `deepseek-v4-pro` transport. This is a separate profile, not
-an automatic format downgrade or provider fallback:
+`deepseek-flash`, `deepseek-v4-flash` or `deepseek-v4-pro` transport. This is a
+separate profile, not an automatic format downgrade or provider fallback.
+
+Prefer `deepseek-flash` for new Flash integrations. `deepseek-v4-flash` is a
+legacy compatibility name and is forwarded unchanged only when explicitly
+selected. It does not pin retired model weights or select another model on
+failure. The [provider's current model details](https://api-docs.deepseek.com/quick_start/pricing/)
+describe the service behind each name; local schema, read-only tool, deadline,
+output and credential boundaries are the same for all three accepted names.
 
 ```js
 import OpenAI from "openai";
