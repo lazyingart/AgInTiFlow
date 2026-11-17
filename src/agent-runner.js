@@ -17,7 +17,7 @@ import {
 } from "./model-client.js";
 import { SessionStore } from "./session-store.js";
 import { nativeToolPolicyAllows } from "./progressive-tool-selection.js";
-import { nativeBackgroundToolGuidance, nativeWorkspaceToolGuidance } from "./native-tool-context.js";
+import { nativeBackgroundToolGuidance, nativeWorkspaceToolGuidance, nativeCapabilityPolicyContext } from "./native-tool-context.js";
 import { assessFileChecksumClaims, nativeFileChecksumReceipts } from "./completion-file-checksums.js";
 import { acquireNativeSessionRunLock } from "./session-run-lock.js";
 import { runNativeHostCommand } from "./native-host-command.js";
@@ -119,6 +119,7 @@ import {
   isAlreadyCommittedCleanGitNoop,
   isCleanGitStatusAfterCurrentCommit,
   requestedWorkspaceProgramRecovery,
+  scopedDiscoveryCorrection,
 } from "./permission-advice.js";
 import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
 import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
@@ -439,6 +440,7 @@ function buildScsRuntimeContext(config = {}, state = {}, extra = {}) {
     goal: state.goal || config.goal || "",
     commandCwd: config.commandCwd || projectRoot,
     readOnlyRoots: Array.isArray(config.readOnlyRoots) ? [...config.readOnlyRoots] : [],
+    nativePolicyContext: nativeCapabilityPolicyContext(config),
     selectedSkills: selectedSkills.map((skill) => ({
       id: skill.id,
       label: skill.label,
@@ -25050,6 +25052,20 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
       });
 
   if (!guard.allowed) {
+    const discoveryCorrection = guard.code === "WORKSPACE_PATH_SCOPE_DENIED" && guard.scopeAccess === "read"
+      ? scopedDiscoveryCorrection({ toolName, args, guard, config, state,
+          contract: completionTaskContract(config, state), goal: completionContractGoal(config, state) })
+      : null;
+    if (discoveryCorrection) {
+      state.meta.nativeScopedDiscoveryCorrection = discoveryCorrection.receipt;
+      const result = { ok: false, blocked: true, recoverable: true, needsApproval: false,
+        toolName, args: safeArgs, reason: guard.reason, category: guard.category, code: guard.code, scopeAccess: guard.scopeAccess,
+        permissionAdvice: discoveryCorrection.advice };
+      await store.appendEvent("workspace.discovery_correction", discoveryCorrection.receipt);
+      await store.appendEvent("tool.blocked", result);
+      observers.event("tool.blocked", result);
+      return result;
+    }
     const programRecovery = requestedWorkspaceProgramRecovery({ toolName, args, guard, config, state });
     if (programRecovery) {
       state.meta.requestedProgramPolicyRecovery = { goalRevision: state.meta.goalContract.revision };

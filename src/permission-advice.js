@@ -1,6 +1,11 @@
 import { redactSensitiveText } from "./redaction.js";
 import { tokenizeShellWords } from "./shell-syntax.js";
 import { firstJsonObject } from "./json-extraction.js";
+import crypto from "node:crypto";
+import path from "node:path";
+import { types } from "node:util";
+import { checkWorkspaceToolUse, normalizeWorkspaceInputPath } from "./workspace-tools.js";
+import { workspacePathScopePlan } from "./workspace-path-policy.js";
 
 const NETWORK_FAILURE_PATTERNS = [
   /could not resolve host/i,
@@ -17,6 +22,83 @@ const NETWORK_FAILURE_PATTERNS = [
 
 const LOCALHOST_TARGET_PATTERN = /\b(127\.0\.0\.1|localhost|::1)\b/i;
 const READ_ONLY_FILE_TOOLS = new Set(["inspect_project", "list_files", "read_file", "search_files", "read_image"]);
+
+// This grants only one next model turn, never access to the denied directory.
+// The normal batch fence skips every remaining call before that turn. Inputs
+// are the runtime's own guard/contract/state, not provider-authored claims.
+export function scopedDiscoveryCorrection({ toolName, args = {}, guard = {}, config = {}, state = {}, contract = {}, goal = "" } = {}) {
+  if ([args, guard, config, state, contract].some(value => types.isProxy(value))) return null;
+  if (!["list_files", "inspect_project", "search_files"].includes(toolName) ||
+      guard.allowed !== false || guard.code !== "WORKSPACE_PATH_SCOPE_DENIED" || guard.scopeAccess !== "read" ||
+      config.allowFileTools !== true || typeof goal !== "string" || !goal || goal.length > 16000 || !goal.isWellFormed()) return null;
+  const metaDescriptor = Object.getOwnPropertyDescriptor(state, "meta");
+  if (!metaDescriptor?.enumerable || !Object.hasOwn(metaDescriptor, "value")) return null;
+  const meta = metaDescriptor.value;
+  if (!meta || types.isProxy(meta) || ![Object.prototype, null].includes(Object.getPrototypeOf(meta))) return null;
+  const goalDescriptor = Object.getOwnPropertyDescriptor(meta, "goalContract");
+  if (!goalDescriptor?.enumerable || !Object.hasOwn(goalDescriptor, "value")) return null;
+  const goalContract = goalDescriptor.value;
+  if (!goalContract || types.isProxy(goalContract) || ![Object.prototype, null].includes(Object.getPrototypeOf(goalContract))) return null;
+  const revisionDescriptor = Object.getOwnPropertyDescriptor(goalContract, "revision");
+  if (!revisionDescriptor?.enumerable || !Object.hasOwn(revisionDescriptor, "value")) return null;
+  const revision = revisionDescriptor.value;
+  if (!Number.isSafeInteger(revision) || revision < 1) return null;
+  const previous = Object.getOwnPropertyDescriptor(meta, "nativeScopedDiscoveryCorrection");
+  if (previous) {
+    if (!previous.enumerable || !Object.hasOwn(previous, "value")) return null;
+    const value = previous.value;
+    if (!value || types.isProxy(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
+    if (keys.length !== 4 || !["schemaVersion", "goalRevision", "policyDigest", "attempts"].every(key =>
+      descriptors[key]?.enumerable && Object.hasOwn(descriptors[key], "value"))) return null;
+    if (descriptors.schemaVersion.value !== "aginti-native-discovery-correction-v1" || descriptors.attempts.value !== 1 ||
+        !Number.isSafeInteger(descriptors.goalRevision.value) || descriptors.goalRevision.value < 1 ||
+        typeof descriptors.policyDigest.value !== "string" || !/^[0-9a-f]{64}$/u.test(descriptors.policyDigest.value) ||
+        descriptors.goalRevision.value >= revision) return null;
+  }
+  const outputs = contract.exactOutputPaths;
+  if (contract.requiresFileMutation !== true || contract.requiresSourceGrounding === true ||
+      !Array.isArray(outputs) || outputs.length < 1 || outputs.length > 16 ||
+      !outputs.every(value => typeof value === "string" && value && value.isWellFormed()) ||
+      !Array.isArray(contract.requiredEvidence) || !contract.requiredEvidence.length ||
+      !contract.requiredEvidence.every(value => value?.category === "file")) return null;
+  for (const name of ["exactInputPaths", "requiredInputReadPaths", "declaredSourceRoots", "requiredToolCalls", "requiredGitActions", "requiredProjectCommands"]) {
+    if (!Array.isArray(contract[name]) || contract[name].length) return null;
+  }
+  // Conservative source-request control. Literal output names are data. A
+  // mixed inspection task is not converted into a simpler artifact task.
+  let intent = goal;
+  for (const output of outputs) intent = intent.split(output).join(" ".repeat(output.length));
+  if (/\b(?:read|inspect|list|search|browse|explore|scan|inventory|enumerate|audit)\b|读取|讀取|列出|检索|檢索|浏览|瀏覽|読み取|一覧|参照|調べ/iu.test(intent) ||
+      /(?:^|[.!?;\n]|\b(?:then|also|and|first)\b)\s*(?:(?:please|kindly)\s+)?(?:review|show|display|describe|report|summari[sz]e)\s+(?:(?:the|this|my|our|current)\s+)?(?:workspace|repo(?:sitory)?|project|directory|folder|root|files?)\b/iu.test(intent)) return null;
+  const rootValue = config.commandCwd || config.baseDir;
+  if (typeof rootValue !== "string" || !rootValue || typeof (args.path ?? ".") !== "string") return null;
+  const root = path.resolve(rootValue), denied = path.resolve(root, normalizeWorkspaceInputPath(args.path || "."));
+  const within = (parent, target) => {
+    const relative = path.relative(parent, target);
+    return relative === "" || relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
+  };
+  if (!within(root, denied)) return null;
+  let read, write;
+  try {
+    read = workspacePathScopePlan(config, root); write = workspacePathScopePlan(config, root, { writeAccess: true });
+    if (!read.restricted || !read.roots.length || !write.roots.length || read.roots.some(value => within(value, denied))) return null;
+    if (!outputs.every(output => checkWorkspaceToolUse("write_file", { path: output, content: "", mode: "create" }, config).allowed)) return null;
+  } catch { return null; }
+  if (!outputs.some(output => { const target = path.resolve(root, normalizeWorkspaceInputPath(output)); return target !== denied && within(denied, target); })) return null;
+  const relative = roots => roots.map(value => path.relative(root, value).split(path.sep).join("/") || ".");
+  const display = redactSensitiveText(JSON.stringify({ readRoots: relative(read.roots), writeRoots: relative(write.roots), outputs }));
+  if (display.length > 4096) return null;
+  const policyDigest = crypto.createHash("sha256").update(JSON.stringify({ root, read: read.roots, write: write.roots, goal })).digest("hex");
+  return {
+    receipt: Object.freeze({ schemaVersion: "aginti-native-discovery-correction-v1", goalRevision: revision, policyDigest, attempts: 1 }),
+    advice: {
+      category: "workspace-scope-correction", autoRecover: true,
+      summary: "The unnecessary ancestor-directory probe was denied. The original named-output task remains inside the admitted file scopes.",
+      instruction: `That read was NOT executed. The rest of this tool batch is skipped. Do not repeat the blocked probe, request broader permissions, or use shell/read-root/other-tool variants. Choose the exact task path or an admitted parent under the unchanged policy: ${display}. Complete every part of the original task and preserve its verification gates. If excluded inspection is actually required, stop with that limitation; do not invent its contents. Only one correction turn is allowed for this request.`,
+    },
+  };
+}
 
 // This selects a recovery explanation, never permission to execute the denied
 // text. The independently requested workspace program still uses every normal
@@ -735,6 +817,18 @@ export function buildPermissionAdvice({ toolName = "", args = {}, guard = {}, co
     return guard.permissionAdvice;
   }
   const guardReason = String(reason || guard.reason || "");
+  if (guard.code === "WORKSPACE_PATH_SCOPE_DENIED" && ["read", "write"].includes(guard.scopeAccess)) {
+    return {
+      category: "workspace-scope",
+      reason: compactLine(guardReason),
+      currentMode: currentMode(config),
+      blockedOperation: toolName,
+      autoRecover: false,
+      summary: "The path is outside the configured workspace file scopes. This operation was not executed.",
+      instruction: "Keep operations inside the admitted scopes. Extra --read-root, shell or destructive approval cannot expand these structured-file scopes. Do not use another tool to bypass them. If the task actually requires excluded data, the host must explicitly review and update its validated scope configuration.",
+      options: ["Use an already admitted path when that satisfies the original task.", "Ask the host to review required access when the requested data is excluded."],
+    };
+  }
   if (
     toolName === "run_command" &&
     /^(?:cd|mkdir) target must be a safe workspace-relative directory:/i.test(guardReason)

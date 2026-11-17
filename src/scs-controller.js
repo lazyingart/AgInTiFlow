@@ -401,10 +401,12 @@ function formatRoutinePlanningContext(context = {}) {
         .join("; ");
     })
     .filter(Boolean);
-  if (!readOnlyRoots.length && !skillLines.length && !context.skillContext) return "";
+  const nativePolicy = typeof context.nativePolicyContext === "string" ? context.nativePolicyContext : "";
+  if (!readOnlyRoots.length && !skillLines.length && !context.skillContext && !nativePolicy) return "";
   return [
     "Runtime routine context:",
-    context.commandCwd ? `- Writable workspace: ${compact(context.commandCwd, 260)}` : "",
+    nativePolicy.length <= 12000 ? nativePolicy : "- Native policy display exceeds its limit; do not infer additional tools or path access.",
+    context.commandCwd ? `- Workspace base (not blanket read/write authority): ${compact(context.commandCwd, 260)}` : "",
     readOnlyRoots.length ? `- Active explicit read-only roots: ${readOnlyRoots.join(", ")}` : "",
     readOnlyRoots.length
       ? "- These roots are already active structured-read scopes. Use inspect_project/list_files/read_file/search_files with an exact root or child path. `--read-root` is a launcher option, not an in-task shell flag."
@@ -1298,6 +1300,7 @@ async function createScsPhase(client, config, state, context = {}, options = {})
       readOnlyRoots: normalizeStringList(context.readOnlyRoots, []),
       selectedSkills: Array.isArray(context.selectedSkills) ? context.selectedSkills : [],
       skillContext: context.skillContext || "",
+      nativePolicyContext: typeof context.nativePolicyContext === "string" ? context.nativePolicyContext : "",
     },
     allowedTools: committee.allowedTools,
     stopConditions: committee.stopConditions,

@@ -487,7 +487,7 @@ function normalizeSoftLineWraps(goal = "") {
 // same path still remains an output. Filenames containing verbs are not actions.
 function withoutFilePathMentions(text = "") {
   return String(text).replace(
-    /["'`][^"'`\n]+\.[a-z0-9]{1,8}["'`]|[\w./~\-\u4e00-\u9fff]+\.[a-z0-9]{1,8}\b/gi,
+    /["'`][^"'`\n]+\.[a-z0-9]{1,8}["'`]|[\p{L}\p{M}\p{N}_./~\-]+\.[a-z0-9]{1,8}\b/giu,
     match => " ".repeat(match.length)
   );
 }
@@ -523,22 +523,116 @@ function outputIntentClauseAt(text, index) {
   return { start, quoted: syntax.quotes.some(range => range.start < index && range.end > index) };
 }
 
+function withoutExplanatoryLiteralData(goal = "") {
+  const source = String(goal || ""), ranges = outputIntentSyntax(source).quotes;
+  let text = source;
+  for (const range of [...ranges].reverse()) {
+    const prefix = source.slice(Math.max(0, range.start - 180), range.start);
+    if (!/\b(?:explain|describe|translate|quote|paraphrase|summari[sz]e)\s+(?:(?:the|this|following|supplied)\s+)*(?:sentence|phrase|text|quotation|example|instruction)\s*[:：]?\s*$|(?:解释|解釋|翻译|翻譯|引用)(?:这句|這句|该句|該句|句子|短语|短語|例句)\s*[:：]?\s*$/iu.test(prefix)) continue;
+    text = text.slice(0, range.start) + source.slice(range.start, range.end).replace(/[^\r\n]/g, " ") + text.slice(range.end);
+  }
+  return text;
+}
+
+// Same-length intent projection only. The user's original goal/content remains
+// in history and semantic constraints. Describing a workflow inside a named
+// text artifact is not authority to execute that workflow.
+function textArtifactExecutionView(goal = "") {
+  const source = withoutExplanatoryLiteralData(goal);
+  if (source.length > 16384 || !source.isWellFormed()) return source;
+  const syntax = outputIntentSyntax(source), spans = [];
+  const quoted = index => syntax.quotes.some(range => range.start < index && range.end > index);
+  const topics = /\b(?:covering|about|describing|explaining)\s+|(?:内容|內容)(?:涵盖|涵蓋|包括|包含|为|為|是)\s*|(?:内容|本文)(?:には|は|に)\s*/giu;
+  for (const match of source.matchAll(topics)) {
+    if (quoted(match.index)) continue;
+    const paragraph = source.lastIndexOf("\n\n", match.index);
+    const offset = Math.max(paragraph < 0 ? 0 : paragraph + 2, match.index - 512, 0);
+    const prefix = source.slice(offset, match.index), actionPrefix = withoutFilePathMentions(prefix);
+    const owner = [...actionPrefix.matchAll(/\b(?:create|write|save|make|generate)\b|创建|建立|写入|寫入|生成|保存|作成|書いて/giu)]
+      .some(action => !quoted(offset + action.index));
+    if (!owner || !/["'`][^"'`\r\n]{1,220}\.(?:md|txt)["'`]|[\p{L}\p{M}\p{N}_./~\-]+\.(?:md|txt)\b/iu.test(prefix)) continue;
+    if (/^(?:covering|about)\b/iu.test(match[0]) && !/\b(?:checklist|guide|note|summary|report|document(?:ation)?|tutorial|article|outline|readme)\b/iu.test(prefix)) continue;
+    const start = match.index + match[0].length;
+    let end = syntax.boundaries.find(index => index >= start) ?? source.length;
+    const body = source.slice(start, end), howTo = /^(?:how\s+to|how\s+(?:we|you|one)\s+(?:can|should|could))\b/iu.test(body);
+    const independent = /\b(?:then|also|but|next|finally|afterwards|and\s+(?:then|also|actually|now|please))\s+(?:please\s+)?(?:run|execute|read|inspect|check|verify|validate|search|browse|open|create|write|build|test|compile|install|publish|deploy|commit|push|delete|remove)\b|(?:然后|然後|接着|接著|并且|並且)(?:实际|實際|请|請)?(?:运行|運行|执行|執行|读取|讀取|检查|檢查|验证|驗證|创建|建立|生成|发布|發布|安装|安裝)|(?:その後|次に|それから)/giu;
+    for (const next of body.matchAll(independent)) if (!quoted(start + next.index)) { end = Math.min(end, start + next.index); break; }
+    if (!howTo) {
+      const additions = /\band\s+(?:run|execute|read|inspect|check|verify|validate|search|browse|open|create|write|build|test|compile|install|publish|deploy|commit|push|delete|remove)\b/giu;
+      for (const next of body.matchAll(additions)) {
+        const rest = body.slice(next.index + next[0].length).trim();
+        if (!rest || /^[,，]/u.test(rest) || quoted(start + next.index)) continue;
+        end = Math.min(end, start + next.index); break;
+      }
+    }
+    if (end > start) spans.push({ start, end });
+  }
+  let text = source;
+  for (const span of spans.reverse()) text = text.slice(0, span.start) + source.slice(span.start, span.end).replace(/[^\r\n]/g, " ") + text.slice(span.end);
+  return text;
+}
+
 // Preservation is not an artifact-format catalog. A literal file may be source
 // code, a dotfile or an extensionless name. Parse only bounded explicit lists;
 // prose, URLs, globs and command strings do not become file authority.
-const PRESERVATION_FILE_TOKEN = "(?:「[^「」\\r\\n]{1,220}」|『[^『』\\r\\n]{1,220}』|[\"'\\x60][^\"'\\x60\\r\\n]{1,220}[\"'\\x60]|[\\w./~\\-\\u4e00-\\u9fff]{0,219}[\\w~\\-\\u4e00-\\u9fff](?![\\w/~\\-\\u4e00-\\u9fff]|\\.(?!\\s|$)))";
+// Preserve spelling/code points, including combining marks. These are lexical
+// references, never permission to traverse outside the actual workspace guard.
+const PRESERVATION_QUOTED_FILE_TOKEN = "(?:「[^「」\\r\\n]{1,220}」|『[^『』\\r\\n]{1,220}』|[\"'\\x60][^\"'\\x60\\r\\n]{1,220}[\"'\\x60])";
+const PRESERVATION_BARE_FILE_TOKEN = "[\\p{L}\\p{M}\\p{N}_./~\\-]{0,219}[\\p{L}\\p{M}\\p{N}_~\\-]";
+const PRESERVATION_FILE_TOKEN = "(?:" + PRESERVATION_QUOTED_FILE_TOKEN + "|" + PRESERVATION_BARE_FILE_TOKEN + "(?![\\p{L}\\p{M}\\p{N}_/~\\-]|\\.(?!\\s|$)))";
 const PRESERVATION_FILE_MEMBER_PREFIX = "(?:(?:the|my|our)\\s+)?(?:(?:existing|original|current|source|input|raw|supplied)\\s+){0,3}(?:files?\\s+)?";
 const PRESERVATION_FILE_MEMBER = PRESERVATION_FILE_MEMBER_PREFIX + PRESERVATION_FILE_TOKEN;
-const PRESERVATION_FILE_LIST = PRESERVATION_FILE_MEMBER + "(?:\\s*(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+|[、，]|和|及び|および|と|及|与|與|或)\\s*" + PRESERVATION_FILE_MEMBER + "){0,15}";
+const PRESERVATION_FILE_SEPARATOR = "\\s*(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+|[、，]|和|及び|および|と|及|与|與|或)\\s*";
+const PRESERVATION_FILE_LIST = PRESERVATION_FILE_MEMBER + "(?:" + PRESERVATION_FILE_SEPARATOR + PRESERVATION_FILE_MEMBER + "){0,15}";
+// Here the complete Japanese imperative supplies the right boundary. A kana
+// particle may abut the path; the general token must still forbid partial names.
+const JAPANESE_BARE_FILE_TOKEN = "(?:(?!(?:は|を|に|だけ)(?:そのまま|変更|編集|更新|上書き|書き換え|削除|移動|リネーム|新規|作成|生成|保存|出力|要約|読|参照)|(?:及び|および|和|と|及|与|與|或)(?=[\"'\\x60「『]))[\\p{L}\\p{M}\\p{N}_./~\\-]){1,220}";
+const JAPANESE_FILE_MEMBER = PRESERVATION_FILE_MEMBER_PREFIX + "(?:" + PRESERVATION_QUOTED_FILE_TOKEN + "|" + JAPANESE_BARE_FILE_TOKEN + ")";
+const JAPANESE_FILE_LIST = JAPANESE_FILE_MEMBER + "(?:" + PRESERVATION_FILE_SEPARATOR + JAPANESE_FILE_MEMBER + "){0,15}";
 const EXPLICIT_OUTPUT_FILE_LIST_HEADER =
   /^(?:#+\s*)?(?:(?:required|final|expected|declared|target|pilot|deliverable)\s+)*(?:create|created files?|files? to create|outputs?|output structure|required outputs?|artifacts?|deliverables?|generated files?|writer requirements|renderer requirements|生成文件|输出结构|輸出結構|输出文件|輸出文件|创建文件|建立文件)(?:\s+(?:outputs?|artifacts?|deliverables?))?\s*[：:]?\s*$/i;
 
 function preservationFileReferences(body = "") {
   const source = String(body || "").trim();
-  if (!new RegExp("^" + PRESERVATION_FILE_LIST + "$", "i").test(source)) return [];
-  const references = [];
-  for (const match of source.matchAll(new RegExp(PRESERVATION_FILE_MEMBER_PREFIX + "(" + PRESERVATION_FILE_TOKEN + ")", "gi"))) {
-    const literal = match[1];
+  if (!source || source.length > 8192) return [];
+  const references = [], prefix = new RegExp("^" + PRESERVATION_FILE_MEMBER_PREFIX, "iu");
+  const separator = new RegExp("^" + PRESERVATION_FILE_SEPARATOR, "iu");
+  const token = new RegExp("^" + PRESERVATION_FILE_TOKEN + "$", "iu");
+  const completeName = value => /(?:^|\/)(?:[^/]*\.[\p{L}\p{M}\p{N}_-]+|[A-Z][A-Z0-9_-]*)$/u.test(value);
+  const nextName = value => {
+    const rest = value.replace(prefix, "");
+    return /^["'\x60「『]/u.test(rest) || completeName(rest.match(/^[\p{L}\p{M}\p{N}_./~\-]+/u)?.[0] || "");
+  };
+  let offset = 0, members = 0;
+  while (offset < source.length) {
+    if (++members > 16) return [];
+    offset += source.slice(offset).match(prefix)[0].length;
+    const index = offset, tail = source.slice(offset);
+    let literal;
+    if (/^["'\x60「『]/u.test(tail)) {
+      const closer = ({ "「": "」", "『": "』" })[tail[0]] || tail[0], end = tail.indexOf(closer, 1);
+      if (end < 0 || end > 221) return [];
+      literal = tail.slice(0, end + 1);
+    } else {
+      const cluster = tail.match(/^[\p{L}\p{M}\p{N}_./~\-]+/u)?.[0];
+      if (!cluster) return [];
+      let end = cluster.length;
+      // A conjunction between complete unquoted file names is list syntax.
+      // Keep kana within a basename (週次と月次.md); quotes preserve an entire
+      // literal that intentionally contains an otherwise ambiguous list.
+      for (const join of cluster.matchAll(/及び|および|和|と|及|与|與|或/gu)) {
+        if (completeName(cluster.slice(0, join.index)) && nextName(tail.slice(join.index + join[0].length))) { end = join.index; break; }
+      }
+      literal = tail.slice(0, end);
+    }
+    if (!token.test(literal)) return [];
+    offset += literal.length;
+    if (offset < source.length) {
+      const join = source.slice(offset).match(separator);
+      if (!join?.[0]) return [];
+      offset += join[0].length;
+      if (offset === source.length) return [];
+    }
     const quoted = /^["'\x60「『]/.test(literal);
     if (quoted && literal.at(-1) !== ({ "「": "」", "『": "』" }[literal[0]] || literal[0])) continue;
     const candidate = quoted ? literal.slice(1, -1) : literal.replace(/\.+$/, "");
@@ -552,7 +646,7 @@ function preservationFileReferences(body = "") {
       if (!/[./]/.test(candidate) && !/^[A-Z][A-Za-z0-9_-]*$/.test(candidate)) continue;
       if (!/[./]/.test(candidate) && /^(?:the|my|our|a|an|and|or|it|them|this|that|these|those|all|everything|anything|files?|inputs?|outputs?|sources?|tests?|code|data|contents?)$/i.test(candidate)) continue;
     }
-    references.push({ path: candidate, index: match.index + match[0].length - literal.length, length: literal.length });
+    references.push({ path: candidate, index, length: literal.length });
   }
   return references;
 }
@@ -589,7 +683,7 @@ function japaneseFileIntentClauses(goal = "") {
   }
   if (quote) ranges.push([start, source.length]);
   const starts = "(?:^|[。!?！？;；\\n,，、]|\\s+)(?:(?:その後|そして|ただし)\\s*)?(?:元の\\s*)?";
-  const nextTarget = "\\s+" + PRESERVATION_FILE_TOKEN + "\\s*(?:は|を|に|だけ)";
+  const nextTarget = "\\s+" + JAPANESE_FILE_MEMBER + "\\s*(?:は|を|に|だけ)";
   const end = "(?=\\s*(?:$|[。!?！？;；\\n,，、]|その後|そして|ただし)|" + nextTarget + ")";
   const request = "(?:してください|して(?:ください)?|する|し|してから)?";
   const entries = [
@@ -601,7 +695,9 @@ function japaneseFileIntentClauses(goal = "") {
   ];
   const clauses = [];
   for (const [kind, action] of entries) {
-    const pattern = new RegExp(starts + "(" + PRESERVATION_FILE_LIST + ")\\s*" + action + end, "g");
+    // Atomic lookahead capture: a malformed ending must not backtrack over
+    // exponentially many ways of partitioning unspaced Unicode conjunctions.
+    const pattern = new RegExp(starts + "((?=(" + JAPANESE_FILE_LIST + "))\\2)\\s*" + action + end, "gu");
     for (const match of source.matchAll(pattern)) {
       const index = match.index + match[0].indexOf(match[1]);
       if (ranges.some(([from, to]) => index > from && index < to) || !preservationFileReferences(match[1]).length) continue;
@@ -626,9 +722,9 @@ function filePreservationClauses(goal = "", { includeUnnamedIntent = false } = {
     .map(({ kind, ...clause }) => ({ ...clause, directProhibition: true }));
   const patterns = [
     /\b(?:keep(?:ing)?|leav(?:e|ing)|preserv(?:e|ing)|retain(?:ing)?)\s+([^;；。!?！？]{1,400}?)\s+(?:unchanged|unmodified|untouched|intact|as[- ]is|as (?:it is|they are)|read[- ]only)\b/gi,
-    new RegExp("(?:^|[\\n;；。!?！？,，]|\\.\\s+)\\s*(?:(?:and|then|but|please|kindly)\\s+){0,2}(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?)?leav(?:e|ing)\\s+(" + PRESERVATION_FILE_LIST + ")\\s+alone\\b", "gi"),
+    new RegExp("(?:^|[\\n;；。!?！？,，]|\\.\\s+)\\s*(?:(?:and|then|but|please|kindly)\\s+){0,2}(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?)?leav(?:e|ing)\\s+(" + PRESERVATION_FILE_LIST + ")\\s+alone\\b", "giu"),
     /(?:保持|保留|維持|维持)\s*([^;；。!?！？]{1,400}?)\s*(?:不变|不變|原样|原樣|不修改)/g,
-    new RegExp("(" + PRESERVATION_FILE_TOKEN + ")\\s+(?:must\\s+)?(?:remain|stay)\\s+(?:unchanged|unmodified|untouched|intact|read[- ]only)\\b", "gi"),
+    new RegExp("(" + PRESERVATION_FILE_TOKEN + ")\\s+(?:must\\s+)?(?:remain|stay)\\s+(?:unchanged|unmodified|untouched|intact|read[- ]only)\\b", "giu"),
   ];
   for (const pattern of patterns) for (const match of source.matchAll(pattern)) {
     if (outputIntentClauseAt(source, match.index).quoted) continue;
@@ -649,8 +745,8 @@ function filePreservationClauses(goal = "", { includeUnnamedIntent = false } = {
   // restriction on only part of a file is not a whole-file preservation clause.
   const clauseEnd = "(?=\\s*(?:$|[.;!?。！？；\\n,，]|\\b(?:and|but|then|instead)\\b))";
   const prohibitedPaths = [
-    new RegExp("\\b(?:(?:do|must|should)\\s+not|don't|dont|never)\\s+(?:modify|edit|change|overwrite|rewrite|replace|delete|remove|rename|touch)\\s+(" + PRESERVATION_FILE_LIST + ")" + clauseEnd, "gi"),
-    new RegExp("(?:不要|请勿|請勿|不得|禁止|别|別)\\s*(?:改动|改動|修改|更改|编辑|編輯|覆盖|覆蓋|重写|重寫|删除|刪除|移除|重命名|改)\\s*(" + PRESERVATION_FILE_LIST + ")" + clauseEnd, "gi"),
+    new RegExp("\\b(?:(?:do|must|should)\\s+not|don't|dont|never)\\s+(?:modify|edit|change|overwrite|rewrite|replace|delete|remove|rename|touch)\\s+(" + PRESERVATION_FILE_LIST + ")" + clauseEnd, "giu"),
+    new RegExp("(?:不要|请勿|請勿|不得|禁止|别|別)\\s*(?:改动|改動|修改|更改|编辑|編輯|覆盖|覆蓋|重写|重寫|删除|刪除|移除|重命名|改)\\s*(" + PRESERVATION_FILE_LIST + ")" + clauseEnd, "giu"),
   ];
   for (const pattern of prohibitedPaths) for (const match of source.matchAll(pattern)) {
     if (!preservationFileReferences(match[1]).length) continue;
@@ -710,12 +806,12 @@ function namedCopyIntent(goal = "") {
   const files = "(" + PRESERVATION_FILE_LIST + ")";
   const end = "(?=\\s*(?:$|[.,;!?。！？；，\\n]|\\b(?:and|then|but|without|leave|keep|again)\\b))";
   const patterns = [
-    [new RegExp("\\b(?:copy|duplicate|back\\s+up|backup)\\s+(?:from\\s+)?" + file + "\\s+(?:to|as|into)\\s+" + files + end, "gi"), false],
-    [new RegExp("\\b(?:make|create)\\s+(?:(?:a|an|the|new|exact|byte-identical)\\s+){0,3}(?:copy|backup)\\s+of\\s+" + file + "\\s+(?:to|as|into)\\s+" + files + end, "gi"), false],
-    [new RegExp("\\b(?:create|write|save)\\s+" + file + "\\s+with\\s+(?:the\\s+)?(?:exact|identical|unchanged)\\s+(?:contents?|bytes)\\s+of\\s+" + file + end, "gi"), true],
-    [new RegExp("(?:复制|複製)\\s*" + file + "\\s*(?:到|为|為|成)\\s*" + file + end, "g"), false],
-    [new RegExp("(?:把|将|將)\\s*" + file + "\\s*(?:原样|原樣)?(?:复制|複製)(?:到|为|為|成)\\s*" + file + end, "g"), false],
-    [new RegExp(file + "\\s*を\\s*" + file + "\\s*にコピー(?:してください|する|して)?[。]?", "g"), false],
+    [new RegExp("\\b(?:copy|duplicate|back\\s+up|backup)\\s+(?:from\\s+)?" + file + "\\s+(?:to|as|into)\\s+" + files + end, "giu"), false],
+    [new RegExp("\\b(?:make|create)\\s+(?:(?:a|an|the|new|exact|byte-identical)\\s+){0,3}(?:copy|backup)\\s+of\\s+" + file + "\\s+(?:to|as|into)\\s+" + files + end, "giu"), false],
+    [new RegExp("\\b(?:create|write|save)\\s+" + file + "\\s+with\\s+(?:the\\s+)?(?:exact|identical|unchanged)\\s+(?:contents?|bytes)\\s+of\\s+" + file + end, "giu"), true],
+    [new RegExp("(?:复制|複製)\\s*" + file + "\\s*(?:到|为|為|成)\\s*" + file + end, "gu"), false],
+    [new RegExp("(?:把|将|將)\\s*" + file + "\\s*(?:原样|原樣)?(?:复制|複製)(?:到|为|為|成)\\s*" + file + end, "gu"), false],
+    [new RegExp(file + "\\s*を\\s*" + file + "\\s*にコピー(?:してください|する|して)?[。]?", "gu"), false],
   ];
   for (const [pattern, reverse] of patterns) for (const match of source.matchAll(pattern)) {
     const clause = outputIntentClauseAt(source, match.index);
@@ -766,8 +862,8 @@ function normalizeFileCreationIntent(goal = "", transformSources = null) {
   // bounded, affirmative request with actual source and destination filenames;
   // command literals, examples, negation and unnamed prose keep their meaning.
   const extension = /\.(?:md|txt|json|jsonl|ndjson|ya?ml|html?|css|js|ts|tsx|jsx|mjs|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx|xlsx|pptx)$/i;
-  const target = new RegExp("^(?:(?:a|an|the|one|two|three|four)\\s+)?(?:(?:short|brief|concise|new|simple|small|standalone|downloadable|self-contained|markdown|text|json|csv|list|table)\\s+){0,4}(?:files?\\s+)?(" + PRESERVATION_FILE_TOKEN + ")", "i");
-  source = source.replace(new RegExp("\\b(?:turn|convert|transform|tidy|clean)\\s+(" + PRESERVATION_FILE_LIST + ")\\s+(?:into|to)\\s+", "gi"), (match, files, index) => {
+  const target = new RegExp("^(?:(?:a|an|the|one|two|three|four)\\s+)?(?:(?:short|brief|concise|new|simple|small|standalone|downloadable|self-contained|markdown|text|json|csv|list|table)\\s+){0,4}(?:files?\\s+)?(" + PRESERVATION_FILE_TOKEN + ")", "iu");
+  source = source.replace(new RegExp("\\b(?:turn|convert|transform|tidy|clean)\\s+(" + PRESERVATION_FILE_LIST + ")\\s+(?:into|to)\\s+", "giu"), (match, files, index) => {
     const references = preservationFileReferences(files);
     if (!references.length || references.some(item => !extension.test(item.path))) return match;
     const prefix = source.slice(source.lastIndexOf("\n", index - 1) + 1, index);
@@ -797,7 +893,7 @@ function normalizeFileCreationIntent(goal = "", transformSources = null) {
   // normalization to a named file or explicit file/artifact noun; "make sure",
   // chat summaries and explicit/quoted command invocations keep their meaning.
   return source.replace(
-    /\b(?:make|add)(?=\s+(?:(?:me|us)\s+)?(?:(?:a|an|the|one|two|three|four)\s+)?(?:(?:short|brief|concise|new|simple|small|standalone|downloadable|self-contained|empty|blank|zero[- ]byte)\s+){0,4}(?:["'`]?[\w./~\-\u4e00-\u9fff]+\.(?:md|txt|json|csv|ya?ml|tex|pdf|docx|xlsx|pptx|svg|png|jpe?g|webp)\b|(?:files?|artifacts?|markdown\s+files?|text\s+files?)\b))/gi,
+    /\b(?:make|add)(?=\s+(?:(?:me|us)\s+)?(?:(?:a|an|the|one|two|three|four)\s+)?(?:(?:short|brief|concise|new|simple|small|standalone|downloadable|self-contained|empty|blank|zero[- ]byte)\s+){0,4}(?:["'`]?[\p{L}\p{M}\p{N}_./~\-]+\.(?:md|txt|json|csv|ya?ml|tex|pdf|docx|xlsx|pptx|svg|png|jpe?g|webp)\b|(?:files?|artifacts?|markdown\s+files?|text\s+files?)\b))/giu,
     (match, index) => {
       const prefix = source.slice(Math.max(source.lastIndexOf("\n", index - 1) + 1, 0), index);
       if ((prefix.match(/`/g) || []).length % 2 || /\b(?:run|rerun|execute|invoke|launch|use)\s+(?:(?:the|this)\s+)?(?:command\s+)?["']?\s*$/i.test(prefix)) return match;
@@ -912,17 +1008,18 @@ export function isReferenceOnlyDocumentRequest(goal = "", sourcePath = "") {
 }
 
 function inferExactOutputPaths(goal = "") {
-  const paths = japaneseFileIntentClauses(goal).filter(clause => ["create", "update"].includes(clause.kind))
+  const outputGoal = textArtifactExecutionView(goal);
+  const paths = japaneseFileIntentClauses(outputGoal).filter(clause => ["create", "update"].includes(clause.kind))
     .flatMap(clause => preservationFileReferences(clause.body).map(reference => reference.path));
-  const source = withoutFilePreservationClauses(normalizeFileCreationIntent(goal));
+  const source = withoutFilePreservationClauses(normalizeFileCreationIntent(outputGoal));
   const lines = outputIntentLines(source);
   const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|mjs|cjs|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,220}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
   const pathPattern = new RegExp(
-    '(?:^|[\\s：:,，、])((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,220}\\.(?:' +
+    '(?:^|[\\s：:,，、])((?:~|\\.{1,2}|/|[\\p{L}\\p{N}_\\-])[\\p{L}\\p{M}\\p{N}_./~\\-]{0,220}\\.(?:' +
       extensionPattern +
       '))(?=$|[\\s"\'`,，、。；;.!?！？])',
-    "gi"
+    "giu"
   );
   const directOutputAction =
     /\b(?:sav(?:e|es|ing)|writ(?:e|es|ing)|rewrit(?:e|es|ing)|output(?:s|ting)?|creat(?:e|es|ing)|rebuild(?:s|ing)?|replac(?:e|es|ing)|regenerat(?:e|es|ing)|generat(?:e|es|ing)|stor(?:e|es|ing)|updat(?:e|es|ing)|modif(?:y|ies|ying)|edit(?:s|ing)?)\b|保存|写入|寫入|重写|重寫|输出|輸出|创建|建立|重建|替换|替換|重新生成|生成|更新|修改|编辑|編輯/i;
@@ -1383,10 +1480,10 @@ export function inferExplicitlyExcludedOutputPaths(goal = "") {
   }
   if (!source.trim()) return uniquePathList(japaneseExcluded, 24);
   const pathPattern = new RegExp(
-    '((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,260}\\.(?:' +
+    '((?:~|\\.{1,2}|/|[\\p{L}\\p{N}_\\-])[\\p{L}\\p{M}\\p{N}_./~\\-]{0,260}\\.(?:' +
       extensionPattern +
       '))',
-    "gi"
+    "giu"
   );
   const negativeActionBefore =
     /\b(?:do\s+not|don't|dont|must\s+not|should\s+not|never)\b[^.!?。！？;；\n]{0,180}\b(?:run|rerun|re-run|execut(?:e|ed|ing)|creat(?:e|ed|ing)|recreat(?:e|ed|ing)|writ(?:e|ten|ing)|generat(?:e|ed|ing)|sav(?:e|ed|ing)|output|touch|modif(?:y|ied|ying)|edit(?:ed|ing)?|stage|commit)(?:\b|\s)/i;
@@ -1474,10 +1571,10 @@ function inferExactInputPaths(goal = "", declaredPreservedPaths = [], { preserva
   const extensionPattern = "md|txt|json|jsonl|ndjson|ya?ml|html|css|mjs|cjs|js|ts|tsx|jsx|py|sh|csv|tex|svg|png|jpe?g|webp|mp4|mov|pdf|docx";
   const quotedPathPattern = new RegExp("[\"'`]([^\"'`\\n]{1,260}\\.(?:" + extensionPattern + "))[\"'`]", "gi");
   const pathPattern = new RegExp(
-    '(?:^|[\\s：:,，、])((?:~|\\.{1,2}|/|[A-Za-z0-9_\\-\\u4e00-\\u9fff])[\\w./~\\-\\u4e00-\\u9fff]{0,260}\\.(?:' +
+    '(?:^|[\\s：:,，、])((?:~|\\.{1,2}|/|[\\p{L}\\p{N}_\\-])[\\p{L}\\p{M}\\p{N}_./~\\-]{0,260}\\.(?:' +
       extensionPattern +
       '))(?=$|[\\s"\'`,，、。；;.!?！？])',
-    "gi"
+    "giu"
   );
   const inputAction =
     /\b(?:use|using|based\s+on|according\s+to|as\s+per|read|load|fill|upload|attach|import|select|choose|reference|input|from|retain(?:ed|ing)?|fix|repair|patch|correct)\b|按(?:照)?|根据|根據|依据|依據|使用|读取|讀取|加载|載入|填写|填入|上传|上傳|附加|导入|導入|选择|選擇|选取|選取|参考|參考|素材|图片|圖片|照片|提示词|提示詞|保留|修复|修正|更正|从|從/i;
@@ -1559,7 +1656,7 @@ function explicitlyCreatedPreservationPaths(goal = "") {
   const action = "(?:create|write|generate|save|output|rebuild|regenerate)\\b\\s+|(?:创建|建立|生成|写入|寫入|保存|输出|輸出|重建|重新生成)\\s*";
   const qualifiers = "(?:(?:a|an|the|one|two|new|short|small|brief|concise|standalone|empty|simple|text|markdown|json|csv|code|source)\\s+|(?:一份|一个|一個|新的|简短|簡短)\\s*){0,4}";
   const after = "(?=\\s*(?:(?:files?\\s*)?(?:$|[.;!?。！？；\\n,，])|\\b(?:from|using|based|with|containing|about|for|as|in|under|to|and|then|but)\\b|从|從|使用|包含))";
-  const pattern = new RegExp(starts + request + from + "(?:" + action + ")" + qualifiers + "(" + PRESERVATION_FILE_LIST + ")" + after, "gi");
+  const pattern = new RegExp(starts + request + from + "(?:" + action + ")" + qualifiers + "(" + PRESERVATION_FILE_LIST + ")" + after, "giu");
   const paths = japaneseFileIntentClauses(source).filter(clause => clause.kind === "create")
     .flatMap(clause => preservationFileReferences(clause.body).map(reference => reference.path));
   for (const match of source.matchAll(pattern)) {
@@ -2071,7 +2168,7 @@ function stripAdvisoryMutationNarration(goal = "") {
     /\b(?:explain|describe|outline|suggest|recommend|propose|discuss|review|inspect|check|verify)\s+(?:(?:a|an|the|one|some|any|existing|current|proposed|possible|potential|minimal|smallest|recommended|necessary|appropriate|safe|code)\s+)*(?:fix(?:es|ing)?|repair(?:s|ing)?|patch(?:es|ing)?|changes?|modifications?|updates?)\b/gi,
     ""
   ).replace(
-    /\b(?:explain|describe|outline|discuss)\s+(?:how\s+to|how\s+(?:we|i|you|one)\s+(?:could|can|should|would)|whether\s+to)\s+(?:fix|repair|patch|change|modify|update|rewrite|refactor)\b/gi,
+    /\b(?:explain|describe|outline|discuss)\s+(?:how\s+to|how\s+(?:we|i|you|one)\s+(?:could|can|should|would)|whether\s+to)\s+(?:fix|repair|patch|change|modify|update|rewrite|refactor|create|write|save|generate)\b/gi,
     ""
   ).replace(
     /(?:解释|解釋|说明|說明|描述|建议|建議|推荐|推薦|讨论|討論|概述)(?:(?:一下|一个|一個|最小|最少|建议的|建議的|可行的|可能的|必要的)\s*)*(?:修复|修復|修改|更新|重构|重構)(?:方案|建议|建議|思路|意见|意見)/g,
@@ -2086,11 +2183,12 @@ function goalRequestsWorkspaceMutation(goal = "", taskProfile = "") {
   const text = normalizedText(
     stripAdvisoryMutationNarration(
       stripHostManagedResponseNarration(
-        stripCompletedWorkNarration(stripForbiddenLanguage(normalizeFileCreationIntent(goal)))
+        stripCompletedWorkNarration(stripForbiddenLanguage(normalizeFileCreationIntent(withoutExplanatoryLiteralData(goal))))
       )
     )
   );
   const explicitAddMutation =
+    japaneseFileIntentClauses(goal).some(clause => ["create", "update"].includes(clause.kind)) ||
     goalRequestsExplicitTestMutation(text) ||
     /\badd\b(?:\s+(?:a|an|the|new|additional|specific))*\s+(?:code|documents?|files?|notes?|readme|scripts?|source|workspace)\b/.test(
       text
@@ -2608,8 +2706,9 @@ function noFileChangeDirectives(text = "") {
 }
 
 function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCriteria = []) {
-  const positiveGoal = stripForbiddenLanguage(normalizeFileCreationIntent(goal));
-  const text = normalizedText(positiveGoal);
+  const positiveGoal = stripForbiddenLanguage(normalizeFileCreationIntent(withoutExplanatoryLiteralData(goal)));
+  const executionGoal = textArtifactExecutionView(positiveGoal);
+  const text = normalizedText(executionGoal);
   const artifactSignalText = artifactSignalsWithoutDraftMentions(text)
     .replace(
       /\b(?:clean(?:\s+up)?|remove|delete|clear|purge)\b[^.\n;]{0,120}\b(?:(?:disposable|generated|temporary|stale|test|build)\s+){0,4}(?:debris|caches?|byproducts?|outputs?|artifacts?|files?|directories?|folders?)\b/gi,
@@ -2636,19 +2735,19 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   }
   const directCommandSignal =
     textHas(
-      text,
+      normalizedText(withoutFilePathMentions(executionGoal)),
       /\b(run|command|lint|typecheck|build|compile|install|npm|node|python|pytest|xelatex|latexmk|ffmpeg)\b|\btest(?:ing)?\s+(?:the|this|that|it|app|site|code|function|workflow|script|build)\b/
-    ) || hasMakeCommandSignal(positiveGoal) || inferExplicitRequestedCommands(positiveGoal).length > 0 ||
-    /运行|测试|编译|安装|実際に実行|実行してください|テストしてください/.test(text);
+    ) || hasMakeCommandSignal(executionGoal) || inferExplicitRequestedCommands(executionGoal).length > 0 ||
+    /运行|测试|编译|安装|実際に実行|実行してください|テストしてください/.test(withoutFilePathMentions(executionGoal));
   const validationSignal = textHas(text, /\b(check|verify|validate)\b/) || /检查|验证/.test(text);
   // A generic "verify outputs" reminder on a simple document/file request is
   // satisfied by the file + semantic evidence checks below. Requiring a shell
   // command as well makes permission-resumed writes repeat an already-successful
   // create. Substantive code validation still requires command evidence.
-  if (!explanatoryOnly && (directCommandSignal || (validationSignal && codeProfileRequiresCommand(positiveGoal)))) {
+  if (!explanatoryOnly && (directCommandSignal || (validationSignal && codeProfileRequiresCommand(executionGoal)))) {
     categories.add("command");
   }
-  if (goalRequestsTestExecution(positiveGoal) || (goalRequiresSuccessfulCheck(positiveGoal) && /\b(?:tests?|checks?|suite)\b|测试|測試|检查|檢查|テスト|検証|検査|チェック/iu.test(positiveGoal))) {
+  if (goalRequestsTestExecution(executionGoal) || (goalRequiresSuccessfulCheck(executionGoal) && /\b(?:tests?|checks?|suite)\b|测试|測試|检查|檢查|テスト|検証|検査|チェック/iu.test(executionGoal))) {
     categories.add("test");
   }
   if (
@@ -2685,7 +2784,7 @@ function inferRequirementCategories(goal = "", taskProfile = "", acceptanceCrite
   ) {
     categories.add("visual");
   }
-  const explicitPublishAction = goalRequestsPublishAction(positiveGoal);
+  const explicitPublishAction = goalRequestsPublishAction(executionGoal);
   if (explicitPublishAction) {
     categories.add("publish");
   }
@@ -3904,18 +4003,25 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   // A bounded question about an already observed result is an answer request,
   // not permission to execute the old task again. Keep prohibitions/outcome,
   // but do not turn historical nouns into fresh file/command obligations.
-  const evidenceGoal = isHistoricalDiagnosticQuestion(originalEvidenceGoal) && isReadOnlyDiagnosticGoal(originalEvidenceGoal, taskProfile)
-    ? "" : inlineTextDeliveryEvidenceGoal(originalEvidenceGoal);
+  const instructionGoal = withoutExplanatoryLiteralData(inlineTextDeliveryEvidenceGoal(originalEvidenceGoal));
+  const inlineArtifactMethod = /\b(?:explain|describe|outline|discuss)\s+how\s+to\s+(?:create|write|save|generate)\b/iu.test(instructionGoal) &&
+    /\bhere\s+(?:in\s+)?chat\b|\bno\s+files?\s*(?:[.!?]|$)|\bno\s+(?:file|workspace)\s+(?:changes|writes)\b/iu.test(instructionGoal) &&
+    !/[\/\\]|\b(?:read|inspect|search|research|browse|open|source|repository|workspace)\b/iu.test(instructionGoal) &&
+    !hasPositiveExecutionRequest(instructionGoal) &&
+    !/(?:^|[.!?;,\n]|\b(?:and|then|also)\b)\s*(?:(?:please|actually|now)\s+)*(?:create|write|save|generate|modify|edit|fix|repair|delete|remove|copy|move)\b/iu.test(instructionGoal);
+  const evidenceGoal = inlineArtifactMethod || (isHistoricalDiagnosticQuestion(originalEvidenceGoal) && isReadOnlyDiagnosticGoal(originalEvidenceGoal, taskProfile))
+    ? "" : instructionGoal;
+  const executionGoal = textArtifactExecutionView(evidenceGoal);
   const copies = namedCopyIntent(evidenceGoal);
   const positiveEvidenceGoal = stripForbiddenLanguage(normalizeFileCreationIntent(evidenceGoal));
   const authoritativeRoutine = inferAuthoritativeReadOnlyRoutine(goal);
   const artifactRoot = scopedArtifactRoot(goal);
   const packetContract = scopedTaskPacketContract(goal);
   const requirementCategories = inferRequirementCategories(evidenceGoal, taskProfile, acceptanceCriteria);
-  const requiredToolCalls = inferRequiredToolCalls(evidenceGoal);
-  const advisoryInvocation = deriveAdvisoryInvocationContract(evidenceGoal);
+  const requiredToolCalls = inferRequiredToolCalls(executionGoal);
+  const advisoryInvocation = deriveAdvisoryInvocationContract(executionGoal);
   if (advisoryInvocation?.required && !requiredToolCalls.includes("delegate_agent")) requiredToolCalls.push("delegate_agent");
-  const requiredGitActions = inferRequiredGitActions(evidenceGoal);
+  const requiredGitActions = inferRequiredGitActions(executionGoal);
   if (requiredGitActions.length && !requirementCategories.includes("git")) {
     requirementCategories.push("git");
   }
@@ -3952,7 +4058,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     .filter((item) => !inferredOutputPaths.includes(item) && !exactOutputPaths.includes(item));
   const requiredInputReadPaths = mandatoryInputReadPaths(evidenceGoal, explicitInputReadPaths);
   const declaredSourceRoots = inferDeclaredSourceRoots(evidenceGoal);
-  let artifactGoal = evidenceGoal;
+  let artifactGoal = executionGoal;
   for (const span of [...copies.spans].sort((a, b) => b.start - a.start)) artifactGoal = artifactGoal.slice(0, span.start) + " ".repeat(span.end - span.start) + artifactGoal.slice(span.end);
   const emptyOutputs = emptyOutputIntent(artifactGoal, exactOutputPaths);
   let requiredArtifactKinds = inferRequestedArtifactRequirements(
@@ -3986,7 +4092,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
   );
   return {
     version: 1,
-    outputRoleInferenceVersion: 1,
+    outputRoleInferenceVersion: 2,
     inputInstructionRoleVersion: 1,
     commandIntentInferenceVersion: 1,
     outcome: compact(originalEvidenceGoal || "Complete the requested task.", 500),
@@ -4020,7 +4126,7 @@ export function deriveScsTaskContract({ goal = "", taskProfile = "", acceptanceC
     requiredToolCalls,
     requiredGitActions,
     requiredProjectCommands: unique([
-      ...inferExplicitRequestedCommands(positiveEvidenceGoal),
+      ...inferExplicitRequestedCommands(stripForbiddenLanguage(normalizeFileCreationIntent(executionGoal))),
       ...(authoritativeRoutine?.primaryCommand ? [authoritativeRoutine.primaryCommand] : []),
     ]).slice(0, 8),
     authoritativeRoutine,

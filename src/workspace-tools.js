@@ -342,7 +342,10 @@ export function resolveWorkspacePath(
   }
 
   if (scope.restricted && !scopedRoots.some((scopeRoot) => isInside(scopeRoot, absolutePath))) {
-    throw new Error(`Path is outside the active task artifact scope: ${rawPath}`);
+    const error = new Error(`Path is outside the active task artifact scope: ${rawPath}`);
+    error.code = "WORKSPACE_PATH_SCOPE_DENIED";
+    error.scopeAccess = writeAccess ? "write" : "read";
+    throw error;
   }
 
   if (!isInside(root, absolutePath)) {
@@ -649,6 +652,9 @@ export function checkWorkspaceToolUse(toolName, args, config) {
       allowed: false,
       reason,
       category: patchFormatFailure ? "workspace-patch" : "workspace-path",
+      ...(error?.code === "WORKSPACE_PATH_SCOPE_DENIED"
+        ? { code: error.code, scopeAccess: error.scopeAccess }
+        : {}),
       ...(patchFormatFailure
         ? {
             recoverable: true,
