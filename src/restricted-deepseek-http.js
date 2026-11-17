@@ -60,7 +60,7 @@ function unambiguousResponseHeaders(response) {
 export function createDeepSeekHttpTransport(options, issueFailure) {
   const fields = dataFields(options, ["apiKey", "model", "userId", "timeoutMs", "maxConcurrency"], ["apiKey", "model", "userId"]);
   if (typeof fields.apiKey !== "string" || !/^[\x21-\x7e]{16,512}$/.test(fields.apiKey)) fail();
-  if (!["deepseek-flash", "deepseek-v4-pro"].includes(fields.model)) fail();
+  if (!["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"].includes(fields.model)) fail();
   if (typeof fields.userId !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(fields.userId)) fail();
   if (fields.userId.includes(fields.apiKey)) fail();
   const timeoutMs = integer(Object.hasOwn(fields, "timeoutMs") ? fields.timeoutMs : 30_000, 100, 60_000);

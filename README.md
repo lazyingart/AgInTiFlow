@@ -198,8 +198,8 @@ also have ambiguous raw JSON rejected by the host transport.
 `createRestrictedDeepSeekProvider({model,complete})` is the explicit
 non-thinking DeepSeek wire profile. Supply it to the same bounded runner.
 
-Exact factory options are `model,complete`. It accepts only `deepseek-flash`
-or `deepseek-v4-pro`, returns `supportsImages:false`, requests `json_object`
+Exact factory options are `model,complete`. It accepts only `deepseek-flash`,
+`deepseek-v4-flash` or `deepseek-v4-pro`, returns `supportsImages:false`, requests `json_object`
 with `thinking:{type:"disabled"}`, and includes the exact final schema in the
 system instruction. Local runner/schema validation remains mandatory. This is
 an explicit profile, not an automatic downgrade from the JSON-schema adapter.
@@ -207,6 +207,9 @@ It imports no provider SDK and starts no HTTP request. `hostTransport` is the
 application's authenticated, fixed-endpoint, no-redirect, no-retry transport.
 Its authentication, response byte limits and actual abort behavior require
 the application's own qualification.
+
+Prefer `deepseek-flash`. Explicit legacy `deepseek-v4-flash` is unchanged on
+wire, not a weight pin or fallback.
 
 Native calls may carry English/Chinese/Japanese commentary. Competing DSML,
 XML, requested-tool or JSON/YAML tool markers reject before reads. Malformed
