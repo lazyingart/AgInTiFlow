@@ -31675,14 +31675,18 @@ async function runAgentOnceUnlocked(config) {
       const currentEmpty = currentContract.exactEmptyOutputPaths || [];
       const previousCopies = state.meta.scs.taskContract?.exactCopyRequirements || [];
       const currentCopies = currentContract.exactCopyRequirements || [];
-      if (((previousEmpty.length || currentEmpty.length) && JSON.stringify(previousEmpty) !== JSON.stringify(currentEmpty)) ||
+      const staleOutputRoles = Boolean(state.meta.scs.taskContract &&
+        state.meta.scs.taskContract.outputRoleInferenceVersion !== currentContract.outputRoleInferenceVersion);
+      if (staleOutputRoles || ((previousEmpty.length || currentEmpty.length) && JSON.stringify(previousEmpty) !== JSON.stringify(currentEmpty)) ||
           ((previousCopies.length || currentCopies.length) && (JSON.stringify(previousCopies) !== JSON.stringify(currentCopies) ||
             JSON.stringify(state.meta.scs.taskContract?.exactInputPaths || []) !== JSON.stringify(currentContract.exactInputPaths || [])))) {
         // Rebase the presentation of this content constraint once. An older
-        // cached document-format plan must not demand filler or a side artifact.
+        // cached document-format/output-role plan must not demand filler,
+        // preservation inputs or a side artifact. Derive from the saved user
+        // task and grounded project instructions, never the model's old plan.
         state.meta.scs.taskContract = currentContract;
         state.meta.scs.supervisorInstructionInjected = false;
-        await store.appendEvent(currentCopies.length || previousCopies.length ? "scs.copy_contract_refreshed" : "scs.empty_output_contract_refreshed", { paths: currentEmpty, copies: currentCopies });
+        await store.appendEvent(staleOutputRoles ? "scs.output_role_contract_refreshed" : currentCopies.length || previousCopies.length ? "scs.copy_contract_refreshed" : "scs.empty_output_contract_refreshed", { paths: currentEmpty, copies: currentCopies });
         await store.saveState(state);
       }
     }
