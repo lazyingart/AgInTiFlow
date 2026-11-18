@@ -59,4 +59,6 @@ Run the process in the application's isolated environment with a private working
 
 Supply the scope on each proposal turn, including a resumed turn. A subsequent execution turn can use tools allowed by the saved session policy. Bind each session to the authenticated account in the application before resuming it.
 
+The standalone CLI preference applies to new interactive sessions. For machine calls, select the provider in the host. To pin a model, pass `--routing manual` together with `--provider` and `--model`. A provider override on `resume` becomes the session's saved provider. If a user chooses OpenAI for just one turn, pass the application's usual provider and model explicitly on the next turn. Keeping both API keys available gives the host a choice of providers.
+
 File creation, command execution and research that needs fresh sources require an execution turn with appropriate tools and evidence. For an embedded schema-checked loop with application-owned read callbacks, see the [Restricted Application SDK](restricted-application.md).
