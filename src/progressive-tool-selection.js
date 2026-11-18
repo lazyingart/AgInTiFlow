@@ -7,6 +7,7 @@ import {
 import {
   deriveScsTaskContract,
   hasAgintiEvidenceScope,
+  isResponseOnlyEvidenceScope,
   scopedChatopsEvidenceGoal,
 } from "./scs-evidence.js";
 import {
@@ -19,6 +20,7 @@ import {
 } from "./integration-retained-vision-workspace.js";
 
 const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const CURRENT_TASK_TOOL = "read_current_task";
 
 export const DEFAULT_LOCAL_TOOL_LIMIT = 12;
 export const LOCAL_TOOL_HARD_CAP = 16;
@@ -419,7 +421,41 @@ function validatedUniqueTools(tools) {
   return valid;
 }
 
+// nextStepRuntimeConfig owns these phases. Some also narrow the arguments of
+// a mandatory tool. A task read cannot be substituted for that action.
+const CURRENT_TASK_PROTECTED_PHASES = [
+  "savedResultAnswerOnly", "advisoryPrerequisitePending", "verifiedCompletionPending",
+  "completionFreshMutationRequired", "patchContextRefreshRequired", "patchContextRepairRequired",
+  "testFailureRepairActive", "testVerificationPending", "requiredProjectCommandPending",
+  "taskOwnedCommitPending", "generatedArtifactProducerPending", "requestedArtifactRequirementsPending",
+  "artifactValidationPhase", "scopedArtifactTask", "repositoryGroundingRequired",
+  "localFailureRecoveryActive", "convergenceOutputPhase",
+];
+const FIXED_INTEGRATION_FIELDS = [
+  "integrationPolicyLock", "integrationPolicyFingerprint", "integrationRuntimeRootsDigest",
+  "expectedIntegrationRuntimeRevision", "integrationSessionProfile", "integrationAllowedToolNames",
+];
+const FIXED_WORKSPACE_PROFILES = new Set([INTEGRATION_TEXT_WORKSPACE_PROFILE_ID, INTEGRATION_VISION_WORKSPACE_PROFILE_ID]);
+
+function currentTaskPolicyAllows(config) {
+  if (!config || Object.getOwnPropertyDescriptor(config, "currentTaskWindowAvailable")?.value !== true) return false;
+  // Fixed integration runs can have no workspace profile. A partial marker
+  // still identifies a different authority and must fail closed.
+  if (FIXED_INTEGRATION_FIELDS.some(field => field in config) || FIXED_WORKSPACE_PROFILES.has(config.taskProfile)) return false;
+  if (config.toolNamespace !== undefined && config.toolNamespace !== "native") return false;
+  if (config.restrictedApplication || config.responseOnly || config.hostManagedResponseOnly ||
+      config.schemaVersion === "aginti-restricted-application-v1" || isResponseOnlyEvidenceScope(config.goal)) return false;
+  if (config.constrainedRecoveryMode || CURRENT_TASK_PROTECTED_PHASES.some(key => config[key] === true)) return false;
+  const allowlists = [config.allowedToolNames, config.allowedTools, config.toolAllowlist,
+    config.skillPolicy?.allowedTools, config.scs?.allowedTools];
+  if (allowlists.some(list => list !== undefined && !(Array.isArray(list) && list.includes(CURRENT_TASK_TOOL)))) return false;
+  const exclusions = [config.excludedToolNames, config.disabledToolNames];
+  if (exclusions.some(list => list !== undefined && (!Array.isArray(list) || list.includes(CURRENT_TASK_TOOL)))) return false;
+  return !toolIsConvergenceSuppressed(CURRENT_TASK_TOOL, config);
+}
+
 function toolIsDisabled(name, config) {
+  if (name === CURRENT_TASK_TOOL && !currentTaskPolicyAllows(config)) return true;
   if (
     config.integrationSessionProfile === INTEGRATION_TEXT_WORKSPACE_PROFILE_ID &&
     !isIntegrationTextWorkspaceToolAllowed(name)
@@ -2234,7 +2270,7 @@ function serializedChars(tools) {
   return JSON.stringify(tools).length;
 }
 
-function compactToolNames({ config, goal, profile, messages }) {
+function compactToolNames({ config, goal, profile, messages, includeCurrentTask = false }) {
   const explicitBundles = bundlesForProfile(profileId(config, profile));
   const inferred = inferredBundles(taskText(goal, config, messages));
   const explicitProfileTools = profileToolNames(profile);
@@ -2242,26 +2278,19 @@ function compactToolNames({ config, goal, profile, messages }) {
     goal: goal || config.goal || "",
     taskProfile: profileId(config, profile),
   });
+  const contracts = includeCurrentTask
+    ? [taskContract, config.taskContract, config.scs?.taskContract, config.skillPolicy].filter(Boolean)
+    : [taskContract];
   const contractRequiredTools = [];
-  if (
-    (Array.isArray(taskContract.requiredEvidence) &&
-      taskContract.requiredEvidence.some(
-        (item) => String(item?.category || "") === "command"
-      )) ||
-    (Array.isArray(taskContract.requiredProjectCommands) &&
-      taskContract.requiredProjectCommands.length > 0)
-  ) {
-    contractRequiredTools.push("run_command");
-  }
-  if (
-    Array.isArray(taskContract.exactInputPaths) &&
-    taskContract.exactInputPaths.length > 0
-  ) {
-    contractRequiredTools.push("read_file");
-  }
-  for (const name of taskContract.requiredToolCalls || []) {
-    if (COMPACT_ELIGIBLE_TOOL_NAMES.has(String(name || "").trim())) {
-      contractRequiredTools.push(String(name).trim());
+  for (const contract of contracts) {
+    if ((Array.isArray(contract.requiredEvidence) && contract.requiredEvidence.some(item => item?.category === "command")) ||
+        (Array.isArray(contract.requiredProjectCommands) && contract.requiredProjectCommands.length)) {
+      contractRequiredTools.push("run_command");
+    }
+    if (Array.isArray(contract.exactInputPaths) && contract.exactInputPaths.length) contractRequiredTools.push("read_file");
+    for (const item of Array.isArray(contract.requiredToolCalls) ? contract.requiredToolCalls : []) {
+      const name = typeof item === "string" ? item.trim() : "";
+      if (name && (includeCurrentTask || COMPACT_ELIGIBLE_TOOL_NAMES.has(name))) contractRequiredTools.push(name);
     }
   }
   const bundleOrder = [];
@@ -2292,6 +2321,11 @@ function compactToolNames({ config, goal, profile, messages }) {
     for (const name of COMPACT_TOOL_BUNDLES[bundle] || []) append(name);
   }
   for (const name of explicitProfileTools) append(name);
+  if (includeCurrentTask) {
+    // Spend the existing tool/character budgets on obligations and finish
+    // first, then reserve a slot for recall ahead of discretionary tools.
+    return [...new Set([...contractRequiredTools, CURRENT_TASK_TOOL, ...names])];
+  }
   const missingContractTools = [
     ...new Set(contractRequiredTools.filter((name) => !seen.has(name))),
   ];
@@ -2314,6 +2348,8 @@ export function selectProgressiveTools(
 ) {
   const validated = validatedUniqueTools(tools);
   const baselineEnabled = validated.filter(({ name }) => nativeToolPolicyAllows(name, config) &&
+    !(name === CURRENT_TASK_TOOL && (FIXED_WORKSPACE_PROFILES.has(profileId(config, profile)) ||
+      (goal && goal !== config.goal && isResponseOnlyEvidenceScope(goal)))) &&
     !(config.readOnlyDiagnosticIntent === true && ["write_file", "apply_patch"].includes(name)));
   const enabled = baselineEnabled.filter(
     ({ name }) => !toolIsConvergenceSuppressed(name, config)
@@ -2968,7 +3004,8 @@ export function selectProgressiveTools(
   );
   const selected = [];
 
-  for (const name of compactToolNames({ config, goal, profile, messages })) {
+  const orderedNames = compactToolNames({ config, goal, profile, messages, includeCurrentTask: available.has(CURRENT_TASK_TOOL) });
+  for (const name of orderedNames) {
     if (selected.length + 1 >= toolLimit) break;
     const tool = available.get(name);
     if (!tool || tool === finish) continue;

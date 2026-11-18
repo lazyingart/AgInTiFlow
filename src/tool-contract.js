@@ -475,6 +475,12 @@ function normalizeBenignToolCallAnnotations(toolCalls, contract) {
     );
     if (!descriptor || typeof call?.function?.arguments !== "string") return null;
 
+    // Current-task recall validates the original argument keys, including in mixed batches.
+    if (toolName === "read_current_task") {
+      normalizedCalls.push(call);
+      continue;
+    }
+
     let args;
     try {
       args = parseNativeToolArguments(call.function.arguments);

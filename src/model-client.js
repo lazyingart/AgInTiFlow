@@ -1441,6 +1441,22 @@ export async function requestNextStep(client, config, messages) {
     {
       type: "function",
       function: {
+        name: "read_current_task",
+        description: "Read the original user request for this active task. Newer same-task corrections and requirements take precedence. Search or page the redacted text in bounded Unicode code point windows.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", minLength: 1, maxLength: 256, description: "Start at the first literal match at or after offset. At most 256 UTF-8 bytes." },
+            offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0, description: "Zero-based offset in Unicode code points of the redacted task." },
+            limit: { type: "integer", minimum: 1, maximum: 2000, default: 1200, description: "Maximum window length in Unicode code points." },
+          },
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "open_url",
         description:
           "Open a remote absolute http or https URL in the browser. Do not use this for generated local workspace files or localhost preview loops; use open_workspace_file or preview_workspace when available.",

@@ -123,6 +123,8 @@ try {
     "test/model-terminal-quota.test.js",
     "test/safe-chat-completion.test.js", "test/restricted-provider-conformance.test.js",
     "test/native-checkpoint-continuation.test.js",
+    "test/current-task-window.test.js",
+    "test/native-current-task-selection.test.js",
     "test/continuation-edit-intent.test.js",
     "test/artifact-instruction-boundary.test.js",
     "test/named-transform-obligations.test.js",
@@ -133,8 +135,8 @@ try {
   const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, ...consumerFiles], installed, consumerTimeoutMs);
   // Baseline 3781 plus six read-window and 22 saved-result cases. Keep the verifier's
   // own fixture count in sync; a zero test-runner exit is insufficient.
-  assert.match(log, /# tests 3842\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 3842\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 3871\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 3871\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,

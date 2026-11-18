@@ -23,6 +23,14 @@ recreating the session pointer for every event. `state.json` remains an atomic,
 fsynced save boundary. A missing state file is resumably absent; malformed JSON
 raises `SESSION_STATE_CORRUPT` instead of silently looking like a new session.
 
+When a native session resumes a long task, its saved task contract retains the
+original request even if the model context has been compacted. On eligible
+steps the agent can use `read_current_task` to find a literal phrase or page
+through the request by Unicode code point. Each read returns up to 2,000 code
+points of redacted text. A later correction in the conversation takes
+precedence over the original wording. The tool reads only the active session's
+task and follows the current step's tool permissions.
+
 ## Machine Run Input
 
 `aginti run` uses deterministic input precedence: explicit `--stdin` reads

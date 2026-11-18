@@ -16,6 +16,7 @@ import {
 } from "./model-client.js";
 import { SessionStore } from "./session-store.js";
 import { nativeToolPolicyAllows } from "./progressive-tool-selection.js";
+import { currentTaskWindowAvailable, readCurrentTaskWindow } from "./current-task-window.js";
 import { nativeBackgroundToolGuidance, nativeWorkspaceToolGuidance, nativeCapabilityPolicyContext } from "./native-tool-context.js";
 import { assessFileChecksumClaims, nativeFileChecksumReceipts } from "./completion-file-checksums.js";
 import { acquireNativeSessionRunLock } from "./session-run-lock.js";
@@ -4756,6 +4757,51 @@ function createBrowserState() {
     context: null,
     page: null,
   };
+}
+
+function modelSurgicalContext(context) {
+  if (!context) return null;
+  return {
+    fingerprint: compactSingleLine(context.fingerprint, 128),
+    generatedAt: compactSingleLine(context.generatedAt, 64),
+    mapPath: compactSingleLine(context.mapPath, 1024),
+    artifactPath: compactSingleLine(context.artifactPath, 1024),
+    summary: compactMultiline(context.summary, 600),
+    contextPreview: compactMultiline(context.contextPreview, 1400),
+  };
+}
+
+// Older runtimes serialized their full goal cache key in synthetic step
+// messages. Preserve genuine user turns and the durable task contract when
+// preparing that transcript for a new provider request.
+export function projectSavedRuntimeSnapshots(state) {
+  const messages = state.messages;
+  const isCandidate = message => message?.role === "user" && typeof message.content === "string" &&
+    message.content.startsWith("Step ") && message.content.includes('"preparedForGoal":');
+  if (!Array.isArray(messages) || !messages.some(isCandidate)) return messages;
+  const authored = new Set((Array.isArray(state.chat) ? state.chat : [])
+    .filter(message => message?.role === "user").map(message => message.content));
+  const contract = state.meta?.goalContract;
+  for (const text of [state.goal, contract?.taskGoal, contract?.activeGoal, contract?.currentRequest]) {
+    if (typeof text === "string") authored.add(text);
+  }
+  let projected = messages;
+  for (const [index, message] of messages.entries()) {
+    if (!isCandidate(message) || authored.has(message.content)) continue;
+    const header = /^Step \d+\/\d+ \(\d+ steps remain after this one\)\. Latest runtime snapshot:\n/u.exec(message.content);
+    if (!header) continue;
+    let snapshot;
+    try { snapshot = JSON.parse(message.content.slice(header[0].length)); } catch { continue; }
+    const cachedGoal = snapshot?.surgicalContext?.preparedForGoal;
+    if (typeof cachedGoal !== "string" || !cachedGoal ||
+        (!authored.has(cachedGoal) && cachedGoal !== state.meta?.surgicalContext?.preparedForGoal) ||
+        typeof snapshot.browserOpen !== "boolean" || !Array.isArray(snapshot.elements) ||
+        !snapshot.stepBudget || typeof snapshot.stepBudget !== "object") continue;
+    snapshot.surgicalContext = modelSurgicalContext(snapshot.surgicalContext);
+    if (projected === messages) projected = messages.slice();
+    projected[index] = { ...message, content: header[0] + JSON.stringify(snapshot) };
+  }
+  return projected;
 }
 
 function ensureChatState(state) {
@@ -20369,6 +20415,9 @@ function retainedActiveTaskMutationSatisfiesGrounding(config = {}, state = {}) {
 }
 
 export function nextStepRuntimeConfig(config = {}, state = {}) {
+  const phaseTools = state.meta?.scs?.active ? state.meta.scs.allowedTools : undefined;
+  const canReadCurrentTask = (phaseTools === undefined ||
+    (Array.isArray(phaseTools) && phaseTools.includes("read_current_task"))) && currentTaskWindowAvailable(state);
   const activeEdit = state.meta?.activeExecutionContract;
   const artifactEditPaths = Number(activeEdit?.revision) === Number(state.meta?.goalContract?.activeGoalRevision) && activeEdit?.artifactRevisionPaths?.length
     ? retainedArtifactEditPaths(state, state.meta?.goalContract?.currentRequest || "") : [];
@@ -20383,6 +20432,8 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const runtimeConfig = applyLocalContextOutputAdaptation(
     {
       ...applyLocalFailureRecovery(config, state),
+      currentTaskWindowAvailable: canReadCurrentTask,
+      currentTaskWindowRevision: canReadCurrentTask ? state.meta.goalContract.revision : null,
       savedResultAnswerOnly: false,
       readOnlyDiagnosticIntent: artifactEditPaths.length === 0 && hasReadOnlyDiagnosticIntent(
         state.meta?.goalContract?.activeGoal || state.goal || config.goal || "",
@@ -25704,6 +25755,24 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     }
 
     switch (toolName) {
+      case "read_current_task": {
+        const offeredForCurrentRevision = config.currentTaskWindowOffered === true &&
+          config.currentTaskWindowRevision === state.meta?.goalContract?.revision &&
+          nativeToolPolicyAllows(toolName, config);
+        const result = {
+          toolName,
+          ...(offeredForCurrentRevision
+            ? readCurrentTaskWindow(state, args)
+            : { ok: false, reason: "Current task lookup is unavailable for this step." }),
+        };
+        const eventName = result.ok ? "tool.completed" : "tool.failed";
+        // The bounded user text belongs in the model reply. The activity log
+        // needs only the outcome of the read.
+        const activity = { toolName, ok: result.ok };
+        await store.appendEvent(eventName, activity);
+        observers.event(eventName, activity);
+        return result;
+      }
       case "open_url":
         await abortable(browserState.page.goto(String(args.url), { waitUntil: "domcontentloaded" }), config.abortSignal);
         break;
@@ -31693,6 +31762,10 @@ async function runAgentOnceUnlocked(config) {
   await store.ensure();
 
   let state = await store.loadState();
+  if (state) {
+    const messages = projectSavedRuntimeSnapshots(state);
+    if (messages !== state.messages) state = { ...state, messages };
+  }
   const noPriorResult = !state || (state.meta?.goalContract?.status === "paused" &&
     state.meta.goalContract.lifecycle?.at(-1)?.reason === "saved_result_unavailable");
   const previousCommandCwd = state?.meta?.runtimeConfig?.commandCwd || state?.commandCwd;
@@ -32705,7 +32778,9 @@ async function runAgentOnceUnlocked(config) {
           webSearchAvailable: config.allowWebSearch !== false,
           mcpBridgeAvailable: config.allowMcpTools !== false,
           parallelScouts: state.meta.parallelScouts || null,
-          surgicalContext: state.meta.surgicalContext || null,
+          // preparedForGoal is the durable cache key. Sending it here would
+          // reinsert the entire user brief immediately after compaction.
+          surgicalContext: modelSurgicalContext(state.meta.surgicalContext),
           shellSandbox: config.useDockerSandbox ? "docker" : "host",
           sandboxMode: config.sandboxMode,
           packageInstallPolicy: config.packageInstallPolicy,
@@ -33718,6 +33793,7 @@ async function runAgentOnceUnlocked(config) {
       const resultObservers = createToolResultObservers(observers);
       const toolBatchRuntimeConfig = {
         ...stepRuntimeConfig,
+        currentTaskWindowOffered: offeredToolNames.includes("read_current_task"),
         artifactValidationAcceptedAtBatchStart: artifactValidationAcceptanceIsCurrent(state),
       };
       for (let toolIndex = 0; toolIndex < toolCalls.length; toolIndex += 1) {
