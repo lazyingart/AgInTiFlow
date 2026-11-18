@@ -19,6 +19,7 @@ import {
   classifyIntegrationExplicitPythonPrompt,
 } from "./integration-explicit-python.js";
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
+import { publicInferenceJson } from "./integration-inference-json.js";
 import {
   classifyIntegrationDocumentArtifactIntent,
   evaluateIntegrationDocumentArtifactCompletion,
@@ -2627,10 +2628,21 @@ function maximumPendingToolFeedbackTokens(messages, modelConfig, { disableTools 
   );
 }
 
-function publicFinalResult({ text, toolCalls, artifacts, executionStatus }) {
+function publicFinalResult({ text, toolCalls, artifacts, executionStatus, jsonObject = false }) {
+  let output;
+  if (jsonObject) {
+    try {
+      if (Buffer.byteLength(text) > PUBLIC_TEXT_MAX_BYTES) throw new RangeError();
+      output = publicInferenceJson(text, sanitizePublicText);
+    } catch {
+      fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "Inference-only response must contain one unambiguous JSON object.", { status: 502 });
+    }
+  } else {
+    output = sanitizePublicText(text).trim();
+  }
   return Object.freeze({
     schemaVersion: INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
-    text: sanitizePublicText(text).trim(),
+    text: output,
     kind: toolCalls > 0 ? "analysis" : "direct",
     toolCalls,
     executionStatus: toolCalls > 0 ? String(executionStatus || "worker_error") : null,
@@ -3232,7 +3244,7 @@ function createPlanner({
           fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "Inference-only response must be complete text without tool calls.", { status: 502 });
         }
         // Do not interpret a textual code/tool example as an executable call.
-        content = sanitizePublicText(message.content).trim();
+        content = json ? message.content : sanitizePublicText(message.content).trim();
         assertNotAborted(signal);
       } catch (error) {
         throw translateError(error, signal);
@@ -3240,17 +3252,7 @@ function createPlanner({
       if (!content) {
         fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "Inference-only response must contain text and no tool call.", { status: 502 });
       }
-      let text = content;
-      if (json) {
-        try {
-          const value = JSON.parse(text);
-          if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("object required");
-          text = canonicalJson(value);
-        } catch {
-          fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "Inference-only response must contain one valid JSON object.", { status: 502 });
-        }
-      }
-      const result = publicFinalResult({ text, toolCalls: 0, artifacts: [], executionStatus: null });
+      const result = publicFinalResult({ text: content, toolCalls: 0, artifacts: [], executionStatus: null, jsonObject: json });
       await options.onFinal?.(result);
       assertNotAborted(signal);
       return result;

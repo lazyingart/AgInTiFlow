@@ -5,6 +5,7 @@ import path from "node:path";
 import { TextDecoder } from "node:util";
 
 import { sanitizeIntegrationArtifact } from "./integration-artifacts.js";
+import { publicInferenceJson } from "./integration-inference-json.js";
 import {
   classifyIntegrationDocumentArtifactIntent,
   evaluateIntegrationDocumentArtifactCompletion,
@@ -6974,21 +6975,21 @@ function createService(options, { testOnly }) {
     ) {
       fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Analysis runner result fields are inconsistent.", { status: 502 });
     }
-    const text = publicText(result.text, "analysis runner text");
+    let text;
     if (inference !== undefined) {
       if (result.kind !== "direct" || result.toolCalls !== 0 || artifacts.length !== 0 || result.executionStatus !== null) {
         fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Inference-only runs cannot return tool results.", { status: 502 });
       }
       if (inference.responseFormat === "json_object") {
         try {
-          const parsed = JSON.parse(text);
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object required");
-          canonicalJson(parsed);
+          const raw = integrationBoundedText(result.text, "analysis runner text", 32_000);
+          text = publicInferenceJson(raw, value => publicText(value, "analysis runner text"));
         } catch {
           fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Inference-only JSON response is invalid.", { status: 502 });
         }
       }
     }
+    text ??= publicText(result.text, "analysis runner text");
     return Object.freeze({
       schemaVersion: result.schemaVersion,
       text,

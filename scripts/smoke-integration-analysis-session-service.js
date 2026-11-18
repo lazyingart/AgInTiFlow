@@ -2326,6 +2326,8 @@ async function explicitPythonDurabilityRoundTrip(temporaryRoot) {
 async function inferenceOnlyDurabilityRoundTrip(temporaryRoot) {
   const root = path.join(temporaryRoot, "inference-only-state");
   const calls = [];
+  let reply = '{"title":"A Research Task"}';
+  let useFinalCallback = true;
   const runner = { async run(_scope, input, options) {
     calls.push(input);
     if (input.inference) {
@@ -2333,8 +2335,8 @@ async function inferenceOnlyDurabilityRoundTrip(temporaryRoot) {
         await assert.rejects(options[name]({}), error => error.code === "ANALYSIS_RUNNER_PROTOCOL_INVALID");
       }
     }
-    const result = plannerResult({ text: '{"title":"A Research Task"}', toolCalls: 0 });
-    await options.onFinal(result);
+    const result = plannerResult({ text: reply, toolCalls: 0 });
+    if (useFinalCallback) await options.onFinal(result);
     return result;
   } };
   let service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: runner, stateRoot: root, searchEnabled: true });
@@ -2376,6 +2378,26 @@ async function inferenceOnlyDurabilityRoundTrip(temporaryRoot) {
     await service.waitForIdle();
     assert.equal((await service.getRunStatus({ runId: corrected.run.id }, context())).run.status, "completed");
     assert.equal(calls.at(-1).inference, undefined, "new input inherits no stale inference-only policy");
+    const failures = [];
+    for (const callback of [true, false]) {
+      useFinalCallback = callback;
+      reply = '{"drafts":[{"title":"Thursday","tit\\u006ce":"Friday"}]}';
+      const attempt = await service.startRun(payload, context());
+      await service.waitForIdle();
+      failures.push(attempt.run.id);
+    }
+    await service.close({ mode: "wait" });
+    service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: runner, stateRoot: root, searchEnabled: true });
+    for (const runId of failures) {
+      const { run } = await service.getRunStatus({ runId }, context());
+      assert.equal(run.status, "failed");
+      assert.equal(run.error.code, "ANALYSIS_RUNNER_PROTOCOL_INVALID");
+      assert.equal(run.output, "");
+      const replay = await service.loadRunEvents(eventsRequest(runId), context());
+      const events = await replay.publicEventLedger.loadEventsAfter(0);
+      assert.equal(events.filter(event => event.type === "run.failed").length, 1);
+      assert.equal(events.some(event => ["output.delta", "run.completed"].includes(event.type)), false);
+    }
     await service.deleteThread({ threadId: created.thread.id }, context());
   } finally { await service.close({ mode: "wait" }); }
 }

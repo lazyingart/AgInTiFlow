@@ -2573,13 +2573,35 @@ async function explicitInferenceCannotDispatchQuotedTasks() {
       assert.equal(calls, 1, "invalid inference settings reached the model");
     } finally { coordinator.close(); }
   }
-  for (const content of ["[]", "not json", '{"value":1e999}']) {
-    const { planner, coordinator } = fixture(async () => textResponse(content));
+  for (const content of [
+    "[]", "not json", '{"value":1e999}',
+    '{"answer":"周四","answer":"周五"}',
+    '{"answer":"Thursday","answ\\u0065r":"Friday"}',
+    '{"drafts":[{"title":"first","title":"last"}]}',
+    '{"tag":"first","ta\\u200bg":"last"}',
+    '{"answer":"bad\u0000text"}',
+  ]) {
+    let calls = 0;
+    const finals = [];
+    const { planner, coordinator, rpcCalls } = fixture(async () => {
+      calls++;
+      return textResponse(content);
+    });
     try {
-      await assert.rejects(planner.run(scope(), { prompt: "Return JSON", inference: { responseFormat: "json_object" } }),
+      await assert.rejects(planner.run(scope(), { prompt: "Return JSON", inference: { responseFormat: "json_object" } },
+        { onFinal: value => finals.push(value) }),
         e => e.code === "ANALYSIS_MODEL_PROTOCOL_INVALID");
+      assert.equal(calls, 1);
+      assert.deepEqual(finals, []);
+      assert.equal(rpcCalls.some(({ pathname }) => pathname === EXECUTION_WORKER_RPC_PATHS.jobsStart), false);
     } finally { coordinator.close(); }
   }
+  const valid = { drafts: [{ title: "first" }, { title: "last" }], literal: '{"v":1,"v":2}', constructor: "data" };
+  const safe = fixture(async () => textResponse(JSON.stringify(valid)));
+  try {
+    const result = await safe.planner.run(scope(), { prompt: "Return JSON", inference: { responseFormat: "json_object" } });
+    assert.deepEqual(JSON.parse(result.text), valid);
+  } finally { safe.coordinator.close(); }
   const { planner, coordinator, rpcCalls } = fixture(async () => ({ choices: [{ message: {
     content: "", tool_calls: [{ id: "call_denied", type: "function", function: { name: INTEGRATION_ANALYSIS_TOOL_NAME, arguments: "{}" } }],
   } }] }));
