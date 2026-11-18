@@ -184,9 +184,10 @@ Field masking does not mutate callers. This is pattern detection, not universal
 privacy: hosts must exclude credentials, including arbitrary encodings.
 
 `createRestrictedOpenAIProvider({model,supportsImages:false,complete})` opens no
-connection and imports no SDK. Its host `complete(body,{signal})` receives
-explicit model/native tools/strict `json_schema`/`max_tokens`/`stream:false`/
-`temperature:0`. Only one complete call response or final JSON is accepted;
+connection and imports no SDK. Its host `complete(body,{signal})` receives the
+model, native tools, strict `json_schema`, `stream:false` and `temperature:0`.
+The token ceiling uses `max_completion_tokens` for GPT-5 or `max_tokens` for
+other models. Only one complete call response or final JSON is accepted;
 truncated/refused/mixed/malformed output rejects. Apps qualify model compatibility.
 
 Native error fields, duplicate decoded JSON keys, malformed metadata and mixed
