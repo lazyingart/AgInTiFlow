@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { createChatCompletion, createClient } from "./model-client.js";
 import { parseNativeToolArguments as parseModelJson } from "./native-tool-arguments.js";
-import { jsonSnapshot } from "./restricted-application-contract.js";
+import { jsonSchemaSnapshot } from "./restricted-application-contract.js";
 import { checkSpecialistSchema } from "./json-specialist-schema.js";
 import { getProviderDefaults } from "./model-routing.js";
 import { normalizeProviderId, providerStructuredOutputAttempts } from "./provider-contract.js";
@@ -57,7 +57,7 @@ function normalizeSchema(raw) {
     if (Buffer.byteLength(schema) > 65536) throw new Error("JSON specialist schema is too large.");
     schema = parseModelJson(schema);
   }
-  schema = jsonSnapshot(schema, { maxBytes: 65536, maxNodes: 8000 });
+  schema = jsonSchemaSnapshot(schema);
   if (schema?.schema && typeof schema.schema === "object" && !schema.type) {
     name = String(schema.name || "").trim();
     strict = schema.strict !== false;

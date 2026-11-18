@@ -30,7 +30,17 @@ export function dataFields(value, allowed, required = allowed) {
   return result;
 }
 
-export function jsonSnapshot(value, { maxBytes = 256 * 1024, maxNodes = 20_000 } = {}) {
+export function jsonSnapshot(value, limits) {
+  return snapshotData(value, limits, key => ["__proto__", "constructor", "prototype", "toJSON", "then"].includes(key));
+}
+
+// Schema keywords and property names are declarative data. In particular,
+// JSON Schema's "then" must survive. Keep application protocol snapshots strict.
+export function jsonSchemaSnapshot(value) {
+  return snapshotData(value, { maxBytes: 65536, maxNodes: 8000 }, key => key === "__proto__");
+}
+
+function snapshotData(value, { maxBytes = 256 * 1024, maxNodes = 20_000 } = {}, reservedKey) {
   let nodes = 0;
   let bytes = 0;
   const active = new Set();
@@ -64,7 +74,7 @@ export function jsonSnapshot(value, { maxBytes = 256 * 1024, maxNodes = 20_000 }
     let members = 0;
     for (const key of keys) {
       if (array && key === "length") continue;
-      if (typeof key !== "string" || ["__proto__", "constructor", "prototype", "toJSON", "then"].includes(key)) fail("INVALID_DATA");
+      if (typeof key !== "string" || reservedKey(key)) fail("INVALID_DATA");
       if (array && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= item.length)) fail("INVALID_DATA");
       const descriptor = Object.getOwnPropertyDescriptor(item, key);
       if (!descriptor.enumerable || !("value" in descriptor)) fail("INVALID_DATA");

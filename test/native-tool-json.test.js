@@ -5,6 +5,7 @@ import { createToolContract, resolveDispatchableToolCallBatch } from "../src/too
 import { parseNativeToolArguments } from "../src/native-tool-arguments.js";
 import { runJsonSpecialist } from "../src/json-specialist.js";
 import { checkSpecialistSchema } from "../src/json-specialist-schema.js";
+import { jsonSnapshot } from "../src/restricted-application-contract.js";
 
 const specialistSchema = { type: "object", required: ["label"], properties: { label: { type: "string" } } };
 async function schemaTrial(schema, responses, options = {}) {
@@ -92,6 +93,28 @@ test("specialist enforces declared draft 2020-12 constraints before returning ok
     prefixItems: [{ type: "number" }], items: false };
   assert.equal((await schemaTrial(schema, [[1]])).result.ok, true);
   assert.equal((await schemaTrial(schema, [[1, 2]])).result.ok, false);
+});
+
+test("the schema permits conditional then and else while application protocol data stays strict", async () => {
+  const schema = { type: "object", properties: { kind: { type: "string" }, duration: { type: "integer" }, pages: { type: "integer" } },
+    required: ["kind"], if: { properties: { kind: { const: "video" } } }, then: { required: ["duration"] }, else: { required: ["pages"] } };
+  for (const [draft, expected] of [[{ kind: "video", duration: 90 }, true], [{ kind: "video" }, false],
+    [{ kind: "book", pages: 10 }, true], [{ kind: "book", duration: 90 }, false]]) {
+    const result = await schemaTrial(schema, [draft]);
+    assert.equal(result.calls, 1); assert.equal(result.result.ok, expected);
+  }
+  assert.throws(() => jsonSnapshot({ then: "text" }), { code: "INVALID_DATA" });
+});
+
+test("declarative text property names do not invoke functions in a model schema", async () => {
+  const schema = { type: "object", additionalProperties: false,
+    properties: { then: { type: "string" }, toJSON: { type: "string" } }, required: ["then", "toJSON"] };
+  assert.equal((await schemaTrial(schema, [{ then: "later", toJSON: "label" }])).result.ok, true);
+  assert.equal((await schemaTrial(schema, [{ then: 2, toJSON: "label" }])).result.ok, false);
+  let observed = 0;
+  const invalid = Object.defineProperty({}, "then", { enumerable: true, get() { observed++; return {}; } });
+  const outcome = await schemaTrial(invalid, []);
+  assert.equal(observed, 0); assert.equal(outcome.calls, 0); assert.equal(outcome.result.ok, false);
 });
 
 test("bounded specialist validation admits 32 jobs, recovers after cancellation and releases the queue", async () => {
