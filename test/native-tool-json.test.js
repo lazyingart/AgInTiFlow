@@ -53,13 +53,19 @@ for (const responseFormat of ["json_object", "json_schema", "prompt"]) {
   });
   test("specialist envelope follows the negotiated wire format: " + responseFormat, async () => {
     const raw = '{"label":"kept"}';
-    for (const content of ["```json\n" + raw + "\n```", "Result: " + raw + "\nEnd."]) {
+    for (const content of [
+      "```json\n" + raw + "\n```", "Result: " + raw + "\nEnd.",
+      "Draft proposal:\n```json\n" + raw + "\n```\nEnd.",
+    ]) {
       const result = await specialistReply(content, responseFormat);
       assert.equal(result.ok, responseFormat === "prompt");
       if (result.ok) assert.deepEqual(result.result, { label: "kept" });
       else assert.equal(result.result, undefined);
     }
-    for (const content of ["```json\n" + raw + "\n```\n" + raw, raw + " " + raw, "prefix " + raw + " {"]) {
+    for (const content of [
+      "```json\n" + raw + "\n```\n" + raw, raw + " " + raw, "prefix " + raw + " {",
+      "Draft:\n```json\n" + raw + "\n```\nAlternative:\n```json\n" + raw + "\n```\nEnd.",
+    ]) {
       assert.equal((await specialistReply(content, responseFormat)).ok, false);
     }
   });

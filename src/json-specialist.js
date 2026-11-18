@@ -26,13 +26,18 @@ function parseJsonValue(content, attempt) {
   // Prompt-only providers may surround a value with prose or a Markdown fence.
   // Examine a single candidate; never salvage an inner value from a rejected one.
   const text = content.trim();
-  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  let candidate = fence?.[1];
-  if (candidate === undefined) {
+  const firstFence = text.indexOf("```");
+  const lastFence = text.lastIndexOf("```");
+  const delimiters = /[[\]{}]/u;
+  let candidate;
+  if (firstFence >= 0 && lastFence > firstFence &&
+      !delimiters.test(text.slice(0, firstFence)) && !delimiters.test(text.slice(lastFence + 3))) {
+    candidate = text.slice(firstFence + 3, lastFence).replace(/^json\b/i, "").trim();
+  } else {
     const start = text.search(/[[\]{}]/u);
     const end = Math.max(text.lastIndexOf("]"), text.lastIndexOf("}"));
     if (start < 0 || end <= start || !["{", "["].includes(text[start]) ||
-        text.includes("```") || /[[{]/u.test(text.slice(end + 1))) return invalid;
+        text.slice(0, start).includes("```") || /[[{]|```/u.test(text.slice(end + 1))) return invalid;
     candidate = text.slice(start, end + 1);
   }
   try {
