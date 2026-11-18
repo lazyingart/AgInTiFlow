@@ -5,7 +5,6 @@ import net from "node:net";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { chromium } from "playwright";
 import { isTerminalModelQuotaError } from "./model-http-client.js";
 import {
   createClient,
@@ -7579,6 +7578,7 @@ async function ensureBrowser(browserState, config, store, state, observers) {
   if (browserState.page) return browserState;
 
   observers.log("browser.starting", { headless: config.headless });
+  const { chromium } = await import("playwright");
   browserState.browser = await chromium.launch({ headless: config.headless });
   browserState.context = await browserState.browser.newContext({
     viewport: { width: 1440, height: 900 },

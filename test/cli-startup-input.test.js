@@ -22,7 +22,9 @@ for (const mode of ["stale-cas", "queued-prompts", "empty-eof"]) test(`non-TTY i
   const env = { PATH: process.env.PATH, LANG: "C.UTF-8", HOME: root, AGINTIFLOW_HOME: root + "/home",
     AGINTIFLOW_NO_WEB_AUTO_START: "1", AGINTIFLOW_NO_AUTO_UPDATE: "1", AGINTIFLOW_NO_AUTH_PROMPT: "1", AGINTI_LANGUAGE: "en" };
   function start(args, extra = {}) {
-    const child = spawn(process.execPath, args, { cwd: root, env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--experimental-loader", fixture("cli-no-browser-loader.js"), ...args], {
+      cwd: root, env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"],
+    });
     let stdout = "", stderr = "", expired = false, gateResolve;
     const gate = new Promise(resolve => gateResolve = resolve);
     const entry = { child, closed: null }; children.add(entry);
@@ -37,6 +39,13 @@ for (const mode of ["stale-cas", "queued-prompts", "empty-eof"]) test(`non-TTY i
     const awaitingGate = Promise.race([gate, entry.closed.then(result => { throw Error("CLI closed before history gate: " + JSON.stringify(result)); })]);
     awaitingGate.catch(() => {});
     return { child, closed: entry.closed, gate: awaitingGate };
+  }
+  if (mode === "empty-eof") {
+    const help = start([rootPath + "bin/aginti-cli.js", "--help"]);
+    help.child.stdin.end();
+    const result = await help.closed;
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Usage: /);
   }
   const seed = start([fixture("cli-startup-seed.js"), root]);
   seed.child.stdin.end();

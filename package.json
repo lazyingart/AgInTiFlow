@@ -195,6 +195,7 @@
     "test/cli-run-resume-runtime.test.js",
     "test/fixtures/cli-run-resume-provider.js",
     "test/fixtures/cli-startup-history-gate.js",
+    "test/fixtures/cli-no-browser-loader.js",
     "test/fixtures/cli-startup-seed.js",
     "test/file-checksum.test.js",
     "test/workspace-patch-line-endings.test.js",
