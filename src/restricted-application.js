@@ -353,12 +353,14 @@ export function createRestrictedOpenAIProvider(options) {
   return createNativeStructuredProvider(options);
 }
 
-function createNativeStructuredProvider(options, finalizeNativeOutput = false) {
+function createNativeStructuredProvider(options, provider = "openai") {
   const fields = dataFields(options, ["complete", "model", "supportsImages"]);
   const complete = callback(fields.complete);
   const model = text(fields.model, 160);
   assertNoCredentials(model);
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model) || fields.supportsImages !== false) fail();
+  const finalizeNativeOutput = provider === "deepseek";
+  const budgetField = provider === "openai" && /^gpt-5(?:[.-]|$)/.test(model) ? "max_completion_tokens" : "max_tokens";
   return Object.freeze({
     supportsImages: false,
     async complete(request, { signal }) {
@@ -399,7 +401,7 @@ function createNativeStructuredProvider(options, finalizeNativeOutput = false) {
       const { value: raw } = await invokeCallback(complete, [{ model, messages, ...(nativeTools.length ? { tools: nativeTools } : {}),
         ...(finalizing ? { tool_choice: { type: "function", function: { name: FINAL_PROPOSAL_FUNCTION } } } : {}),
         response_format: { type: "json_schema", json_schema: { name: "application_proposal", strict: true, schema: wireSchema } },
-        max_tokens: request.maxOutputTokens, stream: false, temperature: 0 }, { signal }]);
+        [budgetField]: request.maxOutputTokens, stream: false, temperature: 0 }, { signal }]);
       // The SDK adds non-enumerable _request_id. Only choices is model data;
       // ignore transport metadata without invoking any accessors/hooks.
       return nativeResponseValidation(() => {
@@ -508,5 +510,5 @@ export function createRestrictedDeepSeekProvider(options) {
         return { choices: [{ ...choices[0], message: { ...choice.message, ...(calls ? { tool_calls: calls } : {}) } }] };
       });
     },
-  }, true);
+  }, "deepseek");
 }

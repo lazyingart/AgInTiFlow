@@ -6,10 +6,9 @@ This local preview is private, unpublished and not a general agent service.
 It includes no CLI/server, shell/filesystem/browser/vision tools, MCP, plugins,
 skills, environment loader, session store or automatic fallback.
 
-Preview 21 counts exact UTF-8 JSON bytes, including escaped names and punctuation,
-not implicit array indices or worst-case primitive estimates. Bounded numeric
-results now fit their stated cap; one byte over rejects. Node/depth, schema,
-cancellation and credential checks remain independent. No authority is added.
+Preview 22 sends the host's output ceiling as `max_completion_tokens` for
+OpenAI GPT-5 and `max_tokens` for DeepSeek Flash and Pro. The app chooses
+the provider, credentials and tool permissions.
 
 ## Consumption
 
@@ -22,12 +21,12 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.21.tgz`.
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.22.tgz`.
 Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
 mutable worktree symlink. In a disposable qualification project:
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.21.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.22.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:

@@ -5,6 +5,35 @@ const FINAL='__aginti_return_proposal';
 const object=properties=>({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
 const text={type:'string',minLength:1,maxLength:100};
 const schema=object({reply:text});
+for (const [route, model, field] of [
+  ["openai", "gpt-5.4-mini", "max_completion_tokens"],
+  ["openai", "gpt-5", "max_completion_tokens"],
+  ["openai", "gpt-5-mini", "max_completion_tokens"],
+  ["openai", "gpt-4o-mini", "max_tokens"],
+  ["openai", "gpt-50", "max_tokens"],
+  ["deepseek", "deepseek-flash", "max_tokens"],
+  ["deepseek", "deepseek-v4-pro", "max_tokens"],
+]) test(`server-selected ${route}/${model} preserves the requested completion budget`, async () => {
+  const requests = [];
+  const complete = body => {
+    requests.push(body);
+    return {choices:[{index:0, finish_reason:"stop", message:{role:"assistant", content:'{"reply":"Maple"}'}}]};
+  };
+  const provider = route === "openai"
+    ? sdk.createRestrictedOpenAIProvider({model, complete, supportsImages:false})
+    : sdk.createRestrictedDeepSeekProvider({model, complete});
+  const runner = sdk.createRestrictedApplicationRunner({
+    instructions:"Return the room named in the supplied note.", provider, tools:[], outputSchema:schema,
+    limits:{maxSteps:1, maxOutputTokens:137},
+  });
+  const result = await runner.run({input:[{type:"text", text:"The workshop is in Maple."}]});
+  assert.equal(result.proposal.reply, "Maple");
+  assert.equal(requests.length, 1);
+  const [body] = requests;
+  assert.deepEqual(Object.keys(body).filter(k => k === "max_tokens" || k === "max_completion_tokens"), [field]);
+  assert.equal(body[field], 137);
+  assert.equal(body.tools, undefined);
+});
 const input={input:[{type:'text',text:'Read the current record and make a short proposal. Leave the original unchanged.'}]};
 const read=()=>({choices:[{finish_reason:'tool_calls',message:{role:'assistant',content:null,tool_calls:[{id:'read_1',type:'function',function:{name:'read_current',arguments:'{}'}}]}}]});
 const final=(args='{"reply":"current evidence"}',name=FINAL)=>({choices:[{finish_reason:'tool_calls',message:{role:'assistant',content:null,tool_calls:[{id:'final_1',type:'function',function:{name,arguments:args}}]}}]});
