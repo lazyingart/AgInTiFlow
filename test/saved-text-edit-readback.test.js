@@ -38,7 +38,7 @@ test("a saved literal edit supports readback across text formats and languages",
 });
 
 test("unproven edits, other goals, different operands, extra actions and explicit checks retain their requirements", () => {
-  for (const goal of [original + " Run the tests.", original.replace("old brigde", "something else"),
+  for (const goal of [original + " Run the tests.",
     original.replace("cut.srt", "elsewhere.srt"), original.replace("unchanged", "synchronized against the rendered video")]) {
     assert.equal(savedTextEditReadback(session(goal), followup), null);
   }
@@ -82,7 +82,21 @@ test("completion needs the exact publication followed by a complete current read
     [patch, { ...read, data: { ...read.data, goalRevision: 1 } }], [patch, { ...read, data: { ...read.data, sha256: proof.before } }],
     [patch, { ...read, data: { ...read.data, contentTruncatedByLines: true } }],
     [{ ...patch, data: { ...patch.data, args: { ...patch.data.args, searchHash: proof.replaceHash } } }, read]]) {
-    assert.equal(hasSavedEditReadbackEvents(proof, events), false);
+    assert.equal(hasSavedEditReadbackEvents(proof, events, state), false);
+  }
+  // A receipt for an edit with different user-specified operands is insufficient.
+  const otherTask = session(original.replace("old brigde", "different text"));
+  assert.equal(hasSavedEditReadbackEvents(completionTaskContract({}, otherTask).savedTextEditReadback,
+    [patch, read], otherTask), false);
+  for (const [search, replace, expected] of [
+    ["At the old brigde.", "At the old bridge.", true],
+    ["At the old brigde.", "Over the old bridge.", false],
+    ["old brigde / old brigde", "old bridge / old brigde", false],
+  ]) {
+    const args = { path: file, search, replace, searchHash: hash(search), replaceHash: hash(replace) };
+    const contextualProof = { ...proof, searchHash: args.searchHash, replaceHash: args.replaceHash };
+    const contextualPatch = { ...patch, data: { ...patch.data, args } };
+    assert.equal(hasSavedEditReadbackEvents(contextualProof, [contextualPatch, read], state), expected);
   }
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-saved-edit-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
@@ -117,6 +131,7 @@ function verifyNativeResume(t, task, request, check) {
       AGINTIFLOW_HOME: path.join(home, "agent"), XDG_CONFIG_HOME: path.join(home, "config"),
       OPENAI_API_KEY: "offline-fixture", TEST_EDIT_TRACE: trace, TEST_INTERRUPT_AFTER_PATCH: interrupt ? "1" : "0",
       TEST_EDIT_VERIFY: interrupt ? "read" : check,
+      TEST_PATCH_CONTEXT: task.startsWith("请") ? "1" : "0",
       AGINTIFLOW_HOUSEKEEPING: "0", AGINTI_PROVIDER_HANDOFF: "0", AGINTIFLOW_NO_WEB_AUTO_START: "1", AGINTIFLOW_NO_AUTO_UPDATE: "1" } });
   const first = run(true, ["run", "--json", "--session-id", "edit", "--provider", "openai", "--model", "gpt-6.1-sol",
     "--routing", "manual", "--max-steps", "5", "--dynamic-steps", "off", "--sandbox-mode", "host", "--allow-file-tools",

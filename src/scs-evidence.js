@@ -6231,7 +6231,7 @@ export function evaluateScsSemanticContract(
     reason: `Requested input reads are missing: ${inputReads.missingInputReads.join(", ")}` };
   const savedEdit = contract.savedTextEditReadback;
   if (savedEdit) {
-    if (!hasSavedEditReadbackEvents(savedEdit, events)) return { ok: false, checked: true,
+    if (!hasSavedEditReadbackEvents(savedEdit, events, state)) return { ok: false, checked: true,
       reason: `Verifying the edit requires its recorded patch and a complete read_file of ${savedEdit.path} in this turn.` };
     const current = copyFileDigest(commandCwd, savedEdit.path, { destination: true });
     if (current?.sha256 !== savedEdit.after || !current.isCurrent()) return { ok: false, checked: true,

@@ -22,6 +22,9 @@ globalThis.fetch = async (url, options) => {
   } else if (lastRead && !results.some(r => r.toolName === "apply_patch" && r.ok)) {
     name = "apply_patch";
     args = { path: "cut.srt", search: "old brigde", replace: "old bridge" };
+    if (process.env.TEST_PATCH_CONTEXT === "1") {
+      args = { path: args.path, search: "At the old brigde.", replace: "At the old bridge." };
+    }
     id = "exact_edit";
   } else if (lastRead && process.env.TEST_INTERRUPT_AFTER_PATCH === "1") {
     await fs.appendFile(process.env.TEST_EDIT_TRACE, "checkpoint\n");

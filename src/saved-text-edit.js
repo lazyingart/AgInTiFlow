@@ -14,24 +14,26 @@ function requestsReadback(text) {
     /^(?:保存した|先ほどの|前回の)(?:文章の)?(?:修正|変更)(?:内容)?を確認して(?:ください)?(?:[、，]どこを変えたか教えてください)?[。！]?$/u.test(text.trim());
 }
 
-// Replace the two quoted operands with markers only after checking their
-// exact UTF-8 hashes. Keep other clauses visible to the anchored grammar.
-function requestedLiteralEdit(goal, mutation) {
-  if (typeof goal !== "string" || goal.length > 4096 || /[\x00-\x08]/u.test(goal)) return false;
-  const { path, searchHash, replaceHash } = mutation.patch;
+// Keep clauses outside the two quoted operands visible to the anchored grammar.
+// The native patch can include surrounding text for a unique match.
+function requestedLiteralEdit(goal, path) {
+  if (typeof goal !== "string" || goal.length > 4096 || /[\x00-\x08]/u.test(goal)) return null;
+  const operands = [];
   const words = goal.replace(/“([^”\n]+)”|「([^」\n]+)」|‘([^’\n]+)’|"([^"\n]+)"|`([^`\n]+)`|'([^'\n]+)'/gu,
     (match, ...groups) => {
       const value = groups.slice(0, 6).find(v => v !== undefined);
       if (value === path) return "\x03";
-      const hash = digest(value);
-      if (hash === searchHash) return "\x01";
-      if (hash === replaceHash) return "\x02";
+      operands.push(value);
+      if (operands.length === 1) return "\x01";
+      if (operands.length === 2) return "\x02";
       return match;
     }).split(path).join("\x03").trim();
   const edit = /^(?:please\s+)?(?:(?:change|correct|fix|replace|update)\s+\x01\s+(?:to|with)\s+\x02\s+in\s+\x03|in\s+\x03[,，]?\s+(?:change|correct|fix|replace|update)\s+\x01\s+(?:to|with)\s+\x02)(?:[.,;]\s*(?:keep|leave)\s+(?:(?:the|and|all|other|everything|else|rest|contents?|text|lines?|subtitles?|timestamps?|timings?|formatting|line breaks)\s+)+(?:otherwise\s+)?(?:unchanged|intact))?[.!]?$/iu;
-  return edit.test(words) ||
+  const matches = edit.test(words) ||
     /^(?:请)?(?:把|将)\s*\x03\s*(?:中|里)的\s*\x01\s*(?:改为|改成|替换为)\s*\x02(?:[，。]\s*(?:其余|其他)(?:内容)?(?:保持)?不变)?[。！]?$/u.test(words) ||
     /^\x03\s*の\s*\x01\s*を\s*\x02\s*に(?:変更|修正|置換)して(?:ください)?(?:[。、]他はそのまま(?:で)?)?[。！]?$/u.test(words);
+  return matches && operands.length === 2 && operands[0] !== operands[1]
+    ? { search: operands[0], replace: operands[1] } : null;
 }
 
 // Used on both sides of the continuation transition. Resolve what "the
@@ -48,7 +50,7 @@ function retainedLiteralEdit(state, request) {
       isSensitiveWorkspacePath(patch.path)) return null;
   if (![patch.searchHash, patch.replaceHash, patch.beforeContentSha256, patch.afterContentSha256].every(
     h => typeof h === "string" && sha256.test(h)) || patch.searchHash === patch.replaceHash ||
-      patch.beforeContentSha256 === patch.afterContentSha256 || !requestedLiteralEdit(goal.taskGoal, mutation)) return null;
+      patch.beforeContentSha256 === patch.afterContentSha256 || !requestedLiteralEdit(goal.taskGoal, patch.path)) return null;
   if (mutation.taskHash !== digest(goal.taskGoal) || mutation.goalRevision !== goal.taskBoundaryRevision ||
       !Array.isArray(goal.history) || !currentGoalRevisionBelongsToActiveTask(state, mutation)) return null;
   const mutations = verification.mutationHistory;
@@ -78,12 +80,26 @@ export function savedTextEditReadback(state, request) {
   if (history.length !== goal.revision - mutation.goalRevision || !history.every((e, index) =>
     e.revision === mutation.goalRevision + index + 1 && e.taskHash === mutation.taskHash &&
     typeof e.preview === "string" && digest(e.preview) === e.hash && requestsReadback(e.preview))) return null;
-  return { path: patch.path, searchHash: patch.searchHash, replaceHash: patch.replaceHash,
+  return { path: patch.path, taskHash: mutation.taskHash, searchHash: patch.searchHash, replaceHash: patch.replaceHash,
     before: patch.beforeContentSha256, after: patch.afterContentSha256,
     patchRevision: mutation.revision, patchGoal: mutation.goalRevision, readGoal: goal.revision };
 }
 
-export function hasSavedEditReadbackEvents(proof, events) {
+function matchesRequestedReplacement(args, edit) {
+  if (digest(edit.search) === args.searchHash && digest(edit.replace) === args.replaceHash) return true;
+  const { search, replace } = args;
+  if (typeof search !== "string" || typeof replace !== "string" || search.length > 220000 || replace.length > 220000 ||
+      digest(search) !== args.searchHash || digest(replace) !== args.replaceHash) return false;
+  const index = search.indexOf(edit.search);
+  return index >= 0 && search.indexOf(edit.search, index + 1) === -1 &&
+    replace === search.slice(0, index) + edit.replace + search.slice(index + edit.search.length);
+}
+
+export function hasSavedEditReadbackEvents(proof, events, state) {
+  const taskGoal = state?.meta?.goalContract?.taskGoal;
+  if (typeof taskGoal !== "string" || digest(taskGoal) !== proof.taskHash) return false;
+  const edit = requestedLiteralEdit(taskGoal, proof.path);
+  if (!edit) return false;
   let published = false, confirmed = false;
   for (const event of events) {
     if (event?.type !== "tool.completed") continue;
@@ -94,7 +110,8 @@ export function hasSavedEditReadbackEvents(proof, events) {
         d.projectMutationRevision === proof.patchRevision && d.change?.beforeHash === proof.before &&
         d.change?.afterHash === proof.after && d.change?.replacements === 1 && d.change?.created === false &&
         d.change?.ok === true && d.change.path === proof.path && d.args?.path === proof.path &&
-        d.args.searchHash === proof.searchHash && d.args.replaceHash === proof.replaceHash;
+        d.args.searchHash === proof.searchHash && d.args.replaceHash === proof.replaceHash &&
+        matchesRequestedReplacement(d.args, edit);
       confirmed = false;
     } else if (d.toolName === "read_file" && d.goalRevision === proof.readGoal) {
       confirmed = published && d.ok === true && !d.blocked && !d.skipped && d.sha256 === proof.after &&
