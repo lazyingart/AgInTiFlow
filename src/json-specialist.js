@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { createChatCompletion, createClient } from "./model-client.js";
+import { parseNativeToolArguments as parseModelJson } from "./native-tool-arguments.js";
 import { getProviderDefaults } from "./model-routing.js";
 import { normalizeProviderId, providerStructuredOutputAttempts } from "./provider-contract.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
@@ -13,33 +14,32 @@ function compact(value = "", limit = MAX_INLINE_PREVIEW) {
   return `${text.slice(0, Math.max(0, limit - 24))} ... [truncated]`;
 }
 
-function parseJsonValue(content = "") {
-  const text = String(content || "").trim();
-  if (!text) return { ok: false, error: "empty JSON response" };
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidates = [fenced?.[1], text].filter(Boolean);
-  for (const candidate of candidates) {
-    try {
-      return { ok: true, value: JSON.parse(candidate.trim()) };
-    } catch {
-      // Try a balanced excerpt below.
-    }
-    const starts = ["{", "["]
-      .map((char) => ({ char, index: candidate.indexOf(char) }))
-      .filter((item) => item.index >= 0)
-      .sort((a, b) => a.index - b.index);
-    for (const start of starts) {
-      const close = start.char === "{" ? "}" : "]";
-      const end = candidate.lastIndexOf(close);
-      if (end <= start.index) continue;
-      try {
-        return { ok: true, value: JSON.parse(candidate.slice(start.index, end + 1)) };
-      } catch {
-        // Keep looking.
-      }
-    }
+function parseJsonValue(content, attempt) {
+  const invalid = { ok: false, error: "response must contain one unambiguous JSON value" };
+  if (typeof content !== "string" || !content.length) return { ok: false, error: "empty JSON response" };
+  try {
+    return { ok: true, value: parseModelJson(content) };
+  } catch (error) {
+    if (attempt !== "prompt" || error.kind !== "syntax") return invalid;
   }
-  return { ok: false, error: "response was not parseable JSON" };
+
+  // Prompt-only providers may surround a value with prose or a Markdown fence.
+  // Examine a single candidate; never salvage an inner value from a rejected one.
+  const text = content.trim();
+  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  let candidate = fence?.[1];
+  if (candidate === undefined) {
+    const start = text.search(/[[\]{}]/u);
+    const end = Math.max(text.lastIndexOf("]"), text.lastIndexOf("}"));
+    if (start < 0 || end <= start || !["{", "["].includes(text[start]) ||
+        text.includes("```") || /[[{]/u.test(text.slice(end + 1))) return invalid;
+    candidate = text.slice(start, end + 1);
+  }
+  try {
+    return { ok: true, value: parseModelJson(candidate) };
+  } catch {
+    return invalid;
+  }
 }
 
 function normalizeSchema(raw) {
@@ -345,7 +345,7 @@ export async function runJsonSpecialist(args = {}, config = {}, store = null) {
         try {
           const response = await createChatCompletion(client, payload, jsonConfig, `json specialist ${attempt} request`);
           rawContent = response.choices[0]?.message?.content || "";
-          const parsed = parseJsonValue(rawContent);
+          const parsed = parseJsonValue(rawContent, attempt);
           if (!parsed.ok) {
             attemptNotes.push(`${attempt}: ${parsed.error}`);
             if (request.fallbackOnInvalid && attempt !== attempts.at(-1)) continue;
