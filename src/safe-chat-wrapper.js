@@ -1,4 +1,5 @@
-import { createModelHttpClient, isModelHttpRedirect } from "./model-http-client.js";
+import { createModelHttpClient, isModelHttpRedirect, isTerminalModelQuotaError } from "./model-http-client.js";
+import { withChatTokenBudget } from "./openai-chat-parameters.js";
 import {
   BASELINE_PROVIDER,
   isLoopbackBaseURL,
@@ -352,7 +353,7 @@ function systemPrompt(locale = "") {
 }
 
 function safeChatPayload(request, config) {
-  return {
+  return withChatTokenBudget(config.provider, {
     model: config.model,
     temperature: 0.2,
     max_tokens: config.limits.maxTokens,
@@ -361,7 +362,7 @@ function safeChatPayload(request, config) {
       ...request.history,
       { role: "user", content: request.prompt },
     ],
-  };
+  });
 }
 
 function defaultClientFactory(config) {
@@ -422,7 +423,7 @@ function classifyProviderError(error, timedOut = false) {
     };
   }
   if (
-    status === 402 ||
+    isTerminalModelQuotaError(error) || status === 402 ||
     /insufficient[_ -]?quota|quota exceeded|billing|account balance|insufficient[_ -]?balance|credits? exhausted/.test(text)
   ) {
     return {

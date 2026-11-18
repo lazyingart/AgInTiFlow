@@ -10,6 +10,7 @@ import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
 import { redactSensitiveText } from "./redaction.js";
 import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
 import { summarizeMcpConfig } from "./mcp/config.js";
+import { withChatTokenBudget } from "./openai-chat-parameters.js";
 import {
   providerCanRetryWithTextToolProtocol,
   providerPrefersTextToolProtocol,
@@ -226,7 +227,7 @@ export function isTransientProviderRequestError(error) {
 }
 
 export async function createChatCompletion(client, payload, config, label = "model request") {
-  const preparedPayload = withChatReasoningEffort(payload, config);
+  const preparedPayload = withChatTokenBudget(config.provider, withChatReasoningEffort(payload, config));
   const timeout = resolveModelTimeoutMs(config);
   const controller = new AbortController();
   let interruptionError = null;

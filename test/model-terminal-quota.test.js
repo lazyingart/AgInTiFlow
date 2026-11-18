@@ -12,7 +12,21 @@ const { createModelHttpClient, MAX_MODEL_HTTP_RESPONSE_BYTES } = await import(pa
 
 const payload = { model: "offline-model", messages: [{ role: "user", content: "Continue the saved task." }] };
 const config = { provider: "deepseek", modelTimeoutMs: 2000 };
-const hardCodes = ["insufficient_quota", "insufficient_balance", "billing_hard_limit_reached", "quota_exceeded"];
+const hardCodes = ["insufficient_quota", "insufficient_balance", "billing_hard_limit_reached", "quota_exceeded", "credit_balance_exhausted"];
+
+test("native planning and step requests preserve the token ceiling on the explicit GPT-5 route", async () => {
+  const seen = [];
+  const client = { chat: { completions: { create: async body => { seen.push(body); return {}; } } } };
+  const body = Object.freeze({ ...payload, model: "gpt-5.4-mini", max_tokens: 137, temperature: 0 });
+  await createChatCompletion(client, body, { ...config, provider: "openai" });
+  await createChatCompletion(client, body, config);
+  await createChatCompletion(client, { ...body, model: "gpt-4o-mini" }, { ...config, provider: "openai" });
+  assert.deepEqual(seen.map(r => [r.max_tokens, r.max_completion_tokens]), [[undefined,137],[137,undefined],[137,undefined]]);
+  assert.equal(seen[0].messages, body.messages);
+  assert.equal(seen[0].temperature, 0);
+  await assert.rejects(createChatCompletion(client, { ...body, max_completion_tokens: 300 }, { ...config, provider: "openai" }), /Conflicting/);
+  assert.equal(seen.length, 3);
+});
 
 for (const field of ["code", "type"]) for (const code of hardCodes) {
   test(`explicit 429 ${field}=${code} is terminal before SDK and core retries`, { timeout: 4000 }, async () => {

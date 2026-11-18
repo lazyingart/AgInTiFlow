@@ -11,6 +11,21 @@ const env = {
   AGINTI_SAFE_CHAT_BASE_URL: "http://127.0.0.1:8008/v1",
 };
 const response = (content = "Ready.") => ({ choices: [{ finish_reason: "stop", message: { role: "assistant", content } }] });
+test("OpenAI safe chat sends the bounded completion cap and reports exhausted credits without retry", async () => {
+  const scoped = { ...env, AGINTI_SAFE_CHAT_PROVIDER: "openai", AGINTI_SAFE_CHAT_BASE_URL: "https://api.openai.com/v1",
+    AGINTI_SAFE_CHAT_MODEL: "gpt-5.4-mini", AGINTI_SAFE_CHAT_MAX_TOKENS: "256" };
+  let calls = 0;
+  const clientFactory = () => ({ chat: { completions: { async create(body) {
+    calls++;
+    assert.equal(body.max_completion_tokens, 256);
+    assert.ok(!Object.hasOwn(body, "max_tokens") && !Object.hasOwn(body, "tools"));
+    throw Object.assign(new Error("Unavailable"), { status: 429, code: "credit_balance_exhausted" });
+  } } } });
+  const answer = await runSafeChat({ prompt: "Summarize the supplied memo." }, { env: scoped, clientFactory });
+  assert.equal(answer.code, "provider_quota");
+  assert.equal(answer.retryable, false);
+  assert.equal(calls, 1);
+});
 function fixture(value) {
   let calls = 0;
   return {

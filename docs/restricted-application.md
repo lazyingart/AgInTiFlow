@@ -1,5 +1,45 @@
 # Restricted Application SDK (v1)
 
+## Use OpenAI for a bounded application task
+
+Choose the provider on the server after authenticating the account. A notes app can offer a read of that account’s current note, ask for a correction, and validate the returned proposal before saving it. The same pattern works for a reading app that offers a read of a selected passage. Keep ownership checks, budgets and writes in the application.
+
+```js
+import OpenAI from "openai";
+import {
+  createRestrictedApplicationRunner,
+  createRestrictedOpenAIProvider,
+} from "@lazyingart/agintiflow/restricted-application";
+
+export function createRoomReader(appKey, readCurrentRoom) {
+  const client = new OpenAI({
+    apiKey: appKey, baseURL: "https://api.openai.com/v1", maxRetries: 0,
+    fetchOptions: { redirect: "error" },
+  });
+  const schema = {
+    type: "object",
+    properties: { room: { type: "string", minLength: 1, maxLength: 80 } },
+    required: ["room"], additionalProperties: false,
+  };
+  return createRestrictedApplicationRunner({
+    provider: createRestrictedOpenAIProvider({
+      model: "gpt-5.4-mini", supportsImages: false,
+      complete: (body, { signal }) => client.chat.completions.create(body, { signal }),
+    }),
+    instructions: "Read the current room and return it in the proposal.",
+    outputSchema: schema,
+    tools: [{
+      name: "read_current", description: "Read the current room for this account.",
+      readOnly: true, inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+      outputSchema: schema, execute: readCurrentRoom,
+    }],
+    limits: { maxSteps: 2, maxToolCalls: 1, maxOutputTokens: 128, timeoutMs: 30000 },
+  });
+}
+```
+
+Bind `readCurrentRoom` to the authenticated account in its closure. Pass its runner an input such as `[{ type: "text", text: "Which room are we using?" }]` and read `result.proposal.room` after completion. For DeepSeek, use the existing `restricted-application/deepseek-http` client with its own service credential. Each call uses the provider selected by the application.
+
 ## Standalone application distribution
 
 For a text-only app backend, AgInTiLite private preview 20 provides the same

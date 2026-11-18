@@ -11,7 +11,7 @@ const setBytes = Uint8Array.prototype.set;
 const apply = Reflect.apply;
 
 const TERMINAL_QUOTA_CODES = new Set([
-  "insufficient_quota", "insufficient_balance", "billing_hard_limit_reached", "quota_exceeded",
+  "insufficient_quota", "insufficient_balance", "billing_hard_limit_reached", "quota_exceeded", "credit_balance_exhausted",
 ]);
 
 function ownData(value, key) {

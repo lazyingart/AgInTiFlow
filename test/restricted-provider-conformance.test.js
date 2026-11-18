@@ -1,8 +1,38 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getEventListeners } from "node:events";
-import { createRestrictedDeepSeekProvider, createRestrictedOpenAIProvider } from "../src/restricted-application.js";
+import { createRestrictedApplicationRunner, createRestrictedDeepSeekProvider, createRestrictedOpenAIProvider } from "../src/restricted-application.js";
 import { qualifyRestrictedProviderFactory } from "../scripts/fixtures/restricted-provider-conformance.js";
+
+test("a server-selected OpenAI model can read the scoped record and return a bounded proposal", async () => {
+  const schema = { type: "object", properties: { room: { type: "string", maxLength: 20 } }, required: ["room"], additionalProperties: false };
+  const bodies = [];
+  let reads = 0;
+  const provider = createRestrictedOpenAIProvider({ model: "gpt-5.4-mini", supportsImages: false, complete(body) {
+    bodies.push(body);
+    if (bodies.length === 1) return { choices: [{ finish_reason: "tool_calls", message: { role: "assistant", content: null,
+      tool_calls: [{ id: "room_lookup", type: "function", function: { name: "read_current", arguments: "{}" } }] } }] };
+    assert.equal(body.messages.at(-1).tool_call_id, "room_lookup");
+    assert.deepEqual(JSON.parse(body.messages.at(-1).content), { room: "MAPLE" });
+    return { choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"room":"MAPLE"}' } }] };
+  } });
+  const app = createRestrictedApplicationRunner({ provider, instructions: "Read the current room.", outputSchema: schema,
+    tools: [{ name: "read_current", description: "Read the signed-in account's record.", readOnly: true,
+      inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false }, outputSchema: schema,
+      execute() { reads++; return { room: "MAPLE" }; } }],
+    limits: { maxSteps: 2, maxToolCalls: 1, maxOutputTokens: 128 } });
+  const result = await app.run({ input: [{ type: "text", text: "Which room was the workshop moved to?" }] });
+  assert.equal(result.proposal.room, "MAPLE");
+  assert.equal(reads, 1);
+  assert.equal(bodies.length, 2);
+  assert.deepEqual(bodies[0].tools.map(t => t.function.name), ["read_current"]);
+  assert.equal(bodies[1].tools, undefined);
+  for (const b of bodies) {
+    assert.equal(b.max_completion_tokens, 128);
+    assert.equal(Object.hasOwn(b, "max_tokens"), false);
+    assert.equal(b.response_format.json_schema.strict, true);
+  }
+});
 
 for (const kind of ["deepseek", "openai"]) test(`qualified ${kind} preserves original envelope through the portable test kit`, async () => {
   const signals = [];

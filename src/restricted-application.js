@@ -1,6 +1,7 @@
 import { types } from "node:util";
 import { performance } from "node:perf_hooks";
 import { addAbortListener } from "node:events";
+import { withChatTokenBudget } from "./openai-chat-parameters.js";
 import { inspectIntegrationAnalysisImageBytes } from "./integration-analysis-image.js";
 import {
   RestrictedApplicationError, fail, dataFields, jsonSnapshot, integer, text,
@@ -368,7 +369,8 @@ export function createRestrictedOpenAIProvider(options) {
   return createNativeStructuredProvider(options);
 }
 
-function createNativeStructuredProvider(options, finalizeNativeOutput = false) {
+function createNativeStructuredProvider(options, providerId = "openai") {
+  const finalizeNativeOutput = providerId === "deepseek";
   const fields = dataFields(options, ["complete", "model", "supportsImages"]);
   const complete = callback(fields.complete);
   const model = text(fields.model, 160);
@@ -407,10 +409,11 @@ function createNativeStructuredProvider(options, finalizeNativeOutput = false) {
       const nativeTools = finalizing ? [{ type: "function", function: {
         name: FINAL_PROPOSAL_FUNCTION, description: "Encode the final application proposal only. This returns data and executes no host action.", parameters: wireSchema,
       } }] : request.tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }));
-      const { value: raw } = await invokeCallback(complete, [{ model, messages, ...(nativeTools.length ? { tools: nativeTools } : {}),
+      const body = { model, messages, ...(nativeTools.length ? { tools: nativeTools } : {}),
         ...(finalizing ? { tool_choice: { type: "function", function: { name: FINAL_PROPOSAL_FUNCTION } } } : {}),
         response_format: { type: "json_schema", json_schema: { name: "application_proposal", strict: true, schema: wireSchema } },
-        max_tokens: request.maxOutputTokens, stream: false, temperature: 0 }, { signal }]);
+        max_tokens: request.maxOutputTokens, stream: false, temperature: 0 };
+      const { value: raw } = await invokeCallback(complete, [withChatTokenBudget(providerId, body), { signal }]);
       // The SDK adds non-enumerable _request_id. Only choices is model data;
       // ignore transport metadata without invoking any accessors/hooks.
       return nativeResponseValidation(() => {
@@ -521,5 +524,5 @@ export function createRestrictedDeepSeekProvider(options) {
         return { choices: [{ ...choices[0], message: { ...choice.message, ...(calls ? { tool_calls: calls } : {}) } }] };
       });
     },
-  }, true);
+  }, "deepseek");
 }
