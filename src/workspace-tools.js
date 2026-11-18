@@ -820,10 +820,18 @@ async function readFile(config, args) {
   if (preserveLineEndings && hasLineRange) throw new Error("preserveLineEndings requires a complete bounded file read, without line-range arguments.");
   const requestedLineLimit = Number(args.lineLimit || args.limit || 0);
   const lineLimit = Number.isFinite(requestedLineLimit) && requestedLineLimit > 0 ? Math.min(requestedLineLimit, 1000) : 0;
+  const requestedStart = Number(args.startLine ?? 1);
+  if (!Number.isSafeInteger(requestedStart)) throw new Error("startLine must be a safe integer.");
+  const startLine = Math.max(1, requestedStart);
   const { stat, content, hash } = await readTextFile(target, config, { allowLargeLineLimited: lineLimit > 0 });
-  const lines = content.split(/\r?\n/);
-  const startLine = Math.min(Math.max(Number(args.startLine) || 1, 1), Math.max(lines.length, 1));
-  const selectedLines = lineLimit > 0 ? lines.slice(startLine - 1, startLine - 1 + lineLimit) : lines;
+  // A credential label can sit on the line before the requested window.
+  // Apply the same redaction as a full read before selecting any lines.
+  const redacted = redactSensitiveText(content);
+  const lines = redacted.split(/\r?\n/);
+  if (redacted !== content && lines.length !== content.split(/\r?\n/).length) {
+    throw new Error("Cannot preserve source line positions after redaction.");
+  }
+  const selectedLines = lines.slice(startLine - 1, lineLimit > 0 ? startLine - 1 + lineLimit : undefined);
   const selectedContent = selectedLines.join("\n");
   return {
     ok: true,
@@ -831,7 +839,7 @@ async function readFile(config, args) {
     path: target.relativePath,
     bytes: stat.size,
     sha256: hash,
-    content: redactSensitiveText(preserveLineEndings ? content : selectedContent),
+    content: preserveLineEndings ? redacted : selectedContent,
     ...(preserveLineEndings ? {
       lineEndingsPreserved: true,
       lineEndingCounts: {
@@ -845,7 +853,7 @@ async function readFile(config, args) {
     startLine,
     lineLimit: lineLimit || null,
     lineCount: lines.length,
-    contentTruncatedByLines: lineLimit > 0 && startLine - 1 + lineLimit < lines.length,
+    contentTruncatedByLines: selectedLines.length < lines.length,
   };
 }
 

@@ -2227,7 +2227,33 @@ function goalRequestsFileMutation(goal = "", taskProfile = "") {
   );
 }
 
-function isSavedEvidenceAnswerRequest(goal = "") {
+// A lookup names both its evidence source and a field or entry to recover.
+// Consume every clause so a new read, write or verification keeps its own
+// execution contract. Past-tense nouns alone do not select this mode.
+function isSavedResultLookup(goal = "") {
+  const request = String(goal || "").trim().replace(/^Active task:[ \t]*\r?\n/u, "");
+  if (!request || request.length > 600) return false;
+  const parts = request.split(/[,.!?;，、。？！；\n]+|\s+and\s+(?=(?:keep|leave)\s)/iu).map(part => part.trim()).filter(Boolean);
+  if (parts.length < 2 || parts.length > 3) return false;
+  let sources = 0, lookups = 0;
+  for (const part of parts) {
+    if (/^(?:please\s+)?(?:use|using|from|based\s+on)\s+(?:only\s+)?(?:the\s+)?(?:saved|recorded|retained|previous|prior|earlier)\s+(?:results?|answers?|outputs?|observations?)(?:\s+only)?$/iu.test(part) ||
+        /^(?:请|請)?(?:仅|僅|只)?(?:根据|根據|使用|基于|基於)(?:已保存|已记录|已記錄|先前|之前|上次)(?:的)?(?:结果|結果|输出|輸出|回答)$/u.test(part) ||
+        /^(?:保存済み|記録済み|前回)の(?:結果|出力|回答)(?:から|に基づいて)$/u.test(part)) {
+      sources++;
+    } else if (/^(?:what|which(?:\s+[a-z][a-z0-9_-]{0,39})?)\s+(?:was|were)\s+(?:the\s+)?(?:(?:first|second|third|fourth|fifth|last|next|previous|final|[1-9]\d{0,2}(?:st|nd|rd|th))\s+)?(?:(?:open|closed|remaining|listed|reported|recorded|selected|returned)\s+)?[a-z][a-z0-9_-]{0,39}$/iu.test(part) ||
+        /^(?:(?:第[一二三四五六七八九十百\d]{1,4}|最后一|最後一)(?:个|個)?)(?:项|項|条|條|行|列|标签|標籤|数值|數值|名称|名稱)(?:是(?:什么|什麼)|是什么内容|是什麼內容)$/u.test(part) ||
+        /^(?:(?:[一二三四五六七八九十\d]{1,3}番目|最後|最初)の)(?:項目|名前|値|結果|行|列)は何でしたか$/u.test(part)) {
+      lookups++;
+    } else if (!/^(?:keep|leave)\s+(?:(?:the|that|this)\s+)?(?:files?|workspace)\s+(?:untouched|unchanged|alone)$/iu.test(part)) {
+      return false;
+    }
+  }
+  return sources === 1 && lookups === 1;
+}
+
+export function isSavedEvidenceAnswerRequest(goal = "") {
+  if (isSavedResultLookup(goal)) return true;
   // Inspect the whole request, including prohibitions: masking a broad negative
   // clause could otherwise hide an affirmative instruction after "but".
   const text = String(goal || "").trim().replace(/^Active task:[ \t]*\r?\n/u, "");

@@ -75,7 +75,7 @@ try {
     "test/advisory-invocation.test.js", "test/advisory-invocation-runtime.test.js", "test/tool-wrappers-lifecycle.test.js", "test/advisory-mutation-intent.test.js", "test/requested-program-recovery.test.js",
     "test/workspace-patch-line-endings.test.js", "test/native-patch-line-endings.test.js",
     "test/workspace-file-publication.test.js", "test/workspace-file-publication-runtime.test.js",
-    "test/workspace-read-authority.test.js",
+    "test/workspace-read-authority.test.js", "test/native-read-window-runtime.test.js",
     "test/project-instruction-boundary.test.js", "test/native-project-instructions-runtime.test.js",
     "test/workspace-path-policy.test.js", "test/native-workspace-scope-runtime.test.js",
     "test/workspace-cancellation.test.js", "test/native-workspace-cancellation.test.js",
@@ -87,6 +87,7 @@ try {
     "test/synchronous-source-read.test.js", "test/document-producer-source.test.js", "test/document-source-cancellation-runtime.test.js",
     "test/diagnostic-command-outcomes.test.js", "test/diagnostic-command-outcomes-runtime.test.js",
     "test/readonly-answer-planning.test.js", "test/readonly-answer-planning-runtime.test.js",
+    "test/saved-result-lookup.test.js", "test/saved-result-lookup-runtime.test.js",
     "test/scs-json-budget.test.js",
     "test/scs-historical-observations.test.js",
     "test/acceptance-continuation.test.js", "test/acceptance-continuation-runtime.test.js",
@@ -130,10 +131,10 @@ try {
   // the required cohort is actually present before spawning its test runner.
   for (const name of consumerFiles) assert.ok((await fs.lstat(path.join(installed, name))).isFile(), `Required packaged test is absent: ${name}`);
   const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, ...consumerFiles], installed, consumerTimeoutMs);
-  // Baseline 3741 plus credit-exhaustion, GPT-5 budgeting and both app-provider cohorts. Keep the verifier's
+  // Baseline 3781 plus six read-window and 22 saved-result cases. Keep the verifier's
   // own fixture count in sync; a zero test-runner exit is insufficient.
-  assert.match(log, /# tests 3781\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 3781\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 3809\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 3809\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,

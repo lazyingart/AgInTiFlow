@@ -2319,6 +2319,13 @@ export function selectProgressiveTools(
     ({ name }) => !toolIsConvergenceSuppressed(name, config)
   );
   const finish = baselineEnabled.find(({ name }) => name === "finish")?.tool;
+  // The user selected saved history as the source. A missing entry is an
+  // answerable limitation; a new read cannot establish what was returned then.
+  if (config.savedResultAnswerOnly === true) {
+    if (!finish) return [];
+    return [{ ...finish, function: { ...finish.function, description:
+      `${finish.function.description} Answer from this session's recorded result. If the entry was not recorded or is ambiguous, say so. Do not claim a fresh check.` } }];
+  }
   if (config.advisoryPrerequisitePending === true) {
     const readOnlyContext = new Set(["inspect_project", "list_files", "read_file", "search_files", "delegate_agent", "finish"]);
     return baselineEnabled.filter(({ name }) => readOnlyContext.has(name)).map(({ name, tool }) => name !== "delegate_agent" ? tool : {

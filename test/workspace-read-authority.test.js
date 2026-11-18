@@ -34,6 +34,44 @@ async function fixture(t) {
   return { root, workspace, other, config };
 }
 const read = (config, name, args = {}) => executeWorkspaceTool("read_file", { path: name, ...args }, config);
+test("line windows return only selected lines and retain whole-source identity", async t => {
+  const { workspace, config } = await fixture(t);
+  const source = "earlier\r\n\r\nselected 🌱\r\nlast\r\n";
+  await fs.writeFile(path.join(workspace, "notes.txt"), source);
+  for (const [args, text, start, partial] of [
+    [{}, "earlier\n\nselected 🌱\nlast\n", 1, false],
+    [{ startLine: 1, lineLimit: 5 }, "earlier\n\nselected 🌱\nlast\n", 1, false],
+    [{ startLine: 3 }, "selected 🌱\nlast\n", 3, true],
+    [{ startLine: 2, limit: 2 }, "\nselected 🌱", 2, true],
+    [{ startLine: 4, lineLimit: 1000 }, "last\n", 4, true],
+    [{ lineLimit: 1 }, "earlier", 1, true],
+    [{ startLine: 5 }, "", 5, true],
+    [{ startLine: 6 }, "", 6, true],
+    [{ startLine: 99, lineLimit: 1 }, "", 99, true],
+  ]) {
+    const r = await read(config, "notes.txt", args);
+    assert.deepEqual([r.content, r.startLine, r.contentTruncatedByLines, r.lineCount, r.sha256, r.bytes],
+      [text, start, partial, 5, hash(source), Buffer.byteLength(source)], JSON.stringify(args));
+  }
+  await fs.writeFile(path.join(workspace, "notes.txt"), "only");
+  assert.equal((await read(config, "notes.txt", { startLine: 2 })).content, "");
+  await fs.writeFile(path.join(workspace, "notes.txt"), "");
+  assert.equal((await read(config, "notes.txt")).contentTruncatedByLines, false);
+  await assert.rejects(read(config, "notes.txt", { startLine: Number.MAX_SAFE_INTEGER + 1 }), /startLine/);
+});
+test("a read window preserves redaction that depends on an earlier line", async t => {
+  const { workspace, config } = await fixture(t);
+  const source = "notes\r\nAuthorization: Bearer\r\n  synthetic-test-value\r\npublic tail";
+  await fs.writeFile(path.join(workspace, "notes.txt"), source);
+  const full = await read(config, "notes.txt");
+  assert.equal(full.content.split("\n")[2], "  [REDACTED]");
+  for (const args of [{ startLine: 3 }, { startLine: 3, limit: 1 }, { startLine: 5 }]) {
+    const result = await read(config, "notes.txt", args);
+    const expected = full.content.split("\n").slice(args.startLine - 1, args.limit ? 3 : undefined).join("\n");
+    assert.deepEqual([result.content, result.sha256, result.lineCount], [expected, hash(source), 4]);
+    assert.equal(result.contentTruncatedByLines, true);
+  }
+});
 function replace(t, object, name, wrap) {
   const descriptor = Object.getOwnPropertyDescriptor(object, name);
   Object.defineProperty(object, name, { ...descriptor, value: wrap(descriptor.value) });

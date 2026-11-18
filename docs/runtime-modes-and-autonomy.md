@@ -463,6 +463,16 @@ and does not force a finish-only tool turn. If no prior result is recorded, the
 answer must explain what is unknown. Mixed requests and current execution
 requirements retain their normal planning; existing approved plans are kept.
 
+To recall an entry after restarting a session or switching providers, name the
+saved result as the source. For example, “What was the checksum? Use the
+previous output.” AgInTi offers only `finish` for a recognized lookup when
+the active task has no outstanding execution requirements. The answer refers
+to the earlier observation even if the file has since changed. A new session
+without a prior result pauses and identifies the missing context.
+
+To check the current value, ask to read or verify the source again. A request
+to compare the two values or update a file keeps its execution requirements.
+
 For this question type, the review preview can also include the preceding
 diagnostic command's bounded stdout/stderr. It checks the native session event
 anchor, goal-hash transitions, command-start/result pairing and failure outcome.

@@ -2371,7 +2371,7 @@ export async function requestNextStep(client, config, messages) {
             type: "object",
             properties: {
               path: { type: "string", description: "Workspace-relative file path." },
-              startLine: { type: "integer", description: "Optional 1-based first line to read." },
+              startLine: { type: "integer", description: "Optional 1-based first line. Without a lineLimit, read from here through EOF within the small-file byte limit. A start past EOF returns empty content." },
               preserveLineEndings: { type: "boolean", description: "Preserve original newline characters in a complete UTF-8 read for copying. No line-range arguments; redaction and existing byte/path limits remain." },
               lineLimit: { type: "integer", description: "Optional maximum number of lines to read; use this for large source files." },
               limit: { type: "integer", description: "Alias for lineLimit for compatibility with older prompts." },

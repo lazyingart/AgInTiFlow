@@ -198,6 +198,7 @@ import {
   isResponseOnlyEvidenceScope,
   isCurrentReadOnlyDiagnosticExecution,
   isHistoricalDiagnosticQuestion,
+  isSavedEvidenceAnswerRequest,
   hasReadOnlyDiagnosticIntent,
   successfulGitCommitProvesFileMutation,
   isObservationalGitAction,
@@ -937,7 +938,7 @@ function summarizeToolHistory(messages = [], limit = 24) {
 }
 
 function summarizeReadSemanticEvidence(payload = {}, limit = 1200) {
-  const content = String(payload.content || payload.contentPreview || "").trim();
+  const content = String(payload.content ?? payload.contentPreview ?? "").trim();
   if (!content) return "";
   const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const selected = [];
@@ -975,7 +976,7 @@ function retainedReadRange(payload = {}, args = {}) {
   const startLine = Number.isFinite(requestedStart) && requestedStart > 0
     ? Math.floor(requestedStart)
     : 1;
-  const requestedLimit = Number(payload.lineLimit ?? args.lineLimit);
+  const requestedLimit = Number(payload.lineLimit ?? args.lineLimit ?? args.limit);
   const lineLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
     ? Math.floor(requestedLimit)
     : 0;
@@ -986,16 +987,24 @@ function retainedReadRange(payload = {}, args = {}) {
   const endLine = lineLimit > 0
     ? Math.min(startLine + lineLimit - 1, lineCount || Number.POSITIVE_INFINITY)
     : 0;
+  let label = `from line ${startLine}`;
+  if (lineCount > 0 && startLine > lineCount) label = `past EOF (line ${startLine}, ${lineCount} total)`;
+  else if (lineLimit > 0) label = `lines ${startLine}-${endLine}`;
   return {
     startLine,
     lineLimit,
     lineCount,
     endLine: Number.isFinite(endLine) ? endLine : 0,
     key: `${startLine}:${lineLimit || "all"}`,
-    label: lineLimit > 0
-      ? `lines ${startLine}-${Number.isFinite(endLine) ? endLine : startLine + lineLimit - 1}`
-      : `from line ${startLine}`,
+    label,
   };
+}
+
+// Older suffix reads could reach EOF with contentTruncatedByLines=false.
+// Their whole-file hash identifies the source, not how much of it was read.
+function readOmitsLines(payload, args = payload.args || {}) {
+  return payload.contentTruncatedByLines === true || Number(payload.startLine) > 1 ||
+    Number(args.startLine) > 1;
 }
 
 function parseRetainedToolEvidenceMessage(message = {}) {
@@ -1049,7 +1058,7 @@ function summarizeRetainedSourceEvidence(messages = [], limit = 28) {
     if (readRange) parts.push(`range=${readRange.label}`);
     if (Number.isFinite(Number(payload.bytes))) parts.push(`bytes=${Number(payload.bytes)}`);
     if (payload.sha256) parts.push(`sha256=${String(payload.sha256).slice(0, 16)}`);
-    if (payload.contentTruncated === true || payload.contentTruncatedByLines === true) {
+    if (payload.contentTruncated === true || (readRange && readOmitsLines(payload, args))) {
       parts.push("content=truncated");
     } else if (toolName === "read_file" && typeof payload.content === "string") {
       parts.push("content=complete");
@@ -1232,10 +1241,14 @@ function compactRetainedToolPayload(toolName, payload = {}, args = {}) {
     result.lineLimit = readRange.lineLimit || null;
     result.lineCount = readRange.lineCount;
     result.contentTruncated = payload.contentTruncated === true;
-    result.contentTruncatedByLines = payload.contentTruncatedByLines === true;
+    result.contentTruncatedByLines = readOmitsLines(payload, args);
     if (payload.sha256) result.sha256 = compactSingleLine(payload.sha256, 96);
-    const content = String(payload.content || payload.contentPreview || "");
-    if (content) result.content = compactMultiline(content, 3000);
+    const hasBody = typeof payload.content === "string";
+    const content = hasBody ? payload.content : payload.contentPreview;
+    if (typeof content === "string") {
+      result.content = compactMultiline(content, 3000);
+      if (!hasBody || content.length > 3000) result.contentTruncated = true;
+    }
     if (Array.isArray(payload.pathEvidence)) {
       result.pathEvidence = compactPathItems(payload.pathEvidence, 12, ["path", "source"]);
     }
@@ -1462,7 +1475,7 @@ function latestCompleteReadFileEvidence(messages = [], maxChars = 16000) {
       payload.blocked ||
       payload.skipped ||
       payload.contentTruncated === true ||
-      payload.contentTruncatedByLines === true ||
+      readOmitsLines(payload, args) ||
       typeof payload.content !== "string" ||
       !sourcePath ||
       payload.content.length > maxChars
@@ -1529,7 +1542,7 @@ export function successfulReadFileEvidencePaths(messages = [], { includeProvenan
       ordinal: ordinal += 1,
       complete:
         payload.contentTruncated !== true &&
-        payload.contentTruncatedByLines !== true &&
+        !readOmitsLines(payload, args) &&
         typeof payload.content === "string",
       sha256: typeof payload.sha256 === "string" && /^[a-f0-9]{64}$/.test(payload.sha256) ? payload.sha256 : "",
       goalRevision: Number.isSafeInteger(payload.goalRevision) && payload.goalRevision > 0 ? payload.goalRevision : 0,
@@ -3200,20 +3213,13 @@ export function buildContextBudgetCompactionMessages(state, config, snapshot, st
   });
 }
 
-export function buildKnownReadOnlyAnswerPhasePlan(config = {}, state = {}) {
-  if (state.plan) return null;
-  const goal = scopedChatopsEvidenceGoal(completionContractGoal(config, state), config.taskProfile || state.meta?.taskProfile || "auto");
-  if (!isHistoricalDiagnosticQuestion(goal)) return null;
-  const active = state.meta?.activeExecutionContract;
+function hasOnlyReadOnlyAnswerObligations(contract, active) {
   if (active && (
     typeof active !== "object" || Array.isArray(active) ||
     active.requiresWorkspaceMutation === true || active.requiresFileMutation === true || active.requiresSourceGrounding === true ||
     (active.requiredProjectCommands !== undefined && (!Array.isArray(active.requiredProjectCommands) || active.requiredProjectCommands.length > 0))
-  )) return null;
-  const contract = completionTaskContract(config, state);
-  // This selects a planning workflow, not evidence or permission. All ordinary
-  // execution and SCS completion gates still assess the actual answer.
-  if (
+  )) return false;
+  return !(
     contract.version !== 1 ||
     contract.readOnlyDiagnostic !== true ||
     contract.requiresExternalEvidence !== false ||
@@ -3232,7 +3238,14 @@ export function buildKnownReadOnlyAnswerPhasePlan(config = {}, state = {}) {
       "artifactRepairRequirements", "artifactQualityIssues", "successCriteria"].some(
       key => !Array.isArray(contract[key]) || contract[key].length !== 0
     )
-  ) return null;
+  );
+}
+
+export function buildKnownReadOnlyAnswerPhasePlan(config = {}, state = {}) {
+  if (state.plan) return null;
+  const goal = scopedChatopsEvidenceGoal(completionContractGoal(config, state), config.taskProfile || state.meta?.taskProfile || "auto");
+  if (!isHistoricalDiagnosticQuestion(goal) ||
+      !hasOnlyReadOnlyAnswerObligations(completionTaskContract(config, state), state.meta?.activeExecutionContract)) return null;
   return {
     mode: "read-only-answer",
     command: "",
@@ -20358,6 +20371,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const runtimeConfig = applyLocalContextOutputAdaptation(
     {
       ...applyLocalFailureRecovery(config, state),
+      savedResultAnswerOnly: false,
       readOnlyDiagnosticIntent: artifactEditPaths.length === 0 && hasReadOnlyDiagnosticIntent(
         state.meta?.goalContract?.activeGoal || state.goal || config.goal || "",
         config.taskProfile || state.meta?.taskProfile || "auto"
@@ -20408,6 +20422,10 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
       ? state.meta.activeExecutionContract || {}
       : {};
   const groundingTaskContract = completionTaskContract(config, state);
+  runtimeConfig.savedResultAnswerOnly = groundingTaskContract.readOnlyDiagnostic === true &&
+    isSavedEvidenceAnswerRequest(completionContractGoal(config, state)) &&
+    hasOnlyReadOnlyAnswerObligations(groundingTaskContract, activeEdit);
+  if (runtimeConfig.savedResultAnswerOnly) return runtimeConfig;
   if (groundingTaskContract.exactCopyRequirements?.length) runtimeConfig.completionExactCopySourcePaths = [...new Set(groundingTaskContract.exactCopyRequirements.map(pair => pair.sourcePath))];
   // A requested backup must be creatable before its separately requested
   // source edit. Do not force a patch of the only existing source merely
@@ -29855,7 +29873,7 @@ function recentFullReadPathsForHash(state = {}, expectedHash = "") {
       result.ok !== true ||
       String(result.toolName || "") !== "read_file" ||
       result.contentTruncated === true ||
-      result.contentTruncatedByLines === true ||
+      readOmitsLines(result) ||
       String(result.sha256 || "").trim().toLowerCase() !== normalizedHash
     ) {
       continue;
@@ -31663,6 +31681,8 @@ async function runAgentOnceUnlocked(config) {
   await store.ensure();
 
   let state = await store.loadState();
+  const noPriorResult = !state || (state.meta?.goalContract?.status === "paused" &&
+    state.meta.goalContract.lifecycle?.at(-1)?.reason === "saved_result_unavailable");
   const previousCommandCwd = state?.meta?.runtimeConfig?.commandCwd || state?.commandCwd;
   if (Object.hasOwn(state?.meta || {}, "projectVerification") && state.meta.projectVerification !== null) {
     commandVerificationSequenceState(state.meta.projectVerification);
@@ -31816,6 +31836,24 @@ async function runAgentOnceUnlocked(config) {
   }
   if (completedContinuationNoop) {
     return finishCompletedContinuationNoop({ config, state, store, observers, sessionId });
+  }
+  // On a first turn there is no earlier native result to consult. Retrying
+  // the same unstarted lookup should not turn the missing history into a fact.
+  if (noPriorResult &&
+      isSavedEvidenceAnswerRequest(completionContractGoal(config, state)) &&
+      hasOnlyReadOnlyAnswerObligations(completionTaskContract(config, state), state.meta?.activeExecutionContract)) {
+    throwIfAborted(config);
+    let result = "There is no earlier result in this session. Supply the result or name the source to check.";
+    if (/[\u3040-\u30ff]/u.test(state.goal)) {
+      result = "このセッションには前回の結果がありません。結果を貼り付けるか、確認する資料を指定してください。";
+    } else if (/\p{Script=Han}/u.test(state.goal)) {
+      result = "这个会话还没有先前的结果。可以提供原结果，或指定需要核对的资料。";
+    }
+    return stopForMissingCompletionEvidence({ config, state, store, observers, sessionId, step: 0, decision: {
+      reason: "saved_result_unavailable",
+      detail: "The session has no earlier result for the requested historical lookup.",
+      result,
+    } });
   }
 
   config = withSelectedSkillReadOnlyRoots(config, state);
