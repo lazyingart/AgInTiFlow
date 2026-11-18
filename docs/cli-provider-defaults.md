@@ -43,6 +43,23 @@ project settings unchanged. Existing project/environment overrides can therefore
 still select a provider after reset. Status returns only a closed non-secret
 object identifying the preference and its standalone scope.
 
+## Resuming a task with OpenAI
+
+For an account with Sol access, a saved CLI task can continue with its existing
+workspace permissions and local tool results:
+
+```bash
+aginti resume SESSION_ID --json --provider openai --model gpt-6.1-sol "Continue from the saved file read."
+```
+
+Sol and Astra tool turns use the Responses API with storage disabled. AgInTi
+sends only its selected function definitions. During a run it keeps recent
+encrypted reasoning frames in memory. After a process restart it starts a fresh
+provider turn from completed local calls and their recorded results. Interrupted
+commands with uncertain external effects still require reconciliation. Text-only
+planning uses Chat Completions and respects the configured output-token ceiling.
+Model availability depends on the API organization.
+
 ## Current DeepSeek names
 
 The direct DeepSeek fast default is `deepseek-flash`; the complex default remains

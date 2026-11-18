@@ -65,7 +65,7 @@ try {
     "test/explicit-command-preamble.test.js", "test/native-command-preamble.test.js",
     "test/command-mutation-observation.test.js", "test/native-command-observation.test.js",
     "test/task-document-read-role.test.js", "test/native-task-document-role.test.js",
-    "test/cli-run-resume-runtime.test.js",
+    "test/cli-run-resume-runtime.test.js", "test/native-openai-responses.test.js",
     "test/long-job-metadata.test.js",
     "test/long-job-status-publication.test.js",
     "test/deferred-job-handoff.test.js", "test/native-background-handoff-runtime.test.js",
@@ -135,8 +135,8 @@ try {
   const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, ...consumerFiles], installed, consumerTimeoutMs);
   // Baseline 3781 plus six read-window and 22 saved-result cases. Keep the verifier's
   // own fixture count in sync; a zero test-runner exit is insufficient.
-  assert.match(log, /# tests 3871\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 3871\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 3878\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 3878\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,

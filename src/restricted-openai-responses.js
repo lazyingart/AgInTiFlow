@@ -38,7 +38,7 @@ export function responsesTextRequest(request, model, frames) {
     })) } : {}) };
 }
 
-export function admitResponsesTurn(raw, request, model) {
+export function admitResponsesOutput(raw, tools, model) {
   if (!raw || typeof raw !== "object" || types.isProxy(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) ||
     Object.getOwnPropertyDescriptor(raw, "then")) invalid();
   function field(name, required = true) {
@@ -72,7 +72,7 @@ export function admitResponsesTurn(raw, request, model) {
   if (item?.type === "function_call") {
     const call = dataFields(item, ["type", "id", "status", "name", "call_id", "arguments"], ["type", "id", "name", "call_id", "arguments"]);
     if (!id(call.id) || !id(call.call_id) || (call.status !== undefined && call.status !== "completed") ||
-      !request.tools.some(tool => tool.name === call.name) || typeof call.arguments !== "string") invalid();
+      !tools.some(tool => tool.name === call.name) || typeof call.arguments !== "string") invalid();
     const args = parseRestrictedJson(call.arguments);
     items.push(item);
     return { turn: { type: "tool_calls", calls: [{ id: call.call_id, name: call.name, arguments: args }] },
@@ -85,7 +85,13 @@ export function admitResponsesTurn(raw, request, model) {
   if (part.type !== "output_text" || typeof part.text !== "string" ||
     (part.annotations != null && (!Array.isArray(part.annotations) || part.annotations.length)) ||
     (part.logprobs != null && (!Array.isArray(part.logprobs) || part.logprobs.length))) invalid();
-  const value = parseRestrictedJson(part.text);
+  return { turn: { type: "text", text: part.text } };
+}
+
+export function admitResponsesTurn(raw, request, model) {
+  const admitted = admitResponsesOutput(raw, request.tools, model);
+  if (admitted.turn.type !== "text") return admitted;
+  const value = parseRestrictedJson(admitted.turn.text);
   if (request.outputSchema.type === "object") return { turn: { type: "final", value } };
   return { turn: { type: "final", value: dataFields(value, ["proposal"]).proposal } };
 }

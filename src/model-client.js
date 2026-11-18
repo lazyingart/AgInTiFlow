@@ -10,7 +10,8 @@ import { formatBehaviorContractForPrompt } from "./behavior-contract.js";
 import { redactSensitiveText } from "./redaction.js";
 import { browserStateReconciliationGuidance } from "./browser-automation-guidance.js";
 import { summarizeMcpConfig } from "./mcp/config.js";
-import { withChatTokenBudget } from "./openai-chat-parameters.js";
+import { hasToolConversation, usesResponsesToolModel, withChatTokenBudget } from "./openai-chat-parameters.js";
+import { requestNativeOpenAIResponses } from "./native-openai-responses.js";
 import {
   providerCanRetryWithTextToolProtocol,
   providerPrefersTextToolProtocol,
@@ -227,7 +228,9 @@ export function isTransientProviderRequestError(error) {
 }
 
 export async function createChatCompletion(client, payload, config, label = "model request") {
-  const preparedPayload = withChatTokenBudget(config.provider, withChatReasoningEffort(payload, config));
+  const responses = usesResponsesToolModel(config.provider, payload.model) && hasToolConversation(payload);
+  const prepared = withChatReasoningEffort(payload, config);
+  const preparedPayload = responses ? prepared : withChatTokenBudget(config.provider, prepared);
   const timeout = resolveModelTimeoutMs(config);
   const controller = new AbortController();
   let interruptionError = null;
@@ -251,10 +254,9 @@ export async function createChatCompletion(client, payload, config, label = "mod
     interruption,
     Promise.resolve().then(() => {
       if (interruptionError) throw interruptionError;
-      return client.chat.completions.create(body, {
-        ...requestOptions(config),
-        signal: controller.signal,
-      });
+      const options = { ...requestOptions(config), signal: controller.signal };
+      return responses ? requestNativeOpenAIResponses(client, body, options, config.resume || config.sessionId)
+        : client.chat.completions.create(body, options);
     }),
   ]);
   config.abortSignal?.addEventListener("abort", abortFromParent, { once: true });
@@ -269,7 +271,7 @@ export async function createChatCompletion(client, payload, config, label = "mod
     try {
       return await request(preparedPayload);
     } catch (error) {
-      if (interruptionError || !shouldRetryWithoutReasoningEffort(error, preparedPayload)) throw error;
+      if (responses || interruptionError || !shouldRetryWithoutReasoningEffort(error, preparedPayload)) throw error;
       const { reasoning_effort: _reasoningEffort, ...retryPayload } = preparedPayload;
       return await request(retryPayload);
     }
@@ -1264,11 +1266,12 @@ export async function createPlan(client, config, state) {
     ].join("\n");
   }
 
-  const planMaxTokens = normalizeProviderId(config.provider, "") === "localllm"
+  const localPlan = normalizeProviderId(config.provider, "") === "localllm";
+  const planMaxTokens = localPlan
     ? Math.min(2048, Number(config.maxOutputTokens || 2048))
-    : 0;
+    : usesResponsesToolModel(config.provider, config.model) ? Number(config.maxOutputTokens || 0) : 0;
   const localContextWindow = Number(config.contextWindowTokens || 32768);
-  const planGoal = planMaxTokens > 0
+  const planGoal = localPlan
     ? compactTextForTokenBudget(
         state.goal,
         Math.max(2048, Math.min(8192, Math.floor(localContextWindow * 0.3))),
