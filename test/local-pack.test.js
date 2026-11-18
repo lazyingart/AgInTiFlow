@@ -19,6 +19,7 @@ test("concurrent private builds with the same release name preserve the winning 
     const cwd = path.join(temp, label);
     await fs.mkdir(path.join(cwd, "scripts"), { recursive: true });
     await fs.copyFile(helper, path.join(cwd, "scripts/pack-local.mjs"));
+    await fs.copyFile(path.join(path.dirname(helper), "retain-archive.mjs"), path.join(cwd, "scripts/retain-archive.mjs"));
     await fs.writeFile(path.join(cwd, "package.json"), JSON.stringify({
       name: "release-name-fixture", version: "0.1.0-preview.1", private: true,
       files: ["README.md"], scripts: { "pack:local": "node scripts/pack-local.mjs" },
