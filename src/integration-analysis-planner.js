@@ -84,7 +84,7 @@ import {
   integrationModelTransport,
   createIntegrationHostedModelClient,
 } from "./integration-model-binding.js";
-import { redactSensitiveText } from "./redaction.js";
+import { redactIntegrationTextPaths } from "./integration-conversation-text.js";
 import { researchSynthesisMessages, renderResearchSynthesis } from "./integration-research-synthesis.js";
 import { validateIntegrationAnalysisVisionEvidence } from "./integration-analysis-vision.js";
 import {
@@ -624,16 +624,17 @@ function truncateUtf8(value, maximumBytes) {
   return `${body}${suffix}`;
 }
 
-function sanitizePublicText(value, maximumBytes = PUBLIC_TEXT_MAX_BYTES) {
+function sanitizePublicText(value, maximumBytes = PUBLIC_TEXT_MAX_BYTES, options) {
   const withoutControls = String(value ?? "").replace(
     /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\p{Cf}\u034f\ufe00-\ufe0f\u{e0100}-\u{e01ef}]/gu,
     ""
   );
-  const redacted = redactSensitiveText(withoutControls).replace(ABSOLUTE_PATH_PATTERN, (match) => {
-    const prefix = /^[\s("'`<>\[{=]/u.test(match) ? match[0] : "";
-    return `${prefix}[REDACTED_PATH]`;
-  });
+  const redacted = redactIntegrationTextPaths(withoutControls, ABSOLUTE_PATH_PATTERN, options);
   return truncateUtf8(redacted, maximumBytes);
+}
+
+function sanitizeConversationText(value, maximumBytes = PUBLIC_TEXT_MAX_BYTES) {
+  return sanitizePublicText(value, maximumBytes, { conversation: true });
 }
 
 function imperativeActionText(value) {
@@ -885,7 +886,7 @@ function boundedPublicInputText(value, label, maximumBytes, { minimum = 1 } = {}
   if (bytes < minimum || bytes > maximumBytes) {
     fail("ANALYSIS_REQUEST_INVALID", `${label} exceeds its byte bound.`, { status: 400 });
   }
-  const sanitized = sanitizePublicText(value, maximumBytes).trim();
+  const sanitized = sanitizeConversationText(value, maximumBytes).trim();
   if (minimum > 0 && !sanitized) {
     fail("ANALYSIS_REQUEST_INVALID", `${label} must contain public text.`, { status: 400 });
   }
@@ -1246,7 +1247,7 @@ function normalizeModelMessage(response) {
   const content = message.content === null || message.content === undefined
     ? ""
     : typeof message.content === "string"
-      ? sanitizePublicText(message.content).trim()
+      ? sanitizeConversationText(message.content).trim()
       : fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "LocalLLM returned unsupported assistant content.", { status: 502 });
   return Object.freeze({
     content,
@@ -2633,12 +2634,12 @@ function publicFinalResult({ text, toolCalls, artifacts, executionStatus, jsonOb
   if (jsonObject) {
     try {
       if (Buffer.byteLength(text) > PUBLIC_TEXT_MAX_BYTES) throw new RangeError();
-      output = publicInferenceJson(text, sanitizePublicText);
+      output = publicInferenceJson(text, sanitizeConversationText);
     } catch {
       fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "Inference-only response must contain one unambiguous JSON object.", { status: 502 });
     }
   } else {
-    output = sanitizePublicText(text).trim();
+    output = sanitizeConversationText(text).trim();
   }
   return Object.freeze({
     schemaVersion: INTEGRATION_ANALYSIS_PLANNER_SCHEMA_VERSION,
@@ -3244,7 +3245,7 @@ function createPlanner({
           fail("ANALYSIS_MODEL_PROTOCOL_INVALID", "Inference-only response must be complete text without tool calls.", { status: 502 });
         }
         // Do not interpret a textual code/tool example as an executable call.
-        content = json ? message.content : sanitizePublicText(message.content).trim();
+        content = json ? message.content : sanitizeConversationText(message.content).trim();
         assertNotAborted(signal);
       } catch (error) {
         throw translateError(error, signal);

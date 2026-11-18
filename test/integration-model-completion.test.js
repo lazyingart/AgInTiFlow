@@ -8,6 +8,8 @@ import { createTestOnlyIntegrationAnalysisCoordinator } from "../src/integration
 import { createTestOnlyIntegrationAnalysisPlanner } from "../src/integration-analysis-planner.js";
 import { createTestOnlyIntegrationAnalysisSessionService } from "../src/integration-analysis-session-service.js";
 
+import { projectPublicIntegrationResponse } from "../src/integration-api.js";
+
 const scope = {
   principalId: "completion-protocol-fixture",
   browserSessionId: "a".repeat(64),
@@ -28,7 +30,10 @@ function fixture(value, provider = "deepseek") {
         ? { provider, baseURL: "http://127.0.0.1:8008/v1", model: "localllm-fast" }
         : { provider, baseURL: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", apiKey: "synthetic-not-a-real-provider-credential", thinking: "disabled" }),
     },
-    complete: async () => { modelCalls++; return value; },
+    complete: async (_client, payload) => {
+      modelCalls++;
+      return typeof value === "function" ? value(payload) : value;
+    },
   });
   return { coordinator, planner, workerCalls: () => workerCalls, modelCalls: () => modelCalls };
 }
@@ -161,3 +166,118 @@ for (const inference of [undefined, { responseFormat: "text" }, { responseFormat
     } finally { f.coordinator.close(); }
   });
 }
+
+test("editor text preserves paired delimiters and private path redaction through restart and resume", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-editor-replay-"));
+  const context = {
+    principalId: scope.principalId, principal: { id: scope.principalId },
+    browserSessionId: scope.browserSessionId, browserSession: { id: scope.browserSessionId },
+  };
+  const source = '<unit id="7"><em>雾港</em> — open /scratch/work.txt</unit>';
+  const safeSource = source.replace("/scratch/work.txt", "[REDACTED_PATH]");
+  const answer = { translation: '<unit id="7"><em>Fog Harbour</em></unit>' };
+  const wires = [];
+  const f = fixture(payload => {
+    wires.push(payload.messages);
+    assert.equal(payload.tools, undefined);
+    const value = response();
+    value.choices[0].message.content = JSON.stringify(answer);
+    return value;
+  });
+  const open = () => createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: f.planner, stateRoot: root });
+  let service = open();
+  try {
+    const { thread } = await service.createThread({ title: "Bilingual passage" }, context);
+    const { run } = await service.startRun({ threadId: thread.id, input: {
+      text: source, inference: { responseFormat: "json_object" },
+    } }, context);
+    await service.waitForIdle();
+    assert.equal(wires[0].at(-1).content, safeSource);
+    await service.close({ mode: "wait" });
+    service = open();
+    const p = { runId: run.id };
+    const status = await service.getRunStatus(p, context);
+    const projected = projectPublicIntegrationResponse("/agent/v1/runs/status", status, p, context).run;
+    assert.equal(projected.status, "completed");
+    assert.deepEqual(JSON.parse(projected.output), answer);
+    const get = { threadId: thread.id };
+    const persisted = projectPublicIntegrationResponse("/agent/v1/threads/get", await service.getThread(get, context), get, context);
+    assert.deepEqual(persisted.thread.messages.map(m => m.content), [safeSource, projected.output]);
+    const { publicEventLedger } = await service.loadRunEvents({ ...p, afterSeq: 0, afterHash: "0".repeat(64) }, context);
+    const events = await publicEventLedger.loadEventsAfter(0);
+    assert.equal(events.filter(e => e.type === "output.delta").map(e => e.payload.text).join(""), projected.output);
+    const follow = await service.resumeRun({ runId: run.id, input: {
+      text: "Keep the formatting and check the place name.", inference: { responseFormat: "json_object" },
+    } }, context);
+    await service.waitForIdle();
+    assert.equal(follow.run.previousRunId, run.id);
+    assert(wires[1].some(m => m.content === safeSource));
+    assert(wires[1].some(m => m.content === projected.output));
+    assert.equal(f.modelCalls(), 2);
+    assert.equal(f.workerCalls(), 0);
+  } finally {
+    await service.close({ mode: "abort" });
+    f.coordinator.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("only paired text delimiters qualify; path, secret and structured-field guards remain active", async () => {
+  const examples = [
+    ['[draft] <line>A <b>B</b></line>.', '[draft] <line>A <b>B</b></line>.'],
+    ['<note href="/private/file.txt">A</note>', '<note href="[REDACTED_PATH]">A</note>'],
+    ['<cell></cell><cell/> </cell>', '<cell></cell><cell/> <[REDACTED_PATH]>'],
+    ['<a><b>text</a></b>', '<a><b>text<[REDACTED_PATH]><[REDACTED_PATH]>'],
+    ['<sample>path </sample/subdir> /data/item', '<sample>path <[REDACTED_PATH]> [REDACTED_PATH]'],
+    ['<sample>bad </Sample>', '<sample>bad <[REDACTED_PATH]>'],
+    ['<sample>bad </sample extra>', '<sample>bad <[REDACTED_PATH] extra>'],
+    ['<note>Use C:\\Temp\\item or file:///private/item</note>', '<note>Use [REDACTED_PATH] or [REDACTED_PATH]</note>'],
+    ['{"x":"<name>","y":"</name>"}', '{"x":"<name>","y":"<[REDACTED_PATH]>"}'],
+    ['<script>example</script>', '<script>example<[REDACTED_PATH]>'],
+    ['<note>api_key=example-private-value end</note>', '<note>api_key=[REDACTED] end</note>'],
+  ];
+  let answer;
+  const f = fixture(() => {
+    const value = response();
+    value.choices[0].message.content = answer;
+    return value;
+  });
+  try {
+    for (const [input, expected] of examples) {
+      answer = input;
+      const result = await f.planner.run(scope, { prompt: "Repeat the sample.", inference: { responseFormat: "text" } });
+      assert.equal(result.text, expected);
+    }
+    assert.equal(f.workerCalls(), 0);
+  } finally { f.coordinator.close(); }
+});
+
+test("long Unicode text and a closing element at an event boundary replay losslessly", async () => {
+  // The '<' lands at UTF-16 offset 3999. Splitting immediately after it
+  // would turn the next event into an apparent absolute path.
+  const passage = "<root>" + "x".repeat(3993) + "</root>" + "🍋".repeat(2600);
+  const value = response();
+  value.choices[0].message.content = passage;
+  const f = fixture(value, "localllm");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-unicode-events-"));
+  const service = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: f.planner, stateRoot: root });
+  try {
+    const { thread } = await service.createThread({ title: "Long passage" }, scope);
+    const { run } = await service.startRun({ threadId: thread.id, input: {
+      text: "Return the sample.", inference: { responseFormat: "text" },
+    } }, scope);
+    await service.waitForIdle();
+    const { publicEventLedger } = await service.loadRunEvents({ runId: run.id, afterSeq: 0, afterHash: "0".repeat(64) }, scope);
+    const events = await publicEventLedger.loadEventsAfter(0);
+    assert.equal(events.at(-1).type, "run.completed");
+    const chunks = events.filter(e => e.type === "output.delta").map(e => e.payload.text);
+    assert(chunks.length >= 3);
+    assert(chunks.every(chunk => chunk.length <= 4000 && chunk.isWellFormed()));
+    assert.equal(chunks.join(""), passage);
+    assert.equal(f.workerCalls(), 0);
+  } finally {
+    await service.close({ mode: "abort" });
+    f.coordinator.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

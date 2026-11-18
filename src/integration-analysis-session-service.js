@@ -153,7 +153,7 @@ import {
   INTEGRATION_ANALYSIS_STATE_STORAGE_V3,
   integrationAnalysisStateStorageVersion,
 } from "./integration-analysis-state-persistence.js";
-import { redactSensitiveText } from "./redaction.js";
+import { redactIntegrationTextPaths } from "./integration-conversation-text.js";
 import {
   INTEGRATION_ANALYSIS_PRIOR_ARTIFACT_AUTHORITY_POLICY,
   INTEGRATION_ANALYSIS_SESSION_SCHEMA_VERSION,
@@ -410,13 +410,15 @@ function stateDigest(value, label) {
   }
 }
 
-function publicText(value, label, maximum = 32_000) {
+function publicText(value, label, options) {
+  const maximum = 32_000;
   const checked = integrationBoundedText(String(value ?? ""), label, maximum);
-  const redacted = redactSensitiveText(checked).replace(PRIVATE_PATH_PATTERN, (match) => {
-    const prefix = /^[\s("'`<>\[{=]/u.test(match) ? match[0] : "";
-    return `${prefix}[REDACTED_PATH]`;
-  });
+  const redacted = redactIntegrationTextPaths(checked, PRIVATE_PATH_PATTERN, options);
   return redacted.length <= maximum ? redacted : redacted.slice(0, maximum);
+}
+
+function conversationText(value, label) {
+  return publicText(value, label, { conversation: true });
 }
 
 function publicErrorCode(error) {
@@ -1287,7 +1289,7 @@ function appendMessage(thread, { role, content, runId, createdAt, attachments })
   const message = {
     id: newMessageId(),
     role,
-    content: publicText(content, "public message content"),
+    content: conversationText(content, "public message content"),
     runId: validateIntegrationRunId(runId),
     createdAt: canonicalTimestamp(createdAt, "public message createdAt"),
     ...(attachments === undefined || attachments.length === 0
@@ -2094,7 +2096,7 @@ function validateRun(run, scope, threadIds, state) {
       if ((run.search !== undefined) !== (checkpoint.currentSourceId !== null)) corrupt();
       if (checkpoint.report !== null && checkpoint.currentSourceId === null) corrupt();
       if (checkpoint.report !== null && publicText(checkpoint.report, "paper checkpoint report") !== checkpoint.report) corrupt();
-      if (checkpoint.completionText !== null && publicText(checkpoint.completionText, "paper checkpoint completion") !== checkpoint.completionText) corrupt();
+      if (checkpoint.completionText !== null && conversationText(checkpoint.completionText, "paper checkpoint completion") !== checkpoint.completionText) corrupt();
     } catch (error) { corrupt(error); }
   }
   if (typeof run.inputMessageId !== "string" || !/^msg_[A-Za-z0-9_-]{16,96}$/u.test(run.inputMessageId)) corrupt();
@@ -6983,13 +6985,13 @@ function createService(options, { testOnly }) {
       if (inference.responseFormat === "json_object") {
         try {
           const raw = integrationBoundedText(result.text, "analysis runner text", 32_000);
-          text = publicInferenceJson(raw, value => publicText(value, "analysis runner text"));
+          text = publicInferenceJson(raw, value => conversationText(value, "analysis runner text"));
         } catch {
           fail("ANALYSIS_RUNNER_PROTOCOL_INVALID", "Inference-only JSON response is invalid.", { status: 502 });
         }
       }
     }
-    text ??= publicText(result.text, "analysis runner text");
+    text ??= conversationText(result.text, "analysis runner text");
     return Object.freeze({
       schemaVersion: result.schemaVersion,
       text,
@@ -7002,9 +7004,16 @@ function createService(options, { testOnly }) {
 
   function outputChunks(text) {
     const chunks = [];
-    const characters = Array.from(text);
-    for (let index = 0; index < characters.length; index += 4_000) {
-      chunks.push(characters.slice(index, index + 4_000).join(""));
+    // Event text is bounded in UTF-16 units. Keep Unicode scalars intact,
+    // and keep "</" together so replay never sees a new standalone root path.
+    for (let start = 0; start < text.length;) {
+      let end = Math.min(start + 4_000, text.length);
+      if (end < text.length) {
+        const next = text.charCodeAt(end);
+        if ((next >= 0xdc00 && next <= 0xdfff) || (text[end - 1] === "<" && text[end] === "/")) end--;
+      }
+      chunks.push(text.slice(start, end));
+      start = end;
     }
     return chunks;
   }
@@ -7416,7 +7425,7 @@ function createService(options, { testOnly }) {
         ? await inspect(scope, (state) => findRun(state, previousRunId).threadId)
         : payload.threadId
     );
-    const prompt = publicText(normalizePrompt(payload.input?.text ?? ""), "analysis prompt");
+    const prompt = conversationText(normalizePrompt(payload.input?.text ?? ""), "analysis prompt");
     if (payload.input?.searchInference !== undefined && typeof payload.input.searchInference !== "boolean") {
       fail("INVALID_REQUEST", "Search inference control must be a boolean.", { status: 400 });
     }

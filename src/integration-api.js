@@ -82,7 +82,7 @@ import {
   IDEMPOTENCY_STARTUP_RECOVERY_SCHEMA_VERSION,
   assertFileIntegrationIdempotencyStore,
 } from "./integration-idempotency-store.js";
-import { redactSensitiveText } from "./redaction.js";
+import { redactIntegrationTextPaths } from "./integration-conversation-text.js";
 
 export const INTEGRATION_SERVICE_METHODS = Object.freeze({
   [INTEGRATION_RPC_PATHS.threadsList]: "listThreads",
@@ -130,11 +130,8 @@ class IntegrationApiError extends Error {
   }
 }
 
-function redactPublicText(value) {
-  return redactSensitiveText(value).replace(ABSOLUTE_PATH_PATTERN, (match) => {
-    const prefix = /^[\s("'`<>\[{=]/u.test(match) ? match[0] : "";
-    return `${prefix}[REDACTED_PATH]`;
-  });
+function redactPublicText(value, options) {
+  return redactIntegrationTextPaths(value, ABSOLUTE_PATH_PATTERN, options);
 }
 
 function errorStatus(error) {
@@ -451,7 +448,7 @@ function publicMessage(value = {}, index) {
   return Object.freeze({
     id: message.id,
     role: message.role,
-    content: integrationBoundedText(redactPublicText(message.content), `thread message[${index}].content`, 32_000),
+    content: integrationBoundedText(redactPublicText(message.content, { conversation: true }), `thread message[${index}].content`, 32_000),
     runId: validateIntegrationRunId(message.runId),
     createdAt: safeTimestamp(message.createdAt, `thread message[${index}].createdAt`),
     digest: safeDigest(message.digest, `thread message[${index}].digest`),
@@ -551,7 +548,7 @@ export function sanitizePublicIntegrationRun(value = {}, options = {}) {
     startedAt: safeTimestamp(value.startedAt, "run startedAt", { nullable: true }),
     completedAt: safeTimestamp(value.completedAt, "run completedAt", { nullable: true }),
     cancelRequestedAt: safeTimestamp(value.cancelRequestedAt, "run cancelRequestedAt", { nullable: true }),
-    output: integrationBoundedText(redactPublicText(value.output || ""), "run output", 32_000),
+    output: integrationBoundedText(redactPublicText(value.output || "", { conversation: true }), "run output", 32_000),
     error: value.error
       ? Object.freeze({
           code: publicLabel(value.error.code, "run error code", 96, { redact: false }),
