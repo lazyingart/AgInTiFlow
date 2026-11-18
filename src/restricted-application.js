@@ -459,7 +459,7 @@ function containsTextToolProtocol(content) {
 export function createRestrictedDeepSeekProvider(options) {
   const fields = dataFields(options, ["complete", "model"]);
   const complete = callback(fields.complete);
-  if (!["deepseek-flash", "deepseek-v4-pro"].includes(fields.model)) fail();
+  if (!["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"].includes(fields.model)) fail();
   return createNativeStructuredProvider({
     model: fields.model, supportsImages: false,
     async complete(body, options) {

@@ -6,9 +6,10 @@ This local preview is private, unpublished and not a general agent service.
 It includes no CLI/server, shell/filesystem/browser/vision tools, MCP, plugins,
 skills, environment loader, session store or automatic fallback.
 
-Preview 22 sends the host's output ceiling as `max_completion_tokens` for
-OpenAI GPT-5 and `max_tokens` for DeepSeek Flash and Pro. The app chooses
-the provider, credentials and tool permissions.
+Preview 23 accepts both explicit Flash model names, `deepseek-flash` and
+`deepseek-v4-flash`, alongside `deepseek-v4-pro`. The HTTP request carries the
+name the host selected. The output ceiling travels as `max_completion_tokens`
+for OpenAI GPT-5 and `max_tokens` for DeepSeek.
 
 ## Consumption
 
@@ -21,12 +22,15 @@ mkdir -p artifacts
 npm run pack:local
 ```
 
-The result is `artifacts/lazyingart-agintilite-0.1.0-preview.22.tgz`.
-Use the reviewed tarball and its SHA-256 digest as the deployment input, not a
-mutable worktree symlink. In a disposable qualification project:
+The result is `artifacts/lazyingart-agintilite-0.1.0-preview.23.tgz`.
+Two historical private builds carried version `0.1.0-preview.22` with different
+provider support. Pin the reviewed SHA-256 digest when installing a private
+archive. Teams can use `npm run pack:local -- /path/to/shared/releases` across
+worktrees. Repacking identical bytes succeeds. A conflicting archive at the same
+destination stops the build and preserves the existing file.
 
 ```sh
-npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.22.tgz
+npm install --offline --ignore-scripts --no-audit --no-fund /absolute/path/to/lazyingart-agintilite-0.1.0-preview.23.tgz
 ```
 
 The package root and `/restricted-application` export the same seven names:
@@ -198,8 +202,8 @@ also have ambiguous raw JSON rejected by the host transport.
 `createRestrictedDeepSeekProvider({model,complete})` is the explicit
 non-thinking DeepSeek wire profile. Supply it to the same bounded runner.
 
-Exact factory options are `model,complete`. It accepts only `deepseek-flash`
-or `deepseek-v4-pro`, returns `supportsImages:false`, requests `json_object`
+Exact factory options are `model,complete`. It accepts only `deepseek-flash`,
+`deepseek-v4-flash` or `deepseek-v4-pro`, returns `supportsImages:false`, requests `json_object`
 with `thinking:{type:"disabled"}`, and includes the exact final schema in the
 system instruction. Local runner/schema validation remains mandatory. This is
 an explicit profile, not an automatic downgrade from the JSON-schema adapter.
@@ -207,6 +211,9 @@ It imports no provider SDK and starts no HTTP request. `hostTransport` is the
 application's authenticated, fixed-endpoint, no-redirect, no-retry transport.
 Its authentication, response byte limits and actual abort behavior require
 the application's own qualification.
+
+Prefer `deepseek-flash`. Explicit legacy `deepseek-v4-flash` is unchanged on
+wire, not a weight pin or fallback.
 
 Native calls may carry English/Chinese/Japanese commentary. Competing DSML,
 XML, requested-tool or JSON/YAML tool markers reject before reads. Malformed

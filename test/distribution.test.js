@@ -90,6 +90,9 @@ test("tarball is reproducible, allowlisted, and installs/runs offline without so
     assert.deepEqual(modules, ["@lazyingart"]);
     assert.deepEqual(await fs.readdir(path.join(consumer, "node_modules", "@lazyingart")), ["agintilite"]);
     const installedRoot = path.join(consumer, "node_modules", "@lazyingart", "agintilite");
+    const selection = path.join(consumer, "installed-provider-selection.mjs");
+    await fs.copyFile(path.join(root, "test/fixtures/installed-provider-selection.mjs"), selection);
+    command(process.execPath, [selection], consumer);
     for (const file of packageFiles) {
       const bytes = await fs.readFile(path.join(installedRoot, file));
       assert.deepEqual(bytes, await fs.readFile(path.join(root, file)));
