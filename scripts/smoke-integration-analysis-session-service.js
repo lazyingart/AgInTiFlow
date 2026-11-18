@@ -4515,14 +4515,31 @@ async function main() {
     assert.equal((await fs.stat(root)).mode & 0o777, 0o700);
     assert.equal((await fs.stat(persistedFile)).mode & 0o777, 0o600);
 
-    const rejectedSecondOwner = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });
-    await expectCode(rejectedSecondOwner.getRunStatus({ runId }, context()), "ANALYSIS_SERVICE_BUSY");
-    await rejectedSecondOwner.close();
+    const restarted = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });
+    const callsBeforeHandoff = fakeRunner.calls.length;
+    await Promise.all([
+      expectCode(restarted.recoverBeforeListen(), "ANALYSIS_SERVICE_BUSY"),
+      expectCode(restarted.getRunStatus({ runId }, context()), "ANALYSIS_SERVICE_BUSY"),
+      expectCode(restarted.createThread({ title: "Blocked write" }, context()), "ANALYSIS_SERVICE_BUSY"),
+    ]);
+    assert.equal(await fs.readFile(persistedFile, "utf8"), persistedText);
     await service.close({ mode: "wait" });
 
-    const restarted = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });
+    const [firstRecovery, sameRecovery] = await Promise.all([
+      restarted.recoverBeforeListen(), restarted.recoverBeforeListen(),
+    ]);
+    assert.equal(firstRecovery.beforeListen, true);
+    assert.deepEqual(firstRecovery, sameRecovery);
+    const contender = createTestOnlyIntegrationAnalysisSessionService({ analysisRunner: fakeRunner, stateRoot: root });
+    try {
+      await expectCode(contender.getRunStatus({ runId }, context()), "ANALYSIS_SERVICE_BUSY");
+    } finally {
+      await contender.close();
+    }
+    await expectCode(contender.recoverBeforeListen(), "ANALYSIS_SERVICE_CLOSED");
     const restartedRun = (await restarted.getRunStatus({ runId }, context())).run;
     assert.equal(restartedRun.eventCursor.lastHash, completed.eventCursor.lastHash);
+    assert.equal(fakeRunner.calls.length, callsBeforeHandoff);
     const restartedEventsResult = await restarted.loadRunEvents(eventsRequest(runId), context());
     const restartedEvents = await restartedEventsResult.publicEventLedger.loadEventsAfter(0);
     assert.deepEqual(restartedEvents, events, "durable event replay changed after service recreation");

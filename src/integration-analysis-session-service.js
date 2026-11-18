@@ -4488,11 +4488,14 @@ function createService(options, { testOnly }) {
         await acquired;
       })();
     }
+    const acquisition = ownershipPromise;
     try {
-      await ownershipPromise;
+      await acquisition;
     } catch (error) {
       if (error instanceof IntegrationAnalysisSessionError) throw error;
       if (error?.code === "INTEGRATION_AUTHORITY_BUSY") {
+        // A later request can acquire the root after its current owner releases it.
+        if (ownershipPromise === acquisition) ownershipPromise = null;
         fail("ANALYSIS_SERVICE_BUSY", "Another durable analysis service owns this state root.", {
           status: 503,
           cause: error,
