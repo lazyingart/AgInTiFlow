@@ -36,10 +36,10 @@ async function actor(f, mode, worker = 0) {
     execArgv: [], stdio: ["ignore", "pipe", "pipe", "ipc"],
     env: { PATH: process.env.PATH, HOME: f.root, LANG: "C.UTF-8", AGINTIFLOW_HOME: path.join(f.root, "home"), AGINTIFLOW_HOUSEKEEPING: "0" },
   });
-  let diagnostics = "";instance.stderr.on("data", b => diagnostics += b);instance.stdout.resume();
+  let diagnostics = "";instance.stderr.on("data", b => diagnostics = (diagnostics + b).slice(-4096));instance.stdout.resume();
   const messages = [], updates = [];
   instance.on("message", message => { messages.push(message); for (const done of updates.splice(0)) done(); });
-  const closed = new Promise(resolve => instance.once("close", (code, signal) => { for (const done of updates.splice(0)) done(); resolve({ code, signal }); }));
+  const closed = new Promise(resolve => instance.once("close", (code, signal) => { for (const done of updates.splice(0)) done(); resolve({ code, signal, ...(code !== 0 && diagnostics ? { diagnostics } : {}) }); }));
   const result = { instance, closed, async message(type) {
     while (!messages.some(m => m.type === type)) {
       if (instance.exitCode !== null || instance.signalCode !== null) throw Error(`Child ended before ${type}: ${diagnostics}`);
@@ -214,6 +214,40 @@ for (const mode of ["crash-owner", "crash-publication", "crash-linked", "crash-r
     const release = await f.store.acquireInboxLock(); await release(); assert.deepEqual(await fs.readdir(f.store.sessionDir), []);
   });
 }
+
+for (const pause of ["before-open", "after-open"]) test(`a waiting writer tolerates normal lock turnover ${pause}`, async t => {
+  const f = await fixture(t), entered = gate(), proceed = gate(), originalOpen = fs.open;
+  const releaseFirst = await f.store.acquireInboxLock();
+  // Keep its inode allocated through successor publication in both schedules.
+  const firstHandle = await originalOpen(f.lock, "r");
+  let armed = true, releaseSecond, waiting;
+  t.mock.method(fs, "open", async (target, ...args) => {
+    if (target !== f.lock || !armed) return originalOpen(target, ...args);
+    armed = false;
+    if (pause === "before-open") {
+      entered.resolve(); await bounded(proceed.promise, "resume before open");
+      return originalOpen(target, ...args);
+    }
+    const handle = await originalOpen(target, ...args);
+    entered.resolve(); await bounded(proceed.promise, "resume after unlink");
+    return handle;
+  });
+  try {
+    waiting = observed(f.store.acquireInboxLock());
+    await bounded(entered.promise, "observe first owner");
+    await releaseFirst();
+    releaseSecond = await f.store.acquireInboxLock();
+    const bytes = await fs.readFile(f.lock);
+    proceed.resolve();
+    const result = await bounded(waiting, "contender under successor");
+    assert.equal(result.error?.code, "INBOX_LOCK_TIMEOUT", result.error?.message);
+    assert.deepEqual(await fs.readFile(f.lock), bytes);
+  } finally {
+    proceed.resolve();
+    await releaseFirst(); await releaseSecond?.(); await firstHandle.close();
+    if (waiting) await (await bounded(waiting, "writer cleanup")).value?.();
+  }
+});
 
 test("four real processes serialize forty queue writes and exact critical sections", { timeout: 30000 }, async t => {
   const f = await fixture(t), actors = await Promise.all([0, 1, 2, 3].map(worker => actor(f, "stress", worker)));

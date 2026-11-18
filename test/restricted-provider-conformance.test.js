@@ -3,6 +3,51 @@ import test from "node:test";
 import { getEventListeners } from "node:events";
 import { createRestrictedApplicationRunner, createRestrictedDeepSeekProvider, createRestrictedOpenAIProvider } from "../src/restricted-application.js";
 import { qualifyRestrictedProviderFactory } from "../scripts/fixtures/restricted-provider-conformance.js";
+import { withChatTokenBudget } from "../src/openai-chat-parameters.js";
+
+test("Sol and Astra text requests keep the caller's ceiling and strict proposal schema", async () => {
+  const schema = { type: "object", properties: { reply: { type: "string", maxLength: 64 } }, required: ["reply"], additionalProperties: false };
+  for (const model of ["gpt-6.1-sol", "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.2-astra-2026-11-01"]) {
+    const requests = [];
+    const provider = createRestrictedOpenAIProvider({ model, supportsImages: false, complete(body) {
+      requests.push(body);
+      return { choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"reply":"ok"}' } }] };
+    } });
+    const app = createRestrictedApplicationRunner({ instructions: "Translate supplied text.", outputSchema: schema,
+      tools: [], provider, limits: { maxSteps: 1, maxOutputTokens: 640 } });
+    const result = await app.run({ input: [{ type: "text", text: "Translate bonjour." }] });
+    assert.equal(result.proposal.reply, "ok");
+    assert.equal(requests.length, 1);
+    const [body] = requests;
+    assert.equal(body.model, model);
+    assert.equal(body.max_completion_tokens, 640);
+    assert.equal(body.response_format.json_schema.strict, true);
+    for (const key of ["tools", "temperature", "max_tokens"]) assert.ok(!Object.hasOwn(body, key));
+  }
+});
+
+test("text-only OpenAI Chat rejects tool semantics before dispatch and leaves other providers intact", async () => {
+  const body = Object.freeze({ model: "gpt-6.2-sol", messages: [], max_tokens: 97, temperature: 0,
+    top_p: 0.9, logprobs: false, top_logprobs: 0, tool_choice: "none", parallel_tool_calls: false,
+    tools: [], functions: [], function_call: "none", reasoning_effort: "medium" });
+  assert.deepEqual(withChatTokenBudget("openai", body), { model: body.model, messages: [], max_completion_tokens: 97, reasoning_effort: "medium" });
+  assert.strictEqual(withChatTokenBudget("deepseek", body), body);
+  assert.throws(() => withChatTokenBudget("openai", { ...body, max_completion_tokens: 500 }), /Conflicting/);
+  assert.equal(withChatTokenBudget("openai", { ...body, model: "gpt-5.4-mini" }).temperature, 0);
+  for (const extra of [{ tools: [{}] }, { functions: [{}] }, { tool_choice: "auto" }, { function_call: { name: "read" } },
+    { messages: [{ role: "tool" }] }, { messages: [{ role: "function" }] },
+    { messages: [{ role: "assistant", tool_calls: [{}] }] }, { messages: [{ role: "assistant", function_call: { name: "read" } }] }]) {
+    assert.throws(() => withChatTokenBudget("openai", { ...body, ...extra }), { code: "OPENAI_RESPONSES_TOOLS_REQUIRED" });
+  }
+  let dispatched = 0;
+  const provider = createRestrictedOpenAIProvider({ model: body.model, supportsImages: false, complete() { dispatched++; } });
+  const objectSchema = { type: "object", properties: {}, required: [], additionalProperties: false };
+  const app = createRestrictedApplicationRunner({ instructions: "Read the record.", provider, outputSchema: objectSchema,
+    tools: [{ name: "read_record", description: "Read a single record.", readOnly: true, inputSchema: objectSchema,
+      outputSchema: objectSchema, execute() { assert.fail("unexpected tool execution"); } }] });
+  await assert.rejects(app.run({ input: [{ type: "text", text: "Read the record." }] }));
+  assert.equal(dispatched, 0);
+});
 
 test("a server-selected OpenAI model can read the scoped record and return a bounded proposal", async () => {
   const schema = { type: "object", properties: { room: { type: "string", maxLength: 20 } }, required: ["room"], additionalProperties: false };

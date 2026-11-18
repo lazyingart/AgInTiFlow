@@ -60,7 +60,13 @@ async function snapshot(target) {
     if (!safeFile(beforeName)) throw unavailable("Inbox lock metadata has an unsafe type, owner, mode or size.");
     handle = await fs.open(target, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
     const before = await handle.stat({ bigint: true });
-    if (!sameInode(beforeName, before) || !safeFile(before)) throw unavailable("Inbox lock identity changed during open.");
+    // Another writer can release or replace the name between lstat, open and
+    // fstat. Discard that observation. Acquisition must still win a fresh link
+    // before entering, and a reaper must still prove the current owner dead.
+    if (!sameInode(beforeName, before) || before.nlink === 0n) {
+      const closing = handle; handle = null; await closing.close(); return null;
+    }
+    if (!safeFile(before)) throw unavailable("Inbox lock metadata is unsafe after open.");
     const bytes = Buffer.alloc(MAX_BYTES + 1); let used = 0;
     while (used < bytes.length) {
       const read = await handle.read(bytes, used, bytes.length - used, used);
