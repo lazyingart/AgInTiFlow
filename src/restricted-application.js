@@ -2,6 +2,7 @@ import { types } from "node:util";
 import { performance } from "node:perf_hooks";
 import { addAbortListener } from "node:events";
 import { withChatTokenBudget } from "./openai-chat-parameters.js";
+import { responsesTextRequest, admitResponsesTurn, maxReplayBytes } from "./restricted-openai-responses.js";
 import { inspectIntegrationAnalysisImageBytes } from "./integration-analysis-image.js";
 import {
   RestrictedApplicationError, fail, dataFields, jsonSnapshot, integer, text,
@@ -367,6 +368,38 @@ function invocationNativeCalls(calls, messages) {
 // vision qualification; neither environment nor provider fallback is consulted.
 export function createRestrictedOpenAIProvider(options) {
   return createNativeStructuredProvider(options);
+}
+
+// A separate explicit native transport for Sol/Astra read-only app tools.
+// The runner owns all dispatch, schema checks, deadlines and final review.
+export function createRestrictedOpenAIResponsesProvider(options) {
+  const fields = dataFields(options, ["complete", "model"]);
+  const send = callback(fields.complete), model = fields.model;
+  if (!["gpt-6.1-sol", "gpt-6.2-sol", "gpt-6.2-astra"].includes(model)) fail();
+  const runs = new WeakMap();
+  return Object.freeze({ supportsImages: false, async complete(request, { signal }) {
+    signalValue(signal);
+    if (!signal || signal.aborted) fail("CANCELLED");
+    let state = runs.get(signal);
+    if (!state) {
+      state = { frames: new Map(), bytes: 0 };
+      runs.set(signal, state);
+      addAbortListener(signal, () => { state.frames.clear(); runs.delete(signal); });
+    }
+    const body = responsesTextRequest(request, model, state.frames);
+    const { value: raw } = await invokeCallback(send, [body, { signal }]);
+    if (signal.aborted) fail("CANCELLED");
+    return nativeResponseValidation(() => {
+      const { turn, frame } = admitResponsesTurn(raw, request, model);
+      if (frame) {
+        const callId = turn.calls[0].id;
+        const bytes = Buffer.byteLength(JSON.stringify(frame));
+        if (state.frames.has(callId) || state.bytes + bytes > maxReplayBytes) fail("PROVIDER_PROTOCOL_INVALID");
+        state.frames.set(callId, jsonSnapshot(frame, { maxBytes: maxReplayBytes })); state.bytes += bytes;
+      }
+      return turn;
+    });
+  } });
 }
 
 function createNativeStructuredProvider(options, providerId = "openai") {

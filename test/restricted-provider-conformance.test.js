@@ -1,9 +1,129 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getEventListeners } from "node:events";
-import { createRestrictedApplicationRunner, createRestrictedDeepSeekProvider, createRestrictedOpenAIProvider } from "../src/restricted-application.js";
+import { createRestrictedApplicationRunner, createRestrictedDeepSeekProvider, createRestrictedOpenAIProvider, createRestrictedOpenAIResponsesProvider } from "../src/restricted-application.js";
 import { qualifyRestrictedProviderFactory } from "../scripts/fixtures/restricted-provider-conformance.js";
 import { withChatTokenBudget } from "../src/openai-chat-parameters.js";
+
+const cueSchema = { type: "object", properties: { cue: { type: "string", maxLength: 40 } }, required: ["cue"], additionalProperties: false };
+const cueToolSchema = { type: "object", properties: {}, required: [], additionalProperties: false };
+function responseFixture(output, model = "gpt-6.1-sol") {
+  return { object: "response", status: "completed", error: null, incomplete_details: null, model, output };
+}
+const cueCall = () => ({ type: "function_call", id: "fc_1", call_id: "call_1", name: "read_cue", arguments: "{}", status: "completed" });
+const finalCue = (text = '{"cue":"PIER B2"}') => ({ type: "message", id: "msg_1", role: "assistant", status: "completed",
+  phase: "final_answer", content: [{ type: "output_text", text, annotations: [], logprobs: [] }] });
+const cueReasoning = (value = "opaque-fixture") => ({ id: "rs_1", type: "reasoning", summary: [], encrypted_content: value });
+function responsesApp(send, read, overrides = {}) {
+  return createRestrictedApplicationRunner({ instructions: "Return the cue from the signed-in workspace.", outputSchema: cueSchema,
+    provider: createRestrictedOpenAIResponsesProvider({ model: "gpt-6.1-sol", complete: send }),
+    tools: [{ name: "read_cue", description: "Read the signed-in workspace cue.", readOnly: true, inputSchema: cueToolSchema, outputSchema: cueSchema, execute: read }],
+    limits: { maxSteps: 2, maxToolCalls: 1, maxOutputTokens: 192 }, ...overrides });
+}
+const cueInput = { input: [{ type: "text", text: "Check our cue and return it." }] };
+
+test("Sol native Responses delegates a scoped read and replays its exact opaque reasoning only within the invocation", async () => {
+  let reads = 0;
+  const requests = [], signals = [];
+  const runner = responsesApp((body, { signal }) => {
+    signals.push(signal); requests.push(body);
+    assert.equal(body.store, false); assert.equal(body.stream, false);
+    assert.equal(body.max_output_tokens, 192); assert.deepEqual(body.include, ["reasoning.encrypted_content"]);
+    assert.equal(body.text.format.strict, true); assert.ok(!("previous_response_id" in body));
+    if (requests.length % 2) {
+      assert.ok(!body.input.some(x => x.type)); assert.deepEqual(body.tools.map(t => t.name), ["read_cue"]);
+      return responseFixture([{ ...cueReasoning(), content: [{ type: "reasoning_text", text: "synthetic private reasoning" }] }, cueCall()]);
+    }
+    assert.ok(!("tools" in body)); assert.deepEqual(body.input.slice(-3).map(x => x.type), ["reasoning", "function_call", "function_call_output"]);
+    assert.equal(body.input.at(-3).encrypted_content, "opaque-fixture");
+    assert.ok(!Object.hasOwn(body.input.at(-3), "content")); assert.ok(!JSON.stringify(body).includes("synthetic private reasoning"));
+    assert.equal(body.input.at(-1).call_id, body.input.at(-2).call_id);
+    assert.deepEqual(JSON.parse(body.input.at(-1).output), { cue: "PIER B2" });
+    return responseFixture([{ ...cueReasoning(), content: null }, finalCue()]);
+  }, () => { reads++;return { cue: "PIER B2" }; });
+  for (let i = 0; i < 2; i++) {
+    const result = await runner.run(cueInput);
+    assert.equal(result.proposal.cue, "PIER B2"); assert.deepEqual({ ...result.usage }, { steps: 2, toolCalls: 1 });
+    assert.ok(!JSON.stringify(result).includes("opaque-fixture"));
+  }
+  assert.equal(reads, 2); assert.equal(requests.length, 4); assert.notEqual(signals[0], signals[2]);
+  assert.ok(signals.every(s => s.aborted && getEventListeners(s, "abort").length === 0));
+});
+
+test("malformed or ambiguous Responses evidence never dispatches a read", async () => {
+  let traps = 0, reads = 0;
+  for (const modify of [
+    raw => ({ ...raw, model: "gpt-6.2-astra" }), raw => ({ ...raw, status: "incomplete" }), raw => ({ ...raw, error: {} }),
+    raw => ({ ...raw, store: true }), raw => ({ ...raw, previous_response_id: "another-run" }), raw => ({ ...raw, background: true }),
+    raw => ({ ...raw, incomplete_details: { reason: "max_output_tokens" } }), () => responseFixture([cueCall(), finalCue()]),
+    () => responseFixture([cueCall(), cueCall()]), () => responseFixture([{ ...cueCall(), type: "web_search_call" }]),
+    () => responseFixture([{ ...cueCall(), name: "foreign_read" }]), () => responseFixture([{ ...cueCall(), status: "in_progress" }]),
+    () => responseFixture([{ ...cueCall(), arguments: '{"x":1,"x":2}' }]), () => responseFixture([{ ...cueCall(), arguments: '{"scope":"elsewhere"}' }]),
+    () => responseFixture([cueReasoning(""), cueCall()]), () => responseFixture([cueReasoning("a".repeat(140000)), cueCall()]),
+    raw => Object.defineProperty(raw, "output", { get() { traps++; throw Error(); } }),
+    raw => new Proxy(raw,{get() { traps++;throw Error(); },getPrototypeOf() { traps++;throw Error(); }}),
+  ]) {
+    const app = responsesApp(() => modify(responseFixture([cueCall()])), () => { reads++; return { cue: "PIER B2" }; });
+    await assert.rejects(app.run(cueInput));
+  }
+  assert.equal(traps,0);assert.equal(reads,0);
+});
+
+test("Responses refusal, text pretending to call tools, invalid schema and repeated call IDs cannot complete or dispatch twice", async () => {
+  for (const bad of [
+    { ...finalCue(), phase: "commentary" }, { ...finalCue(), status: "in_progress" },
+    { ...finalCue(), content: [{ type: "refusal", refusal: "refused" }] }, finalCue('{"tool_calls":[]}'),
+    finalCue('{"cue":"one","cue":"two"}'), finalCue('{"cue":"a","extra":true}'), cueCall(),
+  ]) {
+    let calls=0, reads=0;
+    const app=responsesApp(()=>responseFixture([++calls===1?cueCall():bad]),()=>{reads++;return {cue:"PIER B2"};},
+      {limits:{maxSteps:3,maxToolCalls:2,maxOutputTokens:192}});
+    await assert.rejects(app.run(cueInput));assert.equal(calls,2);assert.equal(reads,1);
+  }
+});
+
+test("parallel Responses runs with reused provider call IDs preserve separate tool and reasoning histories", async () => {
+  let entered = 0, releaseBoth;
+  const both = new Promise(resolve => { releaseBoth=resolve; });
+  const runner = responsesApp(async body => {
+    const account=body.input.find(x=>x.role==="user").content;
+    if (body.tools) { if (++entered===2) releaseBoth(); await both;return responseFixture([cueReasoning(account), cueCall()]); }
+    assert.equal(body.input.at(-3).encrypted_content,account);
+    return responseFixture([finalCue(JSON.stringify({cue:account}))]);
+  },()=>({cue:"allowed"}));
+  const results=await Promise.all(["alpha","beta"].map(text=>runner.run({input:[{type:"text",text}]})));
+  assert.deepEqual(results.map(r=>r.proposal.cue),["alpha","beta"]);
+});
+
+test("cancelling a Responses turn prevents late tool dispatch and keeps its concurrency slot until transport settlement", async () => {
+  let entered, release, reads = 0;
+  const started = new Promise(resolve => { entered = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  const app = responsesApp(async () => { entered(); await held; return responseFixture([cueCall()]); },
+    () => { reads++; return { cue: "PIER B2" }; }, { limits: { maxConcurrency: 1, maxSteps: 2, timeoutMs: 5000 } });
+  const parent = new AbortController();
+  const stopped = assert.rejects(app.run(cueInput, { signal: parent.signal }), { code: "CANCELLED" });
+  try {
+    await started; parent.abort(); await stopped;
+    await assert.rejects(app.run(cueInput), { code: "BUSY" });
+  } finally { release(); }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 0);
+});
+
+test("Responses keeps primitive-root application schemas exact through the native object wrapper", async () => {
+  const primitive = { type: "string", maxLength: 12 };
+  for (const [text, valid] of [['{"proposal":"ready"}', true], ['{"proposal":"ready","extra":1}', false], ['"ready"', false]]) {
+    const runner = responsesApp(body => {
+      assert.deepEqual(body.text.format.schema.required, ["proposal"]);
+      assert.equal(body.text.format.schema.properties.proposal.type, "string");
+      return responseFixture([finalCue(text)]);
+    }, () => assert.fail("unexpected read"), { tools: [], outputSchema: primitive });
+    const run = runner.run(cueInput);
+    if (valid) assert.equal((await run).proposal, "ready");
+    else await assert.rejects(run);
+  }
+});
 
 test("Sol and Astra text requests keep the caller's ceiling and strict proposal schema", async () => {
   const schema = { type: "object", properties: { reply: { type: "string", maxLength: 64 } }, required: ["reply"], additionalProperties: false };

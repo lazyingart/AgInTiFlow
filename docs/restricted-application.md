@@ -2,6 +2,27 @@
 
 ## Use OpenAI for a bounded application task
 
+For a Sol or Astra task that needs an application read, import
+`createRestrictedOpenAIResponsesProvider` from the same SDK entry point.
+Supply an exact model ID that your API organization can use and a server-owned
+Responses transport. For example, the room reader below can use this provider:
+
+```js
+const provider = createRestrictedOpenAIResponsesProvider({
+  model: "gpt-6.1-sol",
+  complete: (body, { signal }) => client.responses.create(body, { signal }),
+});
+```
+
+The adapter requests one read at a time. The runner checks the tool name and
+arguments before calling the application's read callback, then validates the
+final proposal against the application's schema. A host can require that the
+answer cites the current read using `proposalReview`. The transport sends
+`store: false`. Any encrypted reasoning needed for another tool turn is
+retained in memory for that invocation and released on completion or cancellation.
+Only text and the supplied read-only functions are supported. Choose the model
+on the server and set SDK retries to zero when constructing the transport.
+
 Choose the provider on the server after authenticating the account. A notes app can offer a read of that account’s current note, ask for a correction, and validate the returned proposal before saving it. The same pattern works for a reading app that offers a read of a selected passage. Keep ownership checks, budgets and writes in the application.
 
 ```js
