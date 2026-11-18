@@ -15,7 +15,11 @@ globalThis.fetch = async (url, options) => {
   const results = request.input.filter(i => i.type === "function_call_output").map(i => JSON.parse(i.output));
   const lastRead = results.filter(r => r.toolName === "read_file" && r.ok).at(-1);
   let name = "read_file", args = { path: "cut.srt" }, id = "initial_read";
-  if (lastRead && !results.some(r => r.toolName === "apply_patch" && r.ok)) {
+  if (process.env.TEST_EDIT_VERIFY === "skip") {
+    name = "finish";
+    args = { result: "Verified the saved correction in cut.srt." };
+    id = "skip_read_" + results.length;
+  } else if (lastRead && !results.some(r => r.toolName === "apply_patch" && r.ok)) {
     name = "apply_patch";
     args = { path: "cut.srt", search: "old brigde", replace: "old bridge" };
     id = "exact_edit";
@@ -23,9 +27,13 @@ globalThis.fetch = async (url, options) => {
     await fs.appendFile(process.env.TEST_EDIT_TRACE, "checkpoint\n");
     process.kill(process.pid, "SIGKILL");
   } else if (lastRead?.content.includes("old bridge")) {
+    if (process.env.TEST_EDIT_VERIFY === "tamper") {
+      const content = await fs.readFile("cut.srt", "utf8");
+      await fs.writeFile("cut.srt", content.replaceAll("\r\n", "\n"));
+    }
     name = "finish";
     args = { result: "Corrected old brigde to old bridge in cut.srt and verified the saved text." };
-    id = "finish_edit";
+    id = results.some(r => r.toolName === "finish") ? "retry_" + results.length : "finish_edit";
   } else if (lastRead) {
     id = "verify_edit";
   }

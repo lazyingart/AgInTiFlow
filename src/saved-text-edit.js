@@ -34,7 +34,9 @@ function requestedLiteralEdit(goal, mutation) {
     /^\x03\s*の\s*\x01\s*を\s*\x02\s*に(?:変更|修正|置換)して(?:ください)?(?:[。、]他はそのまま(?:で)?)?[。！]?$/u.test(words);
 }
 
-export function savedTextEditReadback(state, request) {
+// Used on both sides of the continuation transition. Resolve what "the
+// saved correction" refers to before resetting any per-goal evidence.
+function retainedLiteralEdit(state, request) {
   if (!requestsReadback(request)) return null;
   const goal = state.meta?.goalContract, verification = state.meta?.projectVerification;
   const mutation = verification?.lastMutation, patch = mutation?.patch;
@@ -47,9 +49,7 @@ export function savedTextEditReadback(state, request) {
   if (![patch.searchHash, patch.replaceHash, patch.beforeContentSha256, patch.afterContentSha256].every(
     h => typeof h === "string" && sha256.test(h)) || patch.searchHash === patch.replaceHash ||
       patch.beforeContentSha256 === patch.afterContentSha256 || !requestedLiteralEdit(goal.taskGoal, mutation)) return null;
-  if (!Number.isSafeInteger(goal.revision) || goal.activeGoalRevision !== goal.revision ||
-      goal.taskRelation !== "same-task" || goal.activeGoal !== request || goal.currentRequest !== request ||
-      mutation.goalRevision !== goal.taskBoundaryRevision || mutation.goalRevision >= goal.revision ||
+  if (mutation.taskHash !== digest(goal.taskGoal) || mutation.goalRevision !== goal.taskBoundaryRevision ||
       !Array.isArray(goal.history) || !currentGoalRevisionBelongsToActiveTask(state, mutation)) return null;
   const mutations = verification.mutationHistory;
   if (!Array.isArray(mutations) || !mutations.every(m => Number.isSafeInteger(m?.goalRevision)) ||
@@ -58,6 +58,20 @@ export function savedTextEditReadback(state, request) {
   if (recorded?.revision !== mutation.revision || recorded.taskHash !== mutation.taskHash ||
       recorded.goalRevision !== mutation.goalRevision || recorded.patch?.afterContentSha256 !== patch.afterContentSha256 ||
       (mutation.revision > 1 && mutations.at(-2)?.revision !== mutation.revision - 1)) return null;
+  return mutation;
+}
+
+export function refersToSavedTextEdit(state, request) {
+  return Boolean(retainedLiteralEdit(state, request));
+}
+
+export function savedTextEditReadback(state, request) {
+  const mutation = retainedLiteralEdit(state, request);
+  if (!mutation) return null;
+  const goal = state.meta.goalContract, patch = mutation.patch;
+  if (!Number.isSafeInteger(goal.revision) || goal.activeGoalRevision !== goal.revision ||
+      goal.taskRelation !== "same-task" || goal.activeGoal !== request || goal.currentRequest !== request ||
+      mutation.goalRevision >= goal.revision) return null;
   // An earlier follow-up can add a real build/test requirement. Never infer
   // that requirement away from a truncated or missing historical preview.
   const history = goal.history.filter(e => e?.revision > mutation.goalRevision && e.revision <= goal.revision);

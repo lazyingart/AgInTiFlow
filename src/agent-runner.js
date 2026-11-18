@@ -134,7 +134,7 @@ import { executeMcpBridgeTool } from "./mcp/tool-bridge.js";
 import { longJobStatus, startLongJob } from "./long-job-tools.js";
 import { executeAgentLinkTool, isAgentLinkTool } from "./agentlink.js";
 import { classifyGoalIntent, isDirectAnswerIntent, currentGoalRevisionBelongsToActiveTask } from "./goal-intent.js";
-import { savedTextEditReadback } from "./saved-text-edit.js";
+import { refersToSavedTextEdit, savedTextEditReadback } from "./saved-text-edit.js";
 import { workspacePathScopePlan } from "./workspace-path-policy.js";
 import { normalizeProviderBaseURL, normalizeProviderId, providerRequiresApiKey } from "./provider-contract.js";
 import {
@@ -5056,7 +5056,7 @@ export function preservesCurrentTaskBoundary(state = {}, nextGoal = "") {
   const previousGoal = retainedTaskGoal(prior, state.goal).replace(/\s+/g, " ").trim();
   if (!normalized || !previousGoal) return false;
   if (normalized === previousGoal) return true;
-  return isGenericTaskContinuationText(normalized);
+  return isGenericTaskContinuationText(normalized) || refersToSavedTextEdit(state, normalized);
 }
 
 export function updateGoalContract(
@@ -20224,7 +20224,8 @@ export function completionTaskContract(config = {}, state = {}) {
     }
   }
   const savedEdit = savedTextEditReadback(state, currentRequest);
-  if (savedEdit && !groundedTaskInstructions && !activeExecutionContractIsAuthoritative &&
+  if (savedEdit && !groundedTaskInstructions && !activeExecutionContract.requiresFileMutation &&
+      !activeExecutionContract.requiresSourceGrounding && !activeExecutionContract.requiredProjectCommands?.length &&
       !state.meta?.scs?.acceptanceCriteria?.length && !contract.requiredFreshMutationRevision &&
       !contract.requiredProjectCommands.length && !contract.requiredToolCalls.length &&
       !contract.requiredGitActions.length && !state.meta?.projectVerification?.requiredCommands?.length &&

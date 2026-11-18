@@ -103,7 +103,7 @@ test("completion needs the exact publication followed by a complete current read
   assert.equal(check().ok, false);
 });
 
-test("native CLI resumes a committed subtitle correction after SIGKILL with exactly one patch and a fresh read", t => {
+function verifyNativeResume(t, task, request, check) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-restart-edit-"));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const cwd = path.join(home, "work"), trace = path.join(home, "trace");
@@ -116,19 +116,43 @@ test("native CLI resumes a committed subtitle correction after SIGKILL with exac
     cwd, encoding: "utf8", timeout: 25000, env: { HOME: home, PATH: process.env.PATH,
       AGINTIFLOW_HOME: path.join(home, "agent"), XDG_CONFIG_HOME: path.join(home, "config"),
       OPENAI_API_KEY: "offline-fixture", TEST_EDIT_TRACE: trace, TEST_INTERRUPT_AFTER_PATCH: interrupt ? "1" : "0",
+      TEST_EDIT_VERIFY: interrupt ? "read" : check,
       AGINTIFLOW_HOUSEKEEPING: "0", AGINTI_PROVIDER_HANDOFF: "0", AGINTIFLOW_NO_WEB_AUTO_START: "1", AGINTIFLOW_NO_AUTO_UPDATE: "1" } });
   const first = run(true, ["run", "--json", "--session-id", "edit", "--provider", "openai", "--model", "gpt-6.1-sol",
     "--routing", "manual", "--max-steps", "5", "--dynamic-steps", "off", "--sandbox-mode", "host", "--allow-file-tools",
-    "--no-shell", "--no-web-search", "--no-mcp", "--no-wrappers", "--no-auxiliary-tools", "--no-parallel-scouts", original]);
+    "--no-shell", "--no-web-search", "--no-mcp", "--no-wrappers", "--no-auxiliary-tools", "--no-parallel-scouts", task]);
   assert.equal(first.signal, "SIGKILL", first.stderr);
   assert.equal(fs.readFileSync(file, "utf8"), bytes.replace("brigde", "bridge"));
   const stat = () => { const s = fs.statSync(file, { bigint: true }); return [s.ino, s.mtimeNs, s.ctimeNs]; };
   const preResume = stat();
-  const next = run(false, ["resume", "edit", "--json", followup]);
+  const next = run(false, ["resume", "edit", "--json", request]);
+  const state = JSON.parse(fs.readFileSync(path.join(home, "agent/sessions/edit/state.json")));
+  assert.equal(state.meta.goalContract.taskRelation, "same-task");
+  const calls = fs.readFileSync(trace, "utf8").trim().split("\n");
+  assert.equal(calls.filter(id => id === "exact_edit").length, 1);
+  if (check !== "read") {
+    assert.equal(next.status, 1);
+    assert.equal(JSON.parse(next.stdout).ok, false);
+    assert.equal(calls.includes("verify_edit"), check === "tamper");
+    const current = fs.readFileSync(file, "utf8");
+    assert.equal(current, (check === "tamper" ? bytes.replaceAll("\r\n", "\n") : bytes).replace("brigde", "bridge"));
+    return;
+  }
   assert.equal(next.status, 0, next.stderr + next.stdout);
   assert.equal(JSON.parse(next.stdout).ok, true);
   assert.match(JSON.parse(next.stdout).result, /old bridge/);
-  assert.deepEqual(fs.readFileSync(trace, "utf8").trim().split("\n"), ["initial_read", "exact_edit", "checkpoint", "verify_edit", "finish_edit"]);
+  assert.deepEqual(calls, ["initial_read", "exact_edit", "checkpoint", "verify_edit", "finish_edit"]);
   assert.deepEqual(stat(), preResume);
   assert.equal(fs.readFileSync(file, "utf8"), bytes.replace("brigde", "bridge"));
-});
+}
+
+for (const [language, task, request] of [
+  ["en", original, followup],
+  ["zh", "请把cut.srt中的「old brigde」改为「old bridge」，其余内容保持不变。", "继续，核对刚才的修改，并告诉我改了什么。"],
+  ["ja", "cut.srtの「old brigde」を「old bridge」に修正してください。", "保存した修正内容を確認してください。"],
+]) {
+  for (const check of ["read", "skip", "tamper"]) {
+    test(`native CLI resumes a committed subtitle correction after SIGKILL (${language}, ${check})`,
+      t => verifyNativeResume(t, task, request, check));
+  }
+}
