@@ -120,6 +120,7 @@ try {
     "test/restricted-native-finalizer.test.js",
     "test/scs-proof-budget.test.js", "test/output-clause-boundary.test.js",
     "test/model-terminal-quota.test.js",
+    "test/safe-chat-completion.test.js", "test/restricted-provider-conformance.test.js",
     "test/native-checkpoint-continuation.test.js",
     "test/continuation-edit-intent.test.js",
     "test/artifact-instruction-boundary.test.js",
@@ -129,10 +130,10 @@ try {
   // the required cohort is actually present before spawning its test runner.
   for (const name of consumerFiles) assert.ok((await fs.lstat(path.join(installed, name))).isFile(), `Required packaged test is absent: ${name}`);
   const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, ...consumerFiles], installed, consumerTimeoutMs);
-  // Baseline3667 +54 command-recovery contract and20 persisted-crash cases. Keep the verifier's
+  // Baseline 3741 plus credit-exhaustion, GPT-5 budgeting and both app-provider cohorts. Keep the verifier's
   // own fixture count in sync; a zero test-runner exit is insufficient.
-  assert.match(log, /# tests 3741\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 3741\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 3781\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 3781\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
