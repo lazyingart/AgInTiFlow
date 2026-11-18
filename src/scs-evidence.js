@@ -13,6 +13,7 @@ import { firstJsonObject } from "./json-extraction.js";
 import { deriveAdvisoryInvocationContract } from "./advisory-invocation.js";
 import { isSensitiveWorkspacePath, createWorkspaceReadBoundarySync, readWorkspaceFileSnapshotSync } from "./workspace-read-boundary.js";
 import { currentGoalRevisionBelongsToActiveTask } from "./goal-intent.js";
+import { hasSavedEditReadbackEvents } from "./saved-text-edit.js";
 import { readCommandMutationEvidence, testCommandSequenceIsCurrent } from "./command-mutation-evidence.js";
 
 const CATEGORY_LABELS = {
@@ -6228,6 +6229,14 @@ export function evaluateScsSemanticContract(
   const inputReads = evaluateExplicitInputReads(contract, { commandCwd, events, state });
   if (!inputReads.ok) return { ok: false, checked: true, inputReads, missingSourceReads: [...inputReads.missingInputReads],
     reason: `Requested input reads are missing: ${inputReads.missingInputReads.join(", ")}` };
+  const savedEdit = contract.savedTextEditReadback;
+  if (savedEdit) {
+    if (!hasSavedEditReadbackEvents(savedEdit, events)) return { ok: false, checked: true,
+      reason: `Verifying the edit requires its recorded patch and a complete read_file of ${savedEdit.path} in this turn.` };
+    const current = copyFileDigest(commandCwd, savedEdit.path, { destination: true });
+    if (current?.sha256 !== savedEdit.after || !current.isCurrent()) return { ok: false, checked: true,
+      reason: `The current bytes of ${savedEdit.path} could not be verified against the saved correction.` };
+  }
   const exactOutputPaths = Array.isArray(contract.exactOutputPaths) ? contract.exactOutputPaths : [];
   const requiredTextTerms = Array.isArray(contract.requiredTextTerms) ? contract.requiredTextTerms : [];
   const requiredExecutableTerms = Array.isArray(contract.requiredExecutableTerms)
@@ -6255,7 +6264,9 @@ export function evaluateScsSemanticContract(
           projectTestVerification,
           reason: projectTestVerification.reason,
         }
-      : { ok: true, checked: inputReads.checked, inputReads, projectTestVerification, reason: inputReads.checked ? "Requested input reads were observed; no output file contract was inferred." : "No semantic file contract was inferred." };
+      : { ok: true, checked: Boolean(savedEdit || inputReads.checked), inputReads, projectTestVerification,
+          reason: savedEdit ? "The saved edit matches its patch and current readback."
+            : inputReads.checked ? "Requested input reads were observed; no output file contract was inferred." : "No semantic file contract was inferred." };
   }
   if (!exactOutputPaths.length) {
     const ok = executable.ok && projectTestVerification.ok && requestedArtifacts.ok && exactCopies.ok;

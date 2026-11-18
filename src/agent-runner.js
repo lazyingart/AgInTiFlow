@@ -134,6 +134,7 @@ import { executeMcpBridgeTool } from "./mcp/tool-bridge.js";
 import { longJobStatus, startLongJob } from "./long-job-tools.js";
 import { executeAgentLinkTool, isAgentLinkTool } from "./agentlink.js";
 import { classifyGoalIntent, isDirectAnswerIntent, currentGoalRevisionBelongsToActiveTask } from "./goal-intent.js";
+import { savedTextEditReadback } from "./saved-text-edit.js";
 import { workspacePathScopePlan } from "./workspace-path-policy.js";
 import { normalizeProviderBaseURL, normalizeProviderId, providerRequiresApiKey } from "./provider-contract.js";
 import {
@@ -20221,6 +20222,22 @@ export function completionTaskContract(config = {}, state = {}) {
           : { requiredGitRevision: 0, requiredGitMutationRevision: 0 }),
       };
     }
+  }
+  const savedEdit = savedTextEditReadback(state, currentRequest);
+  if (savedEdit && !groundedTaskInstructions && !activeExecutionContractIsAuthoritative &&
+      !state.meta?.scs?.acceptanceCriteria?.length && !contract.requiredFreshMutationRevision &&
+      !contract.requiredProjectCommands.length && !contract.requiredToolCalls.length &&
+      !contract.requiredGitActions.length && !state.meta?.projectVerification?.requiredCommands?.length &&
+      contract.requiredEvidence.every(item => ["command", "file"].includes(item.category))) {
+    const existing = contract.requiredEvidence.find(item => item.category === "file");
+    return {
+      ...contract,
+      savedTextEditReadback: savedEdit,
+      requiresExternalEvidence: true,
+      currentEvidenceCategories: ["file"],
+      requiredEvidence: [{ ...existing, id: "file", category: "file", minimumGoalRevision: savedEdit.readGoal,
+        description: `Read back the saved edit in ${savedEdit.path}` }],
+    };
   }
   return contract;
 }

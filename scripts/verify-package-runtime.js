@@ -124,6 +124,7 @@ try {
     "test/safe-chat-completion.test.js", "test/restricted-provider-conformance.test.js",
     "test/native-checkpoint-continuation.test.js",
     "test/current-task-window.test.js",
+    "test/saved-text-edit-readback.test.js",
     "test/native-current-task-selection.test.js",
     "test/continuation-edit-intent.test.js",
     "test/artifact-instruction-boundary.test.js",
@@ -133,10 +134,9 @@ try {
   // the required cohort is actually present before spawning its test runner.
   for (const name of consumerFiles) assert.ok((await fs.lstat(path.join(installed, name))).isFile(), `Required packaged test is absent: ${name}`);
   const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, ...consumerFiles], installed, consumerTimeoutMs);
-  // Baseline 3781 plus six read-window and 22 saved-result cases. Keep the verifier's
-  // own fixture count in sync; a zero test-runner exit is insufficient.
-  assert.match(log, /# tests 3878\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 3878\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  // Including the saved-edit restart cases. Keep the verifier's fixture in sync.
+  assert.match(log, /# tests 3882\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 3882\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
