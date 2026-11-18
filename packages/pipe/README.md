@@ -1,15 +1,22 @@
 # AgInTiLite private application pipe
 
 Optional Node 22 ESM transport for a Python or other application host using a
-private child-process channel. The actual AgInTiLite preview.21 runner owns the
+private child-process channel. The installed AgInTiLite runner owns the
 bounded model/read/schema loop. This package starts no process or network service
 and loads no credentials, configuration, tools or provider implicitly.
 
 Install the exact local archives of both private packages. Build this companion
 with `node packages/pipe/scripts/build-package.js /absolute/output/directory`.
-The companion has an exact preview.21 peer, eight packaged files and a separate
-64 KiB unpacked cap. The nine-file, zero-dependency SDK distribution is unchanged.
-Neither package is published to npm by this build.
+Pipe preview.2 accepts AgInTiLite `0.1.0-preview.21` and `0.1.0-preview.22`.
+Use preview.22 for an OpenAI GPT-5 route that sends `max_completion_tokens`.
+Install your selected SDK archive and the pipe archive together with
+`npm install --offline --strict-peer-deps --ignore-scripts`.
+The pipe has eight packaged files and a 64 KiB unpacked cap.
+
+From this source tree, run `npm --prefix packages/pipe test` with the bundled
+source version of the SDK. For the preview.22 suite, set
+`AGINTILITE_TEST_PEER_ARCHIVE` to the absolute path of the qualified SDK tarball
+and run the same command. The tests verify the archive digest before installing.
 
 ## Bootstrap
 

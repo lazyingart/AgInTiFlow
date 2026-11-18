@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pipe, sdk, base, input, final, call, tool, frame, gate, until, bounded } from "./harness.js";
+import { pipe, sdk, peerVersion, base, input, final, call, tool, frame, gate, until, bounded } from "./harness.js";
 
 function channel(complete, options = {}) {
   const events = [];
@@ -9,6 +9,28 @@ function channel(complete, options = {}) {
 }
 const run = (c, id = "request_alpha_0001", request = input) => c.accept(frame(c, "run", id, { request }));
 const terminal = events => events.find(event => ["result", "error"].includes(event.type));
+
+const openAIModels = peerVersion === "0.1.0-preview.22" ? ["gpt-4.1-mini", "gpt-5.4-mini"] : ["gpt-4.1-mini"];
+for (const model of openAIModels) test(`installed SDK ${peerVersion} preserves the 128-token limit for ${model} over the pipe`, async () => {
+  let calls = 0;
+  const provider = sdk.createRestrictedOpenAIProvider({ model, supportsImages: false, complete(body) {
+    calls++;
+    assert.equal(body.model, model);
+    const budget = model === "gpt-5.4-mini" ? "max_completion_tokens" : "max_tokens";
+    assert.deepEqual(Object.keys(body).filter(key => key === "max_tokens" || key === "max_completion_tokens"), [budget]);
+    assert.equal(body[budget], 128);
+    assert.equal(body.tools?.length ?? 0, 0);
+    return { choices: [{ finish_reason: "stop", message: { role: "assistant", content: '{"reply":"Friday"}' } }] };
+  } });
+  const { value: c, events } = channel(undefined, { provider, limits: { maxOutputTokens: 128, maxSteps: 1 } });
+  try {
+    await run(c);
+    await until(() => terminal(events));
+    assert.equal(terminal(events).result?.proposal?.reply, "Friday");
+    assert.deepEqual({ ...terminal(events).result.usage }, { steps: 1, toolCalls: 0 });
+    assert.equal(calls, 1);
+  } finally { await c.close(); }
+});
 
 test("actual SDK loop delegates one scoped read and returns an uncommitted proposal", async () => {
   let steps = 0;

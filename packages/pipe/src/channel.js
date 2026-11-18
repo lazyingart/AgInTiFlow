@@ -60,7 +60,8 @@ function bounded(promise, ms, code) {
 export function createRestrictedApplicationChannel(options) {
   const config = dataFields(options, ["scopeId", "provider", "instructions", "outputSchema", "tools", "limits", "emit", "closeGraceMs"],
     ["scopeId", "provider", "instructions", "outputSchema", "emit"]);
-  if (peer.name !== "@lazyingart/agintilite" || peer.version !== "0.1.0-preview.21" ||
+  const supportedPeer = peer.version === "0.1.0-preview.21" || peer.version === "0.1.0-preview.22";
+  if (peer.name !== "@lazyingart/agintilite" || !supportedPeer ||
     RESTRICTED_APPLICATION_PROTOCOL !== "aginti-restricted-application-v1") fail("PEER_MISMATCH");
   if (typeof config.scopeId !== "string" || !SCOPES.test(config.scopeId)) fail("INVALID_CONFIG");
   assertNoCredentials(config.scopeId);

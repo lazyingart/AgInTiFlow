@@ -20,16 +20,28 @@ export function command(executable, args, cwd = root) {
   assert.equal(result.status, 0, `${executable}: ${result.stderr}\n${result.stdout}`);
   return result.stdout;
 }
-export const sha = bytes => createHash("sha256").update(bytes).digest("hex");
-// Build the exact peer from this isolated tree. Its payload must still match the
-// independently qualified canonical archive; a changed peer fails this gate.
-const [peer] = JSON.parse(command("npm", ["pack", "--json", "--offline", "--ignore-scripts", "--pack-destination", root], path.resolve(source, "../..")));
-export const peerArchive = path.join(root, peer.filename);
-assert.equal(sha(await fs.readFile(peerArchive)), "e9a74ab0aedf9716b50c4bb11d1fe568f3a5765cf5eb38ae1cff00193bd28f7d");
+const peerDigests = {
+  "0.1.0-preview.21": "e9a74ab0aedf9716b50c4bb11d1fe568f3a5765cf5eb38ae1cff00193bd28f7d",
+  "0.1.0-preview.22": "ad545149afda407ae025b5fb517fc6f1786d7d36ae603b17f334b06c4d2a0196",
+};
+let inputArchive = process.env.AGINTILITE_TEST_PEER_ARCHIVE;
+if (inputArchive === undefined) {
+  const [peer] = JSON.parse(command("npm", ["pack", "--json", "--offline", "--ignore-scripts", "--pack-destination", root], path.resolve(source, "../..")));
+  inputArchive = path.join(root, peer.filename);
+}
+assert.ok(path.isAbsolute(inputArchive), "Supply an absolute SDK archive path");
+const bytes = await fs.readFile(inputArchive);
+const digest = createHash("sha256").update(bytes).digest("hex");
+export const peerVersion = Object.keys(peerDigests).find(version => peerDigests[version] === digest);
+assert.ok(peerVersion, "Unqualified SDK archive");
+// Install the bytes just verified, even if the supplied path is replaced.
+const peerArchive = path.join(root, "verified-sdk.tgz");
+await fs.writeFile(peerArchive, bytes, { flag: "wx", mode: 0o600 });
 export const built = JSON.parse(command(process.execPath, [path.join(source, "scripts/build-package.js"), root]));
-command("npm", ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock", peerArchive, built.archive]);
+command("npm", ["install", "--strict-peer-deps", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock", peerArchive, built.archive]);
 export const installed = path.join(root, "node_modules/@lazyingart/agintilite-pipe");
 export const peerInstalled = path.join(root, "node_modules/@lazyingart/agintilite");
+assert.equal(JSON.parse(await fs.readFile(path.join(peerInstalled, "package.json"), "utf8")).version, peerVersion);
 export const pipe = await import(pathToFileURL(path.join(installed, "src/channel.js")));
 export const streams = await import(pathToFileURL(path.join(installed, "src/streams.js")));
 export const sdk = await import(pathToFileURL(path.join(peerInstalled, "src/restricted-application.js")));

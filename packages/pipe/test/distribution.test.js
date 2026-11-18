@@ -3,14 +3,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { source, root, command, built, sha, installed, peerInstalled, peerArchive } from "./harness.js";
+import { spawnSync } from "node:child_process";
+import { source, root, env, command, built, installed, peerInstalled } from "./harness.js";
 
 test("optional archive is reproducible with a closed dependency/credential-free surface", async () => {
   const second = JSON.parse(command(process.execPath, [path.join(source, "scripts/build-package.js"), path.join(root, "second")]));
   assert.equal(second.sha256, built.sha256);assert.equal(second.unpackedSize, built.unpackedSize);assert.equal(built.files.length, 8);
   assert.ok(built.unpackedSize < 64 * 1024);
   const metadata = JSON.parse(await fs.readFile(path.join(installed, "package.json"), "utf8"));
-  assert.deepEqual(metadata.peerDependencies, { "@lazyingart/agintilite": "0.1.0-preview.21" });assert.equal(metadata.private, true);
+  assert.deepEqual(metadata.peerDependencies, { "@lazyingart/agintilite": "0.1.0-preview.21 || 0.1.0-preview.22" });assert.equal(metadata.private, true);
   for (const field of ["bin", "dependencies", "optionalDependencies", "bundledDependencies"]) assert.equal(Object.hasOwn(metadata, field), false);
   for (const field of ["preinstall", "install", "postinstall", "prepack", "prepare", "prepublishOnly"]) assert.equal(Object.hasOwn(metadata.scripts, field), false);
   assert.deepEqual((await fs.readdir(path.join(root, "node_modules/@lazyingart"))).sort(), ["agintilite", "agintilite-pipe"]);
@@ -23,7 +24,6 @@ test("optional archive is reproducible with a closed dependency/credential-free 
     }
   }
   for (const file of ["restricted-application-contract.js", "redaction.js"]) assert.deepEqual(await fs.readFile(path.join(installed, "src/internal", file)), await fs.readFile(path.join(peerInstalled, "src", file)));
-  assert.equal(sha(await fs.readFile(peerArchive)), "e9a74ab0aedf9716b50c4bb11d1fe568f3a5765cf5eb38ae1cff00193bd28f7d");
 });
 
 test("private Python host runs native DeepSeek envelopes through actual SDK without model/network", () => {
@@ -31,6 +31,36 @@ test("private Python host runs native DeepSeek envelopes through actual SDK with
     path.join(source, "test/fixtures/worker.js"), pathToFileURL(path.join(installed, "src/streams.js")).href,
     pathToFileURL(path.join(peerInstalled, "src/restricted-application.js")).href]));
   assert.deepEqual(result, { passed: true, invocations: 2, reads: 2, hostCommits: 2, liveModels: 0, foreignAccountUnchanged: true });
+});
+
+test("strict offline installation refuses an unqualified successor SDK", async () => {
+  const peer = path.join(root, "unqualified-peer");
+  const consumer = path.join(root, "incompatible-consumer");
+  await fs.mkdir(peer);
+  await fs.mkdir(consumer);
+  await fs.writeFile(path.join(peer, "package.json"), JSON.stringify({ name: "@lazyingart/agintilite", version: "0.1.0-preview.23" }));
+  await fs.writeFile(path.join(consumer, "package.json"), '{"private":true}');
+  const [packed] = JSON.parse(command("npm", ["pack", "--json", "--offline", "--ignore-scripts", "--pack-destination", root], peer));
+  const result = spawnSync("npm", ["install", "--strict-peer-deps", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+    path.join(root, packed.filename), built.archive], { cwd: consumer, env, encoding: "utf8", timeout: 15_000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ERESOLVE/);
+  await assert.rejects(fs.stat(path.join(consumer, "node_modules/@lazyingart/agintilite-pipe")), { code: "ENOENT" });
+});
+
+test("channel refuses an unqualified peer before any callback", () => {
+  command(process.execPath, ["--input-type=module", "-e", `
+    import assert from 'node:assert/strict';
+    import peer from '@lazyingart/agintilite/package.json' with { type: 'json' };
+    import {createRestrictedApplicationChannel} from '@lazyingart/agintilite-pipe';
+    peer.version = '0.1.0-preview.23';
+    let calls = 0;
+    const options = {scopeId:'account_isolated_0001',instructions:'Answer only.',tools:[],
+      outputSchema:{type:'string',maxLength:80},provider:{supportsImages:false,complete(){calls++;}},emit(){calls++;}};
+    assert.throws(() => createRestrictedApplicationChannel(options), {code:'PEER_MISMATCH'});
+    assert.equal(calls,0);
+  `]);
 });
 
 test("import has only the documented exports and no listener/process/provider side effect", () => {

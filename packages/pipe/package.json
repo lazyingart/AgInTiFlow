@@ -1,12 +1,12 @@
 {
   "name": "@lazyingart/agintilite-pipe",
-  "version": "0.1.0-preview.1",
+  "version": "0.1.0-preview.2",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
   "description": "Account-bound private JSONL transport for the existing AgInTiLite proposal loop.",
   "engines": { "node": ">=22" },
-  "peerDependencies": { "@lazyingart/agintilite": "0.1.0-preview.21" },
+  "peerDependencies": { "@lazyingart/agintilite": "0.1.0-preview.21 || 0.1.0-preview.22" },
   "exports": { ".": "./src/channel.js", "./streams": "./src/streams.js", "./package.json": "./package.json" },
   "files": ["src/", "README.md", "NOTICE", "LICENSE"],
   "scripts": {
