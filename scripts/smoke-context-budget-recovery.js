@@ -20,6 +20,14 @@ assert.ok(compacted.includes(TAIL), "token compaction lost the latest authoritat
 assert.ok(compacted.includes("omitted to fit the provider context"));
 assert.ok(estimateTextTokens(compacted) <= 4096);
 
+for (const sample of ["📘".repeat(3200), "文🌙あ".repeat(1400)]) {
+  for (const budget of [1, 2, 5, 16, ...Array.from({ length: 70 }, (_, i) => 100 + i)]) {
+    const result = compactTextForTokenBudget(sample, budget);
+    assert.ok(result.isWellFormed(), `budget ${budget} split a Unicode character`);
+    assert.ok(estimateTextTokens(result) <= budget);
+  }
+}
+
 const chatContract = deriveScsTaskContract({
   goal:
     'AGINTI_EVIDENCE_SCOPE_JSON: {"mode":"chat-response","request":"Return the routing JSON"}\n' +
@@ -881,5 +889,27 @@ assert.equal(
   1,
   "repeated compaction duplicated the durable AGENTS.md tool record"
 );
+
+const middleConstraint = "Keep the photographer credit Lin / Mori unchanged.";
+const privateMarker = "sk-" + "syntheticPrivateExample".repeat(2);
+const longGoal = ["Prepare a bilingual companion.", "Keep the supplied caption. ".repeat(130),
+  middleConstraint, privateMarker, "Retain the scene order. ".repeat(180), "Deliver the checklist."].join("\n");
+for (const budget of [2048, 16000]) {
+  const state = { messages: [{ role: "system", content: "Preserve the confirmed evidence." }, ...instructionReadPair],
+    goal: longGoal, chat: [], meta: { goalContract: { activeGoal: longGoal } } };
+  for (let round = 0; round < 2; round++) {
+    state.messages = buildContextBudgetCompactionMessages(state, {
+      ...config, provider: "deepseek", contextBudgetTargetTokens: budget,
+    }, {}, 30 + round);
+    assert.ok(estimateMessageTokens(state.messages) <= budget, "expansion exceeded available space");
+    const text = state.messages.map(m => m.content).join("\n");
+    assert.ok(!text.includes(privateMarker));
+    assert.ok(text.includes("PROJECT-INSTRUCTION-MARKER"), "goal expansion displaced protected evidence");
+    if (budget === 16000) {
+      assert.ok(text.includes(middleConstraint));
+      assert.ok(text.includes("[REDACTED]"));
+    }
+  }
+}
 
 console.log("context budget recovery smoke passed");

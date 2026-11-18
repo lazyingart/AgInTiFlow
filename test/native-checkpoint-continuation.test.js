@@ -87,12 +87,23 @@ test("same-task checkpoint continuation preserves real required commands", () =>
   assert.ok(deriveScsTaskContract({ goal: state.goal, taskProfile: "code" }).requiredProjectCommands.includes("node check.mjs"));
 });
 
-test("official CLI resumes a quota-interrupted file task and completed checkpoint is a no-op", { timeout: 30000 }, async t => {
+test("official CLI resumes a quota-interrupted file task and completed checkpoint is a no-op",
+  { timeout: 30000 }, t => exerciseCheckpoint(t, false));
+test("fresh CLI recovers a middle instruction from a compacted multi-page task without repeating writes",
+  { timeout: 75000 }, t => exerciseCheckpoint(t, true));
+
+async function exerciseCheckpoint(t, longBrief) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aginti-checkpoint-continuation-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));await fs.mkdir(root + "/workspace");
+  const credit = 'Keep the checklist credit exactly as "Lin / Mori".';
+  const notes = Array.from({ length: 64 }, (_, i) =>
+    `Scene ${i + 1}: preserve its supplied caption, bilingual phrasing, sequence and previously approved location.`);
+  notes.splice(30, 0, credit);
+  const goal = longBrief ? [original, ...notes, "Deliver the two requested files."].join("\n") : original;
+  if (longBrief) await fs.writeFile(path.join(root, "long-request.txt"), goal);
   await fs.writeFile(root + "/workspace/measurement.txt", "Latency fell from 120 ms to 90 ms across 12 samples. Independent review is pending.\n");
   const brief = "# Brief\n\nLatency fell from 120 ms to 90 ms in the supplied test (12 samples). Independent review is pending.\n";
-  const checklist = "# Checklist\n\n- [ ] Obtain independent review.\n";
+  const checklist = "# Checklist\n\n- [ ] Obtain independent review.\n" + (longBrief ? "Credit: Lin / Mori\n" : "");
   const call = (name, args, id) => ({ id, type: "function", function: { name, arguments: JSON.stringify(args) } });
   let phase = "start", turns = 0, requests = 0;const errors = [];
   const server = http.createServer(async (req, res) => {
@@ -102,7 +113,12 @@ test("official CLI resumes a quota-interrupted file task and completed checkpoin
       else if (phase === "start" && turns++ === 0) message = { tool_calls: [call("read_file", { path: "measurement.txt" }, "read_source")] };
       else if (phase === "start" && turns === 2) message = { tool_calls: [call("write_file", { path: "brief.md", content: brief }, "write_brief")] };
       else if (phase === "start") { res.writeHead(402, { "content-type": "application/json" });res.end('{"error":{"code":"insufficient_balance","message":"Synthetic exhausted balance"}}');return; }
-      else if (turns++ === 0) message = { tool_calls: [call("write_file", { path: "checklist.md", content: checklist }, "write_checklist")] };
+      else if (turns++ === 0) {
+        if (longBrief) assert.ok(body.messages.some(m => m.role === "user" &&
+          m.content?.startsWith("The runtime proactively compacted") && m.content.includes(credit)),
+        "middle instruction missing from compacted model request after restart");
+        message = { tool_calls: [call("write_file", { path: "checklist.md", content: checklist }, "write_checklist")] };
+      }
       else if (turns === 2) message = { tool_calls: [call("read_file", { path: "brief.md" }, "verify_brief_as_data")] };
       else if (turns === 3) message = { tool_calls: [call("read_file", { path: "checklist.md" }, "verify_checklist_as_data")] };
       else message = { tool_calls: [call("finish", { result: "The brief.md and checklist.md are ready. The source is unchanged and independent review remains pending." }, "finish_task")] };
@@ -116,18 +132,25 @@ test("official CLI resumes a quota-interrupted file task and completed checkpoin
     const child = spawn(process.execPath, args, { cwd: root + "/workspace", env: { ...env, ...extra }, stdio: ["pipe", "pipe", "pipe"] });let stdout = "", stderr = "", expired = false;
     child.stdout.on("data", b => stdout += b);child.stderr.on("data", b => stderr += b);child.stdin.on("error", () => {});child.stdin.end(input);
     const code = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { expired = true;child.kill("SIGKILL"); }, 12000);
+      const timer = setTimeout(() => { expired = true;child.kill("SIGKILL"); }, longBrief ? 22000 : 12000);
       child.once("error", e => { clearTimeout(timer);reject(e); });child.once("close", c => { clearTimeout(timer);resolve(c); });
     });assert.equal(expired, false);return { code, stdout, stderr, data: JSON.parse(stdout) };
   }
-  const seed = await run([fileURLToPath(new URL("./fixtures/native-terminal-quota.js", import.meta.url)), root, origin + "/v1", "start"]);
+  if (longBrief) Object.assign(env, { AGINTI_CONTEXT_BUDGET_MODE: "on", AGINTI_CONTEXT_BUDGET_CHARS: "10000",
+    AGINTI_CONTEXT_TARGET_TOKENS: "16000", AGINTI_CONTEXT_WINDOW_TOKENS: "64000" });
+  const seed = await run([fileURLToPath(new URL("./fixtures/native-terminal-quota.js", import.meta.url)), root, origin + "/v1", "start", ...(longBrief ? ["long-brief"] : [])]);
   assert.equal(seed.code, 0, seed.stderr);assert.equal(seed.data.resolved, false);phase = "resume";turns = 0;
+  const briefPath = path.join(root, "workspace", "brief.md");
+  const confirmed = await fs.stat(briefPath, { bigint: true });
   const args = [path.join(runtime, "bin/aginti-cli.js"), "run", "--resume", "terminal-quota", "--stdin", "--json", "--no-auto-update", "--provider", "deepseek", "--model", "deepseek-flash", "--routing", "manual", "--route-model", "deepseek-flash", "--main-model", "deepseek-flash", "--spare-model", "deepseek-flash"];
   const extra = { NODE_OPTIONS: "--import=" + fileURLToPath(new URL("./fixtures/native-terminal-quota-cli.js", import.meta.url)), AGINTI_TEST_QUOTA_ORIGIN: origin };
-  const finished = await run(args, extra, continuations[0]);assert.equal(finished.code, 0, JSON.stringify(finished));assert.equal(finished.data.ok, true);
+  const finished = await run(args, extra, continuations[0]);assert.deepEqual(errors, []);assert.equal(finished.code, 0, JSON.stringify(finished));assert.equal(finished.data.ok, true);
   const state = JSON.parse(await fs.readFile(root + "/home/sessions/terminal-quota/state.json"));
-  assert.equal(state.meta.goalContract.taskGoal, original);assert.equal(state.meta.goalContract.activeGoal, original);
+  assert.equal(state.meta.goalContract.taskGoal, goal);assert.equal(state.meta.goalContract.activeGoal, goal);
+  if (longBrief) assert.ok(state.meta.contextBudget.compactions > 0);
+  const retained = await fs.stat(briefPath, { bigint: true });
+  assert.equal(retained.ino, confirmed.ino);assert.equal(retained.mtimeNs, confirmed.mtimeNs);
   assert.equal(state.meta.goalContract.taskRelation, "same-task");assert.equal(state.meta.goalContract.status, "completed");
   assert.equal(await fs.readFile(root + "/workspace/brief.md", "utf8"), brief);assert.equal(await fs.readFile(root + "/workspace/checklist.md", "utf8"), checklist);
   const count = requests;const noOp = await run(args, extra, continuations[0]);assert.equal(noOp.code, 0, noOp.stderr);assert.equal(noOp.data.ok, true);assert.equal(requests, count, "completed continuation must not invoke a provider or repeat tools");assert.deepEqual(errors, []);
-});
+}

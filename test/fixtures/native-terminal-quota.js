@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 const runtime = process.env.AGINTI_TEST_BASELINE_RUNTIME || fileURLToPath(new URL("../../", import.meta.url));
 const { runAgent } = await import(pathToFileURL(path.join(runtime, "src/agent-runner.js")));
@@ -11,7 +12,10 @@ globalThis.fetch = (input, options) => {
   if (actual.origin !== new URL(baseURL).origin) throw new Error("OFFLINE_NETWORK_ESCAPE_REFUSED");
   return Reflect.apply(originalFetch, globalThis, [input, options]);
 };
-const config = resolveRuntimeConfig({ provider: "deepseek", model, routingMode: "manual", taskProfile: "code", goal: phase === "start" ? "Can you turn measurement.txt into a short brief.md and a checklist.md of what is still to do? Leave the source as it is." : "Please continue from where you stopped.", commandCwd: root + "/workspace", maxSteps: 8, dynamicSteps: "off" },
+const task = process.argv[5] === "long-brief"
+  ? await readFile(path.join(root, "long-request.txt"), "utf8")
+  : "Can you turn measurement.txt into a short brief.md and a checklist.md of what is still to do? Leave the source as it is.";
+const config = resolveRuntimeConfig({ provider: "deepseek", model, routingMode: "manual", taskProfile: "code", goal: phase === "start" ? task : "Please continue from where you stopped.", commandCwd: root + "/workspace", maxSteps: 8, dynamicSteps: "off" },
   { baseDir: root + "/workspace", packageDir: runtime, sessionId, apiKey: "synthetic-terminal-quota-key", baseURL, enableScs: "off", sandboxMode: "host", packageInstallPolicy: "block", allowFileTools: true, allowShellTool: false, allowDestructive: false, allowWrapperTools: false, allowAuxiliaryTools: false, allowWebSearch: false, allowMcpTools: false, allowParallelScouts: false, onConsole: () => {} });
 Object.assign(config, { sessionsDir: root + "/home/sessions", projectSessionsDir: root + "/pointers", allowProviderHandoff: false, modelTimeoutMs: 5000,
   routeProvider: "deepseek", routeModel: model, mainProvider: "deepseek", mainModel: model, spareProvider: "deepseek", spareModel: model,

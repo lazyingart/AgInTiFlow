@@ -49,6 +49,20 @@ export function estimateTextTokens(value = "") {
   return Math.ceil(ascii / 3) + Math.ceil(nonAscii * 1.5);
 }
 
+// String budgets use UTF-16 offsets. Never leave half a supplementary character
+// at either edge of an omission, even when the provider counts code points.
+export function compactTextEdges(text, head, tail) {
+  let end = head;
+  let start = text.length - tail;
+  const splitsPair = index =>
+    index > 0 && index < text.length &&
+    text.charCodeAt(index - 1) >= 0xd800 && text.charCodeAt(index - 1) <= 0xdbff &&
+    text.charCodeAt(index) >= 0xdc00 && text.charCodeAt(index) <= 0xdfff;
+  if (splitsPair(end)) end--;
+  if (splitsPair(start)) start++;
+  return { head: text.slice(0, end), tail: text.slice(start), omitted: start - end };
+}
+
 export function compactTextForTokenBudget(value = "", maxTokens = 0, options = {}) {
   const text = String(value ?? "");
   const budget = positiveInteger(maxTokens, 0);
@@ -59,14 +73,15 @@ export function compactTextForTokenBudget(value = "", maxTokens = 0, options = {
     const kept = Math.max(0, Math.min(text.length, Math.floor(keptChars)));
     const headChars = Math.floor(kept * headFraction);
     const tailChars = Math.max(0, kept - headChars);
-    const omitted = Math.max(0, text.length - headChars - tailChars);
+    const { head, tail, omitted } = compactTextEdges(text, headChars, tailChars);
     const marker = `\n\n[... ${omitted} chars omitted to fit the provider context ...]\n\n`;
-    return `${text.slice(0, headChars).trimEnd()}${marker}${text.slice(text.length - tailChars).trimStart()}`;
+    return `${head.trimEnd()}${marker}${tail.trimStart()}`;
   };
 
   let low = 0;
   let high = text.length;
   let best = "[... content omitted to fit the provider context ...]";
+  if (estimateTextTokens(best) > budget) best = ".";
   while (low <= high) {
     const middle = Math.floor((low + high) / 2);
     const candidate = buildCandidate(middle);

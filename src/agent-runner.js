@@ -237,6 +237,7 @@ import {
   toolContractFromResponse,
 } from "./tool-contract.js";
 import {
+  compactTextEdges,
   compactTextForTokenBudget,
   createContextBudgetState,
   decideContextCompaction,
@@ -875,7 +876,8 @@ function compactSingleLine(value, limit = 600) {
     .replace(/\s+/g, " ")
     .trim();
   if (!limit || text.length <= limit) return text;
-  return `${text.slice(0, Math.max(0, limit - 16)).trimEnd()} ... [truncated]`;
+  const { head } = compactTextEdges(text, Math.max(0, limit - 16), 0);
+  return `${head.trimEnd()} ... [truncated]`;
 }
 
 function compactJson(value, limit = 1200) {
@@ -893,7 +895,8 @@ function compactMultiline(value = "", limit = 3600) {
   const available = Math.max(0, limit - marker.length);
   const head = Math.floor(available * 0.35);
   const tail = Math.max(0, available - head);
-  return `${text.slice(0, head).trimEnd()}${marker}${text.slice(-tail).trimStart()}`;
+  const edges = compactTextEdges(text, head, tail);
+  return `${edges.head.trimEnd()}${marker}${edges.tail.trimStart()}`;
 }
 
 function safeParseToolContent(content) {
@@ -2811,13 +2814,13 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
   const authoritativeGoal = currentRequestIsAuthoritative
     ? currentRequest
     : activeGoal || String(state?.goal || config.goal || "").trim();
-  const compactedContent = [
+  const summaryHeader = [
     options.heading || "Continue from this compacted, valid transcript.",
     options.detail ? compactSingleLine(options.detail, 420) : "",
     "",
     "Authoritative current goal:",
-    compactMultiline(authoritativeGoal || "(no goal recorded)", 4000),
-    "",
+  ].filter(Boolean).join("\n");
+  const summaryEvidence = [
     "Current plan:",
     compactMultiline(effectivePlan, 2400),
     "",
@@ -2861,6 +2864,9 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
   ]
     .filter((line) => line !== "")
     .join("\n");
+  const renderSummary = goal => [summaryHeader, goal, summaryEvidence].join("\n");
+  const goalText = authoritativeGoal || "(no goal recorded)";
+  const compactedContent = renderSummary(compactMultiline(goalText, 4000));
 
   const targetTokens = Math.max(
     2048,
@@ -2884,13 +2890,8 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
     Math.max(1024, Math.floor(targetTokens * (retainedToolMessages.length ? 0.28 : 0.52))),
     { headFraction: 0.58 }
   );
-  const baseMessages = [
-    ...boundedSystemMessages,
-    {
-      role: "user",
-      content: boundedContent,
-    },
-  ];
+  const summaryMessage = { role: "user", content: boundedContent };
+  const baseMessages = [...boundedSystemMessages, summaryMessage];
   const retainedPairs = [];
   for (let index = 0; index < retainedToolMessages.length; index += deepSeekCompaction ? 1 : 2) {
     const pair = retainedToolMessages.slice(index, index + (deepSeekCompaction ? 1 : 2));
@@ -2930,6 +2931,17 @@ function buildCompactedRuntimeMessages(state, config, snapshot, step, options = 
     });
   }
 
+  // First reserve the normal verification/tool history. Spend remaining room
+  // on the original active request so instructions in its middle survive.
+  // At our most economical estimate three UTF-16 units cost at least one token.
+  if ((goalText.length > 4000 || boundedContent !== compactedContent) &&
+      goalText.length <= targetTokens * 3) {
+    const expanded = renderSummary(compactMultiline(goalText, 0));
+    const restTokens = estimateMessageTokens(compactMessages) - estimateMessageTokens([summaryMessage]);
+    if (restTokens + estimateMessageTokens([{ role: "user", content: expanded }]) <= targetTokens) {
+      summaryMessage.content = expanded;
+    }
+  }
   return compactMessages;
 }
 
