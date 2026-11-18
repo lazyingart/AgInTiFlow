@@ -21,6 +21,11 @@ import { nativeBackgroundToolGuidance, nativeWorkspaceToolGuidance, nativeCapabi
 import { assessFileChecksumClaims, nativeFileChecksumReceipts } from "./completion-file-checksums.js";
 import { acquireNativeSessionRunLock } from "./session-run-lock.js";
 import { runNativeHostCommand } from "./native-host-command.js";
+import {
+  emptyNativeCommandJournal, readNativeCommandJournal, beginNativeCommand, validateNativeCommandDispatch,
+  prepareNativeCommandResult, retireNativeCommand, restoreNativeCommandFrame,
+  legacyUnconfirmedCommands, legacyNativeCommandHold, readLegacyNativeCommandHold,
+} from "./native-command-recovery.js";
 import { createCommandMutationEvidence, commandMutationEvidenceForPresentation, testCommandSequenceIsCurrent, commandVerificationSequenceState } from "./command-mutation-evidence.js";
 import { budgetStopWithDeferredReceipts, deferredJobLaunchSummary, launchOnlyHandoffReceipt, recordDeferredJobReceipt, retainedLongJobResult } from "./deferred-job-handoff.js";
 import {
@@ -25996,7 +26001,29 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
         if (config.useDockerSandbox) {
           await ensureDockerSandboxReady(config, observers);
         }
-        const commandResult = await runShellCommand(rawCommand, config, policy);
+        // This fsynced intent is not an exactly-once external-effect claim.
+        // If the parent dies without a result receipt, resume must not guess.
+        const commandContext = nativeCommandRecoveryContext(state);
+        completedToolCheckpointStarted = true;
+        const pendingCommand = beginNativeCommand(state.meta.nativeCommandJournal, commandContext, {
+          call: toolCall, command: rawCommand, step: state.stepsCompleted + 1,
+          taskHash: hashForLog(String(state.meta.goalContract.taskGoal || state.goal).trim()),
+        });
+        state.meta.nativeCommandJournal = validateNativeCommandDispatch(pendingCommand, commandContext, state);
+        let commandResult;
+        try {
+          await store.saveState(state);
+          commandResult = await runShellCommand(rawCommand, config, policy);
+        } catch (error) {
+          // POSIX native cancellation resolves only after owned teardown. Do
+          // not equate an unproven Docker/Windows teardown with that contract.
+          if (isAbortError(error, config) && !config.useDockerSandbox && process.platform !== "win32") {
+            state.meta.nativeCommandJournal = retireNativeCommand(state.meta.nativeCommandJournal, commandContext);
+            await store.saveState(state);
+          }
+          completedToolCheckpointStarted = true;
+          throw error;
+        }
         const gitWorktreeAfter = captureMutationScope
           ? await captureGitWorktreeSnapshot(config)
           : null;
@@ -31563,6 +31590,68 @@ async function activatePendingProviderQualityRebound({
   observers.event("provider.quality_rebound_activated", { ...detail, sessionId });
 }
 
+function nativeCommandRecoveryContext(state) {
+  return { sessionId: state.sessionId, commandCwd: state.meta?.runtimeConfig?.commandCwd || state.commandCwd,
+    goalRevision: state.meta?.goalContract?.revision, runtimeRevision: state.meta?.runtimeConfig?.revision };
+}
+
+async function reconcileNativeCommands(state, store, previousCommandCwd) {
+  const currentContext = nativeCommandRecoveryContext(state);
+  const context = { ...currentContext, commandCwd: previousCommandCwd };
+  const assertUnchangedWorkspace = () => {
+    if (currentContext.commandCwd !== context.commandCwd) {
+      throw Object.assign(new Error("An unresolved command still belongs to the saved workspace. Reconcile it there before changing this session's workspace."), { code: "NATIVE_COMMAND_WORKSPACE_CONFLICT" });
+    }
+  };
+  if (Object.hasOwn(state.meta, "nativeCommandLegacyHold")) {
+    readLegacyNativeCommandHold(state.meta.nativeCommandLegacyHold, context);
+    assertUnchangedWorkspace();
+    return true;
+  }
+  if (!Object.hasOwn(state.meta, "nativeCommandJournal")) {
+    const unknown = legacyUnconfirmedCommands(await store.loadEvents({ strict: true }), state);
+    if (unknown.length) {
+      assertUnchangedWorkspace();
+      state.meta.nativeCommandLegacyHold = legacyNativeCommandHold(unknown, context);
+    }
+    state.meta.nativeCommandJournal = emptyNativeCommandJournal(currentContext);
+    await store.saveState(state);
+    return unknown.length > 0;
+  }
+  const journal = readNativeCommandJournal(state.meta.nativeCommandJournal, context);
+  if (journal.pending?.status === "dispatching") { assertUnchangedWorkspace(); return true; }
+  if (journal.pending?.status === "result-ready") {
+    // Restore before continuation/history compaction can remove the exact
+    // unanswered call. Only the bound, semantically verified result is used.
+    restoreNativeCommandFrame(journal, context, state);
+    state.meta.nativeCommandJournal = emptyNativeCommandJournal(currentContext);
+    state.messages.push({ role: "user", content: "Runtime recovery: the preceding command result is an existing bounded, redacted receipt, not a complete stdout/stderr transcript. No command was replayed. Missing presentation text does not authorize repeating a once-only command." });
+    state.updatedAt = new Date().toISOString();
+    await store.saveState(state);
+    await store.appendEvent("command.result_recovered", { toolCallId: journal.pending.toolCallId, actionsReplayed: false });
+  }
+  else if (currentContext.commandCwd !== context.commandCwd) {
+    // An explicit workspace change may rebind only an empty journal, after
+    // any prior result is restored under its original retained identity.
+    state.meta.nativeCommandJournal = emptyNativeCommandJournal(currentContext);
+    await store.saveState(state);
+  }
+  return false;
+}
+
+async function stopForUnknownNativeCommand({ config, state, store, observers, sessionId }) {
+  const reason = "native_command_outcome_unknown", code = "NATIVE_COMMAND_OUTCOME_UNKNOWN";
+  const result = "A previous command may have run, but its result was not durably confirmed. I preserved the session and did not repeat it. Its external effects require independent reconciliation before this session can execute more work.";
+  state.updatedAt = new Date().toISOString();
+  updateGoalStatus(state, "paused", reason, state.updatedAt);
+  await store.saveState(state);
+  const detail = { reason, code, requiresReconciliation: true, sessionId };
+  await store.appendEvent("session.stopped", detail);
+  observers.event("session.stopped", detail);
+  emitConsole(config, result, { kind: "meta" });
+  return { sessionId, result, stopped: true, reason, code, requiresReconciliation: true, ...goalRunMetadata(state) };
+}
+
 async function runAgentOnceUnlocked(config) {
   const incomingConfig = config;
   const sessionId = config.resume || config.sessionId || `web-agent-${crypto.randomUUID()}`;
@@ -31574,6 +31663,7 @@ async function runAgentOnceUnlocked(config) {
   await store.ensure();
 
   let state = await store.loadState();
+  const previousCommandCwd = state?.meta?.runtimeConfig?.commandCwd || state?.commandCwd;
   if (Object.hasOwn(state?.meta || {}, "projectVerification") && state.meta.projectVerification !== null) {
     commandVerificationSequenceState(state.meta.projectVerification);
   }
@@ -31627,11 +31717,19 @@ async function runAgentOnceUnlocked(config) {
     };
   }
 
+  // Legacy sessions without goal metadata use the same initial contract as
+  // ordinary continuation migration. Existing (even malformed) journals are
+  // never silently reset by enrollment.
+  if (state && !Object.hasOwn(state.meta, "goalContract")) {
+    state.meta.goalContract = initialGoalContract(state.goal, state.createdAt);
+  }
+  const nativeCommandHeld = state ? await reconcileNativeCommands(state, store, previousCommandCwd) : false;
+
   // Resume can replace commandCwd after the CLI has initialized storage for
   // its launcher directory. Protect runtime caches in the actual workspace on
   // every run, including sessions resumed from a parent repository.
-  const runtimeGitExcludes = await ensureRuntimeGitExcludes(config.commandCwd).catch(() => null);
-  const repositoryReconciliation = state
+  const runtimeGitExcludes = nativeCommandHeld ? null : await ensureRuntimeGitExcludes(config.commandCwd).catch(() => null);
+  const repositoryReconciliation = state && !nativeCommandHeld
     ? await reconcileRuntimeRepositoryState(state, config, runtimeGitExcludes)
     : null;
   if (repositoryReconciliation) {
@@ -31644,6 +31742,7 @@ async function runAgentOnceUnlocked(config) {
 
   if (!state) {
     state = await createInitialState(config, sessionId);
+    state.meta.nativeCommandJournal = emptyNativeCommandJournal(nativeCommandRecoveryContext(state));
     await store.appendEvent("session.created", {
       sessionId,
       provider: config.provider,
@@ -31695,6 +31794,8 @@ async function runAgentOnceUnlocked(config) {
   if (runtimeResolutionEvent) {
     await store.appendEvent(runtimeResolutionEvent.type, runtimeResolutionEvent.data);
   }
+
+  if (nativeCommandHeld) return stopForUnknownNativeCommand({ config, state, store, observers, sessionId });
 
   const commandMutationReview = reconcileLegacyCommandMutationEvidence(state, config);
   if (commandMutationReview) {
@@ -33579,11 +33680,7 @@ async function runAgentOnceUnlocked(config) {
         }
         let checkpointedToolResult = null;
         const checkpointCompletedToolResult = toolIndex === toolCalls.length - 1 ? async (result) => {
-          checkpointedToolResult = result;
           const resultJson = JSON.stringify(toolResultForModel(result));
-          state.messages.push({ role: "tool", tool_call_id: toolCall.id, content: resultJson });
-          recordDurableEvidenceCategories(state, result);
-          recordDurableResearchEvidence(state, result);
           if (result.toolName === "run_command") {
             const run = state.meta?.projectVerification?.commandRuns?.at(-1);
             const runSha256 = nativeCommandVerificationDigest(run);
@@ -33602,7 +33699,22 @@ async function runAgentOnceUnlocked(config) {
               taskHash: hashForLog(String(state.meta?.goalContract?.taskGoal || state.goal || "").trim()),
               runSha256, resultSha256: hashForLog(checkpointJson), resultJson: checkpointJson,
             };
+            state.meta.nativeCommandJournal = prepareNativeCommandResult(state.meta.nativeCommandJournal,
+              nativeCommandRecoveryContext(state), state, run.nativeResultCheckpoint);
           }
+          // Preserve the runner's actual ordered evidence before publishing a
+          // result-ready receipt. Recovery must not reconstruct Git/publish
+          // authority later from a mirrored bounded model response.
+          recordDurableEvidenceCategories(state, result);
+          recordDurableResearchEvidence(state, result);
+          if (result.toolName === "run_command") {
+            // Result durability precedes the closed frame. A crash in the next
+            // save can recover this outcome without asking the model to rerun.
+            await store.saveState(state);
+            state.meta.nativeCommandJournal = retireNativeCommand(state.meta.nativeCommandJournal, nativeCommandRecoveryContext(state));
+          }
+          checkpointedToolResult = result;
+          state.messages.push({ role: "tool", tool_call_id: toolCall.id, content: resultJson });
           state.stepsCompleted = step;
           state.updatedAt = new Date().toISOString();
           await store.saveState(state);

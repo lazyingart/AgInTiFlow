@@ -376,7 +376,7 @@ export class SessionStore {
     });
   }
 
-  loadEvents() {
+  loadEvents({ strict = false } = {}) {
     return this.withIntegrationOperation("loadEvents", async () => {
       if (retainedIntegrationTextWorkspaceEnabled(this.#integrationSessionClaim)) {
         return invokeIntegrationTextWorkspace(this.#integrationSessionClaim, "loadEvents");
@@ -388,7 +388,8 @@ export class SessionStore {
           .map((line) => line.trim())
           .filter(Boolean)
           .map((line) => JSON.parse(line));
-      } catch {
+      } catch (error) {
+        if (strict && error.code !== "ENOENT") throw error;
         if (this.legacySessionDir) {
           try {
             const raw = await fs.readFile(path.join(this.legacySessionDir, "events.jsonl"), "utf8");
@@ -397,7 +398,8 @@ export class SessionStore {
               .map((line) => line.trim())
               .filter(Boolean)
               .map((line) => JSON.parse(line));
-          } catch {
+          } catch (legacyError) {
+            if (strict && legacyError.code !== "ENOENT") throw legacyError;
             return [];
           }
         }

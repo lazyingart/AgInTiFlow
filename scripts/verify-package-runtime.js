@@ -58,6 +58,7 @@ try {
   const consumerStarted = performance.now();
   const consumerFiles = ["test/package-runtime-dependencies.test.js", "test/package-runtime-verifier.test.js", "test/model-http-boundary.test.js", "test/model-response-budget.test.js", "test/model-response-runtime.test.js", "test/text-tool-turn.test.js", "test/native-text-tool-turn.test.js", "test/native-tool-json.test.js", "test/native-tool-json-runtime.test.js", "test/publish-status-intent.test.js", "test/remote-image-input.test.js", "test/native-session-run-lock.test.js",
     "test/text-artifact-contract.test.js", "test/scoped-discovery-recovery.test.js", "test/native-text-artifact-contract.test.js",
+    "test/native-command-recovery.test.js", "test/native-command-recovery-runtime.test.js",
     "test/native-turn-boundary.test.js", "test/native-turn-runtime.test.js", "test/inbox-dispatch-fence.test.js", "test/inbox-lock-liveness.test.js", "test/inbox-lock-queue-continuity.test.js", "test/native-tool-checkpoint-runtime.test.js", "test/native-completion-delivery-runtime.test.js", "test/native-precompletion-cancellation.test.js", "test/native-interruption-durability.test.js", "test/file-creation-intent.test.js", "test/cli-startup-input.test.js", "test/file-checksum.test.js", "test/file-checksum-runtime.test.js", "test/preserved-input-intent.test.js", "test/preserved-mutation-target.test.js",
     "test/japanese-file-preservation.test.js",
     "test/preservation-output-role.test.js", "test/native-preservation-output.test.js",
@@ -128,10 +129,10 @@ try {
   // the required cohort is actually present before spawning its test runner.
   for (const name of consumerFiles) assert.ok((await fs.lstat(path.join(installed, name))).isFile(), `Required packaged test is absent: ${name}`);
   const log = run(process.execPath, ["--experimental-test-module-mocks", "--test", `--test-concurrency=${testConcurrency}`, ...consumerFiles], installed, consumerTimeoutMs);
-  // Baseline3540 +61 text-artifact cases,37 scope-correction cases and29 persisted-native cases. Keep the verifier's
+  // Baseline3667 +54 command-recovery contract and20 persisted-crash cases. Keep the verifier's
   // own fixture count in sync; a zero test-runner exit is insufficient.
-  assert.match(log, /# tests 3667\n/); assert.match(log, /# fail 0\n/);
-  assert.match(log, /# pass 3667\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
+  assert.match(log, /# tests 3741\n/); assert.match(log, /# fail 0\n/);
+  assert.match(log, /# pass 3741\n/); assert.match(log, /# cancelled 0\n/); assert.match(log, /# skipped 0\n/);
   const consumerTests = Number(log.match(/^# tests (\d+)$/m)[1]);
   const passedTests = Number(log.match(/^# pass (\d+)$/m)[1]);
   receipt = { version: manifest.version, files: packed.files.length, onlineDependencyResolution: true,
