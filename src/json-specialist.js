@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import { createChatCompletion, createClient } from "./model-client.js";
 import { parseNativeToolArguments as parseModelJson } from "./native-tool-arguments.js";
+import { jsonSnapshot } from "./restricted-application-contract.js";
+import { checkSpecialistSchema } from "./json-specialist-schema.js";
 import { getProviderDefaults } from "./model-routing.js";
 import { normalizeProviderId, providerStructuredOutputAttempts } from "./provider-contract.js";
 import { redactSensitiveText, redactValue } from "./redaction.js";
@@ -52,8 +54,10 @@ function normalizeSchema(raw) {
   let name = "";
   let strict = true;
   if (typeof schema === "string" && schema.trim()) {
-    schema = JSON.parse(schema);
+    if (Buffer.byteLength(schema) > 65536) throw new Error("JSON specialist schema is too large.");
+    schema = parseModelJson(schema);
   }
+  schema = jsonSnapshot(schema, { maxBytes: 65536, maxNodes: 8000 });
   if (schema?.schema && typeof schema.schema === "object" && !schema.type) {
     name = String(schema.name || "").trim();
     strict = schema.strict !== false;
@@ -151,66 +155,15 @@ function allowedTypes(schema) {
   return Array.isArray(schema.type) ? schema.type : [schema.type];
 }
 
-function typeMatches(value, type) {
-  if (type === "array") return Array.isArray(value);
-  if (type === "object") return value && typeof value === "object" && !Array.isArray(value);
-  if (type === "integer") return Number.isInteger(value);
-  if (type === "number") return typeof value === "number" && Number.isFinite(value);
-  if (type === "string") return typeof value === "string";
-  if (type === "boolean") return typeof value === "boolean";
-  if (type === "null") return value === null;
-  return true;
-}
-
-function validateSchema(value, schema, path = "$") {
-  if (!schema || typeof schema !== "object") return [];
-  if (Array.isArray(schema.anyOf) && schema.anyOf.length > 0) {
-    const variants = schema.anyOf.map((variant) => validateSchema(value, variant, path));
-    return variants.some((errs) => errs.length === 0) ? [] : [`${path}: did not match anyOf`];
-  }
-  if (Array.isArray(schema.oneOf) && schema.oneOf.length > 0) {
-    const matches = schema.oneOf.filter((variant) => validateSchema(value, variant, path).length === 0).length;
-    return matches === 1 ? [] : [`${path}: did not match exactly one oneOf variant`];
-  }
-  const errors = [];
-  if (schema.const !== undefined && JSON.stringify(value) !== JSON.stringify(schema.const)) {
-    errors.push(`${path}: expected const ${JSON.stringify(schema.const)}`);
-  }
-  if (Array.isArray(schema.enum) && !schema.enum.some((item) => JSON.stringify(item) === JSON.stringify(value))) {
-    errors.push(`${path}: value is not in enum`);
-  }
-  const types = allowedTypes(schema);
-  if (types.length > 0 && !types.some((type) => typeMatches(value, type))) {
-    errors.push(`${path}: expected type ${types.join("|")}`);
-    return errors;
-  }
-  if (Array.isArray(value)) {
-    if (Number.isFinite(schema.minItems) && value.length < schema.minItems) errors.push(`${path}: fewer than minItems`);
-    if (Number.isFinite(schema.maxItems) && value.length > schema.maxItems) errors.push(`${path}: more than maxItems`);
-    if (schema.items) {
-      value.forEach((item, index) => errors.push(...validateSchema(item, schema.items, `${path}[${index}]`)));
-    }
-  } else if (value && typeof value === "object") {
-    const properties = schema.properties && typeof schema.properties === "object" ? schema.properties : {};
-    for (const key of schema.required || []) {
-      if (!(key in value)) errors.push(`${path}.${key}: required property missing`);
-    }
-    for (const [key, child] of Object.entries(properties)) {
-      if (key in value) errors.push(...validateSchema(value[key], child, `${path}.${key}`));
-    }
-    if (schema.additionalProperties === false) {
-      for (const key of Object.keys(value)) {
-        if (!(key in properties)) errors.push(`${path}.${key}: additional property not allowed`);
-      }
-    }
-  }
-  return errors;
-}
-
-function mockValueForSchema(schema) {
+function mockValueForSchema(schema, budget = { nodes: 4096, literalBytes: 65536 }) {
+  if (--budget.nodes < 0) throw new Error("JSON specialist mock exceeds its generation budget.");
   if (!schema || typeof schema !== "object") return {};
-  if (schema.const !== undefined) return schema.const;
-  if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0];
+  if (schema.const !== undefined || (Array.isArray(schema.enum) && schema.enum.length > 0)) {
+    const literal = schema.const !== undefined ? schema.const : schema.enum[0];
+    budget.literalBytes -= Buffer.byteLength(JSON.stringify(literal));
+    if (budget.literalBytes < 0) throw new Error("JSON specialist mock exceeds its generation budget.");
+    return literal;
+  }
   const type = allowedTypes(schema)[0] || (schema.properties ? "object" : "string");
   if (type === "string") return "mock";
   if (type === "integer") return 1;
@@ -218,13 +171,14 @@ function mockValueForSchema(schema) {
   if (type === "boolean") return true;
   if (type === "null") return null;
   if (type === "array") {
-    const count = Number.isFinite(schema.minItems) ? Math.max(1, schema.minItems) : 1;
-    return Array.from({ length: count }, () => mockValueForSchema(schema.items || { type: "string" }));
+    const count = schema.maxItems === 0 ? 0 : Math.max(1, schema.minItems || 0);
+    if (count > budget.nodes) throw new Error("JSON specialist mock exceeds its generation budget.");
+    return Array.from({ length: count }, () => mockValueForSchema(schema.items || { type: "string" }, budget));
   }
   const result = {};
   const properties = schema.properties && typeof schema.properties === "object" ? schema.properties : {};
   const keys = new Set([...(schema.required || []), ...Object.keys(properties).slice(0, 6)]);
-  for (const key of keys) result[key] = mockValueForSchema(properties[key] || { type: "string" });
+  for (const key of keys) result[key] = mockValueForSchema(properties[key] || { type: "string" }, budget);
   return result;
 }
 
@@ -313,13 +267,16 @@ export async function runJsonSpecialist(args = {}, config = {}, store = null) {
     let result;
     let validationErrors = [];
     let usedResponseFormat = "mock";
-    if (config.provider === "mock" || provider === "mock") {
+    const mock = config.provider === "mock" || provider === "mock";
+    if (!mock) provider = resolveJsonProvider(request, config);
+    const schemaSource = JSON.stringify(request.schema);
+    await checkSpecialistSchema(schemaSource, undefined, true, config.abortSignal);
+    if (mock) {
       provider = "mock";
       model = request.model || config.model || "mock-agent";
       result = mockValueForSchema(request.schema);
-      validationErrors = validateSchema(result, request.schema);
+      validationErrors = await checkSpecialistSchema(schemaSource, result, false, config.abortSignal);
     } else {
-      provider = resolveJsonProvider(request, config);
       const providerChanged = provider !== normalizeProviderId(config.provider || "localllm", "");
       const providerDefaults = providerChanged ? getProviderDefaults(provider) : {};
       const jsonConfig = {
@@ -356,7 +313,7 @@ export async function runJsonSpecialist(args = {}, config = {}, store = null) {
             if (request.fallbackOnInvalid && attempt !== attempts.at(-1)) continue;
             throw new Error(parsed.error);
           }
-          const errors = validateSchema(parsed.value, request.schema);
+          const errors = await checkSpecialistSchema(schemaSource, parsed.value, false, config.abortSignal);
           if (errors.length > 0) {
             attemptNotes.push(`${attempt}: ${errors.slice(0, 4).join("; ")}`);
             if (request.fallbackOnInvalid && attempt !== attempts.at(-1)) continue;
@@ -366,6 +323,7 @@ export async function runJsonSpecialist(args = {}, config = {}, store = null) {
           usedResponseFormat = attempt;
           break;
         } catch (error) {
+          if (config.abortSignal?.aborted || error?.code === "SPECIALIST_SCHEMA_UNAVAILABLE" || error?.code === "SPECIALIST_SCHEMA_INVALID") throw error;
           const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
           attemptNotes.push(`${attempt}: ${message}`);
           if (attempt !== attempts.at(-1) && (request.fallbackOnInvalid || errorLooksLikeUnsupportedResponseFormat(error))) continue;

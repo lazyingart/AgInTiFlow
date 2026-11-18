@@ -4,8 +4,117 @@ import { normalizeTextToolCallResponse } from "../src/model-client.js";
 import { createToolContract, resolveDispatchableToolCallBatch } from "../src/tool-contract.js";
 import { parseNativeToolArguments } from "../src/native-tool-arguments.js";
 import { runJsonSpecialist } from "../src/json-specialist.js";
+import { checkSpecialistSchema } from "../src/json-specialist-schema.js";
 
 const specialistSchema = { type: "object", required: ["label"], properties: { label: { type: "string" } } };
+async function schemaTrial(schema, responses, options = {}) {
+  let calls = 0;
+  const model = "offline-schema-fixture";
+  const result = await runJsonSpecialist({
+    task: "Prepare the requested draft.", responseFormat: "json_object", fallbackOnInvalid: false, schema,
+    ...options.request,
+  }, {
+    provider: "deepseek", model, abortSignal: options.signal,
+    jsonClientFactory: () => ({ chat: { completions: { create: async () => {
+      assert.ok(calls < responses.length);
+      const response = responses[calls++];
+      options.onCall?.();
+      return { choices: [{ finish_reason: "stop", message: { role: "assistant", content: JSON.stringify(response) } }] };
+    } } } }),
+  });
+  return { result, calls };
+}
+
+test("specialist follows local schema references and numeric and string constraints", async () => {
+  const schema = { type: "object", required: ["draft"], properties: { draft: { $ref: "#/$defs/Draft" } }, $defs: {
+    Draft: { type: "object", additionalProperties: false, required: ["duration", "key"], properties: {
+      duration: { type: "integer", minimum: 30, maximum: 180 }, key: { type: "string", pattern: "^[A-G] minor$" },
+    } },
+  } };
+  for (const [draft, allowed] of [[{ duration: 30, key: "D minor" }, true], [{ duration: 181, key: "D minor" }, false],
+    [{ duration: 30, key: "H minor" }, false], [{ duration: 30 }, false], ["text", false]]) {
+    const { result, calls } = await schemaTrial(schema, [{ draft }]);
+    assert.equal(calls, 1); assert.equal(result.ok, allowed);
+    if (!allowed) assert.ok(result.validationErrors.length);
+  }
+});
+
+test("specialist counts Unicode characters and enforces sibling constraints beside anyOf", async () => {
+  const schema = { type: "string", anyOf: [{ const: "🎵" }, { type: "string", minLength: 2 }], maxLength: 2 };
+  for (const [text, allowed] of [["🎵", true], ["🎵🎵", true], ["🎵🎵🎵", false], ["", false]]) {
+    assert.equal((await schemaTrial(schema, [text])).result.ok, allowed);
+  }
+});
+
+test("specialist validates object enums by JSON equality without changing key order or defaults", async () => {
+  const value = { b: 2, a: 1 };
+  const schema = { type: "object", enum: [{ a: 1, b: 2 }], properties: { optional: { default: 3 } } };
+  const { result } = await schemaTrial(schema, [value]);
+  assert.equal(result.ok, true); assert.deepEqual(Object.keys(result.result), ["b", "a"]);
+});
+
+test("specialist checks a malformed, asynchronous or unresolved contract before using the model", async () => {
+  for (const schema of [{ type: "unknown" }, { $ref: "https://invalid.example/draft.json" },
+    { $async: true, type: "object" }, { type: "string", unknownValidationRule: true }, { type: "string", pattern: "[" }]) {
+    const { calls, result } = await schemaTrial(schema, []);
+    assert.equal(calls, 0); assert.equal(result.ok, false); assert.match(result.error, /self-contained JSON Schema/);
+  }
+});
+
+test("specialist keeps identical schema IDs scoped to each complete contract", async () => {
+  const id = "urn:example:draft";
+  const observations = await Promise.all(["red", "blue"].map(constant =>
+    schemaTrial({ $id: id, const: constant }, ["red"])));
+  assert.deepEqual(observations.map(x => x.result.ok), [true, false]);
+});
+
+test("specialist snapshots contract before provider work and rejects invalid schema text with zero calls", async () => {
+  const schema = { type: "string", minLength: 2 };
+  const { result } = await schemaTrial(schema, ["x"], { onCall() { schema.minLength = 1; } });
+  assert.equal(result.ok, false);
+  const ambiguous = await schemaTrial('{"type":"number","type":"string"}', []);
+  assert.equal(ambiguous.calls, 0); assert.equal(ambiguous.result.ok, false);
+});
+
+test("specialist revalidates a fresh repair and never treats an aborted run as valid", async () => {
+  const schema = { type: "string", minLength: 2 };
+  const fixed = await schemaTrial(schema, ["x", "yes"], { request: { fallbackOnInvalid: true } });
+  assert.equal(fixed.result.ok, true); assert.equal(fixed.calls, 2);
+  const control = new AbortController();
+  const stopped = await schemaTrial(schema, ["yes"], { signal: control.signal, onCall: () => control.abort() });
+  assert.equal(stopped.calls, 1); assert.equal(stopped.result.ok, false);
+  const before = await schemaTrial(schema, [], { signal: control.signal });
+  assert.equal(before.result.ok, false); assert.equal(before.calls, 0);
+});
+
+test("specialist enforces declared draft 2020-12 constraints before returning ok", async () => {
+  const schema = { $schema: "https://json-schema.org/draft/2020-12/schema", type: "array",
+    prefixItems: [{ type: "number" }], items: false };
+  assert.equal((await schemaTrial(schema, [[1]])).result.ok, true);
+  assert.equal((await schemaTrial(schema, [[1, 2]])).result.ok, false);
+});
+
+test("bounded specialist validation admits 32 jobs, recovers after cancellation and releases the queue", async () => {
+  const source = JSON.stringify({ type: "string" });
+  const jobs = Array.from({ length: 32 }, () => checkSpecialistSchema(source, "ok", false));
+  await assert.rejects(checkSpecialistSchema(source, "overflow", false), { code: "SPECIALIST_SCHEMA_UNAVAILABLE" });
+  assert.deepEqual(await Promise.all(jobs), Array.from({ length: 32 }, () => []));
+  const controller = new AbortController();
+  const cancelled = checkSpecialistSchema(source, "ok", false, controller.signal);
+  controller.abort();
+  await assert.rejects(cancelled, { code: "SPECIALIST_SCHEMA_UNAVAILABLE" });
+  assert.deepEqual(await checkSpecialistSchema(source, "ok", false), []);
+});
+
+test("mock generation respects the schema verdict and bounds output allocation", async () => {
+  const run = schema => runJsonSpecialist({ task: "Generate a mock.", schema }, { provider: "mock" });
+  const empty = await run({ type: "array", maxItems: 0 });
+  assert.equal(empty.ok, true); assert.deepEqual(empty.result, []);
+  const tooLarge = await run({ type: "array", minItems: 10000, items: { type: "number" } });
+  assert.equal(tooLarge.ok, false); assert.match(tooLarge.error, /generation budget/);
+  const invalid = await run({ type: "string", pattern: "^different$" });
+  assert.equal(invalid.ok, false); assert.ok(invalid.validationErrors.length);
+});
 test("an allowed specialist retry uses a fresh response after an ambiguous value", async () => {
   const outputs = ['{"label":"one","label":"two"}', '{"label":"three"}'];
   const formats = [];

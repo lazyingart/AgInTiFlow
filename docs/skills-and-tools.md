@@ -205,6 +205,10 @@ For schema-bound structured data, prefer:
 - `json_specialist` for one isolated extraction, annotation, conversion, or validation request.
 - `json_specialist_batch` for independent chunks that can be requested in parallel without shared writes.
 
+Supply a self-contained JSON Schema. The specialist checks the schema before the model call and validates each proposed result locally, including references such as `#/$defs/Draft`. For example, if a draft sets `maximum: 180` for its duration, a result of 181 fails even when the provider returns well-formed JSON. Keep schemas within 64 KiB and 8,000 JSON nodes. External schema downloads and asynchronous validators are unavailable.
+
+Use the result only when `ok` is true. Applications still verify ownership, the current draft revision and whether the proposed changes match the user's intent before saving.
+
 JSON specialist calls remain on the active session provider unless the run explicitly enables cross-provider specialist routing. A model-supplied provider argument and an ambient API key are not escalation authority.
 
 The JSON specialist receives only the task, focused instructions, minimal context, input, and JSON Schema. It tries provider-native structured output (`json_schema` or JSON object mode) when available, then falls back to prompt-and-validate parsing.
