@@ -38,7 +38,7 @@ function array(value) {
 // proof of a freshly admitted provider profile. Explicit contradiction is not
 // repairable syntax and must never authorize tools, a plan or a final answer.
 export function assertNativeTurnAdmission(response, lane) {
-  if (!["plan", "direct", "step"].includes(lane)) throw new TypeError("Unknown native model lane.");
+  if (!["plan", "direct", "step", "specialist"].includes(lane)) throw new TypeError("Unknown native model lane.");
   const envelope = object(response);
   // An explicit upstream error contradicts choices, even when falsey. Inspect
   // presence only: neither error values nor diagnostic accessors are authority.
@@ -68,7 +68,7 @@ export function assertNativeTurnAdmission(response, lane) {
     if (entry.present && entry.value !== null
         && (typeof entry.value !== "string" || !entry.value.isWellFormed())) fail();
   }
-  const emptyContinuation = lane !== "plan" && calls.length === 0 && !content.value?.trim();
+  const emptyContinuation = (lane === "direct" || lane === "step") && calls.length === 0 && !content.value?.trim();
   const finish = field(choice, "finish_reason");
   if (finish.present) {
     if (finish.value === "length") {

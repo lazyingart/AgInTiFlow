@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { createChatCompletion, createClient } from "./model-client.js";
 import { parseNativeToolArguments as parseModelJson } from "./native-tool-arguments.js";
+import { assertNativeTurnAdmission, NativeTurnError } from "./native-turn-contract.js";
 import { jsonSchemaSnapshot } from "./restricted-application-contract.js";
 import { checkSpecialistSchema } from "./json-specialist-schema.js";
 import { getProviderDefaults } from "./model-routing.js";
@@ -305,7 +306,9 @@ export async function runJsonSpecialist(args = {}, config = {}, store = null) {
             : {}),
         };
         try {
+          rawContent = "";
           const response = await createChatCompletion(client, payload, jsonConfig, `json specialist ${attempt} request`);
+          assertNativeTurnAdmission(response, "specialist");
           rawContent = response.choices[0]?.message?.content || "";
           const parsed = parseJsonValue(rawContent, attempt);
           if (!parsed.ok) {
@@ -323,7 +326,8 @@ export async function runJsonSpecialist(args = {}, config = {}, store = null) {
           usedResponseFormat = attempt;
           break;
         } catch (error) {
-          if (config.abortSignal?.aborted || error?.code === "SPECIALIST_SCHEMA_UNAVAILABLE" || error?.code === "SPECIALIST_SCHEMA_INVALID") throw error;
+          if (error instanceof NativeTurnError || config.abortSignal?.aborted ||
+              error?.code === "SPECIALIST_SCHEMA_UNAVAILABLE" || error?.code === "SPECIALIST_SCHEMA_INVALID") throw error;
           const message = redactSensitiveText(error instanceof Error ? error.message : String(error));
           attemptNotes.push(`${attempt}: ${message}`);
           if (attempt !== attempts.at(-1) && (request.fallbackOnInvalid || errorLooksLikeUnsupportedResponseFormat(error))) continue;
@@ -372,6 +376,7 @@ export async function runJsonSpecialist(args = {}, config = {}, store = null) {
     return {
       ok: false,
       blocked: error?.code === "HOSTED_TOOL_PROVIDER_NOT_ALLOWED",
+      ...(error instanceof NativeTurnError ? { code: error.code } : {}),
       toolName: "json_specialist",
       provider,
       model,

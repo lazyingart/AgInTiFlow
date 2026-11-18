@@ -155,6 +155,76 @@ test("an allowed specialist retry uses a fresh response after an ambiguous value
   assert.deepEqual(result.result, { label: "three" });
 });
 
+async function specialistTurns(envelopes, provider = "localllm") {
+  const formats = [], artifacts = [];
+  const reply = await runJsonSpecialist({
+    task: "Prepare the short title for review.", schema: specialistSchema, responseFormat: "json_object", fallbackOnInvalid: true,
+  }, {
+    provider, model: "text-fixture",
+    jsonClientFactory: () => ({ chat: { completions: { create: async payload => {
+      formats.push(payload.response_format?.type ?? "prompt");
+      return envelopes[formats.length - 1];
+    } } } }),
+  }, { saveJsonArtifact: async (_name, artifact) => { artifacts.push(artifact); return "draft-receipt"; } });
+  return { reply, formats, artifacts };
+}
+
+test("specialist rejects contradictory original turns before format fallback or artifact publication", async () => {
+  const message = { role: "assistant", content: '{"label":"withheld"}' };
+  const choice = { index: 0, finish_reason: "stop", message };
+  const invalid = [
+    { choices: [{ ...choice, finish_reason: "length" }] },
+    { choices: [{ ...choice, finish_reason: "length", message: { ...message, content: "" } }] },
+    { choices: [{ ...choice, finish_reason: "content_filter" }] },
+    { choices: [{ ...choice, finish_reason: null }] },
+    { choices: [{ ...choice, index: 1 }] },
+    { choices: [choice, choice] },
+    { choices: [choice], error: { message: "withheld" } },
+    ...[{ refusal: "withheld" }, { role: "user" }, { tool_calls: [{}] }, { function_call: {} }]
+      .map(fields => ({ choices: [{ ...choice, message: { ...message, ...fields } }] })),
+  ];
+  for (const provider of ["localllm", "deepseek"]) {
+    for (const envelope of invalid) {
+      const { reply, formats, artifacts } = await specialistTurns([envelope], provider);
+      assert.equal(reply.ok, false);
+      assert.match(reply.code, /^MODEL_TURN_(INCOMPLETE|INVALID|REFUSED)$/);
+      assert.equal(reply.result, undefined);
+      assert.equal(reply.rawPreview, "");
+      assert.ok(!JSON.stringify(reply).includes("withheld"));
+      assert.deepEqual(formats, ["json_object"]);
+      assert.deepEqual(artifacts, []);
+    }
+  }
+});
+
+test("specialist publishes complete and legacy content-only turns once", async () => {
+  const content = '{"label":"approved title"}';
+  for (const choice of [
+    { index: 0, finish_reason: "stop", message: { role: "assistant", content, tool_calls: [], refusal: null } },
+    { message: { content } },
+  ]) {
+    const { reply, formats, artifacts } = await specialistTurns([{ choices: [choice] }]);
+    assert.equal(reply.ok, true);
+    assert.deepEqual(reply.result, { label: "approved title" });
+    assert.deepEqual(formats, ["json_object"]);
+    assert.equal(artifacts.length, 1);
+    assert.deepEqual(artifacts[0].result, reply.result);
+  }
+});
+
+test("specialist repair cannot publish or preview an earlier value after a refused second turn", async () => {
+  const { reply, formats, artifacts } = await specialistTurns([
+    { choices: [{ message: { content: '{"wrong":"earlier draft"}' } }] },
+    { choices: [{ message: { refusal: "refused", content: '{"label":"withheld"}' } }] },
+  ]);
+  assert.equal(reply.code, "MODEL_TURN_REFUSED");
+  assert.equal(reply.ok, false);
+  assert.equal(reply.rawPreview, "");
+  assert.ok(!JSON.stringify(reply).includes("earlier draft"));
+  assert.deepEqual(formats, ["json_object", "prompt"]);
+  assert.deepEqual(artifacts, []);
+});
+
 async function specialistReply(content, responseFormat) {
   let calls = 0;
   const result = await runJsonSpecialist({
