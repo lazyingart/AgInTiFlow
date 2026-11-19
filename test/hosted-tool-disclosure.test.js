@@ -67,6 +67,12 @@ test("named tools and long-task recall stay directly callable; history cannot gr
   const narrowed = await contract({ nativeToolMenuExpanded: true, readOnlyDiagnosticIntent: true });
   assert.ok(!names(narrowed).includes("apply_patch"));
   assert.ok(!names(narrowed).includes("write_file"));
+  const retry = await contract({ goal: "Try that same page again.", taskProfile: "auto", allowWebSearch: true, allowFileTools: false });
+  assert.ok(names(retry).includes("read_web_page"));
+  assert.ok(names(retry).includes("web_search"));
+  const remembered = await contract({ nativeToolMenuRecentTools: ["send_to_canvas", "run_command"] });
+  assert.ok(names(remembered).includes("send_to_canvas"));
+  assert.ok(!names(remembered).includes("run_command"));
 });
 
 test("menu expansion belongs to the native goal revision and supplies no completion evidence", () => {
@@ -77,6 +83,12 @@ test("menu expansion belongs to the native goal revision and supplies no complet
   const next = nextStepRuntimeConfig({ ...config, nativeToolMenuExpanded: true }, state);
   assert.equal(next.nativeToolMenuRevision, 4);
   assert.equal(next.nativeToolMenuExpanded, false);
+  state.meta.toolLoop = { recent: [{ toolName: "send_to_canvas", ok: true, goalRevision: 3 },
+    { toolName: "run_command", blocked: true, ok: false, goalRevision: 4 }] };
+  state.meta.goalContract.taskRelation = "same-task";
+  assert.deepEqual(nextStepRuntimeConfig(config, state).nativeToolMenuRecentTools, ["send_to_canvas"]);
+  state.meta.goalContract.taskRelation = "new-task";
+  assert.deepEqual(nextStepRuntimeConfig(config, state).nativeToolMenuRecentTools, []);
   recordDurableEvidenceCategories(state, { toolName: menu, ok: true });
   assert.deepEqual(state.meta.durableEvidenceCategories || [], []);
 });

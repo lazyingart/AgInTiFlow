@@ -20434,6 +20434,14 @@ function retainedActiveTaskMutationSatisfiesGrounding(config = {}, state = {}) {
 
 export function nextStepRuntimeConfig(config = {}, state = {}) {
   const phaseTools = state.meta?.scs?.active ? state.meta.scs.allowedTools : undefined;
+  const goalContract = state.meta?.goalContract;
+  const recent = state.meta?.toolLoop?.recent;
+  const recentMenuTools = Array.isArray(recent) && Number.isSafeInteger(goalContract?.revision)
+    ? recent.slice(-20).filter(entry => entry?.ok === true && !entry.blocked &&
+      (entry.goalRevision === goalContract.revision ||
+       (goalContract.taskRelation === "same-task" && entry.goalRevision === goalContract.revision - 1)))
+      .map(entry => entry.toolName)
+    : [];
   const canReadCurrentTask = (phaseTools === undefined ||
     (Array.isArray(phaseTools) && phaseTools.includes("read_current_task"))) && currentTaskWindowAvailable(state);
   const activeEdit = state.meta?.activeExecutionContract;
@@ -20451,6 +20459,7 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
     {
       ...applyLocalFailureRecovery(config, state),
       nativeToolMenuRevision: state.meta?.scs?.active ? null : state.meta?.goalContract?.revision,
+      nativeToolMenuRecentTools: recentMenuTools,
       nativeToolMenuExpanded: state.meta?.expandedToolMenuRevision === state.meta?.goalContract?.revision,
       currentTaskWindowAvailable: canReadCurrentTask,
       currentTaskWindowRevision: canReadCurrentTask ? state.meta.goalContract.revision : null,

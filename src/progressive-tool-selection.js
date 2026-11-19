@@ -22,6 +22,10 @@ import {
 const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const CURRENT_TASK_TOOL = "read_current_task";
 export const EXPAND_TOOL_MENU = "expand_tool_menu";
+// Native grounding and verification use these actions even when a follow-up
+// says only "try again" or changes language. Never put an extra menu turn
+// between the model and a currently eligible primary evidence source.
+const HOSTED_EVIDENCE_TOOLS = ["read_file", "read_current_task", "run_command", "web_search", "read_web_page"];
 
 export const DEFAULT_LOCAL_TOOL_LIMIT = 12;
 export const LOCAL_TOOL_HARD_CAP = 16;
@@ -3040,6 +3044,10 @@ export function selectProgressiveTools(
   const orderedNames = compactToolNames({ config, goal, profile, messages, includeCurrentTask: available.has(CURRENT_TASK_TOOL), focusedMenu });
   const namedTools = new Set();
   if (focusedMenu) {
+    for (const name of HOSTED_EVIDENCE_TOOLS) if (available.has(name)) namedTools.add(name);
+    if (Array.isArray(config.nativeToolMenuRecentTools)) {
+      for (const name of config.nativeToolMenuRecentTools.slice(-20)) if (available.has(name)) namedTools.add(name);
+    }
     for (const [word] of (goal || config.goal || "").matchAll(/[A-Za-z0-9_-]+/g)) {
       if (available.has(word)) namedTools.add(word);
     }
@@ -3066,7 +3074,7 @@ export function selectProgressiveTools(
     const all = phaseEnabled.map(({ tool }) => tool);
     // Keep an explicit contract obligation immediately callable even if it
     // exceeds the compact budget. A very large catalog also stays on full.
-    if (!deferred.length || catalog.length > 2048 || deferred.includes(CURRENT_TASK_TOOL) ||
+    if (!deferred.length || catalog.length > 2048 ||
         deferred.some(name => namedTools.has(name)) ||
         (Array.isArray(config.taskContract?.requiredToolCalls) &&
           config.taskContract.requiredToolCalls.some(name => deferred.includes(name))) ||
