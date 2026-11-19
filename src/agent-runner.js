@@ -15,7 +15,7 @@ import {
   resolveModelTimeoutMs,
 } from "./model-client.js";
 import { SessionStore } from "./session-store.js";
-import { nativeToolPolicyAllows } from "./progressive-tool-selection.js";
+import { EXPAND_TOOL_MENU, nativeToolPolicyAllows } from "./progressive-tool-selection.js";
 import { currentTaskWindowAvailable, readCurrentTaskWindow } from "./current-task-window.js";
 import { nativeBackgroundToolGuidance, nativeWorkspaceToolGuidance, nativeCapabilityPolicyContext } from "./native-tool-context.js";
 import { assessFileChecksumClaims, nativeFileChecksumReceipts } from "./completion-file-checksums.js";
@@ -20450,6 +20450,8 @@ export function nextStepRuntimeConfig(config = {}, state = {}) {
   const runtimeConfig = applyLocalContextOutputAdaptation(
     {
       ...applyLocalFailureRecovery(config, state),
+      nativeToolMenuRevision: state.meta?.scs?.active ? null : state.meta?.goalContract?.revision,
+      nativeToolMenuExpanded: state.meta?.expandedToolMenuRevision === state.meta?.goalContract?.revision,
       currentTaskWindowAvailable: canReadCurrentTask,
       currentTaskWindowRevision: canReadCurrentTask ? state.meta.goalContract.revision : null,
       savedResultAnswerOnly: false,
@@ -25773,6 +25775,17 @@ async function executeTool(browserState, toolCall, snapshot, config, store, obse
     }
 
     switch (toolName) {
+      case EXPAND_TOOL_MENU: {
+        const revision = state.meta?.goalContract?.revision;
+        if (config.nativeToolMenuOffered !== true || config.nativeToolMenuRevision !== revision ||
+            !nativeToolPolicyAllows(toolName, config)) {
+          return { toolName, ok: false, blocked: true, reason: "Tool menu unavailable for this step." };
+        }
+        await store.appendEvent("tool.menu_expanded", { goalRevision: revision });
+        state.meta.expandedToolMenuRevision = revision;
+        observers.event("tool.menu_expanded", { goalRevision: revision });
+        return { toolName, ok: true, goalRevision: revision, message: "The next step will show all currently eligible tools." };
+      }
       case "read_current_task": {
         const offeredForCurrentRevision = config.currentTaskWindowOffered === true &&
           config.currentTaskWindowRevision === state.meta?.goalContract?.revision &&
@@ -32872,6 +32885,9 @@ async function runAgentOnceUnlocked(config) {
 
       throwIfAborted(config);
       const baseStepRuntimeConfig = nextStepRuntimeConfig(config, state);
+      // A hidden action costs a disclosure step, its own step and a finish.
+      // Don't rely on a discretionary budget extension to make it reachable.
+      if (stepBudget.currentMaxSteps - step < 2) baseStepRuntimeConfig.nativeToolMenuRevision = null;
       const constrainedRecovery = buildConstrainedRecoveryRequest(
         state,
         config,
@@ -33811,6 +33827,7 @@ async function runAgentOnceUnlocked(config) {
       const resultObservers = createToolResultObservers(observers);
       const toolBatchRuntimeConfig = {
         ...stepRuntimeConfig,
+        nativeToolMenuOffered: offeredToolNames.includes(EXPAND_TOOL_MENU),
         currentTaskWindowOffered: offeredToolNames.includes("read_current_task"),
         artifactValidationAcceptedAtBatchStart: artifactValidationAcceptanceIsCurrent(state),
       };

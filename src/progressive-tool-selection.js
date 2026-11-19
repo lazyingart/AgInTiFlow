@@ -21,6 +21,7 @@ import {
 
 const FUNCTION_NAME_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const CURRENT_TASK_TOOL = "read_current_task";
+export const EXPAND_TOOL_MENU = "expand_tool_menu";
 
 export const DEFAULT_LOCAL_TOOL_LIMIT = 12;
 export const LOCAL_TOOL_HARD_CAP = 16;
@@ -455,6 +456,7 @@ function currentTaskPolicyAllows(config) {
 }
 
 function toolIsDisabled(name, config) {
+  if (name === EXPAND_TOOL_MENU && !focusedHostedMenuAllowed(config)) return true;
   if (name === CURRENT_TASK_TOOL && !currentTaskPolicyAllows(config)) return true;
   if (
     config.integrationSessionProfile === INTEGRATION_TEXT_WORKSPACE_PROFILE_ID &&
@@ -547,6 +549,23 @@ function toolSurfacePolicy(config, profile) {
   if (config.progressiveTools === false) return "full";
   if (config.progressiveTools === true) return "compact";
   return localCapability(config, profile) ? "compact" : "full";
+}
+
+// Only an ordinary native step supplies the revision. A menu is a display
+// preference for this revision, never a grant to execute an omitted function.
+function focusedHostedMenuAllowed(config) {
+  const revision = Object.getOwnPropertyDescriptor(config, "nativeToolMenuRevision")?.value;
+  return Number.isSafeInteger(revision) && revision > 0 &&
+    config.executionTier === "focused" && ["deepseek", "openai"].includes(config.provider) &&
+    !config.scsActive && !config.scs?.active && !config.skillPolicy &&
+    !config.restrictedApplication && !config.responseOnly && !config.hostManagedResponseOnly &&
+    config.schemaVersion !== "aginti-restricted-application-v1" &&
+    (config.toolNamespace === undefined || config.toolNamespace === "native") &&
+    !FIXED_INTEGRATION_FIELDS.some(key => key in config) && !FIXED_WORKSPACE_PROFILES.has(config.taskProfile) &&
+    !hasAgintiEvidenceScope(config.goal) && !config.constrainedRecoveryMode &&
+    !CURRENT_TASK_PROTECTED_PHASES.some(key => config[key] === true) &&
+    [config.allowedToolNames, config.allowedTools, config.toolAllowlist, config.scs?.allowedTools,
+      config.disabledToolNames, config.excludedToolNames].every(value => value === undefined);
 }
 
 function profileId(config, profile) {
@@ -2270,9 +2289,12 @@ function serializedChars(tools) {
   return JSON.stringify(tools).length;
 }
 
-function compactToolNames({ config, goal, profile, messages, includeCurrentTask = false }) {
+function compactToolNames({ config, goal, profile, messages, includeCurrentTask = false, focusedMenu = false }) {
   const explicitBundles = bundlesForProfile(profileId(config, profile));
-  const inferred = inferredBundles(taskText(goal, config, messages));
+  // Native user-role messages can contain machine-generated environment
+  // reports mentioning the browser or tools. Infer the initial hosted menu
+  // from the active request; still use actual receipts for discovery order.
+  const inferred = inferredBundles(taskText(goal, config, focusedMenu ? [] : messages));
   const explicitProfileTools = profileToolNames(profile);
   const taskContract = deriveScsTaskContract({
     goal: goal || config.goal || "",
@@ -2335,8 +2357,9 @@ function compactToolNames({ config, goal, profile, messages, includeCurrentTask 
 /**
  * Return a pure, ordered subset of an existing OpenAI function-tool array.
  *
- * Hosted providers and an explicit `toolSurfacePolicy: "full"` retain every
- * valid, enabled descriptor. Local/loopback providers default to a compact,
+ * Focused native hosted turns may offer a compact menu and its expansion.
+ * Explicit full surfaces retain every valid, enabled descriptor.
+ * Local/loopback providers default to a compact,
  * task-shaped surface. Returned entries normally reuse the original descriptor
  * objects. A failed-test repair may expose one bounded internal rewrite alias
  * over the registered apply_patch tool; runtime validation still owns the exact
@@ -2346,7 +2369,9 @@ export function selectProgressiveTools(
   tools,
   { config = {}, goal = "", profile = "", messages = [] } = {}
 ) {
-  const validated = validatedUniqueTools(tools);
+  // This reserved name describes a runtime control. An input descriptor
+  // with the same name must never replace the control or its closed schema.
+  const validated = validatedUniqueTools(tools).filter(({ name }) => name !== EXPAND_TOOL_MENU);
   const baselineEnabled = validated.filter(({ name }) => nativeToolPolicyAllows(name, config) &&
     !(name === CURRENT_TASK_TOOL && (FIXED_WORKSPACE_PROFILES.has(profileId(config, profile)) ||
       (goal && goal !== config.goal && isResponseOnlyEvidenceScope(goal)))) &&
@@ -2990,7 +3015,15 @@ export function selectProgressiveTools(
     if (deepResearch) return [deepResearch, finish];
   }
 
-  if (toolSurfacePolicy(config, profile) === "full") return phaseEnabled.map(({ tool }) => tool);
+  const full = toolSurfacePolicy(config, profile) === "full";
+  const automaticPolicy = String(config.toolSurfacePolicy || config.toolPolicy ||
+    profile?.toolSurfacePolicy || profile?.toolPolicy || "auto").toLowerCase() === "auto" &&
+    config.progressiveTools === undefined;
+  const focusedMenu = full && automaticPolicy && focusedHostedMenuAllowed(config) &&
+    !hasAgintiEvidenceScope(goal) && !FIXED_WORKSPACE_PROFILES.has(profileId(config, profile)) &&
+    !config.nativeToolMenuExpanded &&
+    phaseEnabled.length > DEFAULT_LOCAL_TOOL_LIMIT;
+  if (full && !focusedMenu) return phaseEnabled.map(({ tool }) => tool);
 
   const available = new Map(phaseEnabled.map(({ name, tool }) => [name, tool]));
   const requestedLimit = finitePositiveInteger(
@@ -3004,9 +3037,15 @@ export function selectProgressiveTools(
   );
   const selected = [];
 
-  const orderedNames = compactToolNames({ config, goal, profile, messages, includeCurrentTask: available.has(CURRENT_TASK_TOOL) });
-  for (const name of orderedNames) {
-    if (selected.length + 1 >= toolLimit) break;
+  const orderedNames = compactToolNames({ config, goal, profile, messages, includeCurrentTask: available.has(CURRENT_TASK_TOOL), focusedMenu });
+  const namedTools = new Set();
+  if (focusedMenu) {
+    for (const [word] of (goal || config.goal || "").matchAll(/[A-Za-z0-9_-]+/g)) {
+      if (available.has(word)) namedTools.add(word);
+    }
+  }
+  for (const name of new Set([...namedTools, ...orderedNames])) {
+    if (selected.length + (focusedMenu ? 2 : 1) >= toolLimit) break;
     const tool = available.get(name);
     if (!tool || tool === finish) continue;
     const candidate = [...selected, tool, finish];
@@ -3014,5 +3053,25 @@ export function selectProgressiveTools(
     selected.push(tool);
   }
 
+  if (focusedMenu) {
+    const offered = new Set([...selected, finish].map(openAiFunctionName));
+    const deferred = phaseEnabled.filter(({ name }) => !offered.has(name)).map(({ name }) => name);
+    const catalog = deferred.join(", ");
+    const menu = { type: "function", function: {
+      name: EXPAND_TOOL_MENU,
+      description: `Show the remaining enabled tool definitions for this task revision. Call only when needed: ${catalog}.`,
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    } };
+    const compact = [...selected, menu, finish];
+    const all = phaseEnabled.map(({ tool }) => tool);
+    // Keep an explicit contract obligation immediately callable even if it
+    // exceeds the compact budget. A very large catalog also stays on full.
+    if (!deferred.length || catalog.length > 2048 || deferred.includes(CURRENT_TASK_TOOL) ||
+        deferred.some(name => namedTools.has(name)) ||
+        (Array.isArray(config.taskContract?.requiredToolCalls) &&
+          config.taskContract.requiredToolCalls.some(name => deferred.includes(name))) ||
+        serializedChars(compact) >= serializedChars(all)) return all;
+    return compact;
+  }
   return [...selected, finish];
 }
