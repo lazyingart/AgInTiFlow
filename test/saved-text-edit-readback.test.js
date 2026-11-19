@@ -33,6 +33,7 @@ test("a saved literal edit supports readback across text formats and languages",
     [original, followup, "cut.srt"],
     ['In chapter.md, replace "old brigde" with "old bridge".', "Check the saved edit.", "chapter.md"],
     ["请把歌词.lrc中的「old brigde」改为「old bridge」，其余内容保持不变。", "请核对刚才的修改。", "歌词.lrc"],
+    [original, "继续，核对刚才保存的修改，再告诉我改了什么。", "cut.srt"],
     ["notes.txtの「old brigde」を「old bridge」に修正してください。", "保存した修正内容を確認してください。", "notes.txt"],
   ]) assert.equal(savedTextEditReadback(session(goal, request, file), request)?.path, file);
 });
@@ -42,7 +43,8 @@ test("unproven edits, other goals, different operands, extra actions and explici
     original.replace("cut.srt", "elsewhere.srt"), original.replace("unchanged", "synchronized against the rendered video")]) {
     assert.equal(savedTextEditReadback(session(goal), followup), null);
   }
-  for (const request of ["Verify the saved correction and run the tests.", "Check the rendering.", "Compile the saved change."]) {
+  for (const request of ["Verify the saved correction and run the tests.", "Check the rendering.", "Compile the saved change.",
+    "核对刚才保存的修改，然后运行测试。", "核对上次保存的改动，再告诉我视频是否同步。"]) {
     const state = session(original, request);
     assert.equal(completionTaskContract({}, state).savedTextEditReadback, undefined);
   }
@@ -117,7 +119,7 @@ test("completion needs the exact publication followed by a complete current read
   assert.equal(check().ok, false);
 });
 
-function verifyNativeResume(t, task, request, check) {
+function verifyNativeResume(t, task, request, check, laterRequest) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aginti-restart-edit-"));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const cwd = path.join(home, "work"), trace = path.join(home, "trace");
@@ -126,11 +128,11 @@ function verifyNativeResume(t, task, request, check) {
   fs.writeFileSync(file, bytes);
   const cli = fileURLToPath(new URL("../bin/aginti-cli.js", import.meta.url));
   const fixture = fileURLToPath(new URL("./fixtures/saved-text-edit-provider.js", import.meta.url));
-  const run = (interrupt, args) => spawnSync(process.execPath, ["--import", fixture, cli, ...args], {
+  const run = (interrupt, args, mode = check) => spawnSync(process.execPath, ["--import", fixture, cli, ...args], {
     cwd, encoding: "utf8", timeout: 25000, env: { HOME: home, PATH: process.env.PATH,
       AGINTIFLOW_HOME: path.join(home, "agent"), XDG_CONFIG_HOME: path.join(home, "config"),
       OPENAI_API_KEY: "offline-fixture", TEST_EDIT_TRACE: trace, TEST_INTERRUPT_AFTER_PATCH: interrupt ? "1" : "0",
-      TEST_EDIT_VERIFY: interrupt ? "read" : check,
+      TEST_EDIT_VERIFY: interrupt ? "read" : mode,
       TEST_PATCH_CONTEXT: task.startsWith("请") ? "1" : "0",
       AGINTIFLOW_HOUSEKEEPING: "0", AGINTI_PROVIDER_HANDOFF: "0", AGINTIFLOW_NO_WEB_AUTO_START: "1", AGINTIFLOW_NO_AUTO_UPDATE: "1" } });
   const first = run(true, ["run", "--json", "--session-id", "edit", "--provider", "openai", "--model", "gpt-6.1-sol",
@@ -159,7 +161,24 @@ function verifyNativeResume(t, task, request, check) {
   assert.deepEqual(calls, ["initial_read", "exact_edit", "checkpoint", "verify_edit", "finish_edit"]);
   assert.deepEqual(stat(), preResume);
   assert.equal(fs.readFileSync(file, "utf8"), bytes.replace("brigde", "bridge"));
+  if (laterRequest) {
+    const external = bytes.replace("brigde", "bridge").replaceAll("\r\n", "\n");
+    fs.writeFileSync(file, external);
+    const retry = run(false, ["resume", "edit", "--json", laterRequest], "skip");
+    assert.equal(retry.status, 1, retry.stdout + retry.stderr);
+    assert.equal(JSON.parse(retry.stdout).ok, false);
+    const session = path.join(home, "agent/sessions/edit");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(session, "state.json"))).meta.goalContract.revision, 3);
+    const events = fs.readFileSync(path.join(session, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    assert.ok(events.some(e => e.type === "tool.completed" && e.data.toolName === "read_file" && e.data.goalRevision === 2));
+    assert.ok(!events.some(e => e.type === "tool.completed" && e.data.toolName === "read_file" && e.data.goalRevision === 3));
+    assert.equal(fs.readFileSync(file, "utf8"), external);
+  }
 }
+
+test("a second same-task check cannot reuse the preceding turn's verified bytes after an outside edit", t =>
+  verifyNativeResume(t, "请把cut.srt中的「old brigde」改为「old bridge」，其余内容保持不变。",
+    "继续，核对刚才的修改，并告诉我改了什么。", "read", "继续，核对刚才保存的修改，再告诉我改了什么。"));
 
 for (const [language, task, request] of [
   ["en", original, followup],

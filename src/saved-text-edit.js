@@ -10,7 +10,7 @@ const sha256 = /^[a-f0-9]{64}$/u;
 function requestsReadback(text) {
   if (typeof text !== "string" || text.length > 512) return false;
   return /^(?:continue[.,!]\s*)?(?:please\s+)?(?:verify|check|confirm|read back)\s+(?:the|that|this|my|your)\s+(?:(?:saved|last|latest|previous|text|wording)\s+)*(?:edit|change|correction)(?:\s*(?:,?\s*and|then)\s+(?:tell me|report|summarize|describe)\s+(?:what changed|the change|the result))?[.!?]?$/iu.test(text.trim()) ||
-    /^(?:继续[。，、]?\s*)?(?:请)?(?:核对|检查|确认|验证)(?:一下)?(?:刚才|上次|已保存|保存|刚保存)的(?:文字)?(?:修改|改动|更正)(?:[，、]?(?:并)?(?:告诉我|说明)(?:改了什么|修改了什么|结果))?[。！]?$/u.test(text.trim()) ||
+    /^(?:继续[。，、]?\s*)?(?:请)?(?:核对|检查|确认|验证)(?:一下)?(?:(?:刚才|上次)(?:保存)?|已保存|保存|刚保存)的(?:文字)?(?:修改|改动|更正)(?:[，、]?(?:并|再|然后)?(?:告诉我|说明)(?:改了什么|修改了什么|结果))?[。！]?$/u.test(text.trim()) ||
     /^(?:保存した|先ほどの|前回の)(?:文章の)?(?:修正|変更)(?:内容)?を確認して(?:ください)?(?:[、，]どこを変えたか教えてください)?[。！]?$/u.test(text.trim());
 }
 
