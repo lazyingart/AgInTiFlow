@@ -73,6 +73,9 @@ test("named tools and long-task recall stay directly callable; history cannot gr
   const remembered = await contract({ nativeToolMenuRecentTools: ["send_to_canvas", "run_command"] });
   assert.ok(names(remembered).includes("send_to_canvas"));
   assert.ok(!names(remembered).includes("run_command"));
+  const withAdviser = await contract({ allowWrapperTools: true });
+  assert.ok(names(withAdviser).includes("delegate_agent"));
+  assert.ok(!names(withAdviser).includes(menu));
 });
 
 test("menu expansion belongs to the native goal revision and supplies no completion evidence", () => {

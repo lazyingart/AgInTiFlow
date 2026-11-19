@@ -561,6 +561,9 @@ function focusedHostedMenuAllowed(config) {
   const revision = Object.getOwnPropertyDescriptor(config, "nativeToolMenuRevision")?.value;
   return Number.isSafeInteger(revision) && revision > 0 &&
     config.executionTier === "focused" && ["deepseek", "openai"].includes(config.provider) &&
+    // Once-only advisers and auxiliary providers carry their own invocation
+    // contracts. Preserve the original offer for those opted-in runs.
+    config.allowWrapperTools !== true && config.allowAuxiliaryTools !== true &&
     !config.scsActive && !config.scs?.active && !config.skillPolicy &&
     !config.restrictedApplication && !config.responseOnly && !config.hostManagedResponseOnly &&
     config.schemaVersion !== "aginti-restricted-application-v1" &&
