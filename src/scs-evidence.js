@@ -2302,10 +2302,24 @@ export function isHistoricalDiagnosticQuestion(goal = "") {
   return explanation;
 }
 
+// Dictated CJK requests often end with "不用修改文件". Mask only a complete,
+// unquoted no-file-change clause, preserving offsets and adjacent directives.
+function maskChineseNoFileChangeClauses(text) {
+  const clauses = /(?:^|[，,。！？!?；;\n])[ \t]*(?:请|請)?(?:不用|不必|无需|無需|不需要|别|別)(?:再)?(?:修改|更改|改动|改動|编辑|編輯)(?:任何)?(?:文件|檔案)[ \t]*(?=$|[，,。！？!?；;\n])/gu;
+  let quotes, quoteIndex = 0;
+  return text.replace(clauses, (str, index) => {
+    quotes ??= outputIntentSyntax(text).quotes;
+    while (quoteIndex < quotes.length && quotes[quoteIndex].end <= index) quoteIndex++;
+    if (quotes[quoteIndex]?.start <= index) return str;
+    return str.replace(/[^，,。！？!?；;\n]/gu, " ");
+  });
+}
+
 export function hasReadOnlyDiagnosticIntent(goal = "", taskProfile = "") {
   const text = String(goal || "");
   const explicitReadOnly = /\bread[- ]only\b|\breview\s+only\b|\b(?:do not|don't|without)\b[^.!?;\n]{0,100}\b(?:chang(?:e|ing)|modif(?:y|ying)|edit(?:ing)?|writ(?:e|ing))\b[^.!?;\n]{0,50}\b(?:any\s+)?files?\b|只读|只讀|(?:不要|请勿|請勿)[^。；\n]{0,60}(?:修改|编辑|編輯)(?:文件|檔案)|読み取り専用|読取専用/i.test(text);
-  return isSavedEvidenceAnswerRequest(text) || (explicitReadOnly && (isHistoricalDiagnosticQuestion(text) || !goalRequestsWorkspaceMutation(text, taskProfile)));
+  return isSavedEvidenceAnswerRequest(text) || ((explicitReadOnly || maskChineseNoFileChangeClauses(text) !== text) &&
+    (isHistoricalDiagnosticQuestion(text) || !goalRequestsWorkspaceMutation(text, taskProfile)));
 }
 
 // A bounded preview of this session's immediately preceding diagnostic, NOT
@@ -2887,7 +2901,7 @@ function inferRequiredToolCalls(goal = "") {
 }
 
 function stripForbiddenLanguage(goal = "") {
-  let source = normalizeSoftLineWraps(goal);
+  let source = maskChineseNoFileChangeClauses(normalizeSoftLineWraps(goal));
   // A directly named prohibition ends at its file list. Do not let the broad
   // negative-language fallback erase the next positive CJK/English clause.
   for (const clause of filePreservationClauses(source).filter(item => item.directProhibition).sort((a, b) => b.index - a.index)) {

@@ -109,7 +109,7 @@ function runCli(t, lastStep = false) {
     "--model", "gpt-6.1-sol", "--routing", "manual", "--no-scs", "--task-profile", "code",
     "--sandbox-mode", "host", "--allow-file-tools", "--no-shell", "--no-web-search", "--no-mcp",
     "--no-wrappers", "--no-auxiliary-tools", "--no-parallel-scouts", "--max-steps", lastStep ? "1" : "6", "--dynamic-steps", "off",
-    lastStep ? "Reply with exactly CHECK." : "Read review.txt and share its checklist with me."], {
+    lastStep ? "Reply with exactly CHECK." : "读一下 review.txt，按照里面指定的交付位置，把核对清单给我。不用修改文件。"], {
     cwd: work, timeout: 20000, encoding: "utf8", env: { HOME: home, PATH: process.env.PATH,
       AGINTIFLOW_HOME: agent, XDG_CONFIG_HOME: path.join(home, "config"), AGINTI_EXECUTION_TIER: "focused",
       OPENAI_API_KEY: "offline-fixture", TEST_DISCLOSURE_TRACE: trace, TEST_LAST_STEP: lastStep ? "1" : "0", AGINTI_PROVIDER_HANDOFF: "0",

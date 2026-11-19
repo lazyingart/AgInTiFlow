@@ -13,6 +13,8 @@ import { checkToolUse } from "../src/guardrails.js";
 // Mandatory/once-only execution is covered by advisory-invocation-runtime.
 const realPrompt = "Please check totals.js against totals.test.js. Ask Codex once if useful for an independent read-only second opinion, then verify the finding and briefly explain the smallest fix. Don't change any file or install anything.";
 const readOnly = [realPrompt,
+  "读一下 review.txt，按照里面指定的交付位置，把核对清单给我。不用修改文件。",
+  "請先讀取 note.txt，無需更改任何檔案。",
   "Read index.js and explain a minimal fix without changing files.",
   "Inspect parser.py and recommend the smallest patch. This is review only.",
   "Review the proposed changes to index.js; do not apply them.",
@@ -24,6 +26,8 @@ const readOnly = [realPrompt,
   "index.js を確認して更新案を説明してください。ファイルを編集しないでください。",
 ];
 const mutations = [
+  "不用修改文件。然后创建 report.md。",
+  "编辑 draft.md 的正文，无需修改文件名。",
   "Fix index.js and verify it. Do not change unrelated files.",
   "Read index.js, then explain and implement the smallest fix.",
   "Review and patch index.js.",
@@ -37,6 +41,8 @@ const mutations = [
 ];
 
 test("advisory fix nouns do not create a workspace/file mutation obligation", () => {
+  const quoted = deriveScsTaskContract({ goal: "解释“第一句。不用修改文件。第二句。”的语气。", taskProfile: "auto" });
+  assert.equal(quoted.readOnlyDiagnostic, false);
   for (const goal of readOnly) {
     const contract = deriveScsTaskContract({ goal, taskProfile: "auto" });
     assert.equal(contract.requiresWorkspaceMutation, false, goal);
